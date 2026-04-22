@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Yellow EDU · P2 Icon Bullets</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --yellow: {{ brand_primary_color | default('#FFDE00') }};
+    --bg-dark: {{ brand_bg_dark | default('#000000') }};
+    --bg-yellow: {{ brand_bg_yellow | default('#FFDE00') }};
+    --card-bg: #FFFFFF;
+    --card-inner-bg: #F2F2F2;
+    --text-primary: {{ brand_text_primary | default('#0A0A0A') }};
+    --text-body: {{ brand_text_body | default('#595959') }};
+    --text-meta: #8A8A8A;
+    --font-family: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
+  }
+
+  html, body {
+    font-family: var(--font-family);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .canvas {
+    width: 1080px;
+    height: 1080px;
+    position: relative;
+    padding: 48px;
+    display: flex;
+    flex-direction: column;
+  }
+  .canvas.theme-dark { background: var(--bg-dark); }
+  .canvas.theme-yellow { background: var(--bg-yellow); }
+
+  .top-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+  }
+
+  .series-info .series-title {
+    font-size: 26px; font-weight: 800; color: white;
+    letter-spacing: -0.5px; line-height: 1.2;
+  }
+  .canvas.theme-yellow .series-info .series-title { color: var(--text-primary); }
+  
+  .series-info .series-number { color: var(--yellow); margin-right: 6px; }
+  .canvas.theme-yellow .series-info .series-number { color: var(--text-primary); }
+
+  .series-info .series-subtitle {
+    font-size: 15px; color: white; font-weight: 500;
+    margin-top: 6px; letter-spacing: -0.2px;
+  }
+  .canvas.theme-yellow .series-info .series-subtitle { color: var(--text-primary); }
+
+  .yellow-logo-img {
+    width: 100px; height: auto;
+    flex-shrink: 0; display: block;
+  }.yellow-logo-img.light { display: none; }
+  .yellow-logo-img.dark { display: block; }
+  .canvas.theme-yellow .yellow-logo-img.light { display: block; }
+  .canvas.theme-yellow .yellow-logo-img.dark { display: none; }
+
+  .main-card {
+    flex: 1;
+    background: var(--card-bg);
+    border-radius: 20px;
+    padding: 56px 48px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .lesson-badge {
+    display: inline-block;
+    background: var(--yellow);
+    color: var(--text-primary);
+    font-size: 16px; font-weight: 700;
+    padding: 8px 16px; border-radius: 6px;
+    margin-bottom: 20px;
+    width: fit-content;
+    letter-spacing: -0.2px;
+  }
+  .canvas.theme-yellow .lesson-badge {
+    background: var(--bg-dark);
+    color: var(--yellow);
+  }
+
+  .lesson-title {
+    font-size: 44px;
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -1.5px;
+    line-height: 1.15;
+    margin-bottom: 20px;
+    word-break: keep-all;
+  }
+
+  .lesson-body {
+    font-size: 19px;
+    color: var(--text-body);
+    line-height: 1.55;
+    margin-bottom: 40px;
+    letter-spacing: -0.3px;
+    word-break: keep-all;
+    font-weight: 500;
+  }
+
+  /* ── Bullet List ── */
+  .bullet-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: auto;
+  }
+
+  .bullet-item {
+    background: var(--card-inner-bg);
+    border-radius: 14px;
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .bullet-item .icon {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .bullet-item .icon svg { width: 100%; height: 100%; fill: var(--text-primary); }
+
+  .bullet-item .text {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.3px;
+    line-height: 1.4;
+    word-break: keep-all;
+  }
+</style>
+</head>
+<body>
+
+{# 
+  Variables:
+    theme: "dark" | "yellow"
+    series_number, series_title_en, series_subtitle_kr
+    lesson_number, lesson_title_kr, lesson_body_kr
+    bullets: [{text_kr, icon_svg}, ...] (up to 4)
+#}
+
+<div class="canvas theme-{{ theme | default('dark') }}">
+  <div class="top-header">
+    <div class="series-info">
+      <div class="series-title">
+        <span class="series-number">{{ series_number }}</span>
+        {{ series_title_en }}
+      </div>
+      <div class="series-subtitle">{{ series_subtitle_kr }}</div>
+    </div>
+    {% if theme == 'yellow' %}<img src="{{ logo_light_path }}" class="yellow-logo-img" alt="Yellow"/>{% else %}<img src="{{ logo_dark_path }}" class="yellow-logo-img" alt="Yellow"/>{% endif %}
+  </div>
+
+  <div class="main-card">
+    <div class="lesson-badge">Lesson {{ lesson_number }}</div>
+    <h1 class="lesson-title">{{ lesson_title_kr | safe }}</h1>
+    <p class="lesson-body">{{ lesson_body_kr | safe }}</p>
+    
+    <div class="bullet-list">
+      {% for bullet in bullets %}
+      <div class="bullet-item">
+        <div class="icon">{{ bullet.icon_svg | safe }}</div>
+        <div class="text">{{ bullet.text_kr | safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,74 @@
+client_id: squid
+name: Squid Router
+locale: ko-KR
+active: true
+
+brand:
+  # Squid는 민트그린/보라 브랜드 컬러 (실제 Squid Router 컬러 참고)
+  primary_color: "#00F5D4"
+  bg_dark: "#0A0F1E"
+  bg_yellow: "#00F5D4"       # Squid의 accent로 대체
+  text_primary: "#0A0A0A"
+  text_body: "#4A4A4A"
+  logo_dark: assets/logo_dark.png
+  logo_light: assets/logo_light.png
+  font_family: "Pretendard Variable"
+
+content_sources:
+  twitter:
+    handle: "@SquidRouter"
+    poll_interval_min: 30
+
+llm:
+  edu_carousel:
+    model: "claude-sonnet-4-6"
+    temperature: 0.3
+    tone_guidance: >
+      Approachable and builder-focused. 경어체.
+      Emphasize cross-chain UX and developer simplicity.
+    preserve_terms:
+      - "Squid Router"
+      - "Axelar"
+      - "ITS"
+      - "GMP"
+      - "Coral"
+    glossary:
+      "cross-chain": "크로스체인(cross-chain)"
+      "swap": "스왑(swap)"
+      "routing": "라우팅(routing)"
+      "bridging": "브리징(bridging)"
+      "gas abstraction": "가스 추상화(gas abstraction)"
+
+  news_banner:
+    model: "claude-sonnet-4-6"
+
+publishing:
+  telegram:
+    public_channel: "@SquidKorea"
+    bot_token_env: "TELEGRAM_BOT_TOKEN_SQUID"
+  twitter:
+    typefully_account_id: "squid_kr"
+
+feature_flags:
+  auto_approve: false
+  education_carousel: true
+  news_banner: true
+
+routing:
+  skip_patterns:
+    - "Day 1"
+    - "on the ground"
+    - "AMA"
+
+  edu_signals:
+    - "how it works"
+    - "architecture"
+    - "routing"
+    - "cross-chain"
+    - "swap"
+
+  news_signals:
+    - "partnership"
+    - "integration"
+    - "now live"
+    - "launch"
