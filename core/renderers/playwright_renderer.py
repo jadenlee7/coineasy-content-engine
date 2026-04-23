@@ -1,13 +1,12 @@
 """
-Playwright Renderer
+Playwright Renderer (ASYNC)
 
 Renders an HTML template (resolved per-client) into a PNG.
 Automatically injects client branding (logo paths, colors) as template variables.
 
 USAGE:
     from core.renderers.playwright_renderer import render_png
-    
-    png_path = render_png(
+    png_path = await render_png(
         client_id="yellow",
         template_path="edu/edu_p1_3card.html",
         slots={"lesson_title_kr": "...", ...},
@@ -15,7 +14,6 @@ USAGE:
         theme="dark",
     )
 """
-
 from __future__ import annotations
 
 import base64
@@ -27,14 +25,13 @@ from jinja2 import Environment, FileSystemLoader
 from core.client_config import ClientConfig, get_client_config
 from core.renderers.template_resolver import resolve_template
 
-
 # Viewport defaults
-EDU_CAROUSEL_SIZE = (1080, 1080)  # square for Instagram/X carousel
-NEWS_BANNER_16x9 = (1200, 675)    # 16:9 for X, Telegram
-NEWS_BANNER_1x1 = (1080, 1080)    # square
+EDU_CAROUSEL_SIZE = (1080, 1080)     # square for Instagram/X carousel
+NEWS_BANNER_16x9 = (1200, 675)       # 16:9 for X, Telegram
+NEWS_BANNER_1x1 = (1080, 1080)       # square
 
 
-def render_png(
+async def render_png(
     client_id: str,
     template_path: str,
     slots: dict[str, Any],
@@ -46,62 +43,52 @@ def render_png(
 ) -> Path:
     """
     Render an HTML template to PNG with client branding automatically applied.
-    
-    Args:
-        client_id: which client's branding to use (e.g. "yellow")
-        template_path: relative path like "edu/edu_p1_3card.html"
-        slots: Jinja2 template variables (content-specific)
-        output_path: where to write the PNG
-        theme: "dark" or "yellow" (or other client-defined themes)
-        viewport: (width, height) in pixels
-        wait_ms: how long to wait for fonts/CSS after load
-        device_scale_factor: 2 = retina quality
-    
-    Returns:
-        Path to the generated PNG (same as output_path)
+    Must be awaited inside an asyncio event loop (e.g. FastAPI async endpoint).
     """
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
     except ImportError:
         raise ImportError("pip install playwright; playwright install chromium")
-    
+
     config = get_client_config(client_id)
-    
+
     # Resolve template (checks override first, then core)
     template_file = resolve_template(client_id, template_path)
-    
+
     # Build Jinja environment from the template's parent directory
     env = Environment(
         loader=FileSystemLoader(str(template_file.parent)),
         autoescape=False,  # we trust our own slots; templates handle escaping explicitly
     )
     template = env.get_template(template_file.name)
-    
+
     # Automatically inject client branding into slots
     enhanced_slots = _inject_brand_slots(slots, config, theme)
-    
+
     # Render HTML
     html = template.render(**enhanced_slots)
-    
+
     # Ensure output dir exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Playwright screenshot
+
+    # Playwright screenshot (ASYNC)
     width, height = viewport
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(
-            viewport={"width": width, "height": height},
-            device_scale_factor=device_scale_factor,
-        )
-        page.set_content(html, wait_until="networkidle")
-        page.wait_for_timeout(wait_ms)
-        page.screenshot(
-            path=str(output_path),
-            clip={"x": 0, "y": 0, "width": width, "height": height},
-        )
-        browser.close()
-    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": width, "height": height},
+                device_scale_factor=device_scale_factor,
+            )
+            await page.set_content(html, wait_until="networkidle")
+            await page.wait_for_timeout(wait_ms)
+            await page.screenshot(
+                path=str(output_path),
+                clip={"x": 0, "y": 0, "width": width, "height": height},
+            )
+        finally:
+            await browser.close()
+
     return output_path
 
 
@@ -116,36 +103,24 @@ def _inject_brand_slots(
 ) -> dict[str, Any]:
     """
     Add client-specific branding variables to the Jinja slots.
-    
-    Injected variables:
-        - theme (if not already set)
-        - logo_dark_path, logo_light_path (base64 data URLs)
-        - brand_primary_color, brand_bg_dark, brand_bg_yellow
-        - brand_text_primary, brand_text_body
-        - font_family
-        - client_id, client_name
     """
     enhanced = dict(slots)  # shallow copy
-    
-    # Theme
+
     enhanced.setdefault("theme", theme)
-    
-    # Logo paths as base64 data URLs (so templates are self-contained)
+
     enhanced["logo_dark_path"] = _logo_to_data_url(config.logo_dark_path)
     enhanced["logo_light_path"] = _logo_to_data_url(config.logo_light_path)
-    
-    # Brand tokens
+
     enhanced["brand_primary_color"] = config.brand.primary_color
     enhanced["brand_bg_dark"] = config.brand.bg_dark
     enhanced["brand_bg_yellow"] = config.brand.bg_yellow
     enhanced["brand_text_primary"] = config.brand.text_primary
     enhanced["brand_text_body"] = config.brand.text_body
     enhanced["font_family"] = config.brand.font_family
-    
-    # Client identity
+
     enhanced["client_id"] = config.client_id
     enhanced["client_name"] = config.name
-    
+
     return enhanced
 
 
@@ -157,8 +132,7 @@ def _logo_to_data_url(logo_path: Path) -> str:
             "data:image/png;base64,"
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         )
-    
-    # Determine MIME type from extension
+
     ext = logo_path.suffix.lower().lstrip(".")
     mime = {
         "png": "image/png",
@@ -167,43 +141,38 @@ def _logo_to_data_url(logo_path: Path) -> str:
         "svg": "image/svg+xml",
         "webp": "image/webp",
     }.get(ext, "image/png")
-    
+
     b64 = base64.b64encode(logo_path.read_bytes()).decode()
     return f"data:{mime};base64,{b64}"
 
 
 # ────────────────────────────────────────────────────
-# Batch rendering (for carousels)
+# Batch rendering (for carousels) — ASYNC
 # ────────────────────────────────────────────────────
 
-def render_carousel(
+async def render_carousel(
     client_id: str,
     lessons: list[dict],
     output_dir: Path,
     size: tuple[int, int] = EDU_CAROUSEL_SIZE,
 ) -> list[Path]:
     """
-    Render a multi-slide carousel. Each lesson dict must have:
-        - layout: template layout key (e.g. "P1_3CARD")
-        - theme: "dark" or "yellow"
-        - slots: dict of content slots
-        - lesson_number: int (for filename)
+    Render a multi-slide carousel. Must be awaited.
     """
     from core.orchestrator import LAYOUT_TEMPLATES  # avoid circular import
-    
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    png_paths = []
-    
+    png_paths: list[Path] = []
+
     for lesson in lessons:
         layout = lesson["layout"]
         template_file = LAYOUT_TEMPLATES.get(layout)
         if not template_file:
             print(f"⚠ Unknown layout: {layout}")
             continue
-        
+
         output_png = output_dir / f"lesson_{lesson['lesson_number']:02d}.png"
-        
-        render_png(
+        await render_png(
             client_id=client_id,
             template_path=f"edu/{template_file}",
             slots=lesson["slots"],
@@ -212,5 +181,5 @@ def render_carousel(
             viewport=size,
         )
         png_paths.append(output_png)
-    
+
     return png_paths
