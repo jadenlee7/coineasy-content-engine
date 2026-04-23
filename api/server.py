@@ -7,9 +7,9 @@ Single service serving multiple clients (Yellow, Squid, etc.) via:
 Authentication: X-API-Key header
 Deployment: Railway
 """
-
 import os
 import time
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -95,7 +95,6 @@ async def health():
 @app.get("/clients", response_model=list[ClientInfo])
 async def list_clients(x_api_key: str = Header(default="")):
     _check_auth(x_api_key)
-    
     results = []
     for client_id in list_available_clients():
         try:
@@ -112,7 +111,6 @@ async def list_clients(x_api_key: str = Header(default="")):
             ))
         except Exception as e:
             print(f"⚠ Failed to load client '{client_id}': {e}")
-    
     return results
 
 
@@ -124,19 +122,19 @@ async def generate_carousel(
 ):
     """Generate an education carousel for a client."""
     _check_auth(x_api_key)
-    
+
     # Verify client exists
     try:
         load_client_config(client_id)
     except FileNotFoundError:
         raise HTTPException(404, f"Client '{client_id}' not found")
-    
+
     # Unique output dir per request
     ts = int(time.time())
     output_dir = OUTPUT_ROOT / client_id / f"edu_{ts}"
-    
+
     try:
-        result = generate_edu_carousel(
+        result = await generate_edu_carousel(
             client_id=client_id,
             source_content=req.source_content,
             source_type=req.source_type,
@@ -145,9 +143,13 @@ async def generate_carousel(
             output_dir=output_dir,
             mock_llm=req.mock_llm,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Generation failed: {e}")
-    
+        # Surface full traceback to Railway logs for debugging
+        traceback.print_exc()
+        raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
+
     return GenerateResponse(
         client_id=result.client_id,
         content_type=result.content_type,
@@ -163,17 +165,14 @@ async def generate_carousel(
 async def serve_file(path: str, x_api_key: str = Header(default="")):
     """Serve generated PNG files. Later this should upload to Supabase Storage instead."""
     _check_auth(x_api_key)
-    
     file_path = OUTPUT_ROOT / path
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(404, "File not found")
-    
     # Safety: must be inside OUTPUT_ROOT
     try:
         file_path.resolve().relative_to(OUTPUT_ROOT.resolve())
     except ValueError:
         raise HTTPException(403, "Path outside output root")
-    
     return FileResponse(file_path)
 
 
