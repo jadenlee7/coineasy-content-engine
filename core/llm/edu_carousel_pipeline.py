@@ -63,25 +63,25 @@ Each slide has a layout pattern + filled slot values.
 
 ### P1_3CARD — 3개 컨셉 병렬 비교/나열
 Use when: "What is X?" with 3 essential components
-Slots: lesson_title_kr, lesson_body_kr, cards[3]{title_kr}
+Slots: lesson_title_kr, lesson_body_kr, cards[3]{{title_kr}}
 
 ### P2_BULLETS — 3-4개 아이콘 불릿 리스트 · 가장 많이 쓰는 기본형
 Use when: listing features, capabilities, points
-Slots: lesson_title_kr, lesson_body_kr, bullets[3-4]{text_kr}
+Slots: lesson_title_kr, lesson_body_kr, bullets[3-4]{{text_kr}}
 
 ### P3_BEFORE_AFTER — 이전/현재 비교
 Use when: explaining a CHANGE or comparing two approaches
 Slots: lesson_title_kr, lesson_body_kr, 
-       before{state_label, description}, 
-       after{state_label, description}, 
+       before{{state_label, description}},
+       after{{state_label, description}},
        conclusion_kr
 
 ### P4_SUMMARY — 요약 + Keyword 박스 · 마지막 슬라이드
 Use when: final slide wrapping up the series
 Slots: lesson_title_kr, 
        summary_style: "bullets" | "numbered",
-       summary_items[2-3]{text_kr},
-       keywords[1-2]{term, definition_kr}
+       summary_items[2-3]{{text_kr}},
+       keywords[1-2]{{term, definition_kr}}
 RULE: Last slide of 4+ carousel should almost always be P4_SUMMARY
 
 ### P5_COVER — 시리즈 커버 슬라이드 (옵션)
@@ -90,17 +90,17 @@ Slots: eyebrow_kr, series_number, series_title_en, cover_title_kr, summary_kr, h
 
 ### P6_STEP — 1→2→3→4 순차 프로세스
 Use when: explaining a sequence or workflow
-Slots: lesson_title_kr, lesson_body_kr, steps[3-5]{title_kr, desc_kr?, is_final?}
+Slots: lesson_title_kr, lesson_body_kr, steps[3-5]{{title_kr, desc_kr?, is_final?}}
 
 ### P7_DEFINITION — 단일 용어 정의 중심
 Use when: one term needs detailed explanation
 Slots: term_en, term_pos (optional), term_definition_kr,
-       details[2-3]{label, content_kr}, insight_kr (optional)
+       details[2-3]{{label, content_kr}}, insight_kr (optional)
 
 ### P8_DIAGRAM — Layer 구조 시각화
 Use when: showing architectural stack or layered relationship
 Slots: lesson_title_kr, lesson_body_kr,
-       layers[3-4]{tag, title_kr, subtitle_kr?, style},
+       layers[3-4]{{tag, title_kr, subtitle_kr?, style}},
        caption_kr (optional)
 style: "highlight" (yellow) | "emphasis" (black) | "base" (gray)
 
