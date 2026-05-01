@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from core.client_config import list_active_clients, load_client_config, list_available_clients
 from core.orchestrator import generate_edu_carousel
+from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 
 
 # ────────────────────────────────────────────────────
@@ -36,11 +37,7 @@ OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/tmp/content_engine_output"))
 
 
 def _check_auth(x_api_key: str):
-    if not API_SECRET:
-        # In dev, allow if no secret is set
-        return
-    if x_api_key != API_SECRET:
-        raise HTTPException(401, "Invalid API key")
+    check_any_valid_key(x_api_key)
 
 
 # ────────────────────────────────────────────────────
@@ -163,17 +160,12 @@ async def generate_carousel(
 
 @app.get("/files/{path:path}")
 async def serve_file(path: str, x_api_key: str = Header(default="")):
-    """Serve generated PNG files. Later this should upload to Supabase Storage instead."""
-    _check_auth(x_api_key)
-    file_path = OUTPUT_ROOT / path
-    if not file_path.exists() or not file_path.is_file():
+    """Serve generated PNG files with per-client scope validation."""
+    safe_path = resolve_safe_path(path)
+    validate_client_scope(x_api_key, safe_path)
+    if not safe_path.exists() or not safe_path.is_file():
         raise HTTPException(404, "File not found")
-    # Safety: must be inside OUTPUT_ROOT
-    try:
-        file_path.resolve().relative_to(OUTPUT_ROOT.resolve())
-    except ValueError:
-        raise HTTPException(403, "Path outside output root")
-    return FileResponse(file_path)
+    return FileResponse(safe_path)
 
 
 # ────────────────────────────────────────────────────
