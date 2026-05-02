@@ -19,6 +19,8 @@ from pydantic import BaseModel
 
 from core.client_config import list_active_clients, load_client_config, list_available_clients
 from core.orchestrator import generate_edu_carousel
+from core.sources.x_client import XClient
+from core.generators.daily_news import DailyNewsGenerator
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 
 
@@ -59,6 +61,21 @@ class GenerateResponse(BaseModel):
     lesson_count: int
     png_paths: list[str]
     manifest_path: str
+    duration_ms: int
+
+
+class DailyNewsRequest(BaseModel):
+    hours: int = 24
+    max_results: int = 30
+
+
+class DailyNewsResponse(BaseModel):
+    client_id: str
+    content_type: str
+    handle: str
+    fetched_count: int
+    filtered_count: int
+    news: dict
     duration_ms: int
 
 
@@ -155,6 +172,63 @@ async def generate_carousel(
         png_paths=result.png_paths,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
+    )
+
+
+@app.post("/clients/{client_id}/generate/daily-news", response_model=DailyNewsResponse)
+async def generate_daily_news(
+    client_id: str,
+    req: DailyNewsRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
+    _check_auth(x_api_key)
+
+    try:
+        config = load_client_config(client_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Client '{client_id}' not found")
+
+    if not config.active:
+        raise HTTPException(400, f"Client '{client_id}' is inactive")
+
+    twitter = config.content_sources.twitter
+    if not twitter or not twitter.handle:
+        raise HTTPException(400, f"Client '{client_id}' has no twitter handle configured")
+
+    start = time.time()
+
+    try:
+        x = XClient()
+        tweets = await x.get_recent_tweets(
+            username=twitter.handle,
+            hours=req.hours,
+            max_results=req.max_results,
+        )
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(502, f"X API fetch failed: {type(e).__name__}: {e}")
+
+    try:
+        gen = DailyNewsGenerator()
+        filtered = await gen.filter_tweets(tweets)
+        news = await gen.translate(filtered, client_name=config.name)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"Daily news generation failed: {type(e).__name__}: {e}")
+
+    duration_ms = int((time.time() - start) * 1000)
+
+    return DailyNewsResponse(
+        client_id=client_id,
+        content_type="daily_news",
+        handle=twitter.handle,
+        fetched_count=len(tweets),
+        filtered_count=len(filtered),
+        news=news,
+        duration_ms=duration_ms,
     )
 
 
