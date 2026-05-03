@@ -33,7 +33,7 @@ class XClient:
         Returns list of dicts with keys: id, text, created_at, url, is_retweet, is_reply.
         """
         user_id = await self.get_user_id(username)
-        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
         url = f"{X_API_BASE}/users/{user_id}/tweets"
         params = {
             "max_results": min(max(max_results, 5), 100),
