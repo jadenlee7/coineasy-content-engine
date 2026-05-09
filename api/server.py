@@ -15,12 +15,15 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.client_config import list_active_clients, load_client_config, list_available_clients
 from core.orchestrator import generate_edu_carousel
 from core.sources.x_client import XClient
 from core.generators.daily_news import DailyNewsGenerator
+from core.publishers.base import Publisher
+from core.publishers.typefully import TypefullyPublisher
+from core.publishers.telegram import TelegramPublisher
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 
 
@@ -77,6 +80,13 @@ class DailyNewsResponse(BaseModel):
     filtered_count: int
     news: dict
     duration_ms: int
+
+
+class PublishRequest(BaseModel):
+    hours: int = 24
+    dry_run: bool = True
+    channels: list[str] = Field(default_factory=lambda: ["typefully", "telegram"])
+    publish_at: Optional[str] = None  # None | "next-free-slot" | ISO8601
 
 
 class ClientInfo(BaseModel):
@@ -175,15 +185,15 @@ async def generate_carousel(
     )
 
 
-@app.post("/clients/{client_id}/generate/daily-news", response_model=DailyNewsResponse)
-async def generate_daily_news(
+async def _run_daily_news_generation(
     client_id: str,
-    req: DailyNewsRequest,
-    x_api_key: str = Header(default=""),
-):
-    """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
-    _check_auth(x_api_key)
+    hours: int = 24,
+    max_results: int = 30,
+) -> dict:
+    """Shared pipeline: load client → fetch tweets → filter → translate.
 
+    Returns a DailyNewsResponse-shaped dict. Raises HTTPException on errors.
+    """
     try:
         config = load_client_config(client_id)
     except FileNotFoundError:
@@ -202,8 +212,8 @@ async def generate_daily_news(
         x = XClient()
         tweets = await x.get_recent_tweets(
             username=twitter.handle,
-            hours=req.hours,
-            max_results=req.max_results,
+            hours=hours,
+            max_results=max_results,
         )
     except RuntimeError as e:
         raise HTTPException(500, str(e))
@@ -221,15 +231,133 @@ async def generate_daily_news(
 
     duration_ms = int((time.time() - start) * 1000)
 
-    return DailyNewsResponse(
+    return {
+        "client_id": client_id,
+        "content_type": "daily_news",
+        "handle": twitter.handle,
+        "fetched_count": len(tweets),
+        "filtered_count": len(filtered),
+        "news": news,
+        "duration_ms": duration_ms,
+    }
+
+
+@app.post("/clients/{client_id}/generate/daily-news", response_model=DailyNewsResponse)
+async def generate_daily_news(
+    client_id: str,
+    req: DailyNewsRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
+    _check_auth(x_api_key)
+    result = await _run_daily_news_generation(
         client_id=client_id,
-        content_type="daily_news",
-        handle=twitter.handle,
-        fetched_count=len(tweets),
-        filtered_count=len(filtered),
-        news=news,
-        duration_ms=duration_ms,
+        hours=req.hours,
+        max_results=req.max_results,
     )
+    return DailyNewsResponse(**result)
+
+
+def _build_publisher(channel: str, config) -> Optional[Publisher]:
+    """Factory: build a Publisher instance from client publishing config.
+
+    Returns None if the channel is not configured for this client.
+    """
+    pub = config.publishing
+    if pub is None:
+        return None
+    if channel == "typefully":
+        tf = pub.typefully
+        if not tf or not tf.social_set_id:
+            return None
+        return TypefullyPublisher(social_set_id=tf.social_set_id)
+    if channel == "telegram":
+        tg = pub.telegram
+        if not tg or not tg.bot_env or not tg.channel_env:
+            return None
+        return TelegramPublisher(bot_env=tg.bot_env, channel_env=tg.channel_env)
+    return None
+
+
+def _channel_active(channel: str, config) -> bool:
+    pub = config.publishing
+    if pub is None:
+        return False
+    if channel == "typefully":
+        return bool(pub.typefully and pub.typefully.active)
+    if channel == "telegram":
+        return bool(pub.telegram and pub.telegram.active)
+    return False
+
+
+@app.post("/clients/{client_id}/publish/daily-news")
+async def publish_daily_news(
+    client_id: str,
+    req: PublishRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Generate the daily news and (optionally) publish to Typefully + Telegram.
+
+    dry_run=True (default) returns the composed payloads without making external calls.
+    Each channel is isolated — one channel's failure does not block the others.
+    """
+    _check_auth(x_api_key)
+
+    generation_result = await _run_daily_news_generation(
+        client_id=client_id,
+        hours=req.hours,
+    )
+
+    if generation_result["news"].get("is_empty"):
+        return {
+            "client_id": client_id,
+            "generation": generation_result,
+            "publishing": {
+                "skipped": True,
+                "reason": "no_tweets_in_window",
+            },
+        }
+
+    config = load_client_config(client_id)
+    publishing_results: dict[str, dict] = {}
+
+    for channel in req.channels:
+        if not _channel_active(channel, config):
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "skipped": True,
+                "reason": "channel_inactive_or_unconfigured",
+            }
+            continue
+        publisher = _build_publisher(channel, config)
+        if publisher is None:
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "skipped": True,
+                "reason": "channel_inactive_or_unconfigured",
+            }
+            continue
+        try:
+            publishing_results[channel] = await publisher.publish(
+                generation_result["news"],
+                dry_run=req.dry_run,
+                publish_at=req.publish_at,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    return {
+        "client_id": client_id,
+        "generation": generation_result,
+        "publishing": publishing_results,
+    }
 
 
 @app.get("/files/{path:path}")

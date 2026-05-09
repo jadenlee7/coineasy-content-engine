@@ -75,7 +75,16 @@ class LLMConfig:
 class TelegramConfig:
     public_channel: Optional[str] = None
     approval_channel_id: Optional[int] = None
-    bot_token_env: str = "TELEGRAM_BOT_TOKEN"  # env var name holding the token
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN"  # legacy env var name holding the token
+    bot_env: Optional[str] = None              # env var holding bot token (for daily-news publisher)
+    channel_env: Optional[str] = None          # env var holding chat_id (for daily-news publisher)
+    active: bool = False
+
+
+@dataclass
+class TypefullyPublishing:
+    social_set_id: Optional[int] = None
+    active: bool = False
 
 
 @dataclass
@@ -92,6 +101,7 @@ class DiscordPublishing:
 @dataclass
 class PublishingConfig:
     telegram: Optional[TelegramConfig] = None
+    typefully: Optional[TypefullyPublishing] = None
     twitter: Optional[TwitterPublishing] = None
     discord: Optional[DiscordPublishing] = None
 
@@ -216,6 +226,19 @@ def _parse_telegram(d: dict) -> Optional[TelegramConfig]:
         public_channel=d.get("public_channel"),
         approval_channel_id=d.get("approval_channel_id"),
         bot_token_env=d.get("bot_token_env", "TELEGRAM_BOT_TOKEN"),
+        bot_env=d.get("bot_env"),
+        channel_env=d.get("channel_env"),
+        active=bool(d.get("active", False)),
+    )
+
+
+def _parse_typefully(d: dict) -> Optional[TypefullyPublishing]:
+    if not d:
+        return None
+    sid = d.get("social_set_id")
+    return TypefullyPublishing(
+        social_set_id=int(sid) if sid is not None else None,
+        active=bool(d.get("active", False)),
     )
 
 
@@ -224,6 +247,7 @@ def _parse_publishing(d: dict) -> PublishingConfig:
         return PublishingConfig()
     return PublishingConfig(
         telegram=_parse_telegram(d.get("telegram")),
+        typefully=_parse_typefully(d.get("typefully")),
         twitter=TwitterPublishing(
             typefully_account_id=d.get("twitter", {}).get("typefully_account_id"),
         ) if d.get("twitter") else None,
