@@ -11,16 +11,25 @@ import os
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Literal, Optional
 
+import yaml
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from core.client_config import list_active_clients, load_client_config, list_available_clients
+from core.client_config import (
+    CLIENTS_DIR,
+    list_active_clients,
+    load_client_config,
+    list_available_clients,
+)
 from core.orchestrator import generate_edu_carousel
 from core.sources.x_client import XClient
 from core.generators.daily_news import DailyNewsGenerator
+from core.publishers.base import Publisher
+from core.publishers.telegram import TelegramPublisher
+from core.publishers.typefully import TypefullyPublisher
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 
 
@@ -77,6 +86,19 @@ class DailyNewsResponse(BaseModel):
     filtered_count: int
     news: dict
     duration_ms: int
+
+
+CHANNEL_NAMES = ("typefully", "telegram")
+
+
+class PublishRequest(BaseModel):
+    hours: int = 24
+    max_results: int = 30
+    dry_run: bool = True
+    channels: list[Literal["typefully", "telegram"]] = Field(
+        default_factory=lambda: list(CHANNEL_NAMES)
+    )
+    publish_at: Optional[str] = None  # None | "next-free-slot" | ISO8601
 
 
 class ClientInfo(BaseModel):
@@ -175,15 +197,12 @@ async def generate_carousel(
     )
 
 
-@app.post("/clients/{client_id}/generate/daily-news", response_model=DailyNewsResponse)
-async def generate_daily_news(
-    client_id: str,
-    req: DailyNewsRequest,
-    x_api_key: str = Header(default=""),
-):
-    """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
-    _check_auth(x_api_key)
+async def _run_daily_news_generation(client_id: str, hours: int, max_results: int) -> dict:
+    """Shared pipeline: load client → fetch tweets → LLM filter → KR translate.
 
+    Raises HTTPException on unrecoverable errors. Returns a dict matching
+    DailyNewsResponse shape.
+    """
     try:
         config = load_client_config(client_id)
     except FileNotFoundError:
@@ -202,8 +221,8 @@ async def generate_daily_news(
         x = XClient()
         tweets = await x.get_recent_tweets(
             username=twitter.handle,
-            hours=req.hours,
-            max_results=req.max_results,
+            hours=hours,
+            max_results=max_results,
         )
     except RuntimeError as e:
         raise HTTPException(500, str(e))
@@ -221,15 +240,137 @@ async def generate_daily_news(
 
     duration_ms = int((time.time() - start) * 1000)
 
-    return DailyNewsResponse(
+    return {
+        "client_id": client_id,
+        "content_type": "daily_news",
+        "handle": twitter.handle,
+        "fetched_count": len(tweets),
+        "filtered_count": len(filtered),
+        "news": news,
+        "duration_ms": duration_ms,
+    }
+
+
+@app.post("/clients/{client_id}/generate/daily-news", response_model=DailyNewsResponse)
+async def generate_daily_news(
+    client_id: str,
+    req: DailyNewsRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
+    _check_auth(x_api_key)
+    result = await _run_daily_news_generation(
         client_id=client_id,
-        content_type="daily_news",
-        handle=twitter.handle,
-        fetched_count=len(tweets),
-        filtered_count=len(filtered),
-        news=news,
-        duration_ms=duration_ms,
+        hours=req.hours,
+        max_results=req.max_results,
     )
+    return DailyNewsResponse(**result)
+
+
+def _load_publishing_yaml(client_id: str) -> dict[str, Any]:
+    """Read the raw `publishing:` section from clients/{id}/config.yaml.
+
+    Reading raw yaml here keeps the typed ClientConfig stable while letting the
+    publish endpoint pick up new fields (typefully.social_set_id, telegram.bot_env, ...)
+    without dataclass churn.
+    """
+    config_path = CLIENTS_DIR / client_id / "config.yaml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("publishing", {}) or {}
+
+
+def _build_publisher(channel: str, ch_cfg: dict[str, Any], client_id: str) -> Publisher:
+    if channel == "typefully":
+        social_set_id = ch_cfg.get("social_set_id")
+        if not social_set_id:
+            raise ValueError("typefully.social_set_id missing in client config")
+        return TypefullyPublisher(social_set_id=social_set_id, client_id=client_id)
+    if channel == "telegram":
+        bot_env = ch_cfg.get("bot_env")
+        channel_env = ch_cfg.get("channel_env")
+        if not bot_env or not channel_env:
+            raise ValueError("telegram.bot_env / telegram.channel_env missing in client config")
+        return TelegramPublisher(bot_env=bot_env, channel_env=channel_env, client_id=client_id)
+    raise ValueError(f"Unknown channel: {channel}")
+
+
+@app.post("/clients/{client_id}/publish/daily-news")
+async def publish_daily_news(
+    client_id: str,
+    req: PublishRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Generate the daily news brief and publish to selected channels.
+
+    Reuses the existing daily-news generator. If no tweets pass the filter,
+    publishing is skipped. Each channel publishes independently — one failure
+    does not block other channels.
+    """
+    _check_auth(x_api_key)
+
+    generation_result = await _run_daily_news_generation(
+        client_id=client_id,
+        hours=req.hours,
+        max_results=req.max_results,
+    )
+
+    news = generation_result["news"]
+    if news.get("is_empty"):
+        return {
+            "client_id": client_id,
+            "generation": generation_result,
+            "publishing": {
+                "skipped": True,
+                "reason": "no_tweets_in_window",
+            },
+        }
+
+    pub_config = _load_publishing_yaml(client_id)
+    publishing_results: dict[str, dict[str, Any]] = {}
+
+    for channel in req.channels:
+        ch_cfg = pub_config.get(channel) or {}
+        if not ch_cfg.get("active"):
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "skipped": True,
+                "skipped_reason": "channel_inactive",
+            }
+            continue
+
+        try:
+            publisher = _build_publisher(channel, ch_cfg, client_id)
+        except Exception as e:
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "error": f"config_error: {e}",
+            }
+            continue
+
+        try:
+            publishing_results[channel] = await publisher.publish(
+                news,
+                dry_run=req.dry_run,
+                publish_at=req.publish_at,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            publishing_results[channel] = {
+                "ok": False,
+                "channel": channel,
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    return {
+        "client_id": client_id,
+        "generation": generation_result,
+        "publishing": publishing_results,
+    }
 
 
 @app.get("/files/{path:path}")
