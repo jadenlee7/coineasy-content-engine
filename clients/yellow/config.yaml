@@ -56,10 +56,16 @@ llm:
     temperature: 0.2
 
 publishing:
+  typefully:
+    social_set_id: 254669
+    active: true
   telegram:
     public_channel: "@YellowKorea_ann"
     # approval_channel_id: -1001234567890     # 제이든+Kailey 승인 채널 ID
     bot_token_env: "TELEGRAM_BOT_TOKEN_YELLOW"
+    bot_env: TELEGRAM_BOT_TOKEN_YELLOW
+    channel_env: TELEGRAM_CHANNEL_YELLOW
+    active: true
   twitter:
     typefully_account_id: "yellow_kr"
   discord:
