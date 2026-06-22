@@ -3,7 +3,7 @@
 > **Multi-tenant Korean content generation for Web3 clients.**  
 > One service. N clients. Each with their own brand, glossary, and voice.
 
-Powered by Claude Sonnet + Playwright. Deployed on Railway.
+Powered by Claude Opus + Playwright. Deployed on Railway.
 
 ---
 
@@ -17,7 +17,7 @@ Each slide is 1080×1080 PNG with client branding automatically applied.
 - Yellow Network (`yellow`)
 - Squid Router (`squid`)
 
-**Cost:** ~$0.03 per carousel · ~$6/month for 1 client · ~$14/month for 10 clients.
+**Cost:** Approximate and model-dependent — budget on the order of a few dollars/month per client.
 
 ---
 
@@ -188,7 +188,7 @@ These live separately in the existing `YellowKR` bot:
 ## Tech Stack
 
 - **Python 3.12**
-- **Anthropic Claude Sonnet 4.6** — content generation
+- **Anthropic Claude Opus 4.8** — content generation
 - **Playwright + Chromium** — HTML → PNG rendering
 - **Jinja2** — templating
 - **FastAPI + Uvicorn** — HTTP server

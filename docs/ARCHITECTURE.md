@@ -123,7 +123,7 @@ content_sources:
 
 llm:
   edu_carousel:
-    model: "claude-sonnet-4-6"
+    model: "claude-opus-4-8"
     temperature: 0.3
     # 클라이언트별 커스텀 프롬프트 fragments
     tone_guidance: "professional but approachable, 경어체"
@@ -139,7 +139,7 @@ llm:
       "non-custodial": "논커스터디얼(non-custodial)"
 
   news_banner:
-    model: "claude-sonnet-4-6"
+    model: "claude-opus-4-8"
     temperature: 0.2
 
 publishing:
