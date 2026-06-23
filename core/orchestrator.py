@@ -152,6 +152,9 @@ async def generate_edu_carousel(
     start = datetime.now(timezone.utc)
 
     config = get_client_config(client_id)
+    model_used = config.llm.edu_carousel.model
+    print(f"[{client_id}] Using model: {model_used}")
+
     if not config.active:
         raise ValueError(f"Client '{client_id}' is marked inactive in config.yaml")
     if not config.feature_flags.education_carousel:
@@ -235,6 +238,7 @@ async def generate_edu_carousel(
     manifest = {
         "client_id": client_id,
         "content_type": "edu_carousel",
+        "model_used": model_used,
         "generated_at": start.isoformat(),
         "source_type": source_type,
         "source_url": source_url,

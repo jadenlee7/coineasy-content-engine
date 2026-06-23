@@ -21,7 +21,6 @@ content_sources:
 
 llm:
   edu_carousel:
-    model: "claude-sonnet-4-6"
     temperature: 0.3
     tone_guidance: >
       Approachable and builder-focused. 경어체.
@@ -40,7 +39,6 @@ llm:
       "gas abstraction": "가스 추상화(gas abstraction)"
 
   news_banner:
-    model: "claude-sonnet-4-6"
 
 publishing:
   typefully:

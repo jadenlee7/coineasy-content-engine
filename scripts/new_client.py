@@ -53,7 +53,7 @@ content_sources:
 
 llm:
   edu_carousel:
-    model: "claude-sonnet-4-6"
+    # model: "claude-opus-4-7"  (optional override)
     temperature: 0.3
     tone_guidance: >
       Professional but approachable. 경어체.
@@ -64,7 +64,7 @@ llm:
       # "technical term": "한국어 번역"
 
   news_banner:
-    model: "claude-sonnet-4-6"
+    # model: "claude-opus-4-7"  (optional override)
     temperature: 0.2
 
 publishing:

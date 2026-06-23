@@ -9,7 +9,7 @@ USAGE:
     
     config = get_client_config("yellow")
     print(config.brand.primary_color)  # "#FFDE00"
-    print(config.llm.edu_carousel.model)  # "claude-sonnet-4-6"
+    print(config.llm.edu_carousel.model)  # "claude-opus-4-8"
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ import yaml
 
 # Base directory - can be overridden for testing
 CLIENTS_DIR = Path(os.environ.get("CLIENTS_DIR", "clients"))
+
+
+def _resolve_default_model() -> str:
+    """Central default model. Precedence: YAML explicit > env LLM_MODEL > fallback."""
+    return os.environ.get("LLM_MODEL") or "claude-opus-4-8"
 
 
 # ────────────────────────────────────────────────────
@@ -58,7 +63,7 @@ class ContentSources:
 @dataclass
 class LLMPipelineConfig:
     """Per-pipeline LLM config (edu_carousel, news_banner, etc.)"""
-    model: str = "claude-sonnet-4-6"
+    model: str = field(default_factory=_resolve_default_model)
     temperature: float = 0.3
     tone_guidance: Optional[str] = None
     preserve_terms: list[str] = field(default_factory=list)
@@ -192,7 +197,7 @@ def _parse_llm_pipeline(d: dict) -> LLMPipelineConfig:
     if not d:
         return LLMPipelineConfig()
     return LLMPipelineConfig(
-        model=d.get("model", "claude-sonnet-4-6"),
+        model=(d.get("model") or _resolve_default_model()),
         temperature=d.get("temperature", 0.3),
         tone_guidance=d.get("tone_guidance"),
         preserve_terms=d.get("preserve_terms", []) or [],

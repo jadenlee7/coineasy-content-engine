@@ -22,7 +22,6 @@ content_sources:
 
 llm:
   edu_carousel:
-    model: "claude-sonnet-4-6"
     temperature: 0.3
     tone_guidance: >
       Professional but approachable. 경어체 (합니다/습니다).
@@ -52,7 +51,6 @@ llm:
       "smart contract": "스마트 컨트랙트(smart contract)"
 
   news_banner:
-    model: "claude-sonnet-4-6"
     temperature: 0.2
 
 publishing:
