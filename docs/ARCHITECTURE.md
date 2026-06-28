@@ -27,7 +27,7 @@ coineasy-content-engine/
 ├── core/                                # 클라이언트 무관 공통 로직
 │   ├── llm/
 │   │   ├── edu_carousel_pipeline.py     # 교육 캐러셀 LLM
-│   │   └── news_banner_pipeline.py      # 뉴스 배너 LLM
+│   │   └── news_card_pipeline.py        # 뉴스 카드 LLM
 │   ├── renderers/
 │   │   ├── playwright_renderer.py       # PNG 렌더링
 │   │   └── template_resolver.py         # 템플릿 경로 해결 (core→client override)
@@ -36,7 +36,7 @@ coineasy-content-engine/
 │   │   │   ├── edu_p1_3card.html
 │   │   │   ├── edu_p2_bullets.html
 │   │   │   └── ...
-│   │   └── news/                        # 뉴스 배너 (G-01 등)
+│   │   └── news/                        # 뉴스 카드 (G-01 등)
 │   │       ├── g01_news.html
 │   │       └── g01_news_tier2.html
 │   ├── orchestrator.py                  # E2E 파이프라인
@@ -138,7 +138,7 @@ llm:
       "state channel": "스테이트 채널(state channel)"
       "non-custodial": "논커스터디얼(non-custodial)"
 
-  news_banner:
+  news_card:
     model: "claude-opus-4-8"
     temperature: 0.2
 
@@ -155,7 +155,7 @@ publishing:
 feature_flags:
   auto_approve: false                      # 수동 승인 유지
   education_carousel: true
-  news_banner: true
+  news_card: true
 
 routing:
   # 1차 필터: 소스가 어느 파이프라인으로 갈지
@@ -196,7 +196,7 @@ for each client:
     │     → core/orchestrator.generate_edu_carousel(client_id, tweet)
     │     → send to client.publishing.telegram.approval_channel
     └─ client.routing.is_news_candidate(tweet)?
-          → core/orchestrator.generate_news_banner(client_id, tweet)
+          → core/orchestrator.generate_news_card(client_id, tweet)
           → send to client.publishing.telegram.approval_channel
 ```
 
@@ -207,7 +207,7 @@ POST /clients/yellow/generate
 {
   "source_content": "Yellow is chain-agnostic...",
   "source_type": "tweet",
-  "content_type": "edu_carousel"  // or "news_banner"
+  "content_type": "edu_carousel"  // or "news_card"
 }
     ↓
 core/orchestrator.generate(client_id="yellow", ...)
@@ -281,7 +281,7 @@ python scripts/generate_cli.py --client squid --source "Squid supports..."
 CREATE TABLE content_generations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id VARCHAR(50) NOT NULL,           -- 'yellow', 'squid', etc.
-    content_type VARCHAR(30) NOT NULL,        -- 'edu_carousel', 'news_banner'
+    content_type VARCHAR(30) NOT NULL,        -- 'edu_carousel', 'news_card'
     
     source_url TEXT NOT NULL,
     source_type VARCHAR(20),
@@ -343,7 +343,7 @@ CREATE TABLE content_sources_seen (
 **기존 `YellowKR` 봇은 건드리지 않음**. 역할 재정의:
 
 - **YellowKR (기존)**: `@Yellow__Korea` 스크래핑 + 유저와 AI 채팅 + 팁 발송 (그대로 유지)
-- **coineasy-content-engine (신규)**: `@Yellow` 글로벌 계정 + 블로그 기반 **교육 캐러셀/뉴스 배너 생성**
+- **coineasy-content-engine (신규)**: `@Yellow` 글로벌 계정 + 블로그 기반 **교육 캐러셀/뉴스 카드 생성**
 
 두 시스템은 **완전 독립적**:
 - YellowKR: 한국 커뮤니티 인게이지먼트 (fan-facing)

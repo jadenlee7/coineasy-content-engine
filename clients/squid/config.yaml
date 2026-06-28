@@ -38,7 +38,23 @@ llm:
       "bridging": "브리징(bridging)"
       "gas abstraction": "가스 추상화(gas abstraction)"
 
-  news_banner:
+  news_card:
+    temperature: 0.2
+    tone_guidance: >
+      Approachable and builder-focused. 경어체.
+      Emphasize cross-chain UX and developer simplicity.
+    preserve_terms:
+      - "Squid Router"
+      - "Axelar"
+      - "ITS"
+      - "GMP"
+      - "Coral"
+    glossary:
+      "cross-chain": "크로스체인(cross-chain)"
+      "swap": "스왑(swap)"
+      "routing": "라우팅(routing)"
+      "bridging": "브리징(bridging)"
+      "gas abstraction": "가스 추상화(gas abstraction)"
 
 publishing:
   typefully:
@@ -56,7 +72,7 @@ publishing:
 feature_flags:
   auto_approve: false
   education_carousel: true
-  news_banner: true
+  news_card: true
 
 routing:
   skip_patterns:

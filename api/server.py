@@ -142,7 +142,7 @@ async def list_clients(x_api_key: str = Header(default="")):
                 primary_color=cfg.brand.primary_color,
                 features={
                     "education_carousel": cfg.feature_flags.education_carousel,
-                    "news_banner": cfg.feature_flags.news_banner,
+                    "news_card": cfg.feature_flags.news_card,
                 },
             ))
         except Exception as e:

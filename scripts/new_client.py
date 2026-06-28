@@ -53,7 +53,7 @@ content_sources:
 
 llm:
   edu_carousel:
-    # model: "claude-opus-4-7"  (optional override)
+    # model: 생략 시 중앙 디폴트(claude-opus-4-8) 상속. override 필요시만 명시
     temperature: 0.3
     tone_guidance: >
       Professional but approachable. 경어체.
@@ -63,8 +63,8 @@ llm:
     glossary:
       # "technical term": "한국어 번역"
 
-  news_banner:
-    # model: "claude-opus-4-7"  (optional override)
+  news_card:
+    # model: 생략 시 중앙 디폴트(claude-opus-4-8) 상속. override 필요시만 명시
     temperature: 0.2
 
 publishing:
@@ -80,7 +80,7 @@ publishing:
 feature_flags:
   auto_approve: false
   education_carousel: true
-  news_banner: true
+  news_card: true
 
 routing:
   skip_patterns:
