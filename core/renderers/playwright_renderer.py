@@ -27,8 +27,8 @@ from core.renderers.template_resolver import resolve_template
 
 # Viewport defaults
 EDU_CAROUSEL_SIZE = (1080, 1080)     # square for Instagram/X carousel
-NEWS_BANNER_16x9 = (1200, 675)       # 16:9 for X, Telegram
-NEWS_BANNER_1x1 = (1080, 1080)       # square
+NEWS_CARD_16x9 = (1200, 675)         # 16:9 for X, Telegram (reserved, unused)
+NEWS_CARD_1x1 = (1080, 1080)         # square — primary news card viewport
 
 
 async def render_png(

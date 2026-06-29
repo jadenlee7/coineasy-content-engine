@@ -26,7 +26,8 @@ from typing import Optional
 
 from core.client_config import get_client_config
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
-from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE
+from core.llm.news_card_pipeline import generate_news_card_spec
+from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
 
 
 # ────────────────────────────────────────────────────
@@ -96,6 +97,21 @@ class CarouselResult:
     series_meta: dict
     png_paths: list[str]
     lessons_data: list[dict]
+    manifest_path: str
+    duration_ms: int
+    llm_cost_usd: Optional[float] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class NewsCardResult:
+    client_id: str
+    content_type: str  # "news_card"
+    spec: dict                  # full {label,date,headline,body_lines,source_url,theme}
+    png_path: str               # 1 card → single PNG, not a list
     manifest_path: str
     duration_ms: int
     llm_cost_usd: Optional[float] = None
@@ -258,6 +274,104 @@ async def generate_edu_carousel(
         series_meta=spec["series"],
         png_paths=png_paths,
         lessons_data=spec["lessons"],
+        manifest_path=str(manifest_path),
+        duration_ms=duration,
+    )
+
+
+# ────────────────────────────────────────────────────
+# News Card Main Entry Point (ASYNC)
+# ────────────────────────────────────────────────────
+
+async def generate_news_card(
+    client_id: str,
+    source_content: str,
+    source_type: str = "tweet",
+    source_url: str = "",
+    output_dir: Optional[Path] = None,
+    mock_mode: bool = False,
+    mock_response: Optional[dict] = None,
+) -> NewsCardResult:
+    """
+    End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
+    Must be awaited inside an asyncio event loop (e.g. FastAPI async endpoint).
+    """
+    start = datetime.now(timezone.utc)
+
+    config = get_client_config(client_id)
+    model_used = config.llm.news_card.model
+    print(f"[{client_id}] Using model: {model_used}")
+
+    if not config.active:
+        raise ValueError(f"Client '{client_id}' is marked inactive in config.yaml")
+    if not config.feature_flags.news_card:
+        raise ValueError(f"Client '{client_id}' has news_card disabled in feature_flags")
+
+    if output_dir is None:
+        ts = start.strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(f"output/{client_id}/news_{ts}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Stage 1: LLM ──────────────────────────────
+    print(f"[{client_id}] Stage 1/2: LLM news card spec")
+    try:
+        spec = generate_news_card_spec(
+            client_id=client_id,
+            source_content=source_content,
+            source_type=source_type,
+            source_url=source_url,
+            mock_mode=mock_mode,
+            mock_response=mock_response,
+        )
+    except Exception as e:
+        print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise
+
+    print(f"  → label: {spec['label']} · theme: {spec['theme']}")
+
+    # ── Stage 2: Rendering ────────────────────────
+    print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
+    output_png = output_dir / "news_card.png"
+    try:
+        await render_png(
+            client_id=client_id,
+            template_path="news/news_title_card.html",
+            slots=spec,
+            output_path=output_png,
+            theme=spec["theme"],
+            viewport=NEWS_CARD_1x1,
+        )
+    except Exception as e:
+        print(f"  ✗ Render failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise
+
+    print(f"  ✓ {output_png.name}")
+
+    # ── Manifest ──────────────────────────────────
+    manifest = {
+        "client_id": client_id,
+        "content_type": "news_card",
+        "model_used": model_used,
+        "generated_at": start.isoformat(),
+        "source_type": source_type,
+        "source_url": source_url,
+        "source_content_preview": source_content[:200],
+        "spec": spec,
+        "png_path": str(output_png),
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    duration = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+    print(f"[{client_id}] Complete ({duration}ms)")
+
+    return NewsCardResult(
+        client_id=client_id,
+        content_type="news_card",
+        spec=spec,
+        png_path=str(output_png),
         manifest_path=str(manifest_path),
         duration_ms=duration,
     )
