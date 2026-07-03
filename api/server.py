@@ -24,7 +24,7 @@ from core.client_config import (
     load_client_config,
     list_available_clients,
 )
-from core.orchestrator import generate_edu_carousel
+from core.orchestrator import generate_edu_carousel, generate_news_card
 from core.sources.x_client import XClient
 from core.generators.daily_news import DailyNewsGenerator
 from core.publishers.base import Publisher
@@ -69,6 +69,22 @@ class GenerateResponse(BaseModel):
     series: dict
     lesson_count: int
     png_paths: list[str]
+    manifest_path: str
+    duration_ms: int
+
+
+class NewsCardRequest(BaseModel):
+    source_content: str
+    source_type: str = "tweet"  # "tweet" | "blog" | "article"
+    source_url: str = ""
+    mock_mode: bool = False  # for smoke testing
+
+
+class NewsCardResponse(BaseModel):
+    client_id: str
+    content_type: str
+    spec: dict          # {label, date, headline, body_lines, source_url, theme}
+    png_path: str       # single 1080×1080 card, not a list
     manifest_path: str
     duration_ms: int
 
@@ -192,6 +208,48 @@ async def generate_carousel(
         series=result.series_meta,
         lesson_count=len(result.png_paths),
         png_paths=result.png_paths,
+        manifest_path=result.manifest_path,
+        duration_ms=result.duration_ms,
+    )
+
+
+@app.post("/clients/{client_id}/generate/news-card", response_model=NewsCardResponse)
+async def generate_news(
+    client_id: str,
+    req: NewsCardRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Generate a single 1080×1080 news card for a client."""
+    _check_auth(x_api_key)
+
+    try:
+        load_client_config(client_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Client '{client_id}' not found")
+
+    ts = int(time.time())
+    output_dir = OUTPUT_ROOT / client_id / f"news_{ts}"
+
+    try:
+        result = await generate_news_card(
+            client_id=client_id,
+            source_content=req.source_content,
+            source_type=req.source_type,
+            source_url=req.source_url,
+            output_dir=output_dir,
+            mock_mode=req.mock_mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
+
+    return NewsCardResponse(
+        client_id=result.client_id,
+        content_type=result.content_type,
+        spec=result.spec,
+        png_path=result.png_path,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
     )
