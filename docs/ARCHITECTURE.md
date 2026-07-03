@@ -36,9 +36,8 @@ coineasy-content-engine/
 │   │   │   ├── edu_p1_3card.html
 │   │   │   ├── edu_p2_bullets.html
 │   │   │   └── ...
-│   │   └── news/                        # 뉴스 카드 (G-01 등)
-│   │       ├── g01_news.html
-│   │       └── g01_news_tier2.html
+│   │   └── news/                        # 뉴스 카드 (1080×1080 단일 카드)
+│   │       └── news_title_card.html     # D3 신규 (공유 카드 스키마)
 │   ├── orchestrator.py                  # E2E 파이프라인
 │   ├── client_config.py                 # Client 설정 로더
 │   └── logging.py                       # 구조화 로깅
@@ -139,7 +138,7 @@ llm:
       "non-custodial": "논커스터디얼(non-custodial)"
 
   news_card:
-    model: "claude-opus-4-8"
+    # model 라인 생략 시 중앙 디폴트(claude-opus-4-8) 상속 — 대부분 클라이언트는 이대로.
     temperature: 0.2
 
 publishing:
@@ -399,3 +398,62 @@ content-engine이 PNG 생성 → YellowKR 봇 API 호출 → Yellow Korea 텔레
 - **코드 중복**: 클라이언트 추가 시 core/ 파일 수정 0건
 - **월 운영 비용**: 클라이언트 N개 시 Railway $5 + LLM $0.03 × 월간 캐러셀 수
 - **장애 격리**: 한 클라이언트 config 오류가 다른 클라이언트 중단시키지 않음
+
+---
+
+## 13. News Card Pipeline
+
+`edu_carousel`과 대칭 구조를 갖는 두 번째 콘텐츠 파이프라인. 단일 1080×1080 뉴스 카드를 생성.
+
+### Card Schema (fixed)
+
+```
+{
+  "label":       str,           # 배지 텍스트 (예: "파트너십", "런칭")
+  "date":        "YYYY.MM.DD",
+  "headline":    str,           # 헤드라인 한 문장 (경어체)
+  "body_lines":  list[str],     # 1~3개 요약 문장
+  "source_url":  str,           # 원본 URL
+  "theme":       "dark" | "yellow"
+}
+```
+
+LLM 출력이 그대로 Jinja 슬롯이 됨 — 렌더러가 자동 주입하는 브랜드 변수(`brand_primary_color`, `logo_dark_path` 등)와 병합.
+
+### Flow
+
+1. **`core/llm/news_card_pipeline.py::generate_news_card_spec()`**  
+   소스 콘텐츠를 위 스키마 dict으로 요약. `mock_mode=True`면 `mock_response`를 그대로 반환(스모크용, LLM 호출 없음).
+
+2. **`core/templates/news/news_title_card.html`**  
+   1080×1080 단일 카드 템플릿. 카드 스키마 슬롯 + 브랜드 변수를 렌더.
+
+3. **`core/orchestrator.py::generate_news_card()`**  
+   `feature_flags.news_card` 체크 → spec 생성 → `render_png(..., viewport=NEWS_CARD_1x1)` → manifest 기록. 반환하는 `NewsCardResult.png_path`는 **str 단일**(edu의 `png_paths: list`와 대비).
+
+4. **`api/server.py POST /clients/{client_id}/generate/news-card`**  
+   orchestrator를 HTTP로 노출. 응답에 `spec`과 `png_path`를 담아 호출자가 manifest 재읽기 없이 카드 내용 확인 가능.
+
+### Viewport
+
+`core/renderers/playwright_renderer.py::NEWS_CARD_1x1 = (1080, 1080)` — DPR2로 실제 PNG는 **2160×2160**. `NEWS_CARD_16x9 = (1200, 675)`는 예약(현재 미사용).
+
+### edu_carousel과의 대칭점
+
+| 축 | `edu_carousel` | `news_card` |
+|---|---|---|
+| LLM 파이프라인 | `edu_carousel_pipeline` | `news_card_pipeline` |
+| 템플릿 | `edu/edu_p{1-8}*.html` | `news/news_title_card.html` |
+| Orchestrator | `generate_edu_carousel` | `generate_news_card` |
+| API 라우트 | `POST /generate/edu-carousel` | `POST /generate/news-card` |
+| 출력 | `png_paths: list[str]` (N slides) | `png_path: str` (단일 카드) |
+| Feature flag | `feature_flags.education_carousel` | `feature_flags.news_card` |
+| Viewport 상수 | `EDU_CAROUSEL_SIZE = (1080, 1080)` | `NEWS_CARD_1x1 = (1080, 1080)` |
+
+### LLM 모델 상속
+
+클라이언트 config에서 `llm.news_card.model`을 명시하지 않으면 `client_config._resolve_default_model()`이 env `LLM_MODEL` → 폴백 `"claude-opus-4-8"` 순으로 해석. 대부분 클라이언트(예: `origintrail`)는 명시하지 않고 중앙 디폴트를 그대로 상속.
+
+### CLI 지원 상태
+
+`scripts/generate_cli.py`는 현재 **edu-carousel 전용**. news-card CLI 래퍼는 후속 작업. 그 전까지는 `POST /generate/news-card` API 라우트 또는 `core.orchestrator.generate_news_card()` 직접 호출을 사용.

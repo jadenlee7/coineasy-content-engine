@@ -9,13 +9,14 @@ Powered by Claude Opus + Playwright. Deployed on Railway.
 
 ## What it does
 
-Takes an English source (tweet, blog post, article) and produces **Korean education carousels** (3-5 slides) or **news banners** (1 image) ready for X, Telegram, and other social channels.
+Takes an English source (tweet, blog post, article) and produces **Korean education carousels** (3-5 slides) or **news cards** (1 image) ready for X, Telegram, and other social channels.
 
 Each slide is 1080×1080 PNG with client branding automatically applied.
 
 **Current clients:**
 - Yellow Network (`yellow`)
 - Squid Router (`squid`)
+- OriginTrail Korea (`origintrail`) — news_card only; 브랜드 팔레트 확정 대기 (placeholder)
 
 **Cost:** Approximate and model-dependent — budget on the order of a few dollars/month per client.
 
@@ -45,6 +46,8 @@ python scripts/generate_cli.py --client yellow \
 
 # → Output in ./output/yellow/<timestamp>/lesson_*.png
 ```
+
+> **Note**: `scripts/generate_cli.py` currently supports **edu-carousel only**. News-card CLI wrapper is planned follow-up work — for now use the `POST /generate/news-card` API route or call `core.orchestrator.generate_news_card()` directly.
 
 ---
 
@@ -82,6 +85,7 @@ uvicorn api.server:app --reload
 GET  /health                                       # Railway health check
 GET  /clients                                      # List all clients
 POST /clients/{client_id}/generate/edu-carousel    # Generate carousel
+POST /clients/{client_id}/generate/news-card       # Generate 1080×1080 news card
 GET  /files/{path}                                 # Serve generated PNGs
 ```
 
@@ -96,6 +100,23 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/yellow/gener
     "source_url": "https://x.com/Yellow/status/2046509996834206186"
   }'
 ```
+
+News-card variant (single 1080×1080 card):
+```bash
+curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/generate/news-card \
+  -H "X-API-Key: $API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_content": "OriginTrail launches Paranet on ...",
+    "source_type": "tweet",
+    "source_url": "https://x.com/origin_trail/status/xxx",
+    "mock_mode": false
+  }'
+```
+
+**Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `mock_mode` (default `false`, skips LLM for smoke).
+
+**Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `manifest_path`, `duration_ms`.
 
 ---
 
@@ -126,11 +147,15 @@ core/                   # Client-agnostic engine
 ├── client_config.py    # YAML config loader
 ├── orchestrator.py     # LLM → render → manifest
 ├── llm/
-│   └── edu_carousel_pipeline.py
+│   ├── edu_carousel_pipeline.py
+│   └── news_card_pipeline.py    # single-card LLM spec (shared schema)
 ├── renderers/
 │   ├── playwright_renderer.py   # HTML + Jinja → PNG
 │   └── template_resolver.py     # override > core precedence
-└── templates/edu/      # 8 base layouts (P1-P8)
+└── templates/
+    ├── edu/                     # 8 base layouts (P1-P8)
+    └── news/
+        └── news_title_card.html # 1080×1080 single news card
 
 clients/                # Per-tenant configs
 ├── yellow/
