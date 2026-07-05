@@ -1,0 +1,54 @@
+client_id: origintrail
+name: OriginTrail Korea
+locale: ko-KR
+active: true
+
+# ────────────────────────────────────────────────────
+# Brand
+# TODO: Figma 브랜드킷 확정 대기 (퍼플 계열) — 아래 값은 placeholder.
+#       확정 전까지 hex 추측 금지. 카드는 렌더되지만 컬러가 정식이 아님.
+# ────────────────────────────────────────────────────
+brand:
+  primary_color: "#000000"               # PLACEHOLDER — TODO 퍼플 확정
+  font_family: "Pretendard Variable"     # PLACEHOLDER — TODO Figma 폰트 확정
+  logo_dark: assets/logo_dark.png        # PLACEHOLDER — 파일 미존재 (fallback: transparent PNG)
+  logo_light: assets/logo_light.png      # PLACEHOLDER — 파일 미존재
+
+llm:
+  news_card:
+    # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-4-8 상속.
+    temperature: 0.2
+    tone_guidance: >
+      Professional, knowledge-graph 도메인. 경어체(합니다/습니다).
+    preserve_terms:
+      - "TRAC"
+      - "DKG"
+      - "Knowledge Asset"
+      - "OriginTrail"
+      - "Paranet"
+      - "Knowledge Mining"
+    glossary:
+      "Knowledge Asset": "지식 자산(Knowledge Asset)"
+      "DKG": "탈중앙 지식 그래프(DKG)"
+      "Knowledge Mining": "지식 마이닝(Knowledge Mining)"
+
+publishing:
+  # TODO: 실제 크리덴셜 세팅 시 각 채널 active: true 로 전환
+  typefully:
+    social_set_id: null                  # PLACEHOLDER — Typefully social set 확정 대기
+    active: false
+  telegram:
+    public_channel: "t.me/Origintrailkr"
+    bot_token_env: "TELEGRAM_BOT_TOKEN_ORIGINTRAIL"   # env placeholder
+    bot_env: TELEGRAM_BOT_TOKEN_ORIGINTRAIL
+    channel_env: TELEGRAM_CHANNEL_ORIGINTRAIL         # env placeholder
+    active: false
+  twitter:
+    typefully_account_id: "origin_trail_KR"           # X 게시 대상: @origin_trail_KR
+  discord:
+    enabled: false
+
+feature_flags:
+  auto_approve: false
+  education_carousel: false
+  news_card: true

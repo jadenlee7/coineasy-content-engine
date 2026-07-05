@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>News Card · Single 1080×1080</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --yellow: {{ brand_primary_color | default('#FFDE00') }};
+    --bg-dark: {{ brand_bg_dark | default('#000000') }};
+    --bg-yellow: {{ brand_bg_yellow | default('#FFDE00') }};
+    --card-bg: #FFFFFF;
+    --card-inner-bg: #F2F2F2;
+    --text-primary: {{ brand_text_primary | default('#0A0A0A') }};
+    --text-body: {{ brand_text_body | default('#595959') }};
+    --text-meta: #8A8A8A;
+    --font-family: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
+  }
+
+  html, body {
+    font-family: var(--font-family);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .canvas {
+    width: 1080px;
+    height: 1080px;
+    padding: 48px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .canvas.theme-dark { background: var(--bg-dark); }
+  .canvas.theme-yellow { background: var(--bg-yellow); }
+
+  /* Top: logo only, right-aligned */
+  .top-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    min-height: 44px;
+    margin-bottom: 24px;
+  }
+  .brand-logo {
+    width: 100px; height: auto;
+    flex-shrink: 0; display: block;
+  }
+
+  /* Main white card */
+  .main-card {
+    flex: 1;
+    background: var(--card-bg);
+    border-radius: 20px;
+    padding: 56px 48px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Label badge */
+  .news-label {
+    display: inline-block;
+    background: var(--yellow);
+    color: var(--text-primary);
+    font-size: 18px; font-weight: 700;
+    padding: 10px 20px; border-radius: 8px;
+    margin-bottom: 28px;
+    width: fit-content;
+    letter-spacing: -0.2px;
+  }
+  .canvas.theme-yellow .news-label {
+    background: var(--bg-dark);
+    color: var(--yellow);
+  }
+
+  /* Headline */
+  .news-headline {
+    font-size: 52px;
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -1.6px;
+    line-height: 1.2;
+    margin-bottom: 40px;
+    word-break: keep-all;
+  }
+
+  /* Body bullets */
+  .body-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-bottom: auto;
+  }
+  .body-item {
+    background: var(--card-inner-bg);
+    border-radius: 14px;
+    padding: 22px 26px;
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .body-item .bullet-dot {
+    width: 10px; height: 10px;
+    background: var(--text-primary);
+    border-radius: 50%;
+    margin-top: 12px;
+    flex-shrink: 0;
+  }
+  .body-item .body-text {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.3px;
+    line-height: 1.45;
+    word-break: keep-all;
+    flex: 1;
+  }
+
+  /* Footer: date + source */
+  .card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid #E5E5E5;
+    font-size: 16px;
+    color: var(--text-meta);
+    letter-spacing: -0.2px;
+  }
+  .card-footer .date { font-weight: 600; }
+  .card-footer .source {
+    font-weight: 500;
+    max-width: 600px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+{#
+  News Card · single 1080x1080 square
+  D2 schema slots:
+    theme: "dark" | "yellow"
+    label: 짧은 분류 배지 텍스트 (4-15자)
+    headline: 메인 헤드라인 (한 문장, 경어체)
+    body_lines: list[str], 1-3 items
+    date: "YYYY.MM.DD"
+    source_url: 원본 URL (https:// 포함)
+  Brand vars (auto-injected by renderer):
+    logo_dark_path, logo_light_path,
+    brand_primary_color, brand_bg_dark, brand_bg_yellow,
+    brand_text_primary, brand_text_body, font_family,
+    client_name, client_id
+#}
+
+<div class="canvas theme-{{ theme | default('dark') }}">
+  <div class="top-header">
+    {% if theme == 'yellow' %}
+    <img src="{{ logo_light_path }}" class="brand-logo" alt="{{ client_name | default('') }}"/>
+    {% else %}
+    <img src="{{ logo_dark_path }}" class="brand-logo" alt="{{ client_name | default('') }}"/>
+    {% endif %}
+  </div>
+
+  <div class="main-card">
+    {% if label %}<div class="news-label">{{ label | safe }}</div>{% endif %}
+
+    {% if headline %}<h1 class="news-headline">{{ headline | safe }}</h1>{% endif %}
+
+    {% if body_lines %}
+    <div class="body-list">
+      {% for line in body_lines %}
+      <div class="body-item">
+        <span class="bullet-dot"></span>
+        <span class="body-text">{{ line | safe }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="card-footer">
+      <div class="date">{{ date | default('') }}</div>
+      {% if source_url %}
+      <div class="source">{{ source_url | replace('https://', '') | replace('http://', '') }}</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

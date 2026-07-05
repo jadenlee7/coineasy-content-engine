@@ -50,8 +50,33 @@ llm:
       "on-chain": "온체인(on-chain)"
       "smart contract": "스마트 컨트랙트(smart contract)"
 
-  news_banner:
+  news_card:
     temperature: 0.2
+    tone_guidance: >
+      Professional but approachable. 경어체.
+    preserve_terms:
+      - "Nitrolite"
+      - "Clearnode"
+      - "Yellow SDK"
+      - "$YELLOW"
+      - "State Channel"
+      - "NeoDAX"
+      - "XRPL"
+      - "EVM"
+    glossary:
+      "chain-agnostic": "체인을 가리지 않는"
+      "state channel": "스테이트 채널(state channel)"
+      "state channels": "스테이트 채널(state channels)"
+      "non-custodial": "논커스터디얼(non-custodial)"
+      "clearing": "클리어링(clearing)"
+      "settlement": "정산(settlement)"
+      "Layer 3": "Layer 3"
+      "cross-chain": "크로스체인(cross-chain)"
+      "real-world asset": "실물 자산(real-world asset)"
+      "gas fees": "가스비(gas fees)"
+      "off-chain": "오프체인(off-chain)"
+      "on-chain": "온체인(on-chain)"
+      "smart contract": "스마트 컨트랙트(smart contract)"
 
 publishing:
   typefully:
@@ -72,7 +97,7 @@ publishing:
 feature_flags:
   auto_approve: false
   education_carousel: true
-  news_banner: true
+  news_card: true
 
 routing:
   # 1차 필터 - LLM 부르기 전에 제외할 패턴들
@@ -103,7 +128,7 @@ routing:
     - "clearnode"
     - "SDK"
 
-  # 뉴스 배너 후보 신호
+  # 뉴스 카드 후보 신호
   news_signals:
     - "partnership"
     - "partner"

@@ -62,7 +62,7 @@ class ContentSources:
 
 @dataclass
 class LLMPipelineConfig:
-    """Per-pipeline LLM config (edu_carousel, news_banner, etc.)"""
+    """Per-pipeline LLM config (edu_carousel, news_card, etc.)"""
     model: str = field(default_factory=_resolve_default_model)
     temperature: float = 0.3
     tone_guidance: Optional[str] = None
@@ -73,7 +73,7 @@ class LLMPipelineConfig:
 @dataclass
 class LLMConfig:
     edu_carousel: LLMPipelineConfig = field(default_factory=LLMPipelineConfig)
-    news_banner: LLMPipelineConfig = field(default_factory=LLMPipelineConfig)
+    news_card: LLMPipelineConfig = field(default_factory=LLMPipelineConfig)
 
 
 @dataclass
@@ -105,7 +105,7 @@ class PublishingConfig:
 class FeatureFlags:
     auto_approve: bool = False
     education_carousel: bool = True
-    news_banner: bool = True
+    news_card: bool = True
 
 
 @dataclass
@@ -210,7 +210,7 @@ def _parse_llm(d: dict) -> LLMConfig:
         return LLMConfig()
     return LLMConfig(
         edu_carousel=_parse_llm_pipeline(d.get("edu_carousel", {})),
-        news_banner=_parse_llm_pipeline(d.get("news_banner", {})),
+        news_card=_parse_llm_pipeline(d.get("news_card", {})),
     )
 
 
