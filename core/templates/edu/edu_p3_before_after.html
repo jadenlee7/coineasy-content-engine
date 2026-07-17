@@ -5,6 +5,8 @@
 <title>Yellow EDU · P3 Before/After</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+<!-- brand font (Pretendard already loaded above; extra links only for non-Pretendard brands) -->
+{{ brand_font_links | default('') | safe }}
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 

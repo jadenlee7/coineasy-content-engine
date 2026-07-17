@@ -96,6 +96,28 @@ async def render_png(
 # Brand Injection
 # ────────────────────────────────────────────────────
 
+# Extra web-font <link> tags per brand font. Every template already loads
+# Pretendard, so Pretendard/unknown → no extra links. Latin-only fonts (Inter)
+# rely on the always-present Pretendard to cover Hangul via the fallback stack.
+_FONT_CSS_LINKS: dict[str, str] = {
+    "Gmarket Sans": (
+        '<link rel="stylesheet" '
+        'href="https://cdn.jsdelivr.net/gh/fonts-archive/GmarketSans/GmarketSans.css">'
+    ),
+    "Inter": (
+        '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        '<link rel="stylesheet" '
+        'href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">'
+    ),
+}
+
+
+def _brand_font_links(font_family: str) -> str:
+    """Return extra <link> tags needed to load a client's brand font (empty for
+    Pretendard, which every template already ships)."""
+    return _FONT_CSS_LINKS.get(font_family, "")
+
+
 def _inject_brand_slots(
     slots: dict[str, Any],
     config: ClientConfig,
@@ -117,6 +139,7 @@ def _inject_brand_slots(
     enhanced["brand_text_primary"] = config.brand.text_primary
     enhanced["brand_text_body"] = config.brand.text_body
     enhanced["font_family"] = config.brand.font_family
+    enhanced["brand_font_links"] = _brand_font_links(config.brand.font_family)
 
     enhanced["client_id"] = config.client_id
     enhanced["client_name"] = config.name
