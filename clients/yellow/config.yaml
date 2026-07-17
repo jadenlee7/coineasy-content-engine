@@ -4,11 +4,12 @@ locale: ko-KR
 active: true
 
 brand:
-  primary_color: "#FFDE00"
+  # Figma "Yellow Korea branding" 대조갱신 — 카드 프레임 실측값
+  primary_color: "#FDDA16"               # 브랜드 옐로우 (구 #FFDE00)
   bg_dark: "#000000"
-  bg_yellow: "#FFDE00"
-  text_primary: "#0A0A0A"
-  text_body: "#595959"
+  bg_yellow: "#FDDA16"                    # accent = primary
+  text_primary: "#19191C"                # 헤딩 잉크 (구 #0A0A0A)
+  text_body: "#555555"                   # 본문 그레이 (구 #595959)
   logo_dark: assets/logo_dark.png        # 다크 배경용 (흰색 로고)
   logo_light: assets/logo_light.png      # 밝은 배경용 (검정 로고)
   font_family: "Pretendard Variable"

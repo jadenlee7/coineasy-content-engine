@@ -4,15 +4,15 @@ locale: ko-KR
 active: true
 
 brand:
-  # Squid는 민트그린/보라 브랜드 컬러 (실제 Squid Router 컬러 참고)
-  primary_color: "#00F5D4"
-  bg_dark: "#0A0F1E"
-  bg_yellow: "#00F5D4"       # Squid의 accent로 대체
-  text_primary: "#0A0A0A"
+  # Figma "Squid Korea branding" 대조갱신 — 라임그린 + 라벤더 퍼플 (구 민트 #00F5D4)
+  primary_color: "#E6FA36"   # 라임그린 accent (프레임 배경 실측)
+  bg_dark: "#1A0E2E"         # 딥 퍼플 (Squid는 솔리드 다크 토큰 없음 — 브랜드 hue 기반 파생)
+  bg_yellow: "#B18AE0"       # 라벤더 퍼플 (그라디언트 실측 대표값)
+  text_primary: "#000000"    # 헤딩/본문 블랙 (실측)
   text_body: "#4A4A4A"
   logo_dark: assets/logo_dark.png
   logo_light: assets/logo_light.png
-  font_family: "Pretendard Variable"
+  font_family: "Pretendard Variable"   # 한글 본문용. Figma 헤드라인 디스플레이 폰트는 "Bagoss Condensed"(라틴 전용)
 
 content_sources:
   twitter:

@@ -1,0 +1,63 @@
+client_id: babylon
+name: Babylon Korea
+locale: ko-KR
+active: true
+
+# ────────────────────────────────────────────────────
+# Brand — Figma "Babylon Korea GTM — Brand Kit" 실측 적용
+#   Babylon Orange   #CE6533  (메인 컬러)
+#   Dark Blue        #12495E  (서브 컬러)
+#   CoinEasy Orange  #F7961A  (포인트 컬러)
+# ────────────────────────────────────────────────────
+brand:
+  primary_color: "#CE6533"                # Babylon Orange (메인)
+  bg_dark: "#12495E"                       # Dark Blue (서브 — 다크 배경)
+  bg_yellow: "#F7961A"                     # CoinEasy Orange (포인트 accent)
+  text_primary: "#12495E"                  # 헤딩 잉크 (다크 블루)
+  text_body: "#6B7280"                     # 본문 그레이 (실측)
+  logo_dark: assets/logo_dark.png          # Babylon 오렌지 심볼 (Figma export, 라이트·다크 공용)
+  logo_light: assets/logo_light.png
+  font_family: "Inter"                     # Figma 본문 폰트 (라틴). 한글은 Pretendard fallback
+
+llm:
+  news_card:
+    # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-4-8 상속.
+    temperature: 0.2
+    tone_guidance: >
+      Professional, Bitcoin staking 도메인. 경어체(합니다/습니다).
+      기술 정확성 유지하되 크립토 초보자도 이해 가능하게.
+    preserve_terms:
+      - "Babylon"
+      - "BTC staking"
+      - "finality provider"
+      - "timelock"
+      - "Bitcoin Secured Network"
+      - "TBV"
+    glossary:
+      "BTC staking": "BTC 스테이킹(BTC staking)"
+      "finality provider": "파이널리티 프로바이더(finality provider)"
+      "timelock": "타임락(timelock)"
+      "Bitcoin Secured Network": "비트코인 시큐어드 네트워크(Bitcoin Secured Network)"
+      "staking": "스테이킹(staking)"
+      "slashing": "슬래싱(slashing)"
+
+publishing:
+  # TODO 아님 — 크리덴셜 확정 전까지 전 채널 active: false 유지
+  typefully:
+    social_set_id: null
+    active: false
+  telegram:
+    public_channel: "t.me/BabylonKorea"
+    bot_token_env: "TELEGRAM_BOT_TOKEN_BABYLON"
+    bot_env: TELEGRAM_BOT_TOKEN_BABYLON
+    channel_env: TELEGRAM_CHANNEL_BABYLON
+    active: false
+  twitter:
+    typefully_account_id: "babylon_kr"
+  discord:
+    enabled: false
+
+feature_flags:
+  auto_approve: false
+  education_carousel: false
+  news_card: true
