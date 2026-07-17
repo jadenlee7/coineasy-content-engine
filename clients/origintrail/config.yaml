@@ -4,15 +4,17 @@ locale: ko-KR
 active: true
 
 # ────────────────────────────────────────────────────
-# Brand
-# TODO: Figma 브랜드킷 확정 대기 (퍼플 계열) — 아래 값은 placeholder.
-#       확정 전까지 hex 추측 금지. 카드는 렌더되지만 컬러가 정식이 아님.
+# Brand — Figma "OriginTrail Korea branding" 실측 적용
 # ────────────────────────────────────────────────────
 brand:
-  primary_color: "#000000"               # PLACEHOLDER — TODO 퍼플 확정
-  font_family: "Pretendard Variable"     # PLACEHOLDER — TODO Figma 폰트 확정
-  logo_dark: assets/logo_dark.png        # PLACEHOLDER — 파일 미존재 (fallback: transparent PNG)
-  logo_light: assets/logo_light.png      # PLACEHOLDER — 파일 미존재
+  primary_color: "#6344DF"               # OriginTrail 퍼플 (로고 심볼)
+  bg_dark: "#0C2246"                      # 다크 네이비
+  bg_yellow: "#6344DF"                    # accent = primary(퍼플)
+  text_primary: "#0C2246"                 # 헤딩 잉크 (네이비)
+  text_body: "#595959"                    # 본문 그레이 (Figma 본문은 #000, 가독성용 그레이 적용)
+  logo_dark: assets/logo_dark.png         # 로고 에셋 export 대기 (없으면 transparent PNG fallback)
+  logo_light: assets/logo_light.png
+  font_family: "Gmarket Sans"             # Figma 헤딩/본문 폰트
 
 llm:
   news_card:
