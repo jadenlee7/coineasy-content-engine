@@ -15,7 +15,7 @@ brand:
   bg_yellow: "#F7961A"                     # CoinEasy Orange (포인트 accent)
   text_primary: "#12495E"                  # 헤딩 잉크 (다크 블루)
   text_body: "#6B7280"                     # 본문 그레이 (실측)
-  logo_dark: assets/logo_dark.png          # 로고 에셋 export 대기 (없으면 transparent PNG fallback)
+  logo_dark: assets/logo_dark.png          # Babylon 오렌지 심볼 (Figma export, 라이트·다크 공용)
   logo_light: assets/logo_light.png
   font_family: "Inter"                     # Figma 본문 폰트 (라틴). 한글은 Pretendard fallback
 

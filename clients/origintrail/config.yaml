@@ -12,7 +12,7 @@ brand:
   bg_yellow: "#6344DF"                    # accent = primary(퍼플)
   text_primary: "#0C2246"                 # 헤딩 잉크 (네이비)
   text_body: "#595959"                    # 본문 그레이 (Figma 본문은 #000, 가독성용 그레이 적용)
-  logo_dark: assets/logo_dark.png         # 로고 에셋 export 대기 (없으면 transparent PNG fallback)
+  logo_dark: assets/logo_dark.png         # 레드/블루 심볼 아이콘 (Figma export, 라이트·다크 공용)
   logo_light: assets/logo_light.png
   font_family: "Gmarket Sans"             # Figma 헤딩/본문 폰트
 
