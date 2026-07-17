@@ -1,4 +1,4 @@
-anthropic==0.39.0
+anthropic==0.109.1
 jinja2==3.1.4
 playwright==1.47.0
 pillow==10.4.0
@@ -6,4 +6,3 @@ pyyaml==6.0.2
 fastapi==0.115.0
 uvicorn[standard]==0.31.0
 pydantic==2.9.2
-httpx<0.28
