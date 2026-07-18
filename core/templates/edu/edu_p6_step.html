@@ -19,6 +19,7 @@
     --text-body: {{ brand_text_body | default('#595959') }};
     --text-meta: #8A8A8A;
     --font-family: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
+    --font-display: {% if font_display %}"{{ font_display }}", {% endif %}var(--font-family);
   }
   html, body {
     font-family: var(--font-family);
@@ -70,6 +71,7 @@
   }
 
   .lesson-title {
+    font-family: var(--font-display);
     font-size: 44px; font-weight: 800; color: var(--text-primary);
     letter-spacing: -1.5px; line-height: 1.15;
     margin-bottom: 20px; word-break: keep-all;
