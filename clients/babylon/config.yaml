@@ -7,12 +7,12 @@ active: true
 # Brand — Figma "Babylon Korea GTM — Brand Kit" 실측 적용
 #   Babylon Orange   #CE6533  (메인 컬러)
 #   Dark Blue        #12495E  (서브 컬러)
-#   CoinEasy Orange  #F7961A  (포인트 컬러)
+#   CoinEasy Orange  #F7931A  (포인트 컬러)
 # ────────────────────────────────────────────────────
 brand:
   primary_color: "#CE6533"                # Babylon Orange (메인)
   bg_dark: "#12495E"                       # Dark Blue (서브 — 다크 배경)
-  bg_yellow: "#F7961A"                     # CoinEasy Orange (포인트 accent)
+  bg_yellow: "#F7931A"                     # CoinEasy Orange (포인트 accent)
   text_primary: "#12495E"                  # 헤딩 잉크 (다크 블루)
   text_body: "#6B7280"                     # 본문 그레이 (실측)
   logo_dark: assets/logo_dark.png          # Babylon 오렌지 심볼 (Figma export, 라이트·다크 공용)
