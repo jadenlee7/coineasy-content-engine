@@ -110,13 +110,14 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/
     "source_content": "OriginTrail launches Paranet on ...",
     "source_type": "tweet",
     "source_url": "https://x.com/origin_trail/status/xxx",
-    "mock_mode": false
+    "mock_mode": false,
+    "template_style": "editorial"
   }'
 ```
 
-**Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `mock_mode` (default `false`, skips LLM for smoke).
+**Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `mock_mode` (default `false`, skips LLM for smoke), `template_style` (`"classic"` | `"editorial"` | `"signal"`, default `"classic"`).
 
-**Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `manifest_path`, `duration_ms`.
+**Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `template_style`, `manifest_path`, `duration_ms`.
 
 ---
 

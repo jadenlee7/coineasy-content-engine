@@ -125,6 +125,31 @@
     .client strong { display: block; font-size: 12px; letter-spacing: -.2px; }
     .client small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 
+    .template-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .template-option {
+      min-height: 66px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color .18s, box-shadow .18s, transform .18s;
+    }
+    .template-option:hover { transform: translateY(-1px); }
+    .template-option.active { border-color: #24272e; box-shadow: 0 0 0 2px rgba(25,28,34,.11); }
+    .template-option strong { display: block; font-size: 11px; }
+    .template-option small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .template-swatch { display: flex; gap: 3px; height: 12px; margin-bottom: 8px; }
+    .template-swatch i { display: block; border-radius: 3px; background: #20232a; }
+    .template-option[data-template="classic"] .template-swatch i:first-child { width: 26%; background: #f1f2f4; }
+    .template-option[data-template="classic"] .template-swatch i:last-child { flex: 1; }
+    .template-option[data-template="editorial"] .template-swatch i:first-child { flex: 1; }
+    .template-option[data-template="editorial"] .template-swatch i:last-child { width: 20%; background: var(--accent); }
+    .template-option[data-template="signal"] .template-swatch i:first-child { width: 8%; background: var(--accent); }
+    .template-option[data-template="signal"] .template-swatch i:last-child { flex: 1; background: #dfe2e7; }
+
     textarea, input, select {
       width: 100%;
       border: 1px solid var(--line);
@@ -215,6 +240,27 @@
     .mock-line { display: flex; align-items: flex-start; gap: 11px; padding: 2.1% 2.5%; border-radius: 11px; color: var(--brand-ink); background: #f2f2f2; font-size: clamp(9px, 1.5vw, 17px); line-height: 1.45; font-weight: 650; }
     .mock-line::before { content: ""; flex: 0 0 auto; width: 7px; height: 7px; margin-top: .55em; border-radius: 50%; background: var(--brand-secondary); }
     .mock-foot { display: flex; justify-content: space-between; gap: 20px; margin-top: 4%; padding-top: 2.8%; border-top: 1px solid #e5e5e5; color: #858b94; font-size: clamp(8px, 1.2vw, 14px); }
+
+    .preview-shell[data-template="editorial"] .mock-card { background: var(--brand-bg); padding: 5.8%; }
+    .preview-shell[data-template="editorial"] .mock-top { margin-bottom: 6%; padding-bottom: 3%; border-bottom: 1px solid rgba(255,255,255,.24); }
+    .preview-shell[data-template="editorial"] .mock-inner { padding: 0; background: transparent; }
+    .preview-shell[data-template="editorial"] .mock-label { color: var(--brand-ink); background: var(--brand-primary); border-radius: 999px; }
+    .preview-shell[data-template="editorial"] .mock-headline { color: #fff; font-size: clamp(25px, 5.1vw, 62px); }
+    .preview-shell[data-template="editorial"] .mock-lines { grid-template-columns: repeat(3, 1fr); margin-top: auto; }
+    .preview-shell[data-template="editorial"] .mock-line { min-height: 110px; color: #fff; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); }
+    .preview-shell[data-template="editorial"] .mock-foot { color: rgba(255,255,255,.58); border-top-color: rgba(255,255,255,.2); }
+    .preview-shell[data-template="editorial"][data-client="yellow"] .mock-headline,
+    .preview-shell[data-template="editorial"][data-client="yellow"] .mock-line { color: #19191c; }
+    .preview-shell[data-template="editorial"][data-client="yellow"] .mock-line { background: rgba(255,255,255,.38); border-color: rgba(0,0,0,.08); }
+    .preview-shell[data-template="editorial"][data-client="yellow"] .mock-foot { color: rgba(0,0,0,.52); border-top-color: rgba(0,0,0,.14); }
+
+    .preview-shell[data-template="signal"] { background: #eceeeb; }
+    .preview-shell[data-template="signal"] .mock-card { inset: 4.3%; overflow: hidden; padding: 0; border-radius: 18px; background: #fff; box-shadow: 0 13px 30px rgba(20,30,45,.12); }
+    .preview-shell[data-template="signal"] .mock-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2.6%; background: var(--brand-primary); }
+    .preview-shell[data-template="signal"] .mock-top { min-height: 15%; margin: 0; padding: 0 5% 0 7%; background: var(--brand-bg); }
+    .preview-shell[data-template="signal"] .mock-inner { padding: 6% 5% 5% 7%; border-radius: 0; }
+    .preview-shell[data-template="signal"] .mock-headline { font-size: clamp(24px, 4.6vw, 56px); }
+    .preview-shell[data-template="signal"] .mock-line { border-left: 4px solid var(--brand-primary); border-radius: 2px; }
 
     .result-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
     .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(10,13,18,.82); backdrop-filter: blur(7px); }
@@ -309,6 +355,21 @@
         </div>
 
         <div class="field">
+          <div class="field-label">배너 템플릿 <span class="optional">3가지</span></div>
+          <div class="template-grid" id="templates">
+            <button class="template-option active" type="button" data-template="classic">
+              <span class="template-swatch"><i></i><i></i></span><strong>클래식</strong><small>뉴스 요약 카드</small>
+            </button>
+            <button class="template-option" type="button" data-template="editorial">
+              <span class="template-swatch"><i></i><i></i></span><strong>에디토리얼</strong><small>큰 제목 중심</small>
+            </button>
+            <button class="template-option" type="button" data-template="signal">
+              <span class="template-swatch"><i></i><i></i></span><strong>시그널</strong><small>속보·업데이트</small>
+            </button>
+          </div>
+        </div>
+
+        <div class="field">
           <label class="field-label" for="source-content">원문 콘텐츠 <span class="optional" id="char-count">0자</span></label>
           <textarea id="source-content" minlength="10" maxlength="20000" required></textarea>
         </div>
@@ -352,7 +413,7 @@
         </div>
 
         <div class="stage">
-          <div class="preview-shell" id="preview-shell" data-client="yellow">
+            <div class="preview-shell" id="preview-shell" data-client="yellow" data-template="classic">
             <div class="mock-card" id="mock-card">
               <div class="mock-top">
                 <span>CoinEasy · branded news</span>
@@ -424,9 +485,16 @@
         }
       };
 
-      const state = { client: "yellow", imageUrl: "" };
+      const TEMPLATE = {
+        classic: "클래식",
+        editorial: "에디토리얼",
+        signal: "시그널"
+      };
+
+      const state = { client: "yellow", template: "classic", imageUrl: "" };
       const form = document.getElementById("generator-form");
       const clients = document.getElementById("clients");
+      const templates = document.getElementById("templates");
       const sourceContent = document.getElementById("source-content");
       const sourceType = document.getElementById("source-type");
       const sourceUrl = document.getElementById("source-url");
@@ -461,6 +529,7 @@
       function renderBrand({ replaceSource = false } = {}) {
         const brand = BRAND[state.client];
         shell.dataset.client = state.client;
+        shell.dataset.template = state.template;
         previewLogo.src = brand.logo;
         previewLogo.alt = `${brand.name} logo`;
         previewLabel.textContent = brand.label;
@@ -473,8 +542,8 @@
         mockCard.hidden = false;
         resultImage.hidden = true;
         resultImage.removeAttribute("src");
-        resultKind.textContent = "· 브랜드 예시";
-        resultNote.textContent = "현재 화면은 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 Railway 렌더러가 만든 실제 PNG로 교체됩니다.";
+        resultKind.textContent = `· ${TEMPLATE[state.template]} 예시`;
+        resultNote.textContent = `현재 화면은 ${TEMPLATE[state.template]} 템플릿에 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 실제 PNG로 교체됩니다.`;
         download.hidden = true;
         specDetails.hidden = true;
         state.imageUrl = "";
@@ -500,6 +569,15 @@
         clients.querySelectorAll(".client").forEach(item => item.classList.toggle("active", item === button));
         renderBrand({ replaceSource: true });
         setStatus(`${BRAND[state.client].name} 브랜딩이 선택되었습니다.`);
+      });
+
+      templates.addEventListener("click", event => {
+        const button = event.target.closest(".template-option");
+        if (!button) return;
+        state.template = button.dataset.template;
+        templates.querySelectorAll(".template-option").forEach(item => item.classList.toggle("active", item === button));
+        renderBrand();
+        setStatus(`${TEMPLATE[state.template]} 배너 템플릿이 선택되었습니다.`);
       });
 
       sourceContent.addEventListener("input", () => {
@@ -529,7 +607,8 @@
               source_content: content,
               source_type: sourceType.value,
               source_url: sourceUrl.value.trim(),
-              mock_mode: mockMode.checked
+              mock_mode: mockMode.checked,
+              template_style: state.template
             })
           });
           const payload = await response.json().catch(() => ({}));
@@ -540,7 +619,7 @@
           resultImage.hidden = false;
           mockCard.hidden = true;
           resultKind.textContent = "· 실제 Railway 렌더 결과";
-          resultNote.textContent = `${BRAND[state.client].name} 설정의 공식 로고·색상·서체로 생성했습니다. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+          resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 템플릿으로 생성했습니다. ${(payload.duration_ms / 1000).toFixed(1)}초`;
           download.href = state.imageUrl;
           download.download = payload.filename || `${state.client}-news-card.png`;
           download.hidden = false;
