@@ -1,4 +1,9 @@
 import type { Config, Context } from "@netlify/functions";
+import {
+  resolveSourceInput,
+  SourceInputError,
+  type ResolvedSource,
+} from "./_shared/source-content.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -69,14 +74,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const allowedSourceTypes = new Set(["tweet", "blog", "article"]);
   const allowedTemplateStyles = new Set(["classic", "editorial", "signal"]);
 
-  if (sourceContent.length < 10 || sourceContent.length > 20_000) {
-    return json({ error: "source_content_must_be_10_to_20000_chars" }, 400);
-  }
   if (!allowedSourceTypes.has(sourceType)) {
     return json({ error: "invalid_source_type" }, 400);
   }
   if (!allowedTemplateStyles.has(templateStyle)) {
     return json({ error: "invalid_template_style" }, 400);
+  }
+
+  let resolvedSource: ResolvedSource;
+  try {
+    resolvedSource = await resolveSourceInput(sourceContent, sourceUrl);
+  } catch (error) {
+    if (error instanceof SourceInputError) {
+      return json({ error: error.code, detail: error.message }, error.status);
+    }
+    return json({ error: "source_fetch_failed" }, 422);
   }
 
   const railwayUrl = cleanBaseUrl(
@@ -95,9 +107,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
         method: "POST",
         headers: upstreamHeaders,
         body: JSON.stringify({
-          source_content: sourceContent,
+          source_content: resolvedSource.content,
           source_type: sourceType,
-          source_url: sourceUrl,
+          source_url: resolvedSource.url,
           mock_mode: body.mock_mode === true,
           template_style: templateStyle,
         }),
@@ -146,6 +158,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       client_id: result.client_id,
       content_type: result.content_type,
       spec: result.spec,
+      source_mode: resolvedSource.mode,
       template_style: result.template_style || templateStyle,
       duration_ms: result.duration_ms,
       image_data_url: imageDataUrl,
