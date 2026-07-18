@@ -1,6 +1,9 @@
 {
   "name": "coineasy-content-engine-console",
   "private": true,
+  "scripts": {
+    "test:functions": "node --test tests_js/*.test.mts"
+  },
   "devDependencies": {
     "@netlify/functions": "^5.3.0"
   }

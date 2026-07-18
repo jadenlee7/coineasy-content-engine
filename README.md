@@ -117,6 +117,8 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/
 
 **Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `mock_mode` (default `false`, skips LLM for smoke), `template_style` (`"classic"` | `"editorial"` | `"signal"`, default `"classic"`).
 
+The Netlify console accepts a public X status URL by itself. Its server-side function imports the post text through X's oEmbed endpoint, then forwards both the extracted content and canonical source URL to the Railway API. Article and blog URLs still require pasted source text.
+
 **Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `template_style`, `manifest_path`, `duration_ms`.
 
 ---
