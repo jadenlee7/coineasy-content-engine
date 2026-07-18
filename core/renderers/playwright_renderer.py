@@ -112,10 +112,53 @@ _FONT_CSS_LINKS: dict[str, str] = {
 }
 
 
-def _brand_font_links(font_family: str) -> str:
-    """Return extra <link> tags needed to load a client's brand font (empty for
-    Pretendard, which every template already ships)."""
-    return _FONT_CSS_LINKS.get(font_family, "")
+def _font_face_style(family: str, path: Path) -> Optional[str]:
+    """Inline <style> @font-face embedding a self-hosted font file as a data URL.
+    Returns None if the file can't be read, so callers degrade to a fallback
+    font rather than aborting the render."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    ext = path.suffix.lower().lstrip(".")
+    fmt = {"woff2": "woff2", "woff": "woff", "otf": "opentype", "ttf": "truetype"}.get(ext, "woff2")
+    mime = {"woff2": "font/woff2", "woff": "font/woff", "otf": "font/otf", "ttf": "font/ttf"}.get(ext, "font/woff2")
+    data = base64.b64encode(raw).decode("ascii")
+    return (
+        f"<style>@font-face{{font-family:'{family}';"
+        f"src:url(data:{mime};base64,{data}) format('{fmt}');"
+        f"font-weight:100 900;font-display:swap;}}</style>"
+    )
+
+
+def _build_font_head(config: ClientConfig) -> str:
+    """Extra <head> markup to load a client's brand fonts: CDN links for known
+    web fonts (body + display), plus an inline @font-face for a self-hosted
+    display font when its file is present. Pretendard ships in every template,
+    so it needs nothing here."""
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add_cdn(fam: Optional[str]) -> None:
+        if fam and fam not in seen and fam in _FONT_CSS_LINKS:
+            parts.append(_FONT_CSS_LINKS[fam])
+            seen.add(fam)
+
+    add_cdn(config.brand.font_family)
+
+    display = config.brand.font_display
+    if display and display not in seen:
+        font_path = config.font_display_file_path
+        # .is_file() (not .exists()) so a directory routes to the fallback;
+        # _font_face_style returns None on any read error (perms / TOCTOU race).
+        face = _font_face_style(display, font_path) if (font_path and font_path.is_file()) else None
+        if face:
+            parts.append(face)
+            seen.add(display)
+        else:
+            # no readable self-hosted file — display font might be a known CDN web font
+            add_cdn(display)
+    return "".join(parts)
 
 
 def _inject_brand_slots(
@@ -139,7 +182,8 @@ def _inject_brand_slots(
     enhanced["brand_text_primary"] = config.brand.text_primary
     enhanced["brand_text_body"] = config.brand.text_body
     enhanced["font_family"] = config.brand.font_family
-    enhanced["brand_font_links"] = _brand_font_links(config.brand.font_family)
+    enhanced["font_display"] = config.brand.font_display or ""
+    enhanced["brand_font_links"] = _build_font_head(config)
 
     enhanced["client_id"] = config.client_id
     enhanced["client_name"] = config.name
@@ -147,14 +191,23 @@ def _inject_brand_slots(
     return enhanced
 
 
+_TRANSPARENT_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
 def _logo_to_data_url(logo_path: Path) -> str:
-    """Convert a logo file to a base64 data URL for embedding in HTML."""
-    if not logo_path.exists():
-        # Fallback: empty 1x1 transparent PNG
-        return (
-            "data:image/png;base64,"
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-        )
+    """Convert a logo file to a base64 data URL for embedding in HTML.
+    Falls back to a 1x1 transparent PNG when the file is absent, is a
+    directory, or can't be read (perms / TOCTOU race) — never crashes render."""
+    if not logo_path.is_file():
+        return _TRANSPARENT_PNG
+
+    try:
+        raw = logo_path.read_bytes()
+    except OSError:
+        return _TRANSPARENT_PNG
 
     ext = logo_path.suffix.lower().lstrip(".")
     mime = {
@@ -165,7 +218,7 @@ def _logo_to_data_url(logo_path: Path) -> str:
         "webp": "image/webp",
     }.get(ext, "image/png")
 
-    b64 = base64.b64encode(logo_path.read_bytes()).decode()
+    b64 = base64.b64encode(raw).decode()
     return f"data:{mime};base64,{b64}"
 
 
