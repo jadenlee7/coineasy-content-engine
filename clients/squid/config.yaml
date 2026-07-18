@@ -4,15 +4,20 @@ locale: ko-KR
 active: true
 
 brand:
-  # Squid는 민트그린/보라 브랜드 컬러 (실제 Squid Router 컬러 참고)
-  primary_color: "#00F5D4"
-  bg_dark: "#0A0F1E"
-  bg_yellow: "#00F5D4"       # Squid의 accent로 대체
-  text_primary: "#0A0A0A"
+  # Figma "Squid Korea branding" 대조갱신 — 라임그린 + 라벤더 퍼플 (구 민트 #00F5D4)
+  primary_color: "#E6FA36"   # 라임그린 accent (프레임 배경 실측)
+  bg_dark: "#1A0E2E"         # 딥 퍼플 (Squid는 솔리드 다크 토큰 없음 — 브랜드 hue 기반 파생)
+  bg_yellow: "#B18AE0"       # 라벤더 퍼플 (그라디언트 실측 대표값)
+  text_primary: "#000000"    # 헤딩/본문 블랙 (실측)
   text_body: "#4A4A4A"
   logo_dark: assets/logo_dark.png
   logo_light: assets/logo_light.png
-  font_family: "Pretendard Variable"
+  font_family: "Pretendard Variable"        # 본문/한글
+  # 헤드라인 디스플레이 폰트 (Figma). Bagoss Condensed는 상용(displaay)이라 CDN 없음 —
+  # 라이선스 파일을 아래 경로에 넣으면 @font-face로 self-host되어 헤드라인에 자동 적용.
+  # 파일이 없으면 헤드라인은 Pretendard로 폴백 (무회귀). 라틴만 Bagoss, 한글은 Pretendard.
+  font_display: "Bagoss Condensed"
+  font_display_file: "assets/BagossCondensed.woff2"
 
 content_sources:
   twitter:

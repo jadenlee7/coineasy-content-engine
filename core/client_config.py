@@ -46,6 +46,13 @@ class BrandConfig:
     logo_dark: str = "assets/logo_dark.png"
     logo_light: str = "assets/logo_light.png"
     font_family: str = "Pretendard Variable"
+    # Optional headline display font (Latin display face). Falls back to
+    # font_family (→ Pretendard) when unset or when its font file is absent.
+    font_display: Optional[str] = None
+    # Self-hosted font file for font_display, relative to the client dir
+    # (e.g. "assets/BagossCondensed.woff2"). When present it is embedded as an
+    # @font-face; when missing, headlines silently fall back to font_family.
+    font_display_file: Optional[str] = None
 
 
 @dataclass
@@ -165,6 +172,12 @@ class ClientConfig:
     @property
     def logo_light_path(self) -> Path:
         return self.client_dir / self.brand.logo_light
+
+    @property
+    def font_display_file_path(self) -> Optional[Path]:
+        if not self.brand.font_display_file:
+            return None
+        return self.client_dir / self.brand.font_display_file
     
     @property
     def overrides_dir(self) -> Path:
