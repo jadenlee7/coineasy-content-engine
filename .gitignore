@@ -43,3 +43,9 @@ Thumbs.db
 
 # Railway
 .railway/
+
+# Netlify local state
+.netlify/
+
+# Netlify Functions dependencies
+node_modules/

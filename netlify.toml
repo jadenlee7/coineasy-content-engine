@@ -1,2 +1,5 @@
 [build]
   publish = "web/console"
+
+[functions]
+  directory = "netlify/functions"

@@ -1,686 +1,572 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>news_card · capability console</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-<!-- per-client brand fonts (mirrors renderer): Gmarket Sans=origintrail, Inter=babylon -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fonts-archive/GmarketSans/GmarketSans.css">
-<style>
-  :root{
-    --bg:#0d0f12;
-    --panel:#14171c;
-    --panel-2:#1a1e24;
-    --line:#262b33;
-    --line-2:#31373f;
-    --ink:#e8ebf0;
-    --ink-dim:#9aa3af;
-    --ink-faint:#5f6873;
-    --btc:#FF6B17;                          /* CoinEasy primary (확정) */
-    --btc-soft:rgba(255,107,23,.14);
-    --yellow:#FDDA16;                       /* Yellow Network — Figma 정식값 */
-    --purple:#6344DF;                       /* OriginTrail — Figma 정식값 */
-    --squid:#E6FA36;                        /* Squid — Figma 정식값 (lime) */
-    --squid-purple:#BC8EE4;                 /* Squid Primary Colours — Figma 라벨값 */
-    --babylon:#CE6533;                      /* Babylon — Figma 정식값 (orange) */
-    --babylon-blue:#12495E;                 /* Babylon — Figma 정식값 (dark blue) */
-    --babylon-accent:#F7931A;               /* CoinEasy Orange — Figma 라벨값 */
-    --ok:#3fb950;
-    --warn:#d29922;
-    --mono:'JetBrains Mono',monospace;
-    --sans:'Pretendard Variable',Pretendard,system-ui,sans-serif;
-    /* 클라이언트 폰트 확정: yellow·squid=Pretendard / origintrail=Gmarket Sans / babylon=Inter (헤드라인 전용 디스플레이는 squid=Bagoss, 라이선스 대기) */
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html{-webkit-text-size-adjust:100%}
-  body{
-    background:var(--bg);
-    color:var(--ink);
-    font-family:var(--sans);
-    line-height:1.5;
-    -webkit-font-smoothing:antialiased;
-    padding:0 0 80px;
-  }
-  ::selection{background:var(--btc);color:#000}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoinEasy · 뉴스 카드 스튜디오</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fonts-archive/GmarketSans/GmarketSans.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <style>
+    :root {
+      --page: #f4f5f7;
+      --surface: #ffffff;
+      --surface-soft: #f8f9fb;
+      --ink: #16181d;
+      --muted: #737984;
+      --line: #e2e5ea;
+      --accent: #f7931a;
+      --shadow: 0 20px 55px rgba(19, 28, 43, .09);
+      --radius: 24px;
+      font-family: "Pretendard Variable", Pretendard, system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--page);
+      font-synthesis: none;
+    }
 
-  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--page); }
+    button, input, select, textarea { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    [hidden] { display: none !important; }
 
-  /* ---- header ---- */
-  header{
-    border-bottom:1px solid var(--line);
-    padding:22px 0 20px;
-    margin-bottom:34px;
-  }
-  .hbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-  .logo-dot{
-    width:11px;height:11px;border-radius:50%;
-    background:var(--btc);
-    box-shadow:0 0 0 4px var(--btc-soft);
-    flex:none;
-  }
-  .htitle{font-size:15px;font-weight:600;letter-spacing:-.01em}
-  .htitle .mono{font-family:var(--mono);color:var(--btc);font-weight:700}
-  .hmeta{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .pill{
-    font-family:var(--mono);font-size:11px;font-weight:500;
-    padding:4px 9px;border-radius:5px;
-    border:1px solid var(--line-2);color:var(--ink-dim);
-    white-space:nowrap;
-  }
-  .pill.live{color:var(--ok);border-color:rgba(63,185,80,.35)}
-  .pill.live::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:middle;animation:pulse 2s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    .app { width: min(1480px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 52px; }
 
-  .lede{margin-top:20px;max-width:640px}
-  .lede h1{
-    font-size:clamp(26px,4vw,38px);
-    font-weight:700;letter-spacing:-.025em;line-height:1.1;
-    margin-bottom:12px;
-  }
-  .lede h1 em{font-style:normal;color:var(--btc)}
-  .lede p{color:var(--ink-dim);font-size:15px;max-width:560px}
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 22px;
+    }
 
-  /* ---- layout ---- */
-  .console{
-    display:grid;
-    grid-template-columns:minmax(0,1fr) 520px;
-    gap:28px;
-    align-items:start;
-  }
-  @media(max-width:920px){
-    .console{grid-template-columns:1fr}
-  }
+    .wordmark { display: flex; align-items: center; gap: 12px; }
+    .wordmark-symbol {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font: 800 18px/1 Inter, sans-serif;
+      background: #15171b;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+    }
+    .wordmark strong { display: block; font: 800 17px/1.1 Inter, sans-serif; letter-spacing: -.3px; }
+    .wordmark span { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 
-  .section-tag{
-    font-family:var(--mono);font-size:11px;font-weight:700;
-    text-transform:uppercase;letter-spacing:.14em;
-    color:var(--ink-faint);
-    display:flex;align-items:center;gap:10px;
-    margin-bottom:14px;
-  }
-  .section-tag::after{content:"";flex:1;height:1px;background:var(--line)}
+    .connection {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.72);
+      color: #4f5662;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #20b26b; box-shadow: 0 0 0 4px rgba(32,178,107,.12); }
 
-  /* ---- left: controls ---- */
-  .ctrl-group{margin-bottom:26px}
-  label.fld{
-    display:block;font-family:var(--mono);font-size:11px;
-    color:var(--ink-dim);margin-bottom:7px;letter-spacing:.03em;
-  }
-  textarea,select,input[type=text]{
-    width:100%;background:var(--panel);color:var(--ink);
-    border:1px solid var(--line-2);border-radius:8px;
-    font-family:var(--mono);font-size:13px;line-height:1.55;
-    padding:11px 13px;resize:vertical;
-    transition:border-color .15s;
-  }
-  textarea:focus,select:focus,input:focus{outline:none;border-color:var(--btc)}
-  textarea{min-height:82px}
+    .hero {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 30px;
+      padding: 32px 36px;
+      margin-bottom: 22px;
+      overflow: hidden;
+      border-radius: var(--radius);
+      color: #fff;
+      background:
+        radial-gradient(circle at 88% 5%, rgba(247,147,26,.32), transparent 28%),
+        linear-gradient(135deg, #111317, #252932 72%, #1b202a);
+      box-shadow: var(--shadow);
+    }
+    .hero-copy { max-width: 720px; }
+    .eyebrow { margin: 0 0 12px; color: #f8aa4d; font: 700 11px/1 Inter, sans-serif; letter-spacing: 1.8px; text-transform: uppercase; }
+    .hero h1 { margin: 0; font-size: clamp(30px, 4vw, 52px); line-height: 1.06; letter-spacing: -2.2px; }
+    .hero p { max-width: 610px; margin: 16px 0 0; color: #aeb4bf; font-size: 15px; line-height: 1.65; }
+    .hero-meta { flex: 0 0 auto; display: flex; gap: 10px; }
+    .hero-chip { padding: 10px 13px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; color: #cfd3da; background: rgba(255,255,255,.05); font: 700 11px/1 Inter, sans-serif; }
 
-  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .workspace { display: grid; grid-template-columns: minmax(350px, 440px) minmax(520px, 1fr); gap: 22px; align-items: start; }
+    .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+    .controls { padding: 26px; position: sticky; top: 18px; }
+    .panel-title { margin: 0 0 5px; font-size: 17px; letter-spacing: -.4px; }
+    .panel-subtitle { margin: 0 0 22px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
-  .seg{display:flex;gap:0;border:1px solid var(--line-2);border-radius:8px;overflow:hidden}
-  .seg button{
-    flex:1;background:var(--panel);color:var(--ink-dim);
-    border:none;font-family:var(--mono);font-size:12px;font-weight:500;
-    padding:10px 8px;cursor:pointer;transition:all .15s;
-    border-right:1px solid var(--line-2);
-  }
-  .seg button:last-child{border-right:none}
-  .seg button.on{background:var(--btc);color:#000;font-weight:700}
-  .seg button:not(.on):hover{background:var(--panel-2);color:var(--ink)}
+    .field { margin-top: 20px; }
+    .field-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: #4c525d; font-size: 12px; font-weight: 750; }
+    .optional { color: #9ca1aa; font-size: 11px; font-weight: 500; }
 
-  .client-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .cli{
-    background:var(--panel);border:1px solid var(--line-2);
-    border-radius:9px;padding:13px;cursor:pointer;
-    transition:all .15s;text-align:left;position:relative;
-  }
-  .cli:hover{border-color:var(--line-2);background:var(--panel-2)}
-  .cli.on{border-color:var(--btc);background:var(--btc-soft)}
-  .cli .swatch{width:22px;height:22px;border-radius:6px;margin-bottom:9px;border:1px solid rgba(255,255,255,.12)}
-  .cli .cname{font-size:13px;font-weight:600;letter-spacing:-.01em;margin-bottom:2px}
-  .cli .cid{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)}
-  .cli .cflag{
-    position:absolute;top:11px;right:11px;
-    font-family:var(--mono);font-size:9px;font-weight:700;
-    text-transform:uppercase;letter-spacing:.05em;
-    padding:2px 6px;border-radius:4px;
-  }
-  .cflag.ready{color:var(--ok);background:rgba(63,185,80,.12)}
-  .cflag.wip{color:var(--warn);background:rgba(210,153,34,.12)}
+    .client-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .client {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color .18s, transform .18s, box-shadow .18s;
+    }
+    .client:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(20,28,42,.07); }
+    .client.active { border-color: var(--client-color); box-shadow: 0 0 0 2px color-mix(in srgb, var(--client-color) 26%, transparent); }
+    .client-logo { width: 38px; height: 38px; object-fit: contain; border-radius: 10px; padding: 6px; background: var(--client-bg); }
+    .client strong { display: block; font-size: 12px; letter-spacing: -.2px; }
+    .client small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 
-  .theme-note{
-    font-family:var(--mono);font-size:11px;color:var(--ink-faint);
-    margin-top:9px;line-height:1.5;
-  }
-  .theme-note b{color:var(--warn);font-weight:500}
+    textarea, input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      outline: none;
+      color: var(--ink);
+      background: var(--surface-soft);
+      transition: border-color .18s, box-shadow .18s, background .18s;
+    }
+    textarea:focus, input:focus, select:focus { border-color: #9ca3af; background: #fff; box-shadow: 0 0 0 3px rgba(20,24,31,.06); }
+    textarea { min-height: 152px; padding: 14px; resize: vertical; font-size: 13px; line-height: 1.58; }
+    input, select { height: 44px; padding: 0 12px; font-size: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1.25fr; gap: 10px; }
 
-  .btn-gen{
-    width:100%;margin-top:4px;
-    background:var(--btc);color:#000;border:none;border-radius:8px;
-    font-family:var(--sans);font-size:14px;font-weight:700;
-    padding:13px;cursor:pointer;letter-spacing:-.01em;
-    transition:transform .1s,filter .15s;
-  }
-  .btn-gen:hover{filter:brightness(1.08)}
-  .btn-gen:active{transform:translateY(1px)}
+    .test-mode { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: #fbfbfc; cursor: pointer; }
+    .test-mode input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: #15171b; }
+    .test-mode strong { display: block; font-size: 11px; }
+    .test-mode span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 
-  /* ---- spec readout ---- */
-  .spec{
-    margin-top:24px;background:var(--panel);
-    border:1px solid var(--line);border-radius:10px;overflow:hidden;
-  }
-  .spec-head{
-    padding:10px 14px;border-bottom:1px solid var(--line);
-    display:flex;align-items:center;gap:9px;
-    font-family:var(--mono);font-size:11px;color:var(--ink-dim);
-  }
-  .spec-head .dot{width:7px;height:7px;border-radius:50%;background:var(--btc)}
-  .spec-body{padding:14px;font-family:var(--mono);font-size:12px;line-height:1.7;overflow-x:auto}
-  .k{color:var(--btc)}
-  .s{color:#8dd88d}
-  .p{color:var(--ink-faint)}
-  .b{color:#c9a3ff}
+    .generate {
+      width: 100%;
+      height: 52px;
+      margin-top: 18px;
+      border: 0;
+      border-radius: 15px;
+      color: #fff;
+      background: #15171b;
+      cursor: pointer;
+      font-weight: 800;
+      letter-spacing: -.2px;
+      transition: transform .18s, opacity .18s, background .18s;
+    }
+    .generate:hover { transform: translateY(-1px); background: #2a2d34; }
+    .generate:disabled { cursor: wait; opacity: .62; transform: none; }
+    .form-status { min-height: 18px; margin: 10px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .form-status.error { color: #bd3434; }
+    .form-status.success { color: #148253; }
 
-  /* ---- right: card stage ---- */
-  .stage-panel{position:sticky;top:24px}
-  .stage{
-    background:
-      linear-gradient(var(--line) 1px,transparent 1px),
-      linear-gradient(90deg,var(--line) 1px,transparent 1px);
-    background-size:26px 26px;
-    background-color:#0a0c0f;
-    border:1px solid var(--line);border-radius:12px;
-    padding:30px;display:flex;justify-content:center;align-items:center;
-    min-height:480px;
-  }
+    .result-panel { overflow: hidden; }
+    .result-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 22px 24px; border-bottom: 1px solid var(--line); }
+    .result-title { margin: 0; font-size: 15px; }
+    .result-title span { color: var(--muted); font-size: 11px; font-weight: 500; }
+    .actions { display: flex; gap: 8px; }
+    .action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--ink);
+      background: #fff;
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 750;
+    }
 
-  /* THE CARD — mirrors news_title_card.html (1080×1080, scaled) */
-  .card{
-    width:420px;height:420px;border-radius:18px;
-    position:relative;overflow:hidden;
-    display:flex;flex-direction:column;
-    padding:38px 36px;
-    font-family:var(--sans);
-    box-shadow:0 24px 60px -18px rgba(0,0,0,.7);
-    transition:background .3s,color .3s;
-  }
-  .card.dark{background:#101216;color:#fff}
-  .card.yellow{background:var(--yellow);color:#19191C}                         /* bg_dark→accent yellow, text_primary #19191C */
-  .card.purple{background:#0C2246;color:#fff;font-family:'Gmarket Sans',var(--sans)}   /* origintrail bg_dark + Gmarket Sans */
-  .card.squid{background:#1A0E2E;color:#fff}                                    /* squid bg_dark (derived deep purple) */
-  .card.babylon{background:#12495E;color:#fff;font-family:'Inter',var(--sans)}  /* babylon bg_dark (dark blue) + Inter */
+    .stage { padding: 24px; background: #eceff3; }
+    .preview-shell {
+      --brand-primary: #fdda16;
+      --brand-secondary: #000;
+      --brand-bg: #fdda16;
+      --brand-ink: #19191c;
+      --brand-font: "Pretendard Variable", Pretendard, sans-serif;
+      position: relative;
+      width: min(100%, 760px);
+      aspect-ratio: 1;
+      margin: 0 auto;
+      overflow: hidden;
+      border-radius: 20px;
+      background: var(--brand-bg);
+      box-shadow: 0 18px 50px rgba(20,30,45,.18);
+    }
+    .preview-shell[data-client="origintrail"] { --brand-primary:#6344df; --brand-secondary:#6344df; --brand-bg:#0c2246; --brand-ink:#17171a; --brand-font:"Gmarket Sans", "Pretendard Variable", sans-serif; }
+    .preview-shell[data-client="squid"] { --brand-primary:#e6fa36; --brand-secondary:#bc8ee4; --brand-bg:#1a0e2e; --brand-ink:#000; --brand-font:"Bagoss Condensed", "Pretendard Variable", sans-serif; }
+    .preview-shell[data-client="babylon"] { --brand-primary:#ce6533; --brand-secondary:#f7931a; --brand-bg:#12495e; --brand-ink:#12495e; --brand-font:Inter, "Pretendard Variable", sans-serif; }
 
-  .card-top{display:flex;align-items:center;justify-content:space-between}
-  .badge{
-    font-family:var(--mono);font-size:12px;font-weight:700;
-    text-transform:uppercase;letter-spacing:.08em;
-    padding:6px 12px;border-radius:7px;
-  }
-  .card.dark .badge{background:var(--btc);color:#000}
-  .card.yellow .badge{background:#161616;color:var(--yellow)}
-  .card.purple .badge{background:var(--purple);color:#fff}
-  .card.squid .badge{background:var(--squid);color:#000}
-  .card.babylon .badge{background:var(--babylon);color:#fff}
-  .brandmark{display:flex;align-items:center;gap:7px;font-weight:700;font-size:14px;letter-spacing:-.01em;opacity:.9}
-  .brandmark .bdot{width:9px;height:9px;border-radius:50%}
-  .card.dark .brandmark .bdot,.card.purple .brandmark .bdot{background:var(--btc)}
-  .card.yellow .brandmark .bdot{background:#161616}
-  .card.squid .brandmark .bdot{background:var(--squid)}
-  .card.babylon .brandmark .bdot{background:var(--babylon)}
+    .mock-card { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4.45%; font-family: var(--brand-font); }
+    .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: space-between; margin-bottom: 2.4%; }
+    .mock-top span { color: color-mix(in srgb, #fff 58%, transparent); font: 700 8px/1 Inter, sans-serif; letter-spacing: 1.4px; text-transform: uppercase; }
+    .mock-logo { width: 10%; max-height: 42px; object-fit: contain; }
+    .mock-inner { flex: 1; display: flex; flex-direction: column; padding: 5.2% 4.8%; border-radius: 18px; background: #fff; }
+    .mock-label { align-self: flex-start; margin-bottom: 3%; padding: 1.2% 2.2%; border-radius: 7px; color: var(--brand-ink); background: var(--brand-primary); font-size: clamp(9px, 1.45vw, 17px); font-weight: 800; }
+    .preview-shell[data-client="yellow"] .mock-label { color: #fdda16; background: #000; }
+    .mock-headline { max-width: 94%; margin: 0 0 4%; color: var(--brand-ink); font-size: clamp(21px, 4vw, 50px); line-height: 1.18; letter-spacing: -1.4px; font-weight: 800; word-break: keep-all; }
+    .mock-lines { display: grid; gap: 9px; margin-bottom: auto; }
+    .mock-line { display: flex; align-items: flex-start; gap: 11px; padding: 2.1% 2.5%; border-radius: 11px; color: var(--brand-ink); background: #f2f2f2; font-size: clamp(9px, 1.5vw, 17px); line-height: 1.45; font-weight: 650; }
+    .mock-line::before { content: ""; flex: 0 0 auto; width: 7px; height: 7px; margin-top: .55em; border-radius: 50%; background: var(--brand-secondary); }
+    .mock-foot { display: flex; justify-content: space-between; gap: 20px; margin-top: 4%; padding-top: 2.8%; border-top: 1px solid #e5e5e5; color: #858b94; font-size: clamp(8px, 1.2vw, 14px); }
 
-  .card-mid{flex:1;display:flex;flex-direction:column;justify-content:center;padding:22px 0}
-  .headline{
-    font-size:27px;font-weight:700;line-height:1.22;letter-spacing:-.02em;
-    word-break:keep-all;margin-bottom:18px;
-  }
-  .body-list{display:flex;flex-direction:column;gap:9px}
-  .body-item{
-    display:flex;gap:9px;font-size:13.5px;line-height:1.45;
-    word-break:keep-all;opacity:.92;
-  }
-  .body-item::before{content:"→";font-family:var(--mono);flex:none;opacity:.7}
-  .card.dark .body-item::before,.card.purple .body-item::before{color:var(--btc)}
-  .card.yellow .body-item::before{color:#161616;opacity:.5}
-  .card.squid .body-item::before{color:var(--squid)}
-  .card.babylon .body-item::before{color:var(--babylon)}
+    .result-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
+    .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(10,13,18,.82); backdrop-filter: blur(7px); }
+    .loading-inner { text-align: center; }
+    .spinner { width: 34px; height: 34px; margin: 0 auto 14px; border: 3px solid rgba(255,255,255,.22); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+    .loading strong { display: block; font-size: 13px; }
+    .loading span { display: block; margin-top: 6px; color: #aeb4bf; font-size: 10px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-  .card-foot{
-    display:flex;align-items:center;justify-content:space-between;
-    font-family:var(--mono);font-size:11px;
-    padding-top:16px;border-top:1px solid;
-  }
-  .card.dark .card-foot,.card.purple .card-foot,.card.squid .card-foot,.card.babylon .card-foot{border-color:rgba(255,255,255,.14)}
-  .card.yellow .card-foot{border-color:rgba(0,0,0,.16)}
-  .card-foot .date{font-weight:700;opacity:.85}
-  .card-foot .src{opacity:.6;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .result-meta { padding: 18px 24px 22px; border-top: 1px solid var(--line); }
+    .result-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    details { margin-top: 13px; border: 1px solid var(--line); border-radius: 12px; background: #fbfbfc; }
+    summary { padding: 12px 14px; cursor: pointer; color: #4e5560; font-size: 11px; font-weight: 750; }
+    .spec { padding: 0 14px 14px; color: #656b75; font-size: 11px; line-height: 1.6; }
+    .spec h3 { margin: 3px 0 7px; color: var(--ink); font-size: 13px; }
+    .spec ul { margin: 7px 0 0; padding-left: 18px; }
 
-  .stage-cap{
-    display:flex;align-items:center;justify-content:space-between;
-    margin-top:14px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);
-  }
-  .stage-cap .dim{color:var(--ink-faint)}
-  .stage-cap b{color:var(--ink-dim);font-weight:500}
+    .privacy { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #8b919a; font-size: 10px; }
+    .privacy svg { flex: 0 0 auto; }
 
-  /* ---- bottom: pipeline + endpoint ---- */
-  .lower{margin-top:52px}
-  .flow{
-    display:grid;grid-template-columns:repeat(4,1fr);gap:0;
-    border:1px solid var(--line);border-radius:12px;overflow:hidden;
-    background:var(--panel);
-  }
-  @media(max-width:760px){.flow{grid-template-columns:1fr 1fr}}
-  .stage-cell{
-    padding:18px 16px;border-right:1px solid var(--line);position:relative;
-  }
-  .stage-cell:last-child{border-right:none}
-  @media(max-width:760px){
-    .stage-cell:nth-child(2){border-right:none}
-    .stage-cell:nth-child(1),.stage-cell:nth-child(2){border-bottom:1px solid var(--line)}
-  }
-  .stage-cell .num{
-    font-family:var(--mono);font-size:11px;font-weight:700;color:var(--btc);
-    margin-bottom:8px;
-  }
-  .stage-cell h4{font-size:13.5px;font-weight:600;margin-bottom:5px;letter-spacing:-.01em}
-  .stage-cell p{font-size:11.5px;color:var(--ink-dim);line-height:1.5}
-  .stage-cell code{font-family:var(--mono);font-size:10.5px;color:var(--btc);word-break:break-all}
-  .stage-cell .arrow{
-    position:absolute;right:-9px;top:50%;transform:translateY(-50%);
-    width:18px;height:18px;background:var(--panel);border:1px solid var(--line);
-    border-radius:50%;display:flex;align-items:center;justify-content:center;
-    font-size:10px;color:var(--btc);z-index:2;
-  }
-  @media(max-width:760px){.stage-cell .arrow{display:none}}
-
-  .endpoint{
-    margin-top:22px;background:#0a0c0f;border:1px solid var(--line);
-    border-radius:10px;overflow:hidden;
-  }
-  .ep-head{
-    padding:11px 15px;border-bottom:1px solid var(--line);
-    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  }
-  .method{font-family:var(--mono);font-size:11px;font-weight:700;color:#000;background:var(--btc);padding:3px 8px;border-radius:5px}
-  .ep-path{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
-  .ep-copy{
-    margin-left:auto;font-family:var(--mono);font-size:11px;
-    color:var(--ink-dim);background:var(--panel-2);border:1px solid var(--line-2);
-    padding:4px 10px;border-radius:6px;cursor:pointer;transition:all .15s;
-  }
-  .ep-copy:hover{color:var(--btc);border-color:var(--btc)}
-  .ep-body{padding:15px;font-family:var(--mono);font-size:12px;line-height:1.7;overflow-x:auto;white-space:pre;color:var(--ink-dim)}
-  .ep-body .c{color:var(--ink-faint)}
-  .ep-body .m{color:var(--btc)}
-  .ep-body .g{color:#8dd88d}
-
-  /* ---- ship strip ---- */
-  .ship{
-    margin-top:44px;padding-top:26px;border-top:1px solid var(--line);
-    display:flex;gap:26px;flex-wrap:wrap;align-items:center;
-  }
-  .ship .stat{display:flex;flex-direction:column;gap:2px}
-  .ship .stat .v{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-.02em}
-  .ship .stat .v .u{font-size:13px;color:var(--ink-faint);font-weight:400}
-  .ship .stat .l{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.08em}
-  .ship .stat .v.ok{color:var(--ok)}
-  .ship-sep{width:1px;height:34px;background:var(--line)}
-  @media(max-width:640px){.ship-sep{display:none}}
-
-  .foot{margin-top:40px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);line-height:1.7}
-  .foot a{color:var(--ink-dim)}
-</style>
+    @media (max-width: 980px) {
+      .workspace { grid-template-columns: 1fr; }
+      .controls { position: static; }
+      .hero { align-items: start; flex-direction: column; }
+      .hero-meta { flex-wrap: wrap; }
+    }
+    @media (max-width: 600px) {
+      .app { width: min(100% - 22px, 1480px); padding-top: 16px; }
+      .topbar { align-items: flex-start; }
+      .connection { font-size: 0; padding: 9px; }
+      .hero { padding: 25px 22px; }
+      .hero h1 { letter-spacing: -1.4px; }
+      .controls { padding: 20px; }
+      .client-grid { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+      .stage { padding: 12px; }
+      .result-head { align-items: flex-start; flex-direction: column; }
+      .preview-shell { border-radius: 14px; }
+      .mock-inner { border-radius: 12px; }
+      .mock-lines { gap: 5px; }
+    }
+  </style>
 </head>
 <body>
-<header>
-  <div class="wrap">
-    <div class="hbar">
-      <span class="logo-dot"></span>
-      <span class="htitle">coineasy-content-engine · <span class="mono">news_card</span></span>
-      <div class="hmeta">
-        <span class="pill live">shipped · feat/news-cards</span>
-        <span class="pill">7 commits</span>
-        <span class="pill">opus-4-8</span>
+  <main class="app">
+    <header class="topbar">
+      <div class="wordmark">
+        <div class="wordmark-symbol">C</div>
+        <div><strong>CoinEasy</strong><span>Content Engine</span></div>
       </div>
-    </div>
-    <div class="lede">
-      <h1>뉴스 한 건을 <em>1080×1080 카드</em>로.</h1>
-      <p>영문 소스(트윗·블로그·아티클)을 한국어 뉴스 카드로 변환하는 파이프라인. 아래에서 소스와 클라이언트를 바꾸면 카드가 실시간으로 다시 그려집니다 — 실제 렌더러가 뽑는 결과의 미리보기입니다.</p>
-    </div>
-  </div>
-</header>
+      <div class="connection" id="connection"><span class="connection-dot"></span>보안 서버 경유 연결</div>
+    </header>
 
-<div class="wrap">
-  <div class="console">
-
-    <!-- LEFT: controls -->
-    <div>
-      <div class="section-tag">입력</div>
-
-      <div class="ctrl-group">
-        <label class="fld">source_content</label>
-        <textarea id="src" spellcheck="false">OriginTrail launches Paranet on the DKG mainnet — a permissionless framework for building domain-specific knowledge graphs, with Knowledge Mining rewards paid in TRAC.</textarea>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">News card studio</p>
+        <h1>브랜드에 맞는 뉴스 카드를<br>실제 렌더러로 생성하세요.</h1>
+        <p>Figma에서 확정한 색상, 공식 로고, 클라이언트별 서체를 Railway 렌더러가 적용합니다. 생성된 2160×2160 PNG를 화면에서 확인하고 바로 저장할 수 있습니다.</p>
       </div>
+      <div class="hero-meta">
+        <div class="hero-chip">4 CLIENTS</div>
+        <div class="hero-chip">1080 × 1080</div>
+        <div class="hero-chip">PNG @2X</div>
+      </div>
+    </section>
 
-      <div class="ctrl-group">
-        <div class="row2">
-          <div>
-            <label class="fld">source_type</label>
-            <div class="seg" id="seg-type">
-              <button class="on" data-v="tweet">tweet</button>
-              <button data-v="blog">blog</button>
-              <button data-v="article">article</button>
+    <section class="workspace">
+      <form class="panel controls" id="generator-form">
+        <h2 class="panel-title">콘텐츠 넣기</h2>
+        <p class="panel-subtitle">클라이언트를 고르고 원문을 넣으면 한국어 뉴스 카드가 생성됩니다.</p>
+
+        <div class="field">
+          <div class="field-label">클라이언트</div>
+          <div class="client-grid" id="clients">
+            <button class="client active" type="button" data-client="yellow" style="--client-color:#fdda16;--client-bg:#fdda16">
+              <img class="client-logo" src="assets/brands/yellow-light.svg" alt="Yellow">
+              <span><strong>Yellow</strong><small>Pretendard · #FDDA16</small></span>
+            </button>
+            <button class="client" type="button" data-client="origintrail" style="--client-color:#6344df;--client-bg:#0c2246">
+              <img class="client-logo" src="assets/brands/origintrail-dark.png" alt="OriginTrail">
+              <span><strong>OriginTrail</strong><small>Gmarket Sans · #6344DF</small></span>
+            </button>
+            <button class="client" type="button" data-client="squid" style="--client-color:#e6fa36;--client-bg:#1a0e2e">
+              <img class="client-logo" src="assets/brands/squid-dark.png" alt="Squid">
+              <span><strong>Squid</strong><small>Lime + Lavender</small></span>
+            </button>
+            <button class="client" type="button" data-client="babylon" style="--client-color:#ce6533;--client-bg:#12495e">
+              <img class="client-logo" src="assets/brands/babylon-dark.png" alt="Babylon">
+              <span><strong>Babylon</strong><small>Inter · #CE6533</small></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="source-content">원문 콘텐츠 <span class="optional" id="char-count">0자</span></label>
+          <textarea id="source-content" minlength="10" maxlength="20000" required></textarea>
+        </div>
+
+        <div class="field row">
+          <label>
+            <span class="field-label">원문 유형</span>
+            <select id="source-type">
+              <option value="tweet">X / 트윗</option>
+              <option value="article">기사</option>
+              <option value="blog">블로그</option>
+            </select>
+          </label>
+          <label>
+            <span class="field-label">원문 링크 <span class="optional">선택</span></span>
+            <input id="source-url" type="url" placeholder="https://...">
+          </label>
+        </div>
+
+        <div class="field">
+          <label class="test-mode">
+            <input id="mock-mode" type="checkbox">
+            <span><strong>빠른 브랜딩 테스트</strong><span>AI 요약 없이 샘플 문구로 렌더링합니다. 로고·색상·서체 확인용입니다.</span></span>
+          </label>
+        </div>
+
+        <button class="generate" id="generate" type="submit">뉴스 카드 생성</button>
+        <p class="form-status" id="form-status" role="status" aria-live="polite">준비되었습니다.</p>
+        <div class="privacy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5V10Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          API 비밀키는 브라우저가 아닌 Netlify 서버에만 저장됩니다.
+        </div>
+      </form>
+
+      <section class="panel result-panel">
+        <div class="result-head">
+          <h2 class="result-title">카드 미리보기 <span id="result-kind">· 브랜드 예시</span></h2>
+          <div class="actions">
+            <a class="action" id="download" href="#" download hidden>PNG 저장</a>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="preview-shell" id="preview-shell" data-client="yellow">
+            <div class="mock-card" id="mock-card">
+              <div class="mock-top">
+                <span>CoinEasy · branded news</span>
+                <img class="mock-logo" id="preview-logo" src="assets/brands/yellow-light.svg" alt="Yellow logo">
+              </div>
+              <div class="mock-inner">
+                <span class="mock-label" id="preview-label">업데이트</span>
+                <h3 class="mock-headline" id="preview-headline"></h3>
+                <div class="mock-lines" id="preview-lines"></div>
+                <div class="mock-foot"><span id="preview-date"></span><span id="preview-source"></span></div>
+              </div>
+            </div>
+            <img class="result-image" id="result-image" alt="생성된 브랜드 뉴스 카드" hidden>
+            <div class="loading" id="loading" hidden>
+              <div class="loading-inner"><div class="spinner"></div><strong>실제 카드를 렌더링하고 있습니다</strong><span>AI 요약과 고해상도 PNG 생성에 잠시 시간이 걸릴 수 있어요.</span></div>
             </div>
           </div>
-          <div>
-            <label class="fld">theme</label>
-            <div class="seg" id="seg-theme">
-              <button class="on" data-v="dark">dark</button>
-              <button data-v="yellow">yellow</button>
-            </div>
-          </div>
         </div>
-        <div class="theme-note" id="theme-note">테마는 클라이언트 브랜드에 매핑 — dark / yellow 슬롯 분기.</div>
-      </div>
 
-      <div class="ctrl-group">
-        <label class="fld">client_id</label>
-        <div class="client-cards" id="clients">
-          <button class="cli on" data-id="yellow" data-theme="yellow" data-color="#FDDA16" data-name="Yellow Network" data-ready="1">
-            <span class="cflag ready">ready</span>
-            <span class="swatch" style="background:#FDDA16"></span>
-            <span class="cname">Yellow Network</span>
-            <span class="cid">yellow</span>
-          </button>
-          <button class="cli" data-id="origintrail" data-theme="purple" data-color="#6344DF" data-name="OriginTrail KR" data-ready="1">
-            <span class="cflag ready">ready</span>
-            <span class="swatch" style="background:linear-gradient(135deg,#6344DF,#0C2246)"></span>
-            <span class="cname">OriginTrail KR</span>
-            <span class="cid">origintrail</span>
-          </button>
-          <button class="cli" data-id="squid" data-theme="squid" data-color="#E6FA36" data-name="Squid KR" data-ready="1">
-            <span class="cflag ready">ready</span>
-            <span class="swatch" style="background:linear-gradient(135deg,#E6FA36,#BC8EE4)"></span>
-            <span class="cname">Squid KR</span>
-            <span class="cid">squid</span>
-          </button>
-          <button class="cli" data-id="babylon" data-theme="babylon" data-color="#CE6533" data-name="Babylon KR" data-ready="1">
-            <span class="cflag ready">ready</span>
-            <span class="swatch" style="background:linear-gradient(135deg,#CE6533,#F7931A 52%,#12495E)"></span>
-            <span class="cname">Babylon KR</span>
-            <span class="cid">babylon</span>
-          </button>
+        <div class="result-meta">
+          <p class="result-note" id="result-note">현재 화면은 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 Railway 렌더러가 만든 실제 PNG로 교체됩니다.</p>
+          <details id="spec-details" hidden>
+            <summary>생성된 문구 보기</summary>
+            <div class="spec" id="spec"></div>
+          </details>
         </div>
-      </div>
+      </section>
+    </section>
+  </main>
 
-      <button class="btn-gen" id="gen">↻ 카드 다시 생성</button>
+  <script>
+    (() => {
+      const BRAND = {
+        yellow: {
+          name: "Yellow",
+          logo: "assets/brands/yellow-light.svg",
+          label: "업데이트",
+          headline: "옐로우 네트워크, 스테이트 채널 메인넷 정식 가동",
+          lines: ["오프체인 트레이딩을 온체인 정산으로 마무리하는 클리어링 레이어", "$YELLOW 스테이킹으로 채널 담보 및 수수료 처리", "EVM 체인 간 브로커리스 P2P 결제 지원"],
+          source: "x.com/Yellow",
+          sample: "Yellow Network has launched its state channel mainnet, enabling high-frequency off-chain trading with on-chain settlement and cross-chain collateral support."
+        },
+        origintrail: {
+          name: "OriginTrail",
+          logo: "assets/brands/origintrail-dark.png",
+          label: "런칭",
+          headline: "오리진트레일, DKG 메인넷에 파라넷 프레임워크 공개",
+          lines: ["도메인 특화 지식 그래프를 위한 퍼미션리스 프레임워크", "지식 마이닝 보상은 TRAC으로 지급", "탈중앙 지식 그래프 위에서 검증 가능한 AI 구축"],
+          source: "x.com/origin_trail",
+          sample: "OriginTrail launches the permissionless Paranet framework on the Decentralized Knowledge Graph mainnet, introducing knowledge mining incentives powered by TRAC."
+        },
+        squid: {
+          name: "Squid",
+          logo: "assets/brands/squid-dark.png",
+          label: "마일스톤",
+          headline: "스퀴드, 크로스체인 토큰 전환 거래량 30억 달러 돌파",
+          lines: ["Axelar 기반 크로스체인 스왑으로 60개 이상 체인 지원", "브릿지·스왑·스테이킹을 단일 트랜잭션으로 처리", "DEX 어그리게이터 연동으로 최적 경로 자동 선택"],
+          source: "x.com/squidrouter",
+          sample: "Squid Router has surpassed $3 billion in cross-chain transaction volume while expanding one-click swaps, staking and liquidity routing across more than 60 chains."
+        },
+        babylon: {
+          name: "Babylon",
+          logo: "assets/brands/babylon-dark.png",
+          label: "메인넷",
+          headline: "바빌론, 비트코인 스테이킹 메인넷 첫 단계 개시",
+          lines: ["네이티브 BTC를 브릿지 없이 직접 스테이킹", "바빌론 체인에서 파이널리티 서명 검증", "스테이킹된 BTC로 PoS 네트워크에 공유 보안 제공"],
+          source: "x.com/babylonlabs_io",
+          sample: "Babylon begins the first phase of its Bitcoin staking mainnet, allowing holders to stake native BTC without bridges and provide shared security to proof-of-stake networks."
+        }
+      };
 
-      <!-- spec readout -->
-      <div class="spec">
-        <div class="spec-head"><span class="dot"></span> NewsCardResult.spec — 렌더러가 받는 슬롯</div>
-        <div class="spec-body" id="specout"><span class="p">{</span>
-  <span class="k">"label"</span>: <span class="s">"업데이트"</span>,
-  <span class="k">"date"</span>: <span class="s">"2026.07.06"</span>,
-  <span class="k">"headline"</span>: <span class="s">"옐로우 네트워크, 스테이트 채널 메인넷 정식 가동"</span>,
-  <span class="k">"body_lines"</span>: <span class="p">[</span> <span class="b">3 items</span> <span class="p">]</span>,
-  <span class="k">"source_url"</span>: <span class="s">"https://x.com/Yellow_org/..."</span>,
-  <span class="k">"theme"</span>: <span class="s">"yellow"</span>
-<span class="p">}</span></div>
-      </div>
-    </div>
+      const state = { client: "yellow", imageUrl: "" };
+      const form = document.getElementById("generator-form");
+      const clients = document.getElementById("clients");
+      const sourceContent = document.getElementById("source-content");
+      const sourceType = document.getElementById("source-type");
+      const sourceUrl = document.getElementById("source-url");
+      const mockMode = document.getElementById("mock-mode");
+      const charCount = document.getElementById("char-count");
+      const generate = document.getElementById("generate");
+      const formStatus = document.getElementById("form-status");
+      const shell = document.getElementById("preview-shell");
+      const mockCard = document.getElementById("mock-card");
+      const previewLogo = document.getElementById("preview-logo");
+      const previewLabel = document.getElementById("preview-label");
+      const previewHeadline = document.getElementById("preview-headline");
+      const previewLines = document.getElementById("preview-lines");
+      const previewDate = document.getElementById("preview-date");
+      const previewSource = document.getElementById("preview-source");
+      const resultImage = document.getElementById("result-image");
+      const resultKind = document.getElementById("result-kind");
+      const resultNote = document.getElementById("result-note");
+      const loading = document.getElementById("loading");
+      const download = document.getElementById("download");
+      const specDetails = document.getElementById("spec-details");
+      const spec = document.getElementById("spec");
 
-    <!-- RIGHT: card stage -->
-    <div class="stage-panel">
-      <div class="section-tag">출력 · 실시간 프리뷰</div>
-      <div class="stage">
-        <div class="card yellow" id="card">
-          <div class="card-top">
-            <span class="badge" id="c-label">업데이트</span>
-            <span class="brandmark"><span class="bdot"></span><span id="c-brand">Yellow</span></span>
-          </div>
-          <div class="card-mid">
-            <div class="headline" id="c-headline">옐로우 네트워크, 스테이트 채널 메인넷 정식 가동</div>
-            <div class="body-list" id="c-body"><span class="body-item">오프체인 트레이딩을 온체인 정산으로 마무리하는 클리어링 레이어</span><span class="body-item">$YELLOW 스테이킹으로 채널 담보 및 수수료 처리</span><span class="body-item">EVM 체인 간 브로커리스 P2P 결제 지원</span></div>
-          </div>
-          <div class="card-foot">
-            <span class="date" id="c-date">2026.07.06</span>
-            <span class="src" id="c-src">x.com/Yellow_org</span>
-          </div>
-        </div>
-      </div>
-      <div class="stage-cap">
-        <span><span class="dim">viewport</span> <b>NEWS_CARD_1x1</b> · 1080×1080</span>
-        <span><span class="dim">DPR2 →</span> <b>2160×2160</b> PNG</span>
-      </div>
-    </div>
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>\"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#039;" }[char]));
+      }
 
-  </div>
+      function today() {
+        return new Intl.DateTimeFormat("ko-KR", { year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date()).replace(/\. /g, ".").replace(/\.$/, "");
+      }
 
-  <!-- LOWER: pipeline -->
-  <div class="lower">
-    <div class="section-tag">파이프라인 · 4 스테이지</div>
-    <div class="flow">
-      <div class="stage-cell">
-        <div class="num">01</div>
-        <h4>LLM spec</h4>
-        <p>소스를 카드 스키마 dict로 요약. mock_mode면 LLM 건너맴.</p>
-        <code>news_card_pipeline.py</code>
-        <div class="arrow">›</div>
-      </div>
-      <div class="stage-cell">
-        <div class="num">02</div>
-        <h4>template</h4>
-        <p>스키마 슬롯 + 브랜드 변수를 1080 카드에 주입.</p>
-        <code>news_title_card.html</code>
-        <div class="arrow">›</div>
-      </div>
-      <div class="stage-cell">
-        <div class="num">03</div>
-        <h4>render</h4>
-        <p>Playwright로 PNG 렌더. 단일 png_path 반환.</p>
-        <code>generate_news_card()</code>
-        <div class="arrow">›</div>
-      </div>
-      <div class="stage-cell">
-        <div class="num">04</div>
-        <h4>serve</h4>
-        <p>HTTP로 노출. 응답에 spec + png_path 동봉.</p>
-        <code>POST /generate/news-card</code>
-      </div>
-    </div>
+      function renderBrand({ replaceSource = false } = {}) {
+        const brand = BRAND[state.client];
+        shell.dataset.client = state.client;
+        previewLogo.src = brand.logo;
+        previewLogo.alt = `${brand.name} logo`;
+        previewLabel.textContent = brand.label;
+        previewHeadline.textContent = brand.headline;
+        previewLines.innerHTML = brand.lines.map(line => `<div class="mock-line">${escapeHtml(line)}</div>`).join("");
+        previewDate.textContent = today();
+        previewSource.textContent = brand.source;
+        if (replaceSource) sourceContent.value = brand.sample;
+        charCount.textContent = `${sourceContent.value.length.toLocaleString("ko-KR")}자`;
+        mockCard.hidden = false;
+        resultImage.hidden = true;
+        resultImage.removeAttribute("src");
+        resultKind.textContent = "· 브랜드 예시";
+        resultNote.textContent = "현재 화면은 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 Railway 렌더러가 만든 실제 PNG로 교체됩니다.";
+        download.hidden = true;
+        specDetails.hidden = true;
+        state.imageUrl = "";
+      }
 
-    <!-- endpoint -->
-    <div class="endpoint">
-      <div class="ep-head">
-        <span class="method">POST</span>
-        <span class="ep-path">/clients/{client_id}/generate/news-card</span>
-        <button class="ep-copy" id="copy-curl">copy curl</button>
-      </div>
-      <div class="ep-body" id="curlbody"><span class="c"># yellow · tweet</span>
-<span class="m">curl</span> -X POST \
-  .../clients/<span class="g">yellow</span>/generate/news-card \
-  -H <span class="g">"X-API-Key: $API_SECRET"</span> \
-  -d '{
-    <span class="g">"source_content"</span>: <span class="g">"OriginTrail launches Paranet on the DKG mainnet — a permissi..."</span>,
-    <span class="g">"source_type"</span>: <span class="g">"tweet"</span>,
-    <span class="g">"mock_mode"</span>: false
-  }'</div>
-    </div>
-  </div>
+      function setStatus(message, type = "") {
+        formStatus.textContent = message;
+        formStatus.className = `form-status${type ? ` ${type}` : ""}`;
+      }
 
-  <!-- ship strip -->
-  <div class="ship">
-    <div class="stat"><span class="v ok">PASS</span><span class="l">yellow smoke</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v ok">PASS</span><span class="l">origintrail smoke</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v ok">PASS</span><span class="l">squid smoke</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v ok">PASS</span><span class="l">babylon smoke</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v">2160<span class="u">²</span></span><span class="l">png output</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v">4<span class="u"> clients</span></span><span class="l">news_card on</span></div>
-    <div class="ship-sep"></div>
-    <div class="stat"><span class="v">0<span class="u"> hardcoded</span></span><span class="l">model inherit</span></div>
-  </div>
+      function errorMessage(payload, status) {
+        if (payload?.error === "server_not_configured") return "서버의 API 비밀키 설정을 확인해주세요.";
+        if (payload?.error === "generation_timeout") return "생성 시간이 길어졌습니다. 잠시 후 다시 시도해주세요.";
+        if (payload?.error === "generation_failed") return `카드 생성에 실패했습니다. (${payload.upstream_status || status})`;
+        if (status === 401) return "API 인증 설정을 확인해주세요.";
+        return "카드를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.";
+      }
 
-  <div class="foot">
-    branch <b>feat/news-cards</b> · news_card 파이프라인 + 브랜딩 머지 (PR #15 · #16)<br>
-    적용 완료: Figma 정식 브랜드 색 4클라이언트 · 클라이언트별 폰트(Pretendard / Gmarket Sans / Inter) · 카드 bg_dark 정렬<br>
-    follow-up: squid 헤드라인 Bagoss Condensed 웹폰트 라이선스 · news-card CLI 래퍼 · publishing 자격증명
-  </div>
-</div>
+      clients.addEventListener("click", event => {
+        const button = event.target.closest(".client");
+        if (!button) return;
+        state.client = button.dataset.client;
+        clients.querySelectorAll(".client").forEach(item => item.classList.toggle("active", item === button));
+        renderBrand({ replaceSource: true });
+        setStatus(`${BRAND[state.client].name} 브랜딩이 선택되었습니다.`);
+      });
 
-<script>
-(function(){
-  // ---- sample specs per client (mirrors what the KR LLM pipeline would emit) ----
-  const SAMPLES = {
-    yellow: {
-      label:"업데이트",
-      brand:"Yellow",
-      headline:"옐로우 네트워크, 스테이트 채널 메인넷 정식 가동",
-      body:["오프체인 트레이딩을 온체인 정산으로 마무리하는 클리어링 레이어","$YELLOW 스테이킹으로 채널 담보 및 수수료 처리","EVM 체인 간 브로커리스 P2P 결제 지원"],
-      date:"2026.07.06",
-      src:"x.com/Yellow_org"
-    },
-    origintrail: {
-      label:"런칭",
-      brand:"OriginTrail",
-      headline:"오리진트레일, DKG 메인넷에 파라넷(Paranet) 런칭",
-      body:["도메인 특화 지식 그래프를 위한 퍼미션리스 프레임워크","지식 마이닝(Knowledge Mining) 보상은 TRAC으로 지급","탈중앙 지식 그래프(DKG) 위에서 구축"],
-      date:"2026.07.06",
-      src:"x.com/origin_trail"
-    },
-    squid: {
-      label:"업데이트",
-      brand:"Squid",
-      headline:"스퀴드 라우터, 크로스체인 토큰 전환 볼륨 30억 달러 돌파",
-      body:["Axelar 기반 크로스체인 스왑 — 60+ 체인 지원","단일 트랜잭션으로 브릿지+스왑+스테이킹 원클릭 처리","DEX 어그리게이터 연동으로 최적 경로 자동 선택"],
-      date:"2026.07.06",
-      src:"x.com/sqaborouters"
-    },
-    babylon: {
-      label:"런칭",
-      brand:"Babylon",
-      headline:"바빌론, 비트코인 스테이킹 메인넷 Phase 1 개시",
-      body:["네이티브 BTC를 브릿지 없이 직접 스테이킹","Cosmos SDK 기반 바빌론 체인에서 파이널리티 서명 검증","스테이킹된 BTC로 PoS 체인에 공유 보안 제공"],
-      date:"2026.07.06",
-      src:"x.com/babylon_chain"
-    }
-  };
+      sourceContent.addEventListener("input", () => {
+        charCount.textContent = `${sourceContent.value.length.toLocaleString("ko-KR")}자`;
+      });
 
-  const state = { client:"yellow", theme:"yellow", type:"tweet" };
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const content = sourceContent.value.trim();
+        if (content.length < 10) {
+          setStatus("원문 콘텐츠를 10자 이상 입력해주세요.", "error");
+          sourceContent.focus();
+          return;
+        }
 
-  const card = document.getElementById('card');
-  const el = {
-    label:document.getElementById('c-label'),
-    brand:document.getElementById('c-brand'),
-    headline:document.getElementById('c-headline'),
-    body:document.getElementById('c-body'),
-    date:document.getElementById('c-date'),
-    src:document.getElementById('c-src'),
-    spec:document.getElementById('specout'),
-    curl:document.getElementById('curlbody'),
-    tnote:document.getElementById('theme-note')
-  };
+        generate.disabled = true;
+        loading.hidden = false;
+        download.hidden = true;
+        specDetails.hidden = true;
+        setStatus(mockMode.checked ? "브랜딩 테스트 카드를 렌더링하고 있습니다…" : "원문을 요약하고 고해상도 카드를 생성하고 있습니다…");
 
-  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        try {
+          const response = await fetch(`/api/news-card/${encodeURIComponent(state.client)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source_content: content,
+              source_type: sourceType.value,
+              source_url: sourceUrl.value.trim(),
+              mock_mode: mockMode.checked
+            })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw Object.assign(new Error("generation_failed"), { payload, status: response.status });
 
-  function render(){
-    const s = SAMPLES[state.client];
-    // card visual
-    card.className = 'card ' + state.theme;
-    el.label.textContent = s.label;
-    el.brand.textContent = s.brand;
-    el.headline.textContent = s.headline;
-    el.date.textContent = s.date;
-    el.src.textContent = s.src;
-    el.body.innerHTML = s.body.map(b=>`<span class="body-item">${esc(b)}</span>`).join('');
+          state.imageUrl = payload.image_data_url;
+          resultImage.src = state.imageUrl;
+          resultImage.hidden = false;
+          mockCard.hidden = true;
+          resultKind.textContent = "· 실제 Railway 렌더 결과";
+          resultNote.textContent = `${BRAND[state.client].name} 설정의 공식 로고·색상·서체로 생성했습니다. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+          download.href = state.imageUrl;
+          download.download = payload.filename || `${state.client}-news-card.png`;
+          download.hidden = false;
 
-    // spec readout (json-ish)
-    el.spec.innerHTML =
-      `<span class="p">{</span>\n`+
-      `  <span class="k">"label"</span>: <span class="s">"${esc(s.label)}"</span>,\n`+
-      `  <span class="k">"date"</span>: <span class="s">"${s.date}"</span>,\n`+
-      `  <span class="k">"headline"</span>: <span class="s">"${esc(s.headline)}"</span>,\n`+
-      `  <span class="k">"body_lines"</span>: <span class="p">[</span> <span class="b">${s.body.length} items</span> <span class="p">]</span>,\n`+
-      `  <span class="k">"source_url"</span>: <span class="s">"https://${s.src}/..."</span>,\n`+
-      `  <span class="k">"theme"</span>: <span class="s">"${state.theme}"</span>\n`+
-      `<span class="p">}</span>`;
+          const generatedSpec = payload.spec || {};
+          const lines = Array.isArray(generatedSpec.body_lines) ? generatedSpec.body_lines : [];
+          spec.innerHTML = `<h3>${escapeHtml(generatedSpec.headline || "생성 완료")}</h3>` +
+            (generatedSpec.label ? `<div>분류: ${escapeHtml(generatedSpec.label)}</div>` : "") +
+            (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "");
+          specDetails.hidden = false;
+          setStatus("카드가 완성되었습니다. 오른쪽 위 ‘PNG 저장’을 눌러 내려받을 수 있습니다.", "success");
+          document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
+        } catch (error) {
+          const payload = error?.payload || {};
+          setStatus(errorMessage(payload, error?.status), "error");
+          mockCard.hidden = false;
+          resultImage.hidden = true;
+        } finally {
+          loading.hidden = true;
+          generate.disabled = false;
+        }
+      });
 
-    // curl
-    const body = document.getElementById('src').value.trim().slice(0,60);
-    el.curl.innerHTML =
-      `<span class="c"># ${state.client} · ${state.type}</span>\n`+
-      `<span class="m">curl</span> -X POST \\\n`+
-      `  .../clients/<span class="g">${state.client}</span>/generate/news-card \\\n`+
-      `  -H <span class="g">"X-API-Key: $API_SECRET"</span> \\\n`+
-      `  -d '{\n`+
-      `    <span class="g">"source_content"</span>: <span class="g">"${esc(body)}..."</span>,\n`+
-      `    <span class="g">"source_type"</span>: <span class="g">"${state.type}"</span>,\n`+
-      `    <span class="g">"mock_mode"</span>: false\n`+
-      `  }'`;
-
-    // theme note
-    const notes = {
-      yellow: 'Yellow 옐로우 (#FDDA16) · Pretendard — Figma 정식값.',
-      origintrail: 'OriginTrail 퍼플 (#6344DF) · Gmarket Sans — Figma 정식값.',
-      squid: 'Squid 라임·라벤더 (#E6FA36 / #BC8EE4) · Bagoss Condensed 라이선스 전 Pretendard 폴백.',
-      babylon: 'Babylon 오렌지 (#CE6533) · 다크블루 (#12495E) · CoinEasy 오렌지 (#F7931A) · Inter.'
-    };
-    el.tnote.innerHTML = notes[state.client] || '테마는 클라이언트 브랜드에 매핑.';
-  }
-
-  // segmented: type
-  document.getElementById('seg-type').addEventListener('click',e=>{
-    const b=e.target.closest('button'); if(!b)return;
-    state.type=b.dataset.v;
-    [...e.currentTarget.children].forEach(x=>x.classList.toggle('on',x===b));
-    render();
-  });
-  // segmented: theme
-  document.getElementById('seg-theme').addEventListener('click',e=>{
-    const b=e.target.closest('button'); if(!b)return;
-    state.theme=b.dataset.v;
-    [...e.currentTarget.children].forEach(x=>x.classList.toggle('on',x===b));
-    render();
-  });
-  // client cards
-  document.getElementById('clients').addEventListener('click',e=>{
-    const b=e.target.closest('.cli'); if(!b)return;
-    state.client=b.dataset.id;
-    // sync theme to client default
-    const th=b.dataset.theme;
-    state.theme = th; // each client has its own card theme
-    [...e.currentTarget.children].forEach(x=>x.classList.toggle('on',x===b));
-    // sync theme segment ui
-    [...document.getElementById('seg-theme').children].forEach(x=>x.classList.toggle('on',x.dataset.v===state.theme));
-    render();
-  });
-  // regen (re-pulls textarea into curl + tiny pulse)
-  document.getElementById('gen').addEventListener('click',()=>{
-    render();
-    card.animate([{opacity:.4,transform:'scale(.985)'},{opacity:1,transform:'scale(1)'}],{duration:260,easing:'ease-out'});
-  });
-  document.getElementById('src').addEventListener('input',render);
-
-  // copy curl
-  document.getElementById('copy-curl').addEventListener('click',function(){
-    const txt = el.curl.textContent;
-    navigator.clipboard && navigator.clipboard.writeText(txt);
-    const o=this.textContent; this.textContent='copied ✓';
-    setTimeout(()=>this.textContent=o,1200);
-  });
-
-  render();
-})();
-</script>
-
-
+      sourceContent.value = BRAND.yellow.sample;
+      renderBrand();
+    })();
+  </script>
 </body>
 </html>

@@ -10,8 +10,8 @@ brand:
   bg_yellow: "#BC8EE4"       # Figma Primary Colours 라벤더 퍼플
   text_primary: "#000000"    # 헤딩/본문 블랙 (실측)
   text_body: "#4A4A4A"
-  logo_dark: assets/logo_dark.png
-  logo_light: assets/logo_light.png
+  logo_dark: assets/logo_dark.png          # Figma Squid_Logo_White · 다크 배경용
+  logo_light: assets/logo_light.png        # Figma Squid_Logo_Black · 밝은 배경용
   font_family: "Pretendard Variable"        # 본문/한글
   # 헤드라인 디스플레이 폰트 (Figma). Bagoss Condensed는 상용(displaay)이라 CDN 없음 —
   # 라이선스 파일을 아래 경로에 넣으면 @font-face로 self-host되어 헤드라인에 자동 적용.
