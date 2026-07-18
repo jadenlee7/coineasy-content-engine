@@ -7,7 +7,7 @@ brand:
   # Figma "Squid Korea branding" 대조갱신 — 라임그린 + 라벤더 퍼플 (구 민트 #00F5D4)
   primary_color: "#E6FA36"   # 라임그린 accent (프레임 배경 실측)
   bg_dark: "#1A0E2E"         # 딥 퍼플 (Squid는 솔리드 다크 토큰 없음 — 브랜드 hue 기반 파생)
-  bg_yellow: "#B18AE0"       # 라벤더 퍼플 (그라디언트 실측 대표값)
+  bg_yellow: "#BC8EE4"       # Figma Primary Colours 라벤더 퍼플
   text_primary: "#000000"    # 헤딩/본문 블랙 (실측)
   text_body: "#4A4A4A"
   logo_dark: assets/logo_dark.png
