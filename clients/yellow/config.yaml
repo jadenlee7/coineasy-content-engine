@@ -10,8 +10,8 @@ brand:
   bg_yellow: "#FDDA16"                    # accent = primary
   text_primary: "#19191C"                # 헤딩 잉크 (구 #0A0A0A)
   text_body: "#555555"                   # 본문 그레이 (구 #595959)
-  logo_dark: assets/logo_dark.png        # 다크 배경용 (흰색 로고)
-  logo_light: assets/logo_light.png      # 밝은 배경용 (검정 로고)
+  logo_dark: assets/logo_dark.svg        # Figma 공식 워드마크 · 다크 배경용 흰색 변형
+  logo_light: assets/logo_light.svg      # Figma 공식 검정 워드마크
   font_family: "Pretendard Variable"
 
 content_sources:
