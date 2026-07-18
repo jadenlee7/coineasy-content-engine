@@ -45,6 +45,12 @@ LAYOUT_TEMPLATES = {
     "P8_DIAGRAM": "edu_p8_diagram.html",
 }
 
+NEWS_CARD_TEMPLATES = {
+    "classic": "news/news_title_card.html",
+    "editorial": "news/news_editorial_card.html",
+    "signal": "news/news_signal_card.html",
+}
+
 
 # ────────────────────────────────────────────────────
 # Default icons (injected when LLM omits them)
@@ -112,6 +118,7 @@ class NewsCardResult:
     content_type: str  # "news_card"
     spec: dict                  # full {label,date,headline,body_lines,source_url,theme}
     png_path: str               # 1 card → single PNG, not a list
+    template_style: str
     manifest_path: str
     duration_ms: int
     llm_cost_usd: Optional[float] = None
@@ -291,6 +298,7 @@ async def generate_news_card(
     output_dir: Optional[Path] = None,
     mock_mode: bool = False,
     mock_response: Optional[dict] = None,
+    template_style: str = "classic",
 ) -> NewsCardResult:
     """
     End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
@@ -306,6 +314,11 @@ async def generate_news_card(
         raise ValueError(f"Client '{client_id}' is marked inactive in config.yaml")
     if not config.feature_flags.news_card:
         raise ValueError(f"Client '{client_id}' has news_card disabled in feature_flags")
+
+    template_path = NEWS_CARD_TEMPLATES.get(template_style)
+    if not template_path:
+        allowed = ", ".join(sorted(NEWS_CARD_TEMPLATES))
+        raise ValueError(f"Unknown news card template '{template_style}'. Allowed: {allowed}")
 
     if output_dir is None:
         ts = start.strftime("%Y%m%d_%H%M%S")
@@ -332,11 +345,11 @@ async def generate_news_card(
 
     # ── Stage 2: Rendering ────────────────────────
     print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
-    output_png = output_dir / "news_card.png"
+    output_png = output_dir / f"news_card_{template_style}.png"
     try:
         await render_png(
             client_id=client_id,
-            template_path="news/news_title_card.html",
+            template_path=template_path,
             slots=spec,
             output_path=output_png,
             theme=spec["theme"],
@@ -359,6 +372,7 @@ async def generate_news_card(
         "source_url": source_url,
         "source_content_preview": source_content[:200],
         "spec": spec,
+        "template_style": template_style,
         "png_path": str(output_png),
     }
     manifest_path = output_dir / "manifest.json"
@@ -372,6 +386,7 @@ async def generate_news_card(
         content_type="news_card",
         spec=spec,
         png_path=str(output_png),
+        template_style=template_style,
         manifest_path=str(manifest_path),
         duration_ms=duration,
     )

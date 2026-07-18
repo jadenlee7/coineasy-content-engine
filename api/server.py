@@ -78,6 +78,7 @@ class NewsCardRequest(BaseModel):
     source_type: str = "tweet"  # "tweet" | "blog" | "article"
     source_url: str = ""
     mock_mode: bool = False  # for smoke testing
+    template_style: Literal["classic", "editorial", "signal"] = "classic"
 
 
 class NewsCardResponse(BaseModel):
@@ -85,6 +86,7 @@ class NewsCardResponse(BaseModel):
     content_type: str
     spec: dict          # {label, date, headline, body_lines, source_url, theme}
     png_path: str       # single 1080×1080 card, not a list
+    template_style: str
     manifest_path: str
     duration_ms: int
 
@@ -238,6 +240,7 @@ async def generate_news(
             source_url=req.source_url,
             output_dir=output_dir,
             mock_mode=req.mock_mode,
+            template_style=req.template_style,
         )
     except HTTPException:
         raise
@@ -250,6 +253,7 @@ async def generate_news(
         content_type=result.content_type,
         spec=result.spec,
         png_path=result.png_path,
+        template_style=result.template_style,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
     )

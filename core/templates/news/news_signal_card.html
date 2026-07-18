@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>News Card · Signal</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+{{ brand_font_links | default('') | safe }}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --primary: {{ brand_primary_color | default('#FFDE00') }};
+    --dark: {{ brand_bg_dark | default('#000000') }};
+    --accent: {{ brand_bg_yellow | default('#FFDE00') }};
+    --ink: {{ brand_text_primary | default('#0A0A0A') }};
+    --body: {{ brand_text_body | default('#595959') }};
+    --font: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
+    --display: {% if font_display %}"{{ font_display }}", {% endif %}var(--font);
+  }
+  html, body { width: 1080px; height: 1080px; font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  .canvas { width: 1080px; height: 1080px; padding: 46px; background: #ECEEEB; }
+  .frame { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 28px; background: #fff; box-shadow: 0 24px 70px rgba(10,18,30,.13); }
+  .rail { position: absolute; inset: 0 auto 0 0; width: 28px; background: var(--primary); }
+  .header { height: 150px; display: flex; align-items: center; justify-content: space-between; padding: 0 58px 0 78px; color: #fff; background: var(--dark); }
+  .header-copy { font-size: 15px; font-weight: 750; letter-spacing: 3px; text-transform: uppercase; opacity: .68; }
+  .logo { width: 138px; max-height: 62px; object-fit: contain; }
+  .content { height: calc(100% - 150px); display: flex; flex-direction: column; padding: 62px 58px 48px 78px; }
+  .meta { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+  .label { display: inline-flex; align-items: center; min-height: 42px; padding: 0 17px; border-radius: 8px; color: var(--ink); background: var(--primary); font-size: 17px; font-weight: 800; }
+  .signal-number { color: var(--primary); font: 850 52px/1 var(--display); letter-spacing: -2px; }
+  h1 { max-width: 850px; margin-top: 28px; color: var(--ink); font: 850 60px/1.14 var(--display); letter-spacing: -2.4px; word-break: keep-all; }
+  .body { display: flex; flex-direction: column; gap: 12px; margin-top: 38px; }
+  .item { display: grid; grid-template-columns: 46px 1fr; gap: 14px; align-items: start; padding: 18px 20px; border-left: 4px solid var(--primary); background: #F3F4F2; }
+  .dot { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--ink); background: var(--accent); font-size: 13px; font-weight: 850; }
+  .text { padding-top: 1px; color: var(--ink); font-size: 21px; font-weight: 650; line-height: 1.45; letter-spacing: -.3px; word-break: keep-all; }
+  .footer { display: flex; justify-content: space-between; gap: 24px; margin-top: auto; padding-top: 22px; border-top: 1px solid #DDDFDB; color: #81857F; font-size: 15px; font-weight: 600; }
+  .source { max-width: 650px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="frame">
+    <div class="rail"></div>
+    <div class="header">
+      <div class="header-copy">CoinEasy · News signal</div>
+      <img class="logo" src="{{ logo_dark_path }}" alt="{{ client_name | default('') }}">
+    </div>
+    <div class="content">
+      <div class="meta">
+        {% if label %}<div class="label">{{ label | safe }}</div>{% endif %}
+        <div class="signal-number">01</div>
+      </div>
+      {% if headline %}<h1>{{ headline | safe }}</h1>{% endif %}
+      {% if body_lines %}
+      <div class="body">
+        {% for line in body_lines %}
+        <div class="item"><span class="dot">{{ loop.index }}</span><span class="text">{{ line | safe }}</span></div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="footer">
+        <span>{{ date | default('') }}</span>
+        {% if source_url %}<span class="source">{{ source_url | replace('https://', '') | replace('http://', '') }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

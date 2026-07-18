@@ -25,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
 from core.client_config import ClientConfig, get_client_config
+from core.llm.anthropic_compat import create_message
 
 
 # ────────────────────────────────────────────────────
@@ -221,7 +222,8 @@ def generate_news_card_spec(
 
     client = Anthropic()
 
-    response = client.messages.create(
+    response = create_message(
+        client,
         model=llm_cfg.model,
         max_tokens=1500,
         temperature=llm_cfg.temperature,

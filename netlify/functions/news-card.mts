@@ -5,6 +5,7 @@ type NewsCardRequest = {
   source_type?: unknown;
   source_url?: unknown;
   mock_mode?: unknown;
+  template_style?: unknown;
 };
 
 type RailwayNewsCardResponse = {
@@ -12,6 +13,7 @@ type RailwayNewsCardResponse = {
   content_type: string;
   spec: Record<string, unknown>;
   png_path: string;
+  template_style: string;
   manifest_path: string;
   duration_ms: number;
 };
@@ -63,13 +65,18 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const sourceContent = typeof body.source_content === "string" ? body.source_content.trim() : "";
   const sourceType = typeof body.source_type === "string" ? body.source_type : "tweet";
   const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : "";
+  const templateStyle = typeof body.template_style === "string" ? body.template_style : "classic";
   const allowedSourceTypes = new Set(["tweet", "blog", "article"]);
+  const allowedTemplateStyles = new Set(["classic", "editorial", "signal"]);
 
   if (sourceContent.length < 10 || sourceContent.length > 20_000) {
     return json({ error: "source_content_must_be_10_to_20000_chars" }, 400);
   }
   if (!allowedSourceTypes.has(sourceType)) {
     return json({ error: "invalid_source_type" }, 400);
+  }
+  if (!allowedTemplateStyles.has(templateStyle)) {
+    return json({ error: "invalid_template_style" }, 400);
   }
 
   const railwayUrl = cleanBaseUrl(
@@ -92,6 +99,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_type: sourceType,
           source_url: sourceUrl,
           mock_mode: body.mock_mode === true,
+          template_style: templateStyle,
         }),
         signal: AbortSignal.timeout(55_000),
       },
@@ -138,9 +146,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
       client_id: result.client_id,
       content_type: result.content_type,
       spec: result.spec,
+      template_style: result.template_style || templateStyle,
       duration_ms: result.duration_ms,
       image_data_url: imageDataUrl,
-      filename: `${clientId}-news-card.png`,
+      filename: `${clientId}-${templateStyle}-news-card.png`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";
