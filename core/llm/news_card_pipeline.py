@@ -226,12 +226,13 @@ def _build_user_prompt(
 - Treat the attached image as the final composition. Preserve its character, product, background, crop, layout, and official logo.
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
-- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep the same line count and approximately the same rendered width; retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
-- source_text must transcribe the visible source phrase exactly, including its line breaks. Use one tight region around the actual glyphs and shadows, not the full lower third or an empty background area.
+- If meaningful copy exists and there is a genuinely clear subtitle area, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
+- source_text must transcribe the visible source phrase exactly, including its line breaks. It is used only to preserve the translation meaning, rhythm, and approximate width; do not use the source lettering's position as the Korean subtitle box.
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
-- Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Keep the box tight around the visible copy without covering characters, products, or logos.
-- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
-- The renderer preserves the full source crop and places Korean inside the original banner over a transparent, feathered Squid-dark subtitle gradient around the detected copy. Never request or imply a separate footer, solid caption box, blurred patch, thick text outline, panel, or chip.
+- source_text must transcribe the original visible phrase, but x/y/width/height define the NEW Korean subtitle placement, not the OCR box. Choose a clear negative-space area inside the image using percentages from 0 to 100. Every region must be at least 24% wide and 12% high. The Korean box must not touch or cover the original source lettering, an official logo, a character or face, a product, or product UI. Prefer left or right negative space over the central subject and keep a safe 3% margin from protected visual elements. Translation regions must not overlap one another.
+- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Use a compact readable size, preserve the source alignment when it fits the safe area, and keep translation text to at most 2 lines.
+- The renderer preserves the full source crop and places Korean in a nearby clear area inside the original banner without covering source lettering. The subtitle background stays fully transparent with only a thin readability outline. Never request or imply a separate footer, Squid-colored caption area, gradient, solid caption box, blurred patch, thick text outline, panel, or chip.
+- If no non-overlapping clear area of at least 24% x 12% exists, set source_text_visible=false and translation_regions=[]. Preserve the official creative unchanged instead of covering any protected visual.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -288,11 +289,6 @@ def _text_width_units(text: str) -> float:
                 units += 0.45
         line_units.append(units)
     return max(line_units, default=1.0)
-
-
-def _source_text_width_percent(source_text: str, font_size: float) -> float:
-    """Estimate source glyph width so localization stays aligned to the original copy."""
-    return max(8.0, min(100.0, _text_width_units(source_text) * font_size * 0.85 + 2.0))
 
 
 def _parse_json_response(response: object, purpose: str) -> dict:
@@ -417,7 +413,7 @@ Source caption context (facts only):
 
 Translate every natural-language phrase below into brief, playful Korean suitable for the same banner position.
 - Preserve the punchline and line hierarchy.
-- Keep the same non-empty line count and approximately the same rendered width as source_text.
+- Keep a 1-2 line source at the same non-empty line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width as source_text.
 - When the same short Latin keyword leads multiple source_text lines, keep that keyword unchanged at the start of each corresponding Korean line.
 - Keep protected terms, product names, token symbols, handles, URLs, and numbers unchanged.
 - Each translated text must contain at least one Korean Hangul syllable.
@@ -483,68 +479,75 @@ def _normalize_visual_localization(
         and result.get("source_text_visible") is True
     )
     normalized_regions: list[dict] = []
-    lower_third_crop_candidates: list[float] = []
+    invalid_regions = False
     raw_regions = result.get("translation_regions")
     if enabled and isinstance(raw_regions, list):
-        for raw in raw_regions[:4]:
+        if len(raw_regions) > 4:
+            invalid_regions = True
+        for raw in raw_regions:
+            if invalid_regions:
+                break
             if not isinstance(raw, dict):
-                continue
+                invalid_regions = True
+                break
             text = raw.get("text")
             if not isinstance(text, str) or not text.strip():
-                continue
+                invalid_regions = True
+                break
+            if len([line for line in text.splitlines() if line.strip()]) > 2:
+                invalid_regions = True
+                break
 
             raw_x = max(0.0, min(99.0, _number(raw.get("x"), 8.0)))
             raw_y = max(0.0, min(99.0, _number(raw.get("y"), 8.0)))
             font_size = max(2.0, min(12.0, _number(raw.get("font_size"), 5.2)))
             raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
             raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
+            if raw_width < 24.0 or raw_height < 12.0:
+                invalid_regions = True
+                break
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             scale_x = 1.0
             source_text = raw.get("source_text")
             if isinstance(source_text, str) and source_text.strip():
                 source_text = source_text.strip()
-                estimated_width = _source_text_width_percent(source_text, font_size)
-                if raw_width > estimated_width * 1.2:
-                    raw_center = 50.0 if align == "center" and raw_y >= 65.0 else raw_x + raw_width / 2.0
-                    raw_width = estimated_width
-                    raw_x = max(0.0, min(100.0 - raw_width, raw_center - raw_width / 2.0))
                 translation_units = _text_width_units(text.strip())
                 if translation_units > 0:
                     scale_x = max(0.85, min(1.35, _text_width_units(source_text) / translation_units))
 
-            # Lower-third caption detections frequently anchor near the first
-            # baseline. Give multi-line replacement copy enough room above.
-            top_padding = 10.0 if raw_y >= 65.0 else 2.0
-            x = max(0.0, raw_x - 2.0)
-            y = max(0.0, raw_y - top_padding)
-            right = min(100.0, raw_x + raw_width + 2.0)
-            bottom = min(100.0, raw_y + raw_height + 1.0)
-            width = right - x
-            height = bottom - y
             font_role = raw.get("font_role") if raw.get("font_role") in _REGION_FONT_ROLES else "display"
             text_color = raw.get("text_color")
 
-            normalized_regions.append({
+            candidate = {
                 "text": text.strip()[:240],
-                "x": round(x, 2),
-                "y": round(y, 2),
-                "width": round(width, 2),
-                "height": round(height, 2),
+                "x": round(raw_x, 2),
+                "y": round(raw_y, 2),
+                "width": round(raw_width, 2),
+                "height": round(raw_height, 2),
                 "align": align,
                 "font_role": font_role,
                 "font_size": round(font_size, 2),
                 "scale_x": round(scale_x, 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
-            })
-            if raw_y >= 65.0:
-                lower_third_crop_candidates.append(max(55.0, min(92.0, raw_y - 12.0)))
+            }
+            overlaps_existing = any(
+                candidate["x"] < existing["x"] + existing["width"]
+                and candidate["x"] + candidate["width"] > existing["x"]
+                and candidate["y"] < existing["y"] + existing["height"]
+                and candidate["y"] + candidate["height"] > existing["y"]
+                for existing in normalized_regions
+            )
+            if overlaps_existing:
+                invalid_regions = True
+                break
+            normalized_regions.append(candidate)
+
+    if invalid_regions:
+        normalized_regions = []
 
     result["translation_regions"] = normalized_regions
     result["source_text_visible"] = bool(normalized_regions)
-    result["source_crop_bottom"] = round(
-        min(lower_third_crop_candidates),
-        2,
-    ) if normalized_regions and len(lower_third_crop_candidates) == len(normalized_regions) else 100.0
+    result["source_crop_bottom"] = 100.0
     return result
 
 

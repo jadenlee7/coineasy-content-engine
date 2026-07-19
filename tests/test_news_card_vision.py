@@ -64,11 +64,17 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "official creative as the final composition" in content[1]["text"]
     assert "no meaningful translatable copy" in content[1]["text"]
     assert "source_text must transcribe the visible source phrase exactly" in content[1]["text"]
-    assert "same line count and approximately the same rendered width" in content[1]["text"]
+    assert "Keep a 1-2 line source at the same line count" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "places Korean inside the original banner" in content[1]["text"]
-    assert "transparent, feathered Squid-dark subtitle gradient" in content[1]["text"]
+    assert "places Korean in a nearby clear area inside the original banner" in content[1]["text"]
+    assert "subtitle background stays fully transparent" in content[1]["text"]
+    assert "x/y/width/height define the NEW Korean subtitle placement" in content[1]["text"]
+    assert "must not touch or cover the original source lettering" in content[1]["text"]
+    assert "do not use the source lettering's position as the Korean subtitle box" in content[1]["text"]
+    assert "Use one tight region around the actual glyphs" not in content[1]["text"]
+    assert "Every region must be at least 24% wide and 12% high" in content[1]["text"]
+    assert "If no non-overlapping clear area" in content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
     assert "Squid Router" not in content[1]["text"]
@@ -77,10 +83,10 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert result["source_text_visible"] is True
     assert result["translation_regions"] == [{
         "text": "어디서나 XRP가 필요하신가요?",
-        "x": 2.0,
-        "y": 13.0,
-        "width": 96.0,
-        "height": 15.0,
+        "x": 4.0,
+        "y": 15.0,
+        "width": 92.0,
+        "height": 12.0,
         "align": "center",
         "font_role": "display",
         "font_size": 12.0,
@@ -111,7 +117,7 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
                     "x": 30,
                     "y": 70,
                     "width": 40,
-                    "height": 10,
+                    "height": 14,
                     "align": "center",
                     "font_role": "display",
                     "font_size": 5,
@@ -148,20 +154,20 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
     assert "stack is love, stack is life." in calls[1]["messages"][0]["content"]
     assert result["translation_regions"] == [{
         "text": "stack이 곧 사랑,\nstack이 곧 인생.",
-        "x": 31.7,
-        "y": 60.0,
-        "width": 36.6,
-        "height": 21.0,
+        "x": 30.0,
+        "y": 70.0,
+        "width": 40.0,
+        "height": 14.0,
         "align": "center",
         "font_role": "display",
         "font_size": 5.0,
         "scale_x": 0.91,
         "text_color": "#FFFFFF",
     }]
-    assert result["source_crop_bottom"] == 58.0
+    assert result["source_crop_bottom"] == 100.0
 
 
-def test_squid_lower_caption_keeps_the_image_center_when_vision_box_is_oversized():
+def test_squid_safe_subtitle_box_is_preserved_from_vision():
     result = _normalize_visual_localization({
         "source_text_visible": True,
         "translation_regions": [{
@@ -180,20 +186,20 @@ def test_squid_lower_caption_keeps_the_image_center_when_vision_box_is_oversized
 
     assert result["translation_regions"][0] == {
         "text": "스택은 사랑,\n스택은 인생.",
-        "x": 28.64,
-        "y": 72.0,
-        "width": 42.72,
-        "height": 25.0,
+        "x": 20.0,
+        "y": 82.0,
+        "width": 60.0,
+        "height": 14.0,
         "align": "center",
         "font_role": "display",
         "font_size": 6.0,
         "scale_x": 1.24,
         "text_color": "#FFFFFF",
     }
-    assert result["source_crop_bottom"] == 70.0
+    assert result["source_crop_bottom"] == 100.0
 
 
-def test_squid_lower_third_boundary_uses_the_raw_vision_coordinate():
+def test_squid_safe_subtitle_coordinates_are_not_shifted_by_the_renderer():
     result = _normalize_visual_localization({
         "source_text_visible": True,
         "translation_regions": [{
@@ -202,7 +208,7 @@ def test_squid_lower_third_boundary_uses_the_raw_vision_coordinate():
             "x": 20,
             "y": 67,
             "width": 60,
-            "height": 10,
+            "height": 12,
             "align": "center",
             "font_role": "display",
             "font_size": 5,
@@ -210,8 +216,55 @@ def test_squid_lower_third_boundary_uses_the_raw_vision_coordinate():
         }],
     }, "squid", True)
 
-    assert result["translation_regions"][0]["y"] == 57.0
-    assert result["source_crop_bottom"] == 55.0
+    assert result["translation_regions"][0]["y"] == 67.0
+    assert result["source_crop_bottom"] == 100.0
+
+
+def test_squid_unsafe_small_subtitle_box_is_dropped():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "A caption",
+            "text": "한국어 자막",
+            "x": 4,
+            "y": 4,
+            "width": 20,
+            "height": 8,
+        }],
+    }, "squid", True)
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_overlapping_subtitle_boxes_preserve_the_original_creative():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [
+            {"source_text": "First", "text": "첫 번째", "x": 4, "y": 4, "width": 30, "height": 16},
+            {"source_text": "Second", "text": "두 번째", "x": 20, "y": 10, "width": 30, "height": 16},
+        ],
+    }, "squid", True)
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_three_line_subtitle_preserves_the_original_creative():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "First\nSecond\nThird",
+            "text": "첫째 줄\n둘째 줄\n셋째 줄",
+            "x": 4,
+            "y": 4,
+            "width": 40,
+            "height": 24,
+        }],
+    }, "squid", True)
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_untranslated_visual_copy_cannot_succeed_after_failed_repair(monkeypatch):

@@ -131,28 +131,47 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
       .slice(0, 3)
     : [];
   const sourceTextVisible = spec.source_text_visible === true;
-  const translationRegions: NormalizedTranslationRegion[] = sourceTextVisible && Array.isArray(spec.translation_regions)
-    ? spec.translation_regions
-      .filter((region): region is Record<string, unknown> => Boolean(region) && typeof region === "object" && !Array.isArray(region))
-      .map((region) => {
-        const x = boundedNumber(region.x, 8, 0, 99);
-        const y = boundedNumber(region.y, 8, 0, 99);
-        return {
-          text: cleanText(region.text, 240),
-          x,
-          y,
-          width: boundedNumber(region.width, 84, 1, 100 - x),
-          height: boundedNumber(region.height, 20, 1, 100 - y),
-          align: region.align === "center" || region.align === "right" ? region.align : "left",
-          fontRole: region.font_role === "body" ? "body" : "display",
-          fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
-          scaleX: boundedNumber(region.scale_x, 1, 0.85, 1.35),
-          textColor: normalizedColor(region.text_color, "#FFFFFF"),
-        };
-      })
-      .filter((region) => region.text)
-      .slice(0, 4)
-    : [];
+  const translationRegions: NormalizedTranslationRegion[] = [];
+  let invalidTranslationRegions = false;
+  if (sourceTextVisible && Array.isArray(spec.translation_regions)) {
+    if (spec.translation_regions.length > 4) invalidTranslationRegions = true;
+    for (const rawRegion of spec.translation_regions) {
+      if (invalidTranslationRegions) break;
+      if (!rawRegion || typeof rawRegion !== "object" || Array.isArray(rawRegion)) {
+        invalidTranslationRegions = true;
+        break;
+      }
+      const region = rawRegion as Record<string, unknown>;
+      const text = cleanText(region.text, 240);
+      const x = boundedNumber(region.x, 8, 0, 99);
+      const y = boundedNumber(region.y, 8, 0, 99);
+      const candidate: NormalizedTranslationRegion = {
+        text,
+        x,
+        y,
+        width: boundedNumber(region.width, 84, 1, 100 - x),
+        height: boundedNumber(region.height, 20, 1, 100 - y),
+        align: region.align === "center" || region.align === "right" ? region.align : "left",
+        fontRole: region.font_role === "body" ? "body" : "display",
+        fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
+        scaleX: boundedNumber(region.scale_x, 1, 0.85, 1.35),
+        textColor: normalizedColor(region.text_color, "#FFFFFF"),
+      };
+      const explicitLines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+      const overlapsExisting = translationRegions.some((existing) => (
+        candidate.x < existing.x + existing.width
+        && candidate.x + candidate.width > existing.x
+        && candidate.y < existing.y + existing.height
+        && candidate.y + candidate.height > existing.y
+      ));
+      if (!text || explicitLines.length > 2 || candidate.width < 24 || candidate.height < 12 || overlapsExisting) {
+        invalidTranslationRegions = true;
+        break;
+      }
+      translationRegions.push(candidate);
+    }
+  }
+  if (invalidTranslationRegions) translationRegions.length = 0;
   return {
     label: cleanText(spec.label, 40) || "업데이트",
     headline: cleanText(spec.headline, 280) || "새로운 소식을 전합니다",
@@ -370,47 +389,23 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const minimumRegionY = localized ? Math.min(...spec.translationRegions.map((region) => region.y)) : 100;
-  const maximumRegionBottom = localized
-    ? Math.max(...spec.translationRegions.map((region) => region.y + region.height))
-    : 100;
-  const lowerThirdScrim = minimumRegionY >= 55;
-  const scrimTopPercent = Math.max(0, minimumRegionY - 7);
-  const scrimBottomPercent = lowerThirdScrim ? 100 : Math.min(100, maximumRegionBottom + 7);
-  const scrimY = frame.y + frame.height * scrimTopPercent / 100;
-  const scrimHeight = frame.height * (scrimBottomPercent - scrimTopPercent) / 100;
-  const scrim = localized
-    ? `<defs><linearGradient id="Korean-Subtitle-Scrim-Gradient" x1="0" y1="0" x2="0" y2="1">
-      ${lowerThirdScrim
-        ? `<stop offset="0%" stop-color="${brand.dark}" stop-opacity="0"/>
-      <stop offset="18%" stop-color="${brand.dark}" stop-opacity="0.9"/>
-      <stop offset="24%" stop-color="${brand.dark}" stop-opacity="1"/>
-      <stop offset="90%" stop-color="${brand.dark}" stop-opacity="1"/>
-      <stop offset="100%" stop-color="${brand.dark}" stop-opacity="0"/>`
-        : `<stop offset="0%" stop-color="${brand.dark}" stop-opacity="0"/>
-      <stop offset="18%" stop-color="${brand.dark}" stop-opacity="0.92"/>
-      <stop offset="28%" stop-color="${brand.dark}" stop-opacity="1"/>
-      <stop offset="72%" stop-color="${brand.dark}" stop-opacity="1"/>
-      <stop offset="82%" stop-color="${brand.dark}" stop-opacity="0.92"/>
-      <stop offset="100%" stop-color="${brand.dark}" stop-opacity="0"/>`}
-    </linearGradient></defs>
-    <rect id="Korean-Subtitle-Scrim" x="${frame.x.toFixed(2)}" y="${scrimY.toFixed(2)}" width="${frame.width.toFixed(2)}" height="${scrimHeight.toFixed(2)}" fill="url(#Korean-Subtitle-Scrim-Gradient)"/>`
-    : "";
-  const translations = localized
+  const translationLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
       const y = frame.y + frame.height * region.y / 100;
       const width = frame.width * region.width / 100;
       const height = frame.height * region.height / 100;
-      let fontSize = frame.width * region.fontSize / 100;
+      let fontSize = frame.width * region.fontSize / 100 * 0.72;
       const minFontSize = Math.max(14, frame.width * 0.02);
       let lineHeight = fontSize * 1.02;
       let lines: string[] = [];
+      const paragraphs = region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean);
+      if (paragraphs.length > 2) return "";
       while (true) {
         const maxUnits = Math.max(6, width / Math.max(fontSize * region.scaleX, 1) * 2.5);
-        const maxLines = Math.max(1, Math.min(5, Math.floor(height / Math.max(lineHeight, 1))));
+        const maxLines = Math.max(1, Math.min(2, Math.floor(height / Math.max(lineHeight, 1))));
         lines = [];
-        for (const paragraph of region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean)) {
+        for (const paragraph of paragraphs) {
           if (lines.length >= maxLines) break;
           lines.push(...wrapSvgText(paragraph, maxUnits, maxLines - lines.length));
         }
@@ -419,26 +414,33 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
         fontSize = Math.max(minFontSize, fontSize * 0.92);
         lineHeight = fontSize * 1.02;
       }
+      const fits = lines.length > 0
+        && lines.at(-1)?.endsWith("…") !== true
+        && lines.length * lineHeight <= height;
+      if (!fits) return "";
       const blockHeight = lines.length * lineHeight;
       const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize);
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
+      const clipId = `${regionId}-Clip`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      return `<g id="${regionId}">${textLayers(
+      return `<defs><clipPath id="${clipId}"><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}"/></clipPath></defs><g id="${regionId}" clip-path="url(#${clipId})">${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-opacity="0.78" stroke-width="2" paint-order="stroke fill" stroke-linejoin="round" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
-    }).join("\n")
+    })
+    : [];
+  const translations = translationLayers.length > 0 && translationLayers.every(Boolean)
+    ? translationLayers.join("\n")
     : "";
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
   <g id="Source-Visual-Layer">${visual}</g>
-  ${scrim}
   <g id="Korean-Translation-Layer">${translations}</g>`;
 }
 
