@@ -45,7 +45,6 @@ type NormalizedSpec = {
   sourceLogoVisible: boolean;
   sourceTextVisible: boolean;
   translationRegions: NormalizedTranslationRegion[];
-  sourceCropBottom: number;
   sourceImageWidth: number;
   sourceImageHeight: number;
 };
@@ -164,7 +163,6 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     sourceLogoVisible: spec.source_logo_visible === true,
     sourceTextVisible: translationRegions.length > 0,
     translationRegions,
-    sourceCropBottom: boundedNumber(spec.source_crop_bottom, 100, 55, 100),
     sourceImageWidth: boundedNumber(spec.source_image_width, 1080, 1, 10_000),
     sourceImageHeight: boundedNumber(spec.source_image_height, 1080, 1, 10_000),
   };
@@ -365,79 +363,83 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
 
 function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
   const sourceRatio = spec.sourceImageWidth / spec.sourceImageHeight;
+  const frame = sourceRatio >= 1
+    ? { x: 0, y: (1080 - 1080 / sourceRatio) / 2, width: 1080, height: 1080 / sourceRatio }
+    : { x: (1080 - 1080 * sourceRatio) / 2, y: 0, width: 1080 * sourceRatio, height: 1080 };
   const localized = spec.sourceTextVisible && spec.translationRegions.length > 0;
-  const cropFraction = localized ? spec.sourceCropBottom / 100 : 1;
-  const croppedRatio = sourceRatio / cropFraction;
-  let frame: { x: number; y: number; width: number; height: number; cropWidth: number; cropHeight: number };
-  if (localized && croppedRatio >= 1.5) {
-    const width = 1080;
-    const height = width / sourceRatio;
-    const cropHeight = height * cropFraction;
-    frame = { x: 0, y: 720 - cropHeight, width, height, cropWidth: width, cropHeight };
-  } else if (localized) {
-    const cropHeight = 720;
-    const height = cropHeight / cropFraction;
-    const width = height * sourceRatio;
-    frame = { x: (1080 - width) / 2, y: 0, width, height, cropWidth: width, cropHeight };
-  } else if (sourceRatio >= 1) {
-    const height = 1080 / sourceRatio;
-    frame = { x: 0, y: (1080 - height) / 2, width: 1080, height, cropWidth: 1080, cropHeight: height };
-  } else {
-    const width = 1080 * sourceRatio;
-    frame = { x: (1080 - width) / 2, y: 0, width, height: 1080, cropWidth: width, cropHeight: 1080 };
-  }
-  const clip = localized
-    ? `<defs><clipPath id="Source-Visual-Crop"><rect x="${frame.x.toFixed(2)}" y="${frame.y.toFixed(2)}" width="${frame.cropWidth.toFixed(2)}" height="${frame.cropHeight.toFixed(2)}"/></clipPath></defs>`
-    : "";
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const sourceLayer = localized
-    ? `<g id="Source-Visual-Layer" clip-path="url(#Source-Visual-Crop)">${visual}</g>`
-    : `<g id="Source-Visual-Layer">${visual}</g>`;
-  let translations = "";
-  if (localized) {
-    const maximumFontSize = spec.translationRegions.length === 1 ? 76 : spec.translationRegions.length === 2 ? 56 : 42;
-    const blocks = spec.translationRegions.map((region, index) => {
-      const fontSize = Math.min(maximumFontSize, Math.max(32, region.fontSize * 10.8));
-      const lines: string[] = [];
-      for (const paragraph of region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean)) {
-        if (lines.length >= 6) break;
-        lines.push(...wrapSvgText(paragraph, Math.max(12, 952 / fontSize * 1.65), 6 - lines.length));
+  const minimumRegionY = localized ? Math.min(...spec.translationRegions.map((region) => region.y)) : 100;
+  const maximumRegionBottom = localized
+    ? Math.max(...spec.translationRegions.map((region) => region.y + region.height))
+    : 100;
+  const lowerThirdScrim = minimumRegionY >= 55;
+  const scrimTopPercent = Math.max(0, minimumRegionY - 7);
+  const scrimBottomPercent = lowerThirdScrim ? 100 : Math.min(100, maximumRegionBottom + 7);
+  const scrimY = frame.y + frame.height * scrimTopPercent / 100;
+  const scrimHeight = frame.height * (scrimBottomPercent - scrimTopPercent) / 100;
+  const scrim = localized
+    ? `<defs><linearGradient id="Korean-Subtitle-Scrim-Gradient" x1="0" y1="0" x2="0" y2="1">
+      ${lowerThirdScrim
+        ? `<stop offset="0%" stop-color="${brand.dark}" stop-opacity="0"/>
+      <stop offset="18%" stop-color="${brand.dark}" stop-opacity="0.9"/>
+      <stop offset="24%" stop-color="${brand.dark}" stop-opacity="1"/>
+      <stop offset="90%" stop-color="${brand.dark}" stop-opacity="1"/>
+      <stop offset="100%" stop-color="${brand.dark}" stop-opacity="0"/>`
+        : `<stop offset="0%" stop-color="${brand.dark}" stop-opacity="0"/>
+      <stop offset="18%" stop-color="${brand.dark}" stop-opacity="0.92"/>
+      <stop offset="28%" stop-color="${brand.dark}" stop-opacity="1"/>
+      <stop offset="72%" stop-color="${brand.dark}" stop-opacity="1"/>
+      <stop offset="82%" stop-color="${brand.dark}" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="${brand.dark}" stop-opacity="0"/>`}
+    </linearGradient></defs>
+    <rect id="Korean-Subtitle-Scrim" x="${frame.x.toFixed(2)}" y="${scrimY.toFixed(2)}" width="${frame.width.toFixed(2)}" height="${scrimHeight.toFixed(2)}" fill="url(#Korean-Subtitle-Scrim-Gradient)"/>`
+    : "";
+  const translations = localized
+    ? spec.translationRegions.map((region, index) => {
+      const x = frame.x + frame.width * region.x / 100;
+      const y = frame.y + frame.height * region.y / 100;
+      const width = frame.width * region.width / 100;
+      const height = frame.height * region.height / 100;
+      let fontSize = frame.width * region.fontSize / 100;
+      const minFontSize = Math.max(14, frame.width * 0.02);
+      let lineHeight = fontSize * 1.02;
+      let lines: string[] = [];
+      while (true) {
+        const maxUnits = Math.max(6, width / Math.max(fontSize * region.scaleX, 1) * 2.5);
+        const maxLines = Math.max(1, Math.min(5, Math.floor(height / Math.max(lineHeight, 1))));
+        lines = [];
+        for (const paragraph of region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean)) {
+          if (lines.length >= maxLines) break;
+          lines.push(...wrapSvgText(paragraph, maxUnits, maxLines - lines.length));
+        }
+        const truncated = lines.at(-1)?.endsWith("…") === true;
+        if ((!truncated && lines.length * lineHeight <= height) || fontSize <= minFontSize) break;
+        fontSize = Math.max(minFontSize, fontSize * 0.92);
+        lineHeight = fontSize * 1.02;
       }
-      const lineHeight = fontSize * 1.06;
-      return {
-        id: `Korean-Translation-Region-${index + 1}`,
-        lines: lines.slice(0, 6),
-        font: region.fontRole === "display" ? brand.displayFont : brand.font,
-        fontSize,
-        lineHeight,
-        height: lines.length * lineHeight,
-      };
-    });
-    const footerTop = 752;
-    const footerHeight = 286;
-    const gap = 12;
-    const totalHeight = blocks.reduce((sum, block) => sum + block.height, 0) + gap * Math.max(0, blocks.length - 1);
-    let cursor = footerTop + (footerHeight - totalHeight) / 2;
-    translations = blocks.map((block) => {
-      const firstBaseline = cursor + block.fontSize;
-      cursor += block.height + gap;
-      return `<g id="${block.id}">${textLayers(
-        `${block.id}-Text`,
-        block.lines,
-        540,
+      const blockHeight = lines.length * lineHeight;
+      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize);
+      const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
+      const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
+      const font = region.fontRole === "display" ? brand.displayFont : brand.font;
+      const regionId = `Korean-Translation-Region-${index + 1}`;
+      const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
+      return `<g id="${regionId}">${textLayers(
+        `${regionId}-Text`,
+        lines,
+        textX,
         firstBaseline,
-        block.lineHeight,
-        `text-anchor="middle" fill="#FFFFFF" font-family="${escapeXml(block.font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${block.fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(block.fontSize * 0.045).toFixed(2)}"`,
+        lineHeight,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
-    }).join("\n");
-  }
+    }).join("\n")
+    : "";
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
-  ${clip}
-  ${sourceLayer}
-  ${localized ? `<rect id="Translation-Footer-Background" x="0" y="720" width="1080" height="360" fill="${brand.dark}"/>` : ""}
-  <g id="Korean-Translation-Footer">${translations}</g>`;
+  <g id="Source-Visual-Layer">${visual}</g>
+  ${scrim}
+  <g id="Korean-Translation-Layer">${translations}</g>`;
 }
 
 export function buildEditableSvg(

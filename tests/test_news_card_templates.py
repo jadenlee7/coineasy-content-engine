@@ -30,11 +30,14 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "logo_dark_path" not in override_html
     assert "translation-region::after" not in override_html
     assert "--region-tint" not in override_html
-    assert 'class="translation-footer"' in override_html
-    assert "source_crop_bottom" in override_html
-    assert "translation-region" not in override_html
+    assert 'class="translation-region"' in override_html
+    assert "subtitle-scrim--lower" in override_html
+    assert "subtitle-scrim--band" in override_html
+    assert "translation-footer" not in override_html
+    assert "source_crop_bottom" not in override_html
     assert "filter: blur" not in override_html
     assert "-webkit-text-stroke" not in override_html
+    assert ".28em" not in override_html
 
 
 @pytest.mark.asyncio
