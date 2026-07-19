@@ -13,23 +13,51 @@ const CLIENT_COPY = {
   yellow: {
     name: "Yellow",
     hashtags: ["#Yellow", "#YellowNetwork", "#YellowKorea", "#Web3"],
+    xHashtags: ["#Yellow", "#YellowKorea"],
   },
   origintrail: {
     name: "OriginTrail",
     hashtags: ["#OriginTrail", "#TRAC", "#DKG", "#Web3"],
+    xHashtags: ["#OriginTrail", "#DKG"],
   },
   squid: {
     name: "Squid",
     hashtags: ["#SquidRouter", "#CrossChain", "#SquidKorea", "#Web3"],
+    xHashtags: ["#SquidRouter", "#SquidKorea"],
   },
   babylon: {
     name: "Babylon",
     hashtags: ["#Babylon", "#BitcoinStaking", "#BTC", "#BabylonKorea"],
+    xHashtags: ["#Babylon", "#BabylonKorea"],
   },
 } as const;
 
 function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildXPost(
+  headline: string,
+  bodyLines: string[],
+  sourceUrl: string,
+  hashtags: readonly string[],
+): string {
+  const footer = [sourceUrl ? `🔗 원문 확인: ${sourceUrl}` : "", hashtags.join(" ")]
+    .filter(Boolean)
+    .join("\n\n");
+  const available = Math.max(80, 280 - (footer ? footer.length + 2 : 0));
+  const core = [`📌 ${truncateText(headline, Math.min(118, available - 3))}`];
+  for (const line of bodyLines.slice(0, 2)) {
+    const item = `• ${truncateText(line, 72)}`;
+    if ([...core, item].join("\n\n").length <= available) core.push(item);
+  }
+  const coreText = truncateText(core.join("\n\n"), available);
+  return footer ? `${coreText}\n\n${footer}` : coreText;
 }
 
 export function buildChannelCopy(
@@ -60,6 +88,6 @@ export function buildChannelCopy(
 
   return {
     telegram: telegramSections.join("\n\n"),
-    x: sourceContent.trim(),
+    x: buildXPost(headline, bodyLines, sourceUrl, client.xHashtags),
   };
 }

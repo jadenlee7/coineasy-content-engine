@@ -24,17 +24,21 @@ test("builds a Korean GTM Telegram announcement with CTA, original link, and has
   assert.match(copy.telegram, /#Yellow #YellowNetwork #YellowKorea #Web3/);
 });
 
-test("keeps the X copy as source content without added CTA or hashtags", () => {
+test("builds a concise Korean GTM X post with source CTA and focused hashtags", () => {
   const original = "Original post line one.\nOriginal post line two.";
   const copy = buildChannelCopy(
     "babylon",
-    { headline: "한국어 카드 헤드라인", body_lines: ["한국 GTM 요약"] },
+    { headline: "바빌론이 비트코인 스테이킹의 활용 범위를 넓힙니다", body_lines: ["BTC를 브릿지 없이 직접 활용합니다", "비트코인 보안을 다양한 네트워크로 확장합니다"] },
     `  ${original}  `,
     "https://x.com/babylonlabs_io/status/123",
   );
 
-  assert.equal(copy.x, original);
-  assert.doesNotMatch(copy.x, /자세한 내용|#Babylon|한국어 카드/);
+  assert.match(copy.x, /바빌론이 비트코인 스테이킹의 활용 범위를 넓힙니다/);
+  assert.match(copy.x, /• BTC를 브릿지 없이 직접 활용합니다/);
+  assert.match(copy.x, /🔗 원문 확인: https:\/\/x\.com\/babylonlabs_io\/status\/123/);
+  assert.match(copy.x, /#Babylon #BabylonKorea/);
+  assert.doesNotMatch(copy.x, /Original post line/);
+  assert.ok(copy.x.length <= 280);
 });
 
 test("omits the original-link line when no source URL is available", () => {
@@ -46,5 +50,6 @@ test("omits the original-link line when no source URL is available", () => {
   );
 
   assert.doesNotMatch(copy.telegram, /🔗 원문:/);
+  assert.doesNotMatch(copy.x, /🔗 원문 확인:/);
   assert.match(copy.telegram, /#SquidRouter/);
 });
