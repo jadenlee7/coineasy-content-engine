@@ -38,41 +38,13 @@
     overflow: hidden;
   }
   .source-image { display: block; width: 100%; height: 100%; object-fit: fill; }
-  .subtitle-scrim {
-    position: absolute;
-    left: 0;
-    right: 0;
-    pointer-events: none;
-  }
-  .subtitle-scrim--lower {
-    bottom: 0;
-    background: linear-gradient(
-      to bottom,
-      rgba(26, 14, 46, 0) 0%,
-      rgba(26, 14, 46, .9) 18%,
-      rgba(26, 14, 46, 1) 24%,
-      rgba(26, 14, 46, 1) 90%,
-      rgba(26, 14, 46, 0) 100%
-    );
-  }
-  .subtitle-scrim--band {
-    background: linear-gradient(
-      to bottom,
-      rgba(26, 14, 46, 0) 0%,
-      rgba(26, 14, 46, .92) 18%,
-      rgba(26, 14, 46, 1) 28%,
-      rgba(26, 14, 46, 1) 72%,
-      rgba(26, 14, 46, .92) 82%,
-      rgba(26, 14, 46, 0) 100%
-    );
-  }
   .translation-region {
     position: absolute;
     display: flex;
     align-items: center;
     min-width: 1px;
     min-height: 1px;
-    overflow: visible;
+    overflow: hidden;
     isolation: isolate;
     color: var(--region-text);
     text-align: var(--region-align);
@@ -93,7 +65,8 @@
     max-width: 100%;
     transform: scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
-    text-shadow: none;
+    -webkit-text-stroke: 2px rgba(16, 13, 22, .78);
+    paint-order: stroke fill;
   }
 </style>
 </head>
@@ -102,21 +75,8 @@
   <section class="source-frame" aria-label="Squid source creative">
     <img class="source-image" src="{{ source_image_data_url }}" alt="">
     {% if source_text_visible and translation_regions %}
-      {% set bounds = namespace(top=100.0, bottom=0.0) %}
       {% for region in translation_regions %}
-        {% if region.y < bounds.top %}{% set bounds.top = region.y %}{% endif %}
-        {% if region.y + region.height > bounds.bottom %}{% set bounds.bottom = region.y + region.height %}{% endif %}
-      {% endfor %}
-      {% set scrim_top = bounds.top - 7.0 %}
-      {% set safe_top = 0 if scrim_top < 0 else scrim_top %}
-      {% if bounds.top >= 55.0 %}
-      <div class="subtitle-scrim subtitle-scrim--lower" style="top: {{ safe_top }}%;"></div>
-      {% else %}
-        {% set scrim_bottom = bounds.bottom + 7.0 %}
-        {% set safe_bottom = 100 if scrim_bottom > 100 else scrim_bottom %}
-      <div class="subtitle-scrim subtitle-scrim--band" style="top: {{ safe_top }}%; height: {{ safe_bottom - safe_top }}%;"></div>
-      {% endif %}
-      {% for region in translation_regions %}
+        {% set caption_font_size = region.font_size * frame_width / 100.0 * 0.72 %}
       <div
         class="translation-region"
         style="
@@ -127,7 +87,7 @@
           justify-content: {% if region.align == 'center' %}center{% elif region.align == 'right' %}flex-end{% else %}flex-start{% endif %};
           --region-align: {{ region.align }};
           --region-font: {% if region.font_role == 'display' %}var(--display){% else %}var(--font){% endif %};
-          --region-size: {{ '%.2f' | format(region.font_size * frame_width / 100.0) }}px;
+          --region-size: {{ '%.2f' | format(caption_font_size) }}px;
           --region-scale-x: {{ region.scale_x | default(1) }};
           --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
           --region-text: #FFFFFF;
@@ -138,16 +98,29 @@
   </section>
 </main>
 <script>
-  for (const region of document.querySelectorAll('.translation-region')) {
+  const translationRegions = [...document.querySelectorAll('.translation-region')];
+  let anyRegionFailed = false;
+  for (const region of translationRegions) {
     const text = region.querySelector('span');
     if (!text) continue;
     let size = parseFloat(getComputedStyle(region).fontSize);
     const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
     const minimum = Math.max(14, {{ '%.3f' | format(frame_width) }} * 0.02);
-    while ((text.scrollHeight > region.clientHeight || text.scrollWidth * scaleX > region.clientWidth) && size > minimum) {
+    const doesNotFit = () => {
+      const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+      const renderedLineCount = lineHeight > 0 ? Math.round(text.scrollHeight / lineHeight) : 3;
+      return renderedLineCount > 2
+        || text.scrollHeight > region.clientHeight
+        || text.scrollWidth * scaleX > region.clientWidth;
+    };
+    while (doesNotFit() && size > minimum) {
       size = Math.max(minimum, size * 0.92);
       region.style.fontSize = `${size}px`;
     }
+    if (doesNotFit()) anyRegionFailed = true;
+  }
+  if (anyRegionFailed) {
+    for (const region of translationRegions) region.hidden = true;
   }
 </script>
 </body>
