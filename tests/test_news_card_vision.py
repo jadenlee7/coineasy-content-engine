@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import anthropic
 import pytest
 
-from core.llm.news_card_pipeline import generate_news_card_spec
+from core.llm.news_card_pipeline import _normalize_visual_localization, generate_news_card_spec
 from core.sources.source_image import PreparedSourceImage
 
 
@@ -157,6 +157,37 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
         "scale_x": 0.91,
         "text_color": "#FFFFFF",
     }]
+
+
+def test_squid_lower_caption_keeps_the_image_center_when_vision_box_is_oversized():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "stack is love,\nstack is life.",
+            "text": "스택은 사랑,\n스택은 인생.",
+            "x": 20,
+            "y": 82,
+            "width": 60,
+            "height": 14,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 6,
+            "text_color": "#FFFFFF",
+        }],
+    }, "squid", True)
+
+    assert result["translation_regions"][0] == {
+        "text": "스택은 사랑,\n스택은 인생.",
+        "x": 28.64,
+        "y": 72.0,
+        "width": 42.72,
+        "height": 25.0,
+        "align": "center",
+        "font_role": "display",
+        "font_size": 6.0,
+        "scale_x": 1.24,
+        "text_color": "#FFFFFF",
+    }
 
 
 def test_squid_untranslated_visual_copy_cannot_succeed_after_failed_repair(monkeypatch):

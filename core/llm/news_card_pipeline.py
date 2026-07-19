@@ -497,13 +497,14 @@ def _normalize_visual_localization(
             font_size = max(2.0, min(12.0, _number(raw.get("font_size"), 5.2)))
             raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
             raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
+            align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             scale_x = 1.0
             source_text = raw.get("source_text")
             if isinstance(source_text, str) and source_text.strip():
                 source_text = source_text.strip()
                 estimated_width = _source_text_width_percent(source_text, font_size)
                 if raw_width > estimated_width * 1.2:
-                    raw_center = raw_x + raw_width / 2.0
+                    raw_center = 50.0 if align == "center" and raw_y >= 65.0 else raw_x + raw_width / 2.0
                     raw_width = estimated_width
                     raw_x = max(0.0, min(100.0 - raw_width, raw_center - raw_width / 2.0))
                 translation_units = _text_width_units(text.strip())
@@ -519,7 +520,6 @@ def _normalize_visual_localization(
             bottom = min(100.0, raw_y + raw_height + 1.0)
             width = right - x
             height = bottom - y
-            align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             font_role = raw.get("font_role") if raw.get("font_role") in _REGION_FONT_ROLES else "display"
             text_color = raw.get("text_color")
 
