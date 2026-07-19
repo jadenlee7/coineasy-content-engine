@@ -92,9 +92,7 @@ NOT a carousel. NOT multiple slides. One card.
       "align": "left" | "center" | "right",
       "font_role": "display" | "body",
       "font_size": 2-12,
-      "text_color": "#RRGGBB",
-      "background_color": "#RRGGBB",
-      "background_opacity": 0.82-1.0
+      "text_color": "#RRGGBB"
     }}
   ]
 }}
@@ -223,7 +221,8 @@ def _build_user_prompt(
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
 - If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols.
 - Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Include enough padding to hide the original copy without covering characters, products, or logos.
-- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and approximate foreground/background colors.
+- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
+- The renderer uses a transparent, feathered source-image blur only to remove the original glyphs. Never request or imply a solid caption box, panel, chip, or opaque background behind the Korean text.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -295,7 +294,6 @@ def _normalize_visual_localization(
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             font_role = raw.get("font_role") if raw.get("font_role") in _REGION_FONT_ROLES else "display"
             text_color = raw.get("text_color")
-            background_color = raw.get("background_color")
 
             normalized_regions.append({
                 "text": text.strip()[:240],
@@ -307,8 +305,6 @@ def _normalize_visual_localization(
                 "font_role": font_role,
                 "font_size": round(max(2.0, min(12.0, _number(raw.get("font_size"), 5.2))), 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
-                "background_color": background_color.upper() if isinstance(background_color, str) and _HEX_COLOR.match(background_color) else "#1A0E2E",
-                "background_opacity": round(max(0.82, min(1.0, _number(raw.get("background_opacity"), 0.94))), 2),
             })
 
     result["translation_regions"] = normalized_regions

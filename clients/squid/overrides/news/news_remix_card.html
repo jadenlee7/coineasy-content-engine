@@ -45,7 +45,8 @@
     min-width: 1px;
     min-height: 1px;
     padding: .16em .24em;
-    overflow: hidden;
+    overflow: visible;
+    isolation: isolate;
     color: var(--region-text);
     text-align: var(--region-align);
     font-family: var(--region-font);
@@ -60,23 +61,30 @@
   .translation-region::before {
     content: "";
     position: absolute;
-    inset: -20px;
+    inset: -24px;
     z-index: 0;
     background-image: url('{{ source_image_data_url }}');
     background-repeat: no-repeat;
     background-size: {{ '%.3f' | format(frame_width) }}px {{ '%.3f' | format(frame_height) }}px;
     background-position: var(--source-offset-x) var(--source-offset-y);
-    filter: blur(16px) saturate(.92);
+    filter: blur(12px) saturate(.96);
+    -webkit-mask-image:
+      linear-gradient(to right, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%),
+      linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-image:
+      linear-gradient(to right, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%),
+      linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%);
+    mask-composite: intersect;
   }
-  .translation-region::after {
-    content: "";
-    position: absolute;
-    inset: 0;
+  .translation-region > span {
+    position: relative;
     z-index: 1;
-    background: var(--region-bg);
-    opacity: var(--region-tint);
+    width: 100%;
+    paint-order: stroke fill;
+    -webkit-text-stroke: .025em rgba(0, 0, 0, .5);
+    text-shadow: 0 .04em .16em rgba(0, 0, 0, .72), 0 0 .045em rgba(0, 0, 0, .5);
   }
-  .translation-region > span { position: relative; z-index: 2; width: 100%; }
 </style>
 </head>
 <body>
@@ -97,10 +105,8 @@
           --region-font: {% if region.font_role == 'display' %}var(--display){% else %}var(--font){% endif %};
           --region-size: {{ '%.2f' | format(region.font_size * frame_width / 100.0) }}px;
           --region-text: {{ region.text_color }};
-          --region-bg: {{ region.background_color }};
-          --region-tint: {{ '%.2f' | format(region.background_opacity - 0.25) }};
-          --source-offset-x: {{ '%.2f' | format(20.0 - region.x * frame_width / 100.0) }}px;
-          --source-offset-y: {{ '%.2f' | format(20.0 - region.y * frame_height / 100.0) }}px;
+          --source-offset-x: {{ '%.2f' | format(24.0 - region.x * frame_width / 100.0) }}px;
+          --source-offset-y: {{ '%.2f' | format(24.0 - region.y * frame_height / 100.0) }}px;
         "
       ><span>{{ region.text | e }}</span></div>
       {% endfor %}
