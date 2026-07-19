@@ -271,7 +271,7 @@
     .preview-shell[data-template="remix"] { background: #111; }
     .preview-shell[data-template="remix"] .mock-card { padding: 4.5%; justify-content: flex-end; background: radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--brand-primary) 35%, #17242b), transparent 34%), linear-gradient(135deg, #101a20, var(--brand-bg)); }
     .preview-shell[data-template="remix"] .mock-top { position: absolute; inset: 4.5% 4.5% auto; }
-    .preview-shell[data-template="remix"] .mock-top::after { content: "ORIGINAL VISUAL"; padding: 7px 10px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; font: 700 7px/1 Inter, sans-serif; letter-spacing: 1px; }
+    .preview-shell[data-template="remix"] .mock-top::after { content: "COINEASY"; padding: 7px 10px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; font: 700 7px/1 Inter, sans-serif; letter-spacing: 1px; }
     .preview-shell[data-template="remix"] .mock-inner { flex: 0 0 42%; padding: 4.6%; border-radius: 16px; background: color-mix(in srgb, var(--brand-bg) 94%, #000); box-shadow: 0 -12px 36px rgba(0,0,0,.22); }
     .preview-shell[data-template="remix"] .mock-headline { margin-bottom: 3%; color: #fff; font-size: clamp(21px, 4vw, 48px); }
     .preview-shell[data-template="remix"] .mock-lines { grid-template-columns: 1fr 1fr; gap: 7px; }
@@ -385,7 +385,7 @@
           <div class="field-label">배너 스타일 <span class="optional">4가지</span></div>
           <div class="template-grid" id="templates">
             <button class="template-option active" type="button" data-template="remix">
-              <span class="template-swatch"><i></i><i></i></span><strong>원본 비주얼 리믹스 · 추천</strong><small>원본 배너 + 한국 GTM</small>
+              <span class="template-swatch"><i></i><i></i></span><strong>브랜드 비주얼 · 추천</strong><small>원본 배너 + CoinEasy 스타일</small>
             </button>
             <button class="template-option" type="button" data-template="classic">
               <span class="template-swatch"><i></i><i></i></span><strong>클래식</strong><small>뉴스 요약 카드</small>
@@ -475,11 +475,11 @@
             <h3>채널별 게시 문구</h3>
             <div class="channel-copy-grid">
               <article class="channel-copy-card">
-                <div class="channel-copy-head"><strong>텔레그램 공지방 · 한국 GTM</strong><button class="copy-button" type="button" data-copy-target="telegram-copy">복사</button></div>
+                <div class="channel-copy-head"><strong>텔레그램 공지방</strong><button class="copy-button" type="button" data-copy-target="telegram-copy">복사</button></div>
                 <pre class="channel-copy-text" id="telegram-copy"></pre>
               </article>
               <article class="channel-copy-card">
-                <div class="channel-copy-head"><strong>X · 원문 내용만</strong><button class="copy-button" type="button" data-copy-target="x-copy">복사</button></div>
+                <div class="channel-copy-head"><strong>X 포스팅</strong><button class="copy-button" type="button" data-copy-target="x-copy">복사</button></div>
                 <pre class="channel-copy-text" id="x-copy"></pre>
               </article>
             </div>
@@ -531,7 +531,7 @@
       };
 
       const TEMPLATE = {
-        remix: "원본 비주얼 리믹스",
+        remix: "브랜드 비주얼",
         classic: "클래식",
         editorial: "에디토리얼",
         signal: "시그널"

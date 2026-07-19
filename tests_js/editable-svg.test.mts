@@ -32,15 +32,16 @@ test("creates a native-layer classic SVG for Figma without foreignObject", () =>
   assert.doesNotMatch(svg, /foreignObject|<style/);
 });
 
-test("keeps the original remix visual as a separate embedded image layer", () => {
+test("keeps the source visual as a separate embedded image layer without production labels", () => {
   const svg = buildEditableSvg("squid", "remix", SPEC, {
     logoDark: "data:image/png;base64,bG9nbw==",
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
-  assert.match(svg, /id="Original-Visual"/);
+  assert.match(svg, /id="Source-Visual"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
-  assert.match(svg, /id="Korea-GTM-Panel"/);
-  assert.match(svg, /id="Edit-Note"/);
+  assert.match(svg, /id="CoinEasy-Content-Panel"/);
+  assert.match(svg, />COINEASY<\/text>/);
+  assert.doesNotMatch(svg, /ORIGINAL VISUAL REMIX|KOREA GTM EDIT/i);
 });
 
 test("supports all four editable layout styles", () => {
