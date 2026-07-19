@@ -30,6 +30,7 @@ type NormalizedTranslationRegion = {
   align: "left" | "center" | "right";
   fontRole: "display" | "body";
   fontSize: number;
+  scaleX: number;
   textColor: string;
 };
 
@@ -152,6 +153,7 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
           align: region.align === "center" || region.align === "right" ? region.align : "left",
           fontRole: region.font_role === "body" ? "body" : "display",
           fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
+          scaleX: boundedNumber(region.scale_x, 1, 0.85, 1.35),
           textColor: normalizedColor(region.text_color, "#FFFFFF"),
         };
       })
@@ -385,7 +387,7 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       let lineHeight = fontSize * 1.08;
       let lines: string[] = [];
       while (true) {
-        const maxUnits = Math.max(6, width / Math.max(fontSize, 1) * 1.65);
+        const maxUnits = Math.max(6, width / Math.max(fontSize * region.scaleX, 1) * 1.65);
         const maxLines = Math.max(1, Math.min(5, Math.floor(height / Math.max(lineHeight, 1))));
         lines = wrapSvgText(region.text, maxUnits, maxLines);
         const truncated = lines.at(-1)?.endsWith("…") === true;
@@ -399,8 +401,9 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Translated-Region-${index + 1}`;
+      const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
       return `<g id="Translated-Region-${index + 1}">
-        ${textLayers(`${regionId}-Text`, lines, textX, firstBaseline, lineHeight, `text-anchor="${textAnchor}" fill="${region.textColor}" stroke="${outlineColor(region.textColor)}" stroke-opacity="0.97" stroke-width="${Math.max(1, fontSize * 0.22).toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
+        ${textLayers(`${regionId}-Text`, lines, textX, firstBaseline, lineHeight, `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="${region.textColor}" stroke="${outlineColor(region.textColor)}" stroke-opacity="0.97" stroke-width="${Math.max(1, fontSize * 0.28).toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
       </g>`;
     }).join("\n")
     : "";

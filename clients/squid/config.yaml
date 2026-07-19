@@ -51,7 +51,8 @@ brand_voice:
       character and visual untouched. Never add a headline panel, badge, footer, CTA,
       or duplicate logo. Korean text must never sit on a solid caption box or blurred
       image patch; cover the original copy only with a transparent outline and shadow
-      that follows the replacement glyphs.
+      that follows the replacement glyphs. Keep the source line count and visual width;
+      a short repeated Latin keyword may remain when it carries the original rhythm.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
   reference_examples:
     - type: "community one-liner"

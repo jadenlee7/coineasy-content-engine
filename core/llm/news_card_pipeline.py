@@ -367,33 +367,6 @@ def _repeated_leading_keyword(source_text: object) -> str | None:
     return keywords[0] if all(keyword.lower() == keywords[0].lower() for keyword in keywords) else None
 
 
-def _visual_alignment_region_indexes(result: dict) -> list[int]:
-    """Find translations that lost a repeated source keyword or line rhythm."""
-    if result.get("source_text_visible") is not True:
-        return []
-    regions = result.get("translation_regions")
-    if not isinstance(regions, list):
-        return []
-    indexes: list[int] = []
-    for index, region in enumerate(regions):
-        if not isinstance(region, dict):
-            continue
-        source_text = region.get("source_text")
-        text = region.get("text")
-        keyword = _repeated_leading_keyword(source_text)
-        if not keyword or not isinstance(text, str):
-            continue
-        source_lines = [line for line in source_text.splitlines() if line.strip()]
-        translated_lines = [line for line in text.splitlines() if line.strip()]
-        has_keyword = re.search(
-            rf"(?i)(?<![A-Za-z0-9_-]){re.escape(keyword)}(?![A-Za-z0-9_-])",
-            text,
-        ) is not None
-        if not has_keyword or len(source_lines) != len(translated_lines):
-            indexes.append(index)
-    return indexes
-
-
 def _is_protected_identifier_only(text: str, preserve_terms: list[str]) -> bool:
     """Allow a region to be removed when it contains identifiers, not prose."""
     tokens = re.findall(r"[A-Za-z0-9@#.$:/_-]+", text)
@@ -421,11 +394,8 @@ def _repair_untranslated_visual_copy(
     preserve_terms: list[str],
     source_content: str,
 ) -> dict:
-    """Repair untranslated copy and restore the source visual line rhythm."""
-    indexes = sorted(set(
-        _untranslated_region_indexes(result, preserve_terms)
-        + _visual_alignment_region_indexes(result)
-    ))
+    """Repair untranslated copy while asking the model to keep visual rhythm."""
+    indexes = _untranslated_region_indexes(result, preserve_terms)
     if not indexes:
         return result
 
@@ -487,8 +457,6 @@ Return exactly:
         replacement = replacements.get(index, "")
         if replacement and _HANGUL.search(replacement):
             regions[index]["text"] = replacement
-            if index in _visual_alignment_region_indexes(result):
-                raise ValueError(f"LLM broke visual line alignment at region {index}")
             continue
         if not replacement and _is_protected_identifier_only(original, preserve_terms):
             regions[index]["text"] = ""
@@ -529,6 +497,7 @@ def _normalize_visual_localization(
             font_size = max(2.0, min(12.0, _number(raw.get("font_size"), 5.2)))
             raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
             raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
+            scale_x = 1.0
             source_text = raw.get("source_text")
             if isinstance(source_text, str) and source_text.strip():
                 source_text = source_text.strip()
@@ -537,6 +506,9 @@ def _normalize_visual_localization(
                     raw_center = raw_x + raw_width / 2.0
                     raw_width = estimated_width
                     raw_x = max(0.0, min(100.0 - raw_width, raw_center - raw_width / 2.0))
+                translation_units = _text_width_units(text.strip())
+                if translation_units > 0:
+                    scale_x = max(0.85, min(1.35, _text_width_units(source_text) / translation_units))
 
             # Lower-third caption detections frequently anchor near the first
             # baseline. Give multi-line replacement copy enough room above.
@@ -560,6 +532,7 @@ def _normalize_visual_localization(
                 "align": align,
                 "font_role": font_role,
                 "font_size": round(font_size, 2),
+                "scale_x": round(scale_x, 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
             })
 

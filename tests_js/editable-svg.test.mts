@@ -48,6 +48,7 @@ test("creates a Squid official-creative translation layer without extra card chr
       align: "left",
       font_role: "display",
       font_size: 5.5,
+      scale_x: 1.24,
       text_color: "#FFFFFF",
     }],
   }, {
@@ -58,6 +59,7 @@ test("creates a Squid official-creative translation layer without extra card chr
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
   assert.match(svg, /id="Korean-Translation-Layer"/);
   assert.match(svg, /paint-order="stroke fill"/);
+  assert.match(svg, /scale\(1\.24 1\)/);
   assert.match(svg, /stroke-opacity="0.97"/);
   assert.match(svg, /어디서나 XRP를/);
   assert.match(svg, /사용하세요/);
