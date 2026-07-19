@@ -14,6 +14,7 @@ type EditableSpec = {
   date?: unknown;
   source_url?: unknown;
   theme?: unknown;
+  source_logo_visible?: unknown;
 };
 
 type NormalizedSpec = {
@@ -23,6 +24,7 @@ type NormalizedSpec = {
   date: string;
   sourceUrl: string;
   theme: "dark" | "yellow";
+  sourceLogoVisible: boolean;
 };
 
 type Brand = {
@@ -102,6 +104,7 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     date: cleanText(spec.date, 24),
     sourceUrl: cleanText(spec.source_url, 2_048),
     theme: spec.theme === "yellow" ? "yellow" : "dark",
+    sourceLogoVisible: spec.source_logo_visible === true,
   };
 }
 
@@ -238,7 +241,6 @@ function editorialSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAs
   }).join("\n");
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${background}"/>
   <g id="Header">
-    <text id="Header-Eyebrow" x="64" y="95" fill="${foreground}" fill-opacity="0.62" font-family="Inter, sans-serif" font-size="15" font-weight="700" letter-spacing="3">COINEASY · EDITORIAL BRIEF</text>
     ${logoLayer(brand, logo, 874, 58, 142, 58, foreground)}
     <line id="Header-Divider" x1="64" y1="158" x2="1016" y2="158" stroke="${foreground}" stroke-opacity="0.2" stroke-width="2"/>
   </g>
@@ -264,7 +266,7 @@ function signalSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsset
   }).join("\n");
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="#ECEEEB"/>
   <g id="Card-Frame"><rect id="Card-Background" x="46" y="46" width="988" height="988" rx="28" fill="#FFFFFF"/><rect id="Brand-Rail" x="46" y="46" width="28" height="988" rx="14" fill="${brand.primary}"/></g>
-  <g id="Header"><path id="Header-Background" d="M74 46H1006C1021.46 46 1034 58.54 1034 74V196H74V46Z" fill="${brand.dark}"/><text id="Header-Eyebrow" x="124" y="128" fill="#FFFFFF" fill-opacity="0.68" font-family="Inter, sans-serif" font-size="15" font-weight="700" letter-spacing="3">COINEASY · NEWS SIGNAL</text>${logoLayer(brand, assets.logoDark, 840, 90, 138, 62, "#FFFFFF")}</g>
+  <g id="Header"><path id="Header-Background" d="M74 46H1006C1021.46 46 1034 58.54 1034 74V196H74V46Z" fill="${brand.dark}"/>${logoLayer(brand, assets.logoDark, 840, 90, 138, 62, "#FFFFFF")}</g>
   <g id="Content">
     <g id="Label"><rect id="Label-Background" x="124" y="258" width="148" height="42" rx="8" fill="${brand.primary}"/><text id="Label-Text" x="198" y="285" text-anchor="middle" fill="${brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="17" font-weight="800">${escapeXml(spec.label)}</text></g>
     <text id="Signal-Number" x="974" y="298" text-anchor="end" fill="${brand.primary}" font-family="${escapeXml(brand.displayFont)}, sans-serif" font-size="52" font-weight="800">01</text>
@@ -283,13 +285,16 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
     return `<g id="Insight-${index + 1}"><circle id="Insight-${index + 1}-Bullet" cx="${x + 4}" cy="951" r="4" fill="${brand.primary}"/>${textLayers(`Insight-${index + 1}-Text`, lines, x + 18, 957, 26, `fill="#FFFFFF" fill-opacity="0.78" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="18" font-weight="600"`)}</g>`;
   }).join("\n");
   const visual = assets.sourceImage
-    ? `<rect id="Source-Visual-Background" x="0" y="78" width="1080" height="632" fill="#111820"/>${imageLayer("Source-Visual", assets.sourceImage, 0, 78, 1080, 632)}<rect id="Source-Visual-Shade" x="0" y="78" width="1080" height="632" fill="#05080C" fill-opacity="0.18"/>`
-    : `<rect id="Source-Visual-Placeholder" x="0" y="78" width="1080" height="632" fill="#17242B"/><text id="Source-Visual-Placeholder-Text" x="540" y="402" text-anchor="middle" fill="#FFFFFF" fill-opacity="0.45" font-family="Inter, sans-serif" font-size="24" font-weight="700" letter-spacing="2">COINEASY</text>`;
+    ? `<rect id="Source-Visual-Background" x="0" y="0" width="1080" height="710" fill="#111820"/>${imageLayer("Source-Visual", assets.sourceImage, 0, 0, 1080, 710)}<rect id="Source-Visual-Shade" x="0" y="0" width="1080" height="710" fill="#05080C" fill-opacity="0.18"/>`
+    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="710" fill="#17242B"/>`;
+  const panelLogo = spec.sourceLogoVisible
+    ? ""
+    : `<g id="Official-Logo-Safe-Area"><rect id="Logo-Chip" x="908" y="728" width="128" height="50" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.18"/>${logoLayer(brand, assets.logoDark, 916, 735, 112, 36, "#FFFFFF")}</g>`;
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
   <g id="Source-Visual-Layer">${visual}</g>
-  <g id="Header"><rect id="Header-Background" width="1080" height="78" fill="${brand.dark}"/><rect id="CoinEasy-Pill" x="34" y="18" width="130" height="42" rx="21" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.2"/><circle id="CoinEasy-Pill-Dot" cx="56" cy="39" r="5" fill="${brand.primary}"/><text id="CoinEasy-Pill-Text" x="73" y="44" fill="#FFFFFF" font-family="Inter, sans-serif" font-size="12" font-weight="700" letter-spacing="1.5">COINEASY</text><rect id="Logo-Chip" x="918" y="14" width="128" height="50" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.18"/>${logoLayer(brand, assets.logoDark, 926, 21, 112, 36, "#FFFFFF")}</g>
-  <g id="CoinEasy-Content-Panel"><rect id="Panel-Background" x="0" y="710" width="1080" height="370" fill="${brand.dark}"/><rect id="Panel-Accent" x="44" y="710" width="992" height="5" rx="2.5" fill="${brand.primary}"/>
+  <g id="Localized-Content-Panel"><rect id="Panel-Background" x="0" y="710" width="1080" height="370" fill="${brand.dark}"/><rect id="Panel-Accent" x="44" y="710" width="992" height="5" rx="2.5" fill="${brand.primary}"/>
     <g id="Label"><rect id="Label-Background" x="44" y="738" width="148" height="38" rx="8" fill="${brand.primary}"/><text id="Label-Text" x="118" y="763" text-anchor="middle" fill="${brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="16" font-weight="800">${escapeXml(spec.label)}</text></g>
+    ${panelLogo}
     <g id="Headline">${textLayers("Headline", headlineLines, 44, 839, 52, `fill="#FFFFFF" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="45" font-weight="800"`)}</g>
     <g id="Insights">${body}</g>
     ${footer(spec, 1054, "#FFFFFF", 44, 74)}
@@ -313,9 +318,9 @@ export function buildEditableSvg(
         : classicSvg(brand, spec, assets);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-labelledby="Title Description">
-  <title id="Title">${escapeXml(brand.name)} editable news card</title>
-  <desc id="Description">Figma-editable CoinEasy news card. Text, shapes, logo, and source image are separate named layers.</desc>
-  <metadata>CoinEasy Content Engine · Figma Editable · ${templateStyle}</metadata>
+  <title id="Title">${escapeXml(brand.name)} editable Korean news card</title>
+  <desc id="Description">Figma-editable localized news card. Text, shapes, official logo, and source image are separate named layers.</desc>
+  <metadata>Localized News Card · Figma Editable · ${templateStyle}</metadata>
   ${content}
 </svg>`;
 }

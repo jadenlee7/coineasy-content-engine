@@ -18,8 +18,10 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 2. Only `https://pbs.twimg.com` media URLs are forwarded to Railway.
 3. Railway validates the host again, downloads at most 8 MB, decodes with Pillow, bounds the pixel count, auto-orients, and resizes to at most 1800 px.
 4. The prepared image is sent to Claude as a vision block so visible product names, UI states, token pairs, and numbers can support the Korean copy.
-5. The renderer keeps the full original image with `object-fit: contain` and adds a separate branded Korean GTM panel below it.
-6. If no valid image is available, the request automatically renders with the `classic` template and reports the actual style in the response.
+5. The same vision response reports whether the current client's official logo or wordmark is already visible in the source image.
+6. The renderer keeps the full original image with `object-fit: contain` and adds a separate Korean localization panel below it, with no agency mark.
+7. If the official logo is visible in the source image, the renderer preserves it and omits an extra logo. Otherwise it places the official logo once in the localization panel's safe area.
+8. If no valid image is available, the request automatically renders with the `classic` template and reports the actual style in the response.
 
 ## Options Considered
 
@@ -60,7 +62,8 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 
 ## Consequences
 
-- Original artwork remains visually authoritative while CoinEasy adds a clearly separated Korea GTM editorial layer.
+- Original artwork remains visually authoritative while a clearly separated Korean editorial layer provides the localization treatment without an agency mark.
+- Official-logo presence is checked on every vision-backed remix to prevent redundant logo placement.
 - X syndication metadata is an external dependency that may change; the classic fallback is therefore mandatory.
 - Only the first public photo is used in v1. Multi-image selection, video posters, manual uploads, and in-place translation can be added later.
 - Article and blog URLs still require pasted text and an approved image ingestion path.

@@ -75,7 +75,8 @@ NOT a carousel. NOT multiple slides. One card.
   "headline": "메인 헤드라인 한 문장 (15-40자, 경어체)",
   "body_lines": ["불릿 1 (10-30자)", "불릿 2 (10-30자)", "불릿 3 (옵션)"],
   "source_url": "원본 URL (입력값 그대로)",
-  "theme": "dark" | "yellow"
+  "theme": "dark" | "yellow",
+  "source_logo_visible": true | false
 }}
 
 Rules:
@@ -85,6 +86,7 @@ Rules:
 - body_lines: 1-3개 배열. 각 줄은 헤드라인을 뒷받침하는 구체 사실. 중복 금지.
 - source_url: 입력 source_url을 그대로 옮길 것. 생성/변경 금지 (시스템이 사후 보정).
 - theme: 아래 4번 규칙대로.
+- source_logo_visible: 첨부 이미지에 현재 Client의 공식 로고 또는 공식 워드마크가 명확히 보이면 true, 아니면 false. 파트너사·거래소·토큰 등 다른 로고는 무시할 것. 이미지가 없으면 false.
 
 ## 4. Theme Selection
 
@@ -127,6 +129,7 @@ Original visual context:
 
 When an original visual is attached:
 - Read visible product names, feature labels, token pairs, UI states, and numbers.
+- Check whether the current Client's official logo or wordmark is already clearly visible, so the renderer can avoid placing a duplicate logo.
 - Use the visual only as factual supporting context; do not invent hidden details.
 - Write Korean copy that complements the original visual instead of merely repeating its English headline.
 - Preserve important brand and product terms visible in the image.
@@ -141,7 +144,8 @@ Return JSON only. No markdown. No prose. No code fences.
   "headline": "...",
   "body_lines": ["...", "..."],
   "source_url": "{source_url}",
-  "theme": "dark" | "yellow"
+  "theme": "dark" | "yellow",
+  "source_logo_visible": true | false
 }}
 
 ## 8. Now Process This Source
@@ -224,11 +228,18 @@ def generate_news_card_spec(
             "headline": str,
             "body_lines": list[str],  # 1-3 items
             "source_url": str,
-            "theme": "dark" | "yellow"
+            "theme": "dark" | "yellow",
+            "source_logo_visible": bool
         }
     """
     if mock_mode:
-        return mock_response or _get_default_mock(client_id)
+        result = dict(mock_response or _get_default_mock(client_id))
+        result["source_logo_visible"] = (
+            result.get("source_logo_visible") is True
+            if source_image is not None
+            else False
+        )
+        return result
 
     config = get_client_config(client_id)
     llm_cfg = config.llm.news_card
@@ -283,6 +294,11 @@ def generate_news_card_spec(
     # Force-stamp source_url: LLM occasionally truncates or normalizes URLs;
     # the caller's URL is the source of truth.
     result["source_url"] = source_url
+    result["source_logo_visible"] = (
+        result.get("source_logo_visible") is True
+        if source_image is not None
+        else False
+    )
 
     _validate_result(result)
     return result
@@ -294,7 +310,15 @@ def generate_news_card_spec(
 
 VALID_THEMES = {"dark", "yellow"}
 DATE_PATTERN = re.compile(r"^\d{4}\.\d{2}\.\d{2}$")
-REQUIRED_KEYS = ("label", "date", "headline", "body_lines", "source_url", "theme")
+REQUIRED_KEYS = (
+    "label",
+    "date",
+    "headline",
+    "body_lines",
+    "source_url",
+    "theme",
+    "source_logo_visible",
+)
 
 
 def _validate_result(result: dict):
@@ -311,6 +335,9 @@ def _validate_result(result: dict):
 
     assert result["theme"] in VALID_THEMES, \
         f"news_card: 'theme' must be one of {VALID_THEMES}, got '{result['theme']}'"
+
+    assert isinstance(result["source_logo_visible"], bool), \
+        "news_card: 'source_logo_visible' must be bool"
 
     body = result["body_lines"]
     assert isinstance(body, list), "news_card: 'body_lines' must be list"
@@ -333,4 +360,5 @@ def _get_default_mock(client_id: str) -> dict:
         ],
         "source_url": "https://example.com",
         "theme": "dark",
+        "source_logo_visible": False,
     }

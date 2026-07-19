@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CoinEasy · 뉴스 카드 스튜디오</title>
+  <title>한국 현지화 뉴스 카드 스튜디오</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -235,8 +235,7 @@
     .preview-shell[data-client="babylon"] { --brand-primary:#ce6533; --brand-secondary:#f7931a; --brand-bg:#12495e; --brand-ink:#12495e; --brand-font:Inter, "Pretendard Variable", sans-serif; }
 
     .mock-card { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4.45%; font-family: var(--brand-font); }
-    .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: space-between; margin-bottom: 2.4%; }
-    .mock-top span { color: color-mix(in srgb, #fff 58%, transparent); font: 700 8px/1 Inter, sans-serif; letter-spacing: 1.4px; text-transform: uppercase; }
+    .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2.4%; }
     .mock-logo { width: 12%; height: 42px; object-fit: contain; object-position: right center; }
     .mock-inner { flex: 1; display: flex; flex-direction: column; padding: 5.2% 4.8%; border-radius: 18px; background: #fff; }
     .mock-label { align-self: flex-start; margin-bottom: 3%; padding: 1.2% 2.2%; border-radius: 7px; color: var(--brand-ink); background: var(--brand-primary); font-size: clamp(9px, 1.45vw, 17px); font-weight: 800; }
@@ -271,7 +270,6 @@
     .preview-shell[data-template="remix"] { background: #111; }
     .preview-shell[data-template="remix"] .mock-card { padding: 4.5%; justify-content: flex-end; background: radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--brand-primary) 35%, #17242b), transparent 34%), linear-gradient(135deg, #101a20, var(--brand-bg)); }
     .preview-shell[data-template="remix"] .mock-top { position: absolute; inset: 4.5% 4.5% auto; }
-    .preview-shell[data-template="remix"] .mock-top::after { content: "COINEASY"; padding: 7px 10px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; font: 700 7px/1 Inter, sans-serif; letter-spacing: 1px; }
     .preview-shell[data-template="remix"] .mock-inner { flex: 0 0 42%; padding: 4.6%; border-radius: 16px; background: color-mix(in srgb, var(--brand-bg) 94%, #000); box-shadow: 0 -12px 36px rgba(0,0,0,.22); }
     .preview-shell[data-template="remix"] .mock-headline { margin-bottom: 3%; color: #fff; font-size: clamp(21px, 4vw, 48px); }
     .preview-shell[data-template="remix"] .mock-lines { grid-template-columns: 1fr 1fr; gap: 7px; }
@@ -335,8 +333,8 @@
   <main class="app">
     <header class="topbar">
       <div class="wordmark">
-        <div class="wordmark-symbol">C</div>
-        <div><strong>CoinEasy</strong><span>Content Engine</span></div>
+        <div class="wordmark-symbol">K</div>
+        <div><strong>한국 현지화</strong><span>Content Studio</span></div>
       </div>
       <div class="connection" id="connection"><span class="connection-dot"></span>보안 서버 경유 연결</div>
     </header>
@@ -385,7 +383,7 @@
           <div class="field-label">배너 스타일 <span class="optional">4가지</span></div>
           <div class="template-grid" id="templates">
             <button class="template-option active" type="button" data-template="remix">
-              <span class="template-swatch"><i></i><i></i></span><strong>브랜드 비주얼 · 추천</strong><small>원본 배너 + CoinEasy 스타일</small>
+              <span class="template-swatch"><i></i><i></i></span><strong>브랜드 비주얼 · 추천</strong><small>원본 배너 + 한국 현지화</small>
             </button>
             <button class="template-option" type="button" data-template="classic">
               <span class="template-swatch"><i></i><i></i></span><strong>클래식</strong><small>뉴스 요약 카드</small>
@@ -448,7 +446,6 @@
             <div class="preview-shell" id="preview-shell" data-client="yellow" data-template="remix">
             <div class="mock-card" id="mock-card">
               <div class="mock-top">
-                <span>CoinEasy · branded news</span>
                 <img class="mock-logo" id="preview-logo" src="assets/brands/yellow-light.svg" alt="Yellow logo">
               </div>
               <div class="mock-inner">
@@ -766,7 +763,12 @@
             : payload.requested_template_style === "remix" && payload.template_style !== "remix"
               ? " · 원본 배너가 없어 클래식으로 자동 전환"
               : "";
-          resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 스타일로 생성했습니다${sourceNote}${remixNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+          const logoNote = payload.template_style === "remix"
+            ? payload.spec?.source_logo_visible === true
+              ? " · 원본 공식 로고 유지, 추가 로고 생략"
+              : " · 공식 로고 안전영역에 1회 배치"
+            : "";
+          resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 스타일로 생성했습니다${sourceNote}${remixNote}${logoNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
           download.href = state.imageUrl;
           download.download = payload.filename || `${state.client}-news-card.png`;
           download.hidden = false;
