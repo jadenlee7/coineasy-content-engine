@@ -293,15 +293,20 @@
     .spec ul { margin: 7px 0 0; padding-left: 18px; }
 
     .channel-copy { margin-top: 16px; }
-    .channel-copy > h3 { margin: 0 0 10px; color: var(--ink); font-size: 13px; }
+    .channel-copy > h3 { margin: 0 0 5px; color: var(--ink); font-size: 13px; }
+    .channel-copy-help { margin: 0 0 10px; color: var(--muted); font-size: 10px; line-height: 1.55; }
     .channel-copy-grid { display: grid; gap: 10px; }
     .channel-copy-card { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #fbfbfc; }
     .channel-copy-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .channel-copy-label { display: flex; align-items: baseline; gap: 7px; }
     .channel-copy-head strong { color: #4e5560; font-size: 11px; }
+    .channel-copy-count { color: #969ca5; font-size: 9px; }
     .copy-button { min-width: 58px; min-height: 36px; padding: 0 12px; border: 1px solid #d7dae0; border-radius: 9px; color: var(--ink); background: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 750; }
     .copy-button:hover { border-color: #aeb3bc; background: #f5f6f8; }
     .copy-button:focus-visible { outline: 3px solid rgba(39,99,255,.2); outline-offset: 2px; }
-    .channel-copy-text { max-height: 230px; overflow: auto; margin: 0; padding: 13px 14px 15px; color: #565d68; white-space: pre-wrap; overflow-wrap: anywhere; font: 500 11px/1.65 "Pretendard Variable", Pretendard, sans-serif; }
+    .channel-copy-text { display: block; width: 100%; min-height: 190px; max-height: 360px; overflow: auto; margin: 0; padding: 13px 14px 15px; border: 0; border-radius: 0; outline: 0; resize: vertical; color: #3f4650; background: #fbfbfc; white-space: pre-wrap; overflow-wrap: anywhere; font: 500 11px/1.65 "Pretendard Variable", Pretendard, sans-serif; }
+    .channel-copy-text.x-copy { min-height: 150px; }
+    .channel-copy-text:focus { background: #fff; box-shadow: inset 0 0 0 2px rgba(39,99,255,.18); }
 
     .privacy { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #8b919a; font-size: 10px; }
     .privacy svg { flex: 0 0 auto; }
@@ -469,15 +474,16 @@
             <div class="spec" id="spec"></div>
           </details>
           <section class="channel-copy" id="channel-copy" hidden>
-            <h3>채널별 게시 문구</h3>
+            <h3>복사해서 바로 게시하기</h3>
+            <p class="channel-copy-help">문구를 자유롭게 수정한 뒤 복사 버튼을 눌러 텔레그램과 X에 붙여넣으세요.</p>
             <div class="channel-copy-grid">
               <article class="channel-copy-card">
-                <div class="channel-copy-head"><strong>텔레그램 공지방</strong><button class="copy-button" type="button" data-copy-target="telegram-copy">복사</button></div>
-                <pre class="channel-copy-text" id="telegram-copy"></pre>
+                <div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong><span class="channel-copy-count" id="telegram-copy-count">0자</span></div><button class="copy-button" type="button" data-copy-target="telegram-copy">복사</button></div>
+                <textarea class="channel-copy-text" id="telegram-copy" rows="11" aria-label="텔레그램 공지문 편집" placeholder="카드를 생성하면 텔레그램 공지문이 여기에 채워집니다."></textarea>
               </article>
               <article class="channel-copy-card">
-                <div class="channel-copy-head"><strong>X 포스팅</strong><button class="copy-button" type="button" data-copy-target="x-copy">복사</button></div>
-                <pre class="channel-copy-text" id="x-copy"></pre>
+                <div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong><span class="channel-copy-count" id="x-copy-count">0/280자</span></div><button class="copy-button" type="button" data-copy-target="x-copy">복사</button></div>
+                <textarea class="channel-copy-text x-copy" id="x-copy" rows="8" aria-label="X 포스팅 편집" placeholder="카드를 생성하면 X 포스팅 문구가 여기에 채워집니다."></textarea>
               </article>
             </div>
           </section>
@@ -564,6 +570,8 @@
       const channelCopy = document.getElementById("channel-copy");
       const telegramCopy = document.getElementById("telegram-copy");
       const xCopy = document.getElementById("x-copy");
+      const telegramCopyCount = document.getElementById("telegram-copy-count");
+      const xCopyCount = document.getElementById("x-copy-count");
 
       function escapeHtml(value) {
         return String(value ?? "").replace(/[&<>\"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#039;" }[char]));
@@ -578,6 +586,29 @@
         state.svgUrl = "";
         downloadSvg.hidden = true;
         downloadSvg.removeAttribute("href");
+      }
+
+      function updateCopyCounts() {
+        telegramCopyCount.textContent = `${telegramCopy.value.length.toLocaleString("ko-KR")}자`;
+        xCopyCount.textContent = `${xCopy.value.length.toLocaleString("ko-KR")}/280자`;
+      }
+
+      async function copyField(target) {
+        const value = target.value;
+        if (!value.trim()) return false;
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(value);
+            return true;
+          }
+        } catch {
+          // Fall through to the selection-based copy path for mobile browsers.
+        }
+        target.focus();
+        target.select();
+        const copied = document.execCommand("copy");
+        target.setSelectionRange(value.length, value.length);
+        return copied;
       }
 
       async function prepareEditableDownload(payload) {
@@ -626,8 +657,9 @@
         clearEditableDownload();
         specDetails.hidden = true;
         channelCopy.hidden = true;
-        telegramCopy.textContent = "";
-        xCopy.textContent = "";
+        telegramCopy.value = "";
+        xCopy.value = "";
+        updateCopyCounts();
         state.imageUrl = "";
       }
 
@@ -691,13 +723,16 @@
         sourceUrl.value = normalizeUserUrl(sourceUrl.value);
       });
 
+      telegramCopy.addEventListener("input", updateCopyCounts);
+      xCopy.addEventListener("input", updateCopyCounts);
+
       channelCopy.addEventListener("click", async event => {
         const button = event.target.closest("[data-copy-target]");
         if (!button) return;
         const target = document.getElementById(button.dataset.copyTarget);
-        if (!target?.textContent) return;
+        if (!target) return;
         try {
-          await navigator.clipboard.writeText(target.textContent);
+          if (!await copyField(target)) throw new Error("copy_failed");
           const originalLabel = button.textContent;
           button.textContent = "복사됨";
           window.setTimeout(() => { button.textContent = originalLabel; }, 1400);
@@ -782,9 +817,10 @@
             (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "");
           specDetails.hidden = false;
 
-          telegramCopy.textContent = payload.channel_copy?.telegram || "";
-          xCopy.textContent = payload.channel_copy?.x || "";
-          channelCopy.hidden = !(telegramCopy.textContent || xCopy.textContent);
+          telegramCopy.value = payload.channel_copy?.telegram || "";
+          xCopy.value = payload.channel_copy?.x || "";
+          updateCopyCounts();
+          channelCopy.hidden = !(telegramCopy.value || xCopy.value);
           setStatus(editableReady
             ? "PNG와 Figma 편집본이 완성되었습니다. SVG를 Figma 캔버스로 드래그하면 레이어별로 수정할 수 있습니다."
             : "PNG는 완성됐지만 Figma 편집본을 준비하지 못했습니다. 잠시 후 다시 생성해주세요.",
