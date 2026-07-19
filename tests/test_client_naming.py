@@ -22,3 +22,21 @@ def test_squid_uses_approved_display_name_across_nested_generated_content():
 def test_other_clients_are_not_rewritten():
     value = {"headline": "Squid Router integration"}
     assert enforce_client_display_name("yellow", value) is value
+
+
+def test_squid_uses_natural_korean_particles():
+    value = [
+        "Squid이 업데이트했습니다",
+        "Squid은 연결합니다",
+        "Squid을 사용합니다",
+        "Squid과 통합합니다",
+        "Squid으로 이동합니다",
+    ]
+
+    assert enforce_client_display_name("squid", value) == [
+        "Squid가 업데이트했습니다",
+        "Squid는 연결합니다",
+        "Squid를 사용합니다",
+        "Squid와 통합합니다",
+        "Squid로 이동합니다",
+    ]
