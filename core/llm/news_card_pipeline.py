@@ -24,6 +24,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
+from core.brand_voice import build_brand_voice_prompt
 from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
@@ -65,7 +66,9 @@ NOT a carousel. NOT multiple slides. One card.
 - body_lines = 핵심 디테일 1-3줄 (불릿 형태)
 - "What changed" + "Why it matters" 두 가지가 카드 안에 다 들어가야 함
 - 광고 톤 아닌 뉴스 톤 (홍보가 아니라 사실 전달)
-- 한국 GTM 시즈닝: 단순 번역을 피하고, 한국 사용자·빌더가 이해할 수 있는 의미를 한 줄에 담을 것
+- 한국 현지화: 원문의 주장과 강도를 유지하면서 자연스러운 한국어로 옮기고,
+  낯선 용어만 필요한 만큼 짧게 풀어 쓸 것
+- 원문에 없는 해석, 효용, 시장 전망, 한국 관점을 새로 추가하지 말 것
 - 한국 출시·지원 여부가 원문에 없으면 한국에서 제공된다고 추정하거나 과장하지 말 것
 
 ## 3. Output Schema (FIXED — do not add or remove keys)
@@ -105,6 +108,8 @@ Rules:
 
 - Tone guidance: {tone_guidance}
 
+{brand_voice_block}
+
 - em dash(—) 사용 금지. 쉼표(,)나 마침표(.)로 대체. (label/headline/body_lines 전체 적용)
 
 - Length budgets (Korean chars):
@@ -132,7 +137,7 @@ When an original visual is attached:
 - Read visible product names, feature labels, token pairs, UI states, and numbers.
 - Check whether the current Client's official logo or wordmark is already clearly visible, so the renderer can avoid placing a duplicate logo.
 - Use the visual only as factual supporting context; do not invent hidden details.
-- Write Korean copy that complements the original visual instead of merely repeating its English headline.
+- Write Korean copy that makes the original visual locally readable without adding a new angle or claim.
 - Preserve important brand and product terms visible in the image.
 
 ## 7. Output Format (STRICT JSON)
@@ -194,6 +199,7 @@ def _build_user_prompt(
         preserve_terms_block=preserve_block,
         glossary_block=glossary_block,
         tone_guidance=tone,
+        brand_voice_block=build_brand_voice_prompt(config, "news_card"),
         client_name=config.name,
         client_id=config.client_id,
         source_type=source_type,

@@ -23,6 +23,7 @@ import json
 import re
 from typing import Literal, Optional
 
+from core.brand_voice import build_brand_voice_prompt
 from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
@@ -122,6 +123,8 @@ style: "highlight" (yellow) | "emphasis" (black) | "base" (gray)
 
 - Tone guidance: {tone_guidance}
 
+{brand_voice_block}
+
 - Length budgets (Korean chars):
   - series_title_en: 20-40 chars (English kept)
   - lesson_title_kr: 10-25 chars (punchy)
@@ -207,6 +210,7 @@ def _build_user_prompt(
         preserve_terms_block=preserve_block,
         glossary_block=glossary_block,
         tone_guidance=tone,
+        brand_voice_block=build_brand_voice_prompt(config, "education"),
         client_name=config.name,
         client_id=config.client_id,
         source_type=source_type,

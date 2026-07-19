@@ -9,26 +9,28 @@ type ChannelCopy = {
   x: string;
 };
 
+type XStyle = "analytical" | "causal" | "minimal" | "guide";
+
 const CLIENT_COPY = {
   yellow: {
     name: "Yellow",
     hashtags: ["#Yellow", "#YellowNetwork", "#YellowKorea", "#Web3"],
-    xHashtags: ["#Yellow", "#YellowKorea"],
+    xStyle: "analytical" as XStyle,
   },
   origintrail: {
     name: "OriginTrail",
     hashtags: ["#OriginTrail", "#TRAC", "#DKG", "#Web3"],
-    xHashtags: ["#OriginTrail", "#DKG"],
+    xStyle: "causal" as XStyle,
   },
   squid: {
     name: "Squid",
     hashtags: ["#SquidRouter", "#CrossChain", "#SquidKorea", "#Web3"],
-    xHashtags: ["#SquidRouter", "#SquidKorea"],
+    xStyle: "minimal" as XStyle,
   },
   babylon: {
     name: "Babylon",
     hashtags: ["#Babylon", "#BitcoinStaking", "#BTC", "#BabylonKorea"],
-    xHashtags: ["#Babylon", "#BabylonKorea"],
+    xStyle: "guide" as XStyle,
   },
 } as const;
 
@@ -42,22 +44,31 @@ function truncateText(value: string, maxLength: number): string {
 }
 
 function buildXPost(
+  style: XStyle,
   headline: string,
   bodyLines: string[],
-  sourceUrl: string,
-  hashtags: readonly string[],
+  sourceContent: string,
 ): string {
-  const footer = [sourceUrl ? `🔗 원문 확인: ${sourceUrl}` : "", hashtags.join(" ")]
-    .filter(Boolean)
-    .join("\n\n");
-  const available = Math.max(80, 280 - (footer ? footer.length + 2 : 0));
-  const core = [`📌 ${truncateText(headline, Math.min(118, available - 3))}`];
-  for (const line of bodyLines.slice(0, 2)) {
-    const item = `• ${truncateText(line, 72)}`;
-    if ([...core, item].join("\n\n").length <= available) core.push(item);
+  const sourceTokens = Array.from(
+    new Set(cleanText(sourceContent).match(/(?:^|\s)([@#$][A-Za-z0-9_]+)/g)?.map((token) => token.trim()) || []),
+  );
+  const sourceIsShort = cleanText(sourceContent).length <= 120;
+  const bodyLimit = style === "minimal" && sourceIsShort ? 1 : 2;
+  const core = [truncateText(headline, 118)];
+
+  for (const line of bodyLines.slice(0, bodyLimit)) {
+    const prefix = style === "causal" ? "→ " : style === "guide" ? "• " : "";
+    const item = `${prefix}${truncateText(line, style === "minimal" ? 80 : 88)}`;
+    if ([...core, item].join("\n\n").length <= 250) core.push(item);
   }
-  const coreText = truncateText(core.join("\n\n"), available);
-  return footer ? `${coreText}\n\n${footer}` : coreText;
+
+  let result = truncateText(core.join("\n\n"), 280);
+  const missingTokens = sourceTokens.filter((token) => !result.includes(token));
+  if (missingTokens.length) {
+    const tokenLine = missingTokens.join(" ");
+    if (`${result}\n\n${tokenLine}`.length <= 280) result = `${result}\n\n${tokenLine}`;
+  }
+  return result;
 }
 
 export function buildChannelCopy(
@@ -88,6 +99,6 @@ export function buildChannelCopy(
 
   return {
     telegram: telegramSections.join("\n\n"),
-    x: buildXPost(headline, bodyLines, sourceUrl, client.xHashtags),
+    x: buildXPost(client.xStyle, headline, bodyLines, sourceContent),
   };
 }

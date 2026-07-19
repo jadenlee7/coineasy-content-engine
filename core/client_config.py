@@ -68,6 +68,17 @@ class ContentSources:
 
 
 @dataclass
+class BrandVoiceConfig:
+    """Source-locked localization and official-post voice references."""
+    identity: list[str] = field(default_factory=list)
+    avoid: list[str] = field(default_factory=list)
+    writing_patterns: list[str] = field(default_factory=list)
+    source_fidelity: dict[str, int] = field(default_factory=dict)
+    channel_guidance: dict[str, str] = field(default_factory=dict)
+    reference_examples: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class LLMPipelineConfig:
     """Per-pipeline LLM config (edu_carousel, news_card, etc.)"""
     model: str = field(default_factory=_resolve_default_model)
@@ -150,6 +161,7 @@ class ClientConfig:
     
     brand: BrandConfig = field(default_factory=BrandConfig)
     content_sources: ContentSources = field(default_factory=ContentSources)
+    brand_voice: BrandVoiceConfig = field(default_factory=BrandVoiceConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     publishing: PublishingConfig = field(default_factory=PublishingConfig)
     feature_flags: FeatureFlags = field(default_factory=FeatureFlags)
@@ -203,6 +215,23 @@ def _parse_content_sources(d: dict) -> ContentSources:
     return ContentSources(
         twitter=_parse_twitter(d.get("twitter")),
         blog_rss=d.get("blog_rss", []) or [],
+    )
+
+
+def _parse_brand_voice(d: dict) -> BrandVoiceConfig:
+    if not d:
+        return BrandVoiceConfig()
+    source_fidelity = d.get("source_fidelity", {}) or {}
+    return BrandVoiceConfig(
+        identity=d.get("identity", []) or [],
+        avoid=d.get("avoid", []) or [],
+        writing_patterns=d.get("writing_patterns", []) or [],
+        source_fidelity={
+            str(key): max(0, min(100, int(value)))
+            for key, value in source_fidelity.items()
+        },
+        channel_guidance=d.get("channel_guidance", {}) or {},
+        reference_examples=d.get("reference_examples", []) or [],
     )
 
 
@@ -286,6 +315,7 @@ def load_client_config(client_id: str, clients_dir: Optional[Path] = None) -> Cl
         active=data.get("active", True),
         brand=BrandConfig(**{**BrandConfig().__dict__, **brand_data}),
         content_sources=_parse_content_sources(data.get("content_sources")),
+        brand_voice=_parse_brand_voice(data.get("brand_voice")),
         llm=_parse_llm(data.get("llm")),
         publishing=_parse_publishing(data.get("publishing")),
         feature_flags=FeatureFlags(**{**FeatureFlags().__dict__, **(data.get("feature_flags") or {})}),

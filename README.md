@@ -16,7 +16,8 @@ Each slide is 1080×1080 PNG with client branding automatically applied.
 **Current clients:**
 - Yellow Network (`yellow`)
 - Squid (`squid`)
-- OriginTrail Korea (`origintrail`) — news_card only; 브랜드 팔레트 확정 대기 (placeholder)
+- OriginTrail Korea (`origintrail`) — news_card only
+- Babylon Korea (`babylon`) — news_card only
 
 **Cost:** Approximate and model-dependent — budget on the order of a few dollars/month per client.
 
@@ -119,7 +120,9 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/
 
 The Netlify console accepts a public X status URL by itself. Its server-side function imports the post text and first attached photo, then forwards the extracted content, canonical source URL, and allowlisted image URL to the Railway API. The recommended `remix` style reads visible banner text with Claude vision, preserves the complete source visual, and adds localized Korean copy without an agency mark. The same vision pass detects whether the client's official logo is already visible: an extra logo is omitted when present and otherwise placed once in the Korean panel's safe area. Posts without an available image automatically fall back to `classic`. Article and blog URLs still require pasted source text.
 
-After generation, the console also returns channel-ready Korean copy in `channel_copy`: `telegram` is a full announcement with the generated headline and bullets, CTA, canonical original link, and client hashtags; `x` is a concise Korean post with the generated headline, selected key points, original-link CTA, and focused client hashtags. Both are available as one-click copy blocks below the card preview.
+After generation, the console also returns channel-ready Korean copy in `channel_copy`. `telegram` is a full announcement with the generated headline and bullets, CTA, canonical original link, and client hashtags. `x` is source-locked Korean localization: it follows each client's observed cadence, preserves source handles/cashtags/hashtags, and does not automatically add a generic CTA, link, or campaign hashtags. Both are available as one-click copy blocks below the card preview.
+
+Each client config also contains a `brand_voice` profile derived from recent official posts: voice constants, anti-patterns, observed writing structures, channel-specific source-fidelity targets, and reference examples. These rules are injected into both news-card and education prompts. Reference examples control cadence only; their facts are explicitly barred from leaking into the current source. The shared enforcement guide lives at `.claude/brand-voice-guidelines.md`.
 
 The console provides two design outputs for every generated card: the production-ready 2160×2160 PNG and a 1080×1080 Figma-editable SVG. The SVG uses named native text, shape, logo, and source-image layers rather than `foreignObject`; drag the downloaded SVG onto a Figma Design canvas to adjust copy, colors, spacing, logo placement, and image cropping. Designers need the configured brand fonts installed for exact typography.
 

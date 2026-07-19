@@ -43,7 +43,8 @@ def test_original_visual_is_sent_to_llm_with_korean_gtm_guidance(monkeypatch):
     assert content[0]["type"] == "image"
     assert content[0]["source"]["media_type"] == "image/jpeg"
     assert content[0]["source"]["data"] == "aW1hZ2U="
-    assert "한국 GTM 시즈닝" in content[1]["text"]
+    assert "원문의 주장과 강도를 유지" in content[1]["text"]
+    assert "원문에 없는 해석" in content[1]["text"]
     assert "original post image is attached" in content[1]["text"]
     assert "official logo or wordmark" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
