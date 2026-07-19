@@ -280,10 +280,18 @@ def _normalize_visual_localization(
             if not isinstance(text, str) or not text.strip():
                 continue
 
-            x = max(0.0, min(99.0, _number(raw.get("x"), 8.0)))
-            y = max(0.0, min(99.0, _number(raw.get("y"), 8.0)))
-            width = max(1.0, min(100.0 - x, _number(raw.get("width"), 84.0)))
-            height = max(1.0, min(100.0 - y, _number(raw.get("height"), 20.0)))
+            raw_x = max(0.0, min(99.0, _number(raw.get("x"), 8.0)))
+            raw_y = max(0.0, min(99.0, _number(raw.get("y"), 8.0)))
+            raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
+            raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
+            # Vision boxes are often tight around glyphs. Expand the cover area
+            # so antialiasing and the last English character cannot remain visible.
+            x = max(0.0, raw_x - 2.0)
+            y = max(0.0, raw_y - 1.0)
+            right = min(100.0, raw_x + raw_width + 2.0)
+            bottom = min(100.0, raw_y + raw_height + 1.0)
+            width = right - x
+            height = bottom - y
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             font_role = raw.get("font_role") if raw.get("font_role") in _REGION_FONT_ROLES else "display"
             text_color = raw.get("text_color")
