@@ -30,7 +30,9 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "logo_dark_path" not in override_html
     assert "translation-region::after" not in override_html
     assert "--region-tint" not in override_html
-    assert "mask-composite: intersect" in override_html
+    assert ".translation-region::before" in override_html
+    assert "content: none" in override_html
+    assert "filter: blur" not in override_html
     assert "-webkit-text-stroke" in override_html
 
 

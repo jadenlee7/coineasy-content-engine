@@ -23,6 +23,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
             "source_logo_visible": True,
             "source_text_visible": True,
             "translation_regions": [{
+                "source_text": "Need XRP anywhere?",
                 "text": "어디서나 XRP가 필요하신가요?",
                 "x": 4,
                 "y": 15,
@@ -62,9 +63,10 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "official logo or wordmark" in content[1]["text"]
     assert "official creative as the final composition" in content[1]["text"]
     assert "no meaningful translatable copy" in content[1]["text"]
+    assert "source_text must transcribe the visible source phrase exactly" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "transparent, feathered source-image blur" in content[1]["text"]
+    assert "transparent, expanded outline and shadow" in content[1]["text"]
     assert "solid caption box" in content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
@@ -75,9 +77,9 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert result["translation_regions"] == [{
         "text": "어디서나 XRP가 필요하신가요?",
         "x": 2.0,
-        "y": 14.0,
+        "y": 13.0,
         "width": 96.0,
-        "height": 14.0,
+        "height": 15.0,
         "align": "center",
         "font_role": "display",
         "font_size": 12.0,
@@ -101,6 +103,7 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
                 "source_logo_visible": True,
                 "source_text_visible": True,
                 "translation_regions": [{
+                    "source_text": "stack is love,\nstack is life.",
                     "text": "stack is love, stack is life.",
                     "x": 30,
                     "y": 70,
@@ -143,9 +146,9 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
     assert result["translation_regions"] == [{
         "text": "스택은 사랑, 스택은 인생.",
         "x": 28.0,
-        "y": 69.0,
-        "width": 44.0,
-        "height": 12.0,
+        "y": 60.0,
+        "width": 36.6,
+        "height": 21.0,
         "align": "center",
         "font_role": "display",
         "font_size": 5.0,

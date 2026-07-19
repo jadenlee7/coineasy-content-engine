@@ -49,8 +49,9 @@ brand_voice:
       editorial copy, replace only that copy with concise natural Korean in the same
       hierarchy and alignment. If it contains no translatable copy, preserve the
       character and visual untouched. Never add a headline panel, badge, footer, CTA,
-      or duplicate logo. Korean text must never sit on a solid caption box; use only
-      a transparent, feathered source-image blur where the original glyphs must be removed.
+      or duplicate logo. Korean text must never sit on a solid caption box or blurred
+      image patch; cover the original copy only with a transparent outline and shadow
+      that follows the replacement glyphs.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
   reference_examples:
     - type: "community one-liner"

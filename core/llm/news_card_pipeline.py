@@ -90,6 +90,7 @@ NOT a carousel. NOT multiple slides. One card.
   "source_text_visible": true | false,
   "translation_regions": [
     {{
+      "source_text": "이미지에 보이는 원문 문구를 줄바꿈까지 그대로 기록",
       "text": "원본 배너 문구의 자연스러운 한국어 번역",
       "x": 0-100,
       "y": 0-100,
@@ -226,10 +227,11 @@ def _build_user_prompt(
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
 - If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols.
+- source_text must transcribe the visible source phrase exactly, including its line breaks. Use one tight region around the actual glyphs and shadows, not the full lower third or an empty background area.
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, and token symbols inside an otherwise Korean translation.
 - Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Include enough padding to hide the original copy without covering characters, products, or logos.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
-- The renderer uses a transparent, feathered source-image blur only to remove the original glyphs. Never request or imply a solid caption box, panel, chip, or opaque background behind the Korean text.
+- The renderer uses only a transparent, expanded outline and shadow attached to the Korean glyphs to cover the original copy. Never request or imply image blur, a solid caption box, panel, chip, or opaque background behind the Korean text.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -266,6 +268,31 @@ def _number(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _text_width_units(text: str) -> float:
+    """Approximate the widest rendered line in font-relative units."""
+    line_units: list[float] = []
+    for line in text.splitlines() or [text]:
+        units = 0.0
+        for character in line:
+            if "가" <= character <= "힣":
+                units += 1.0
+            elif character.isspace():
+                units += 0.35
+            elif character.isupper() or character.isdigit():
+                units += 0.65
+            elif character.isalpha():
+                units += 0.55
+            else:
+                units += 0.45
+        line_units.append(units)
+    return max(line_units, default=1.0)
+
+
+def _source_text_width_percent(source_text: str, font_size: float) -> float:
+    """Estimate source glyph width so localization stays aligned to the original copy."""
+    return max(8.0, min(100.0, _text_width_units(source_text) * font_size * 0.85 + 2.0))
 
 
 def _parse_json_response(response: object, purpose: str) -> dict:
@@ -446,12 +473,28 @@ def _normalize_visual_localization(
 
             raw_x = max(0.0, min(99.0, _number(raw.get("x"), 8.0)))
             raw_y = max(0.0, min(99.0, _number(raw.get("y"), 8.0)))
+            font_size = max(2.0, min(12.0, _number(raw.get("font_size"), 5.2)))
             raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
             raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
-            # Vision boxes are often tight around glyphs. Expand the cover area
-            # so antialiasing and the last English character cannot remain visible.
+            source_text = raw.get("source_text")
+            if isinstance(source_text, str) and source_text.strip():
+                source_text = source_text.strip()
+                estimated_width = _source_text_width_percent(source_text, font_size)
+                if raw_width > estimated_width * 1.2:
+                    raw_width = estimated_width
+                translation_units = _text_width_units(text.strip())
+                source_units = _text_width_units(source_text)
+                if translation_units > 0 and source_units > translation_units:
+                    width_ratio = source_units / translation_units
+                    if _ASCII_WORD.search(source_text) and _HANGUL.search(text):
+                        width_ratio *= 1.25
+                    font_size = min(12.0, font_size * min(1.7, width_ratio))
+
+            # Lower-third caption detections frequently anchor near the first
+            # baseline. Give multi-line replacement copy enough room above.
+            top_padding = 10.0 if raw_y >= 65.0 else 2.0
             x = max(0.0, raw_x - 2.0)
-            y = max(0.0, raw_y - 1.0)
+            y = max(0.0, raw_y - top_padding)
             right = min(100.0, raw_x + raw_width + 2.0)
             bottom = min(100.0, raw_y + raw_height + 1.0)
             width = right - x
@@ -468,7 +511,7 @@ def _normalize_visual_localization(
                 "height": round(height, 2),
                 "align": align,
                 "font_role": font_role,
-                "font_size": round(max(2.0, min(12.0, _number(raw.get("font_size"), 5.2))), 2),
+                "font_size": round(font_size, 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
             })
 
