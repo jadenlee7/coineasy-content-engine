@@ -46,6 +46,8 @@ def test_original_visual_is_sent_to_llm_with_korean_gtm_guidance(monkeypatch):
     assert "한국 GTM 시즈닝" in content[1]["text"]
     assert "original post image is attached" in content[1]["text"]
     assert "official logo or wordmark" in content[1]["text"]
+    assert "Client: Squid (squid)" in content[1]["text"]
+    assert "Squid Router" not in content[1]["text"]
     assert result["source_url"] == "https://x.com/squidrouter/status/123"
     assert result["source_logo_visible"] is True
 

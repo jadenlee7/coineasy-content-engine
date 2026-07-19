@@ -24,6 +24,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
+from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
 from core.sources.source_image import PreparedSourceImage
@@ -234,6 +235,7 @@ def generate_news_card_spec(
     """
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
+        result = enforce_client_display_name(client_id, result)
         result["source_logo_visible"] = (
             result.get("source_logo_visible") is True
             if source_image is not None
@@ -294,6 +296,7 @@ def generate_news_card_spec(
     # Force-stamp source_url: LLM occasionally truncates or normalizes URLs;
     # the caller's URL is the source of truth.
     result["source_url"] = source_url
+    result = enforce_client_display_name(client_id, result)
     result["source_logo_visible"] = (
         result.get("source_logo_visible") is True
         if source_image is not None

@@ -40,6 +40,8 @@ test("omits an extra official logo when the source visual already contains it", 
   assert.match(svg, /id="Source-Visual"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
   assert.match(svg, /id="Localized-Content-Panel"/);
+  assert.match(svg, /<title id="Title">Squid editable Korean news card<\/title>/);
+  assert.doesNotMatch(svg, /Squid Router/);
   assert.doesNotMatch(svg, /Official-Logo-Safe-Area|CoinEasy|COINEASY/i);
 });
 
