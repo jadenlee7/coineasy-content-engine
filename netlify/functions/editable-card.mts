@@ -1,0 +1,107 @@
+import type { Config, Context } from "@netlify/functions";
+import {
+  buildEditableSvg,
+  type EditableCardAssets,
+  type EditableClientId,
+  type EditableTemplateStyle,
+} from "./_shared/editable-svg.mts";
+
+type EditableCardRequest = {
+  spec?: unknown;
+  template_style?: unknown;
+  source_image_url?: unknown;
+};
+
+const CLIENT_ASSETS: Record<EditableClientId, { dark: string; light: string }> = {
+  yellow: { dark: "/assets/brands/yellow-dark.svg", light: "/assets/brands/yellow-light.svg" },
+  origintrail: { dark: "/assets/brands/origintrail-dark.png", light: "/assets/brands/origintrail-light.png" },
+  squid: { dark: "/assets/brands/squid-dark.png", light: "/assets/brands/squid-light.png" },
+  babylon: { dark: "/assets/brands/babylon-dark.png", light: "/assets/brands/babylon-light.png" },
+};
+
+function jsonError(error: string, status: number): Response {
+  return Response.json({ error }, {
+    status,
+    headers: { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+function allowlistedSourceImage(value: unknown): string {
+  if (typeof value !== "string" || !value) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "pbs.twimg.com" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function fetchImageDataUrl(url: string, maxBytes: number): Promise<string> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+  if (!response.ok) throw new Error("image_fetch_failed");
+  const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
+  if (!/^image\/(?:png|jpeg|webp|svg\+xml)$/.test(contentType)) throw new Error("unsupported_image_type");
+  const declaredSize = Number(response.headers.get("content-length") || 0);
+  if (declaredSize > maxBytes) throw new Error("image_too_large");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error("image_too_large");
+  return `data:${contentType};base64,${bytes.toString("base64")}`;
+}
+
+export default async (req: Request, context: Context): Promise<Response> => {
+  if (req.method !== "POST") return jsonError("method_not_allowed", 405);
+
+  const clientId = context.params.clientId as EditableClientId | undefined;
+  if (!clientId || !(clientId in CLIENT_ASSETS)) return jsonError("unknown_client", 404);
+
+  let body: EditableCardRequest;
+  try {
+    body = (await req.json()) as EditableCardRequest;
+  } catch {
+    return jsonError("invalid_json", 400);
+  }
+  if (!body.spec || typeof body.spec !== "object" || Array.isArray(body.spec)) {
+    return jsonError("invalid_spec", 400);
+  }
+  const allowedStyles = new Set<EditableTemplateStyle>(["remix", "classic", "editorial", "signal"]);
+  const templateStyle = typeof body.template_style === "string" && allowedStyles.has(body.template_style as EditableTemplateStyle)
+    ? body.template_style as EditableTemplateStyle
+    : "classic";
+
+  const assetPaths = CLIENT_ASSETS[clientId];
+  const siteOrigin = new URL(context.site.url).origin;
+  const sourceImageUrl = allowlistedSourceImage(body.source_image_url);
+  const assets: EditableCardAssets = {};
+  const assetRequests: Array<Promise<void>> = [
+    fetchImageDataUrl(new URL(assetPaths.dark, siteOrigin).toString(), 512_000)
+      .then((value) => { assets.logoDark = value; })
+      .catch(() => undefined),
+    fetchImageDataUrl(new URL(assetPaths.light, siteOrigin).toString(), 512_000)
+      .then((value) => { assets.logoLight = value; })
+      .catch(() => undefined),
+  ];
+  if (templateStyle === "remix" && sourceImageUrl) {
+    assetRequests.push(
+      fetchImageDataUrl(sourceImageUrl, 4_000_000)
+        .then((value) => { assets.sourceImage = value; })
+        .catch(() => undefined),
+    );
+  }
+  await Promise.all(assetRequests);
+
+  const svg = buildEditableSvg(clientId, templateStyle, body.spec, assets);
+  const filename = `${clientId}-${templateStyle}-figma-editable.svg`;
+  return new Response(svg, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+};
+
+export const config: Config = {
+  path: "/api/editable-card/:clientId",
+};

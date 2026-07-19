@@ -210,6 +210,9 @@
       font-size: 11px;
       font-weight: 750;
     }
+    .action.figma { color: #fff; border-color: #191b20; background: #191b20; }
+    .action:hover { border-color: #aeb3bc; }
+    .action.figma:hover { border-color: #30333a; background: #30333a; }
 
     .stage { padding: 24px; background: #eceff3; }
     .preview-shell {
@@ -342,12 +345,12 @@
       <div class="hero-copy">
         <p class="eyebrow">News card studio</p>
         <h1>브랜드에 맞는 뉴스 카드를<br>실제 렌더러로 생성하세요.</h1>
-        <p>Figma에서 확정한 색상, 공식 로고, 클라이언트별 서체를 Railway 렌더러가 적용합니다. 생성된 2160×2160 PNG를 화면에서 확인하고 바로 저장할 수 있습니다.</p>
+        <p>Figma에서 확정한 색상, 공식 로고, 클라이언트별 서체를 Railway 렌더러가 적용합니다. 2160×2160 PNG와 디자이너가 레이어별로 수정할 수 있는 Figma용 SVG를 함께 제공합니다.</p>
       </div>
       <div class="hero-meta">
         <div class="hero-chip">4 CLIENTS</div>
         <div class="hero-chip">1080 × 1080</div>
-        <div class="hero-chip">PNG @2X</div>
+        <div class="hero-chip">PNG + FIGMA SVG</div>
       </div>
     </section>
 
@@ -437,6 +440,7 @@
           <h2 class="result-title">카드 미리보기 <span id="result-kind">· 브랜드 예시</span></h2>
           <div class="actions">
             <a class="action" id="download" href="#" download hidden>PNG 저장</a>
+            <a class="action figma" id="download-svg" href="#" download hidden>Figma 편집용 SVG</a>
           </div>
         </div>
 
@@ -462,7 +466,7 @@
         </div>
 
         <div class="result-meta">
-          <p class="result-note" id="result-note">현재 화면은 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 Railway 렌더러가 만든 실제 PNG로 교체됩니다.</p>
+          <p class="result-note" id="result-note">현재 화면은 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. 생성 후 실제 PNG와 Figma 편집용 SVG를 함께 저장할 수 있습니다.</p>
           <details id="spec-details" hidden>
             <summary>생성된 문구 보기</summary>
             <div class="spec" id="spec"></div>
@@ -533,7 +537,7 @@
         signal: "시그널"
       };
 
-      const state = { client: "yellow", template: "remix", imageUrl: "" };
+      const state = { client: "yellow", template: "remix", imageUrl: "", svgUrl: "" };
       const form = document.getElementById("generator-form");
       const clients = document.getElementById("clients");
       const templates = document.getElementById("templates");
@@ -557,6 +561,7 @@
       const resultNote = document.getElementById("result-note");
       const loading = document.getElementById("loading");
       const download = document.getElementById("download");
+      const downloadSvg = document.getElementById("download-svg");
       const specDetails = document.getElementById("spec-details");
       const spec = document.getElementById("spec");
       const channelCopy = document.getElementById("channel-copy");
@@ -569,6 +574,38 @@
 
       function today() {
         return new Intl.DateTimeFormat("ko-KR", { year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date()).replace(/\. /g, ".").replace(/\.$/, "");
+      }
+
+      function clearEditableDownload() {
+        if (state.svgUrl) URL.revokeObjectURL(state.svgUrl);
+        state.svgUrl = "";
+        downloadSvg.hidden = true;
+        downloadSvg.removeAttribute("href");
+      }
+
+      async function prepareEditableDownload(payload) {
+        try {
+          const response = await fetch(`/api/editable-card/${encodeURIComponent(state.client)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              spec: payload.spec || {},
+              template_style: payload.template_style || state.template,
+              source_image_url: payload.source_image_url || ""
+            })
+          });
+          if (!response.ok) return false;
+          const svgBlob = await response.blob();
+          if (!svgBlob.type.includes("image/svg+xml")) return false;
+          clearEditableDownload();
+          state.svgUrl = URL.createObjectURL(svgBlob);
+          downloadSvg.href = state.svgUrl;
+          downloadSvg.download = `${state.client}-${payload.template_style || state.template}-figma-editable.svg`;
+          downloadSvg.hidden = false;
+          return true;
+        } catch {
+          return false;
+        }
       }
 
       function renderBrand() {
@@ -587,8 +624,9 @@
         resultImage.hidden = true;
         resultImage.removeAttribute("src");
         resultKind.textContent = `· ${TEMPLATE[state.template]} 예시`;
-        resultNote.textContent = `현재 화면은 ${TEMPLATE[state.template]} 템플릿에 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 실제 PNG로 교체됩니다.`;
+        resultNote.textContent = `현재 화면은 ${TEMPLATE[state.template]} 템플릿에 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. 생성 후 실제 PNG와 Figma 편집용 SVG를 함께 저장할 수 있습니다.`;
         download.hidden = true;
+        clearEditableDownload();
         specDetails.hidden = true;
         channelCopy.hidden = true;
         telegramCopy.textContent = "";
@@ -629,6 +667,7 @@
       }
 
       clients.addEventListener("click", event => {
+        if (generate.disabled) return;
         const button = event.target.closest(".client");
         if (!button) return;
         state.client = button.dataset.client;
@@ -638,6 +677,7 @@
       });
 
       templates.addEventListener("click", event => {
+        if (generate.disabled) return;
         const button = event.target.closest(".template-option");
         if (!button) return;
         state.template = button.dataset.template;
@@ -693,6 +733,7 @@
         generate.disabled = true;
         loading.hidden = false;
         download.hidden = true;
+        clearEditableDownload();
         specDetails.hidden = true;
         channelCopy.hidden = true;
         setStatus(contentIsXLink || (content.length < 10 && isXStatusUrl(normalizedUrl))
@@ -729,6 +770,8 @@
           download.href = state.imageUrl;
           download.download = payload.filename || `${state.client}-news-card.png`;
           download.hidden = false;
+          setStatus("PNG가 완성되었습니다. Figma 편집본을 준비하고 있습니다…");
+          const editableReady = await prepareEditableDownload(payload);
 
           const generatedSpec = payload.spec || {};
           const lines = Array.isArray(generatedSpec.body_lines) ? generatedSpec.body_lines : [];
@@ -740,7 +783,10 @@
           telegramCopy.textContent = payload.channel_copy?.telegram || "";
           xCopy.textContent = payload.channel_copy?.x || "";
           channelCopy.hidden = !(telegramCopy.textContent || xCopy.textContent);
-          setStatus("카드가 완성되었습니다. PNG를 저장하고 아래에서 채널별 문구를 복사할 수 있습니다.", "success");
+          setStatus(editableReady
+            ? "PNG와 Figma 편집본이 완성되었습니다. SVG를 Figma 캔버스로 드래그하면 레이어별로 수정할 수 있습니다."
+            : "PNG는 완성됐지만 Figma 편집본을 준비하지 못했습니다. 잠시 후 다시 생성해주세요.",
+          editableReady ? "success" : "error");
           document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
         } catch (error) {
           const payload = error?.payload || {};
