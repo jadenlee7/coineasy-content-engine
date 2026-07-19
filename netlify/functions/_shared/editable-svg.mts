@@ -31,8 +31,6 @@ type NormalizedTranslationRegion = {
   fontRole: "display" | "body";
   fontSize: number;
   textColor: string;
-  backgroundColor: string;
-  backgroundOpacity: number;
 };
 
 type NormalizedSpec = {
@@ -123,6 +121,14 @@ function normalizedColor(value: unknown, fallback: string): string {
     : fallback;
 }
 
+function outlineColor(textColor: string): string {
+  const red = Number.parseInt(textColor.slice(1, 3), 16);
+  const green = Number.parseInt(textColor.slice(3, 5), 16);
+  const blue = Number.parseInt(textColor.slice(5, 7), 16);
+  const luminance = (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255;
+  return luminance > 0.5 ? "#000000" : "#FFFFFF";
+}
+
 function normalizeSpec(spec: EditableSpec): NormalizedSpec {
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines
@@ -147,8 +153,6 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
           fontRole: region.font_role === "body" ? "body" : "display",
           fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
           textColor: normalizedColor(region.text_color, "#FFFFFF"),
-          backgroundColor: normalizedColor(region.background_color, "#1A0E2E"),
-          backgroundOpacity: boundedNumber(region.background_opacity, 0.94, 0.82, 1),
         };
       })
       .filter((region) => region.text)
@@ -394,9 +398,32 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width - fontSize * 0.22 : x + fontSize * 0.22;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
+      const regionId = `Translated-Region-${index + 1}`;
+      const feather = Math.max(7, Math.min(12, height * 0.1));
+      const blur = Math.max(8, Math.min(12, height * 0.09));
+      const coreExpansion = feather * 2;
+      const maskX = x - coreExpansion - feather * 3;
+      const maskY = y - coreExpansion - feather * 3;
+      const maskWidth = width + coreExpansion * 2 + feather * 6;
+      const maskHeight = height + coreExpansion * 2 + feather * 6;
+      const radius = Math.min(height * 0.45 + coreExpansion, 36);
+      const sourcePatch = assets.sourceImage
+        ? `<defs>
+          <filter id="${regionId}-Source-Blur" filterUnits="userSpaceOnUse" x="${(frame.x - blur * 3).toFixed(2)}" y="${(frame.y - blur * 3).toFixed(2)}" width="${(frame.width + blur * 6).toFixed(2)}" height="${(frame.height + blur * 6).toFixed(2)}" color-interpolation-filters="sRGB">
+            <feGaussianBlur stdDeviation="${blur.toFixed(2)}" edgeMode="duplicate"/>
+          </filter>
+          <filter id="${regionId}-Mask-Feather" filterUnits="userSpaceOnUse" x="${maskX.toFixed(2)}" y="${maskY.toFixed(2)}" width="${maskWidth.toFixed(2)}" height="${maskHeight.toFixed(2)}" color-interpolation-filters="sRGB">
+            <feGaussianBlur stdDeviation="${feather.toFixed(2)}"/>
+          </filter>
+          <mask id="${regionId}-Feather-Mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="${maskX.toFixed(2)}" y="${maskY.toFixed(2)}" width="${maskWidth.toFixed(2)}" height="${maskHeight.toFixed(2)}">
+            <rect x="${(x - coreExpansion).toFixed(2)}" y="${(y - coreExpansion).toFixed(2)}" width="${(width + coreExpansion * 2).toFixed(2)}" height="${(height + coreExpansion * 2).toFixed(2)}" rx="${radius.toFixed(2)}" fill="#FFFFFF" filter="url(#${regionId}-Mask-Feather)"/>
+          </mask>
+        </defs>
+        <image id="${regionId}-Blur-Patch" x="${frame.x.toFixed(2)}" y="${frame.y.toFixed(2)}" width="${frame.width.toFixed(2)}" height="${frame.height.toFixed(2)}" href="${escapeXml(assets.sourceImage)}" preserveAspectRatio="xMidYMid meet" filter="url(#${regionId}-Source-Blur)" mask="url(#${regionId}-Feather-Mask)"/>`
+        : "";
       return `<g id="Translated-Region-${index + 1}">
-        <rect id="Translated-Region-${index + 1}-Cover" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" fill="${region.backgroundColor}" fill-opacity="${region.backgroundOpacity}"/>
-        ${textLayers(`Translated-Region-${index + 1}-Text`, lines, textX, firstBaseline, lineHeight, `text-anchor="${textAnchor}" fill="${region.textColor}" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
+        ${sourcePatch}
+        ${textLayers(`${regionId}-Text`, lines, textX, firstBaseline, lineHeight, `text-anchor="${textAnchor}" fill="${region.textColor}" stroke="${outlineColor(region.textColor)}" stroke-opacity="0.52" stroke-width="${Math.max(1, fontSize * 0.025).toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
       </g>`;
     }).join("\n")
     : "";

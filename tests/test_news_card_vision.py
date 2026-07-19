@@ -31,8 +31,6 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
                 "font_role": "display",
                 "font_size": 20,
                 "text_color": "#e6fa36",
-                "background_color": "invalid",
-                "background_opacity": 0.2,
             }],
         }
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
@@ -63,6 +61,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "official logo or wordmark" in content[1]["text"]
     assert "official creative as the final composition" in content[1]["text"]
     assert "no meaningful translatable copy" in content[1]["text"]
+    assert "transparent, feathered source-image blur" in content[1]["text"]
+    assert "solid caption box" in content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
     assert "Squid Router" not in content[1]["text"]
@@ -79,8 +79,6 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
         "font_role": "display",
         "font_size": 12.0,
         "text_color": "#E6FA36",
-        "background_color": "#1A0E2E",
-        "background_opacity": 0.82,
     }]
 
 

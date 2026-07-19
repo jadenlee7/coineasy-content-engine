@@ -49,8 +49,6 @@ test("creates a Squid official-creative translation layer without extra card chr
       font_role: "display",
       font_size: 5.5,
       text_color: "#FFFFFF",
-      background_color: "#1A0E2E",
-      background_opacity: 0.94,
     }],
   }, {
     logoDark: "data:image/png;base64,bG9nbw==",
@@ -59,11 +57,15 @@ test("creates a Squid official-creative translation layer without extra card chr
   assert.match(svg, /id="Source-Visual"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
   assert.match(svg, /id="Korean-Translation-Layer"/);
-  assert.match(svg, /id="Translated-Region-1-Cover"/);
+  assert.match(svg, /id="Translated-Region-1-Blur-Patch"/);
+  assert.match(svg, /id="Translated-Region-1-Feather-Mask"/);
+  assert.match(svg, /feGaussianBlur/);
+  assert.match(svg, /paint-order="stroke fill"/);
   assert.match(svg, /어디서나 XRP를/);
   assert.match(svg, /사용하세요/);
   assert.match(svg, /<title id="Title">Squid editable Korean news card<\/title>/);
   assert.doesNotMatch(svg, /Squid Router/);
+  assert.doesNotMatch(svg, /Translated-Region-1-Cover/);
   assert.doesNotMatch(svg, /Localized-Content-Panel|Official-Logo-Safe-Area|Brand-Logo|Footer|Label-Text|CoinEasy|COINEASY/i);
 });
 
