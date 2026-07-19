@@ -19,6 +19,8 @@ type RailwayNewsCardResponse = {
   spec: Record<string, unknown>;
   png_path: string;
   template_style: string;
+  requested_template_style?: string;
+  source_image_used?: boolean;
   manifest_path: string;
   duration_ms: number;
 };
@@ -72,7 +74,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : "";
   const templateStyle = typeof body.template_style === "string" ? body.template_style : "classic";
   const allowedSourceTypes = new Set(["tweet", "blog", "article"]);
-  const allowedTemplateStyles = new Set(["classic", "editorial", "signal"]);
+  const allowedTemplateStyles = new Set(["remix", "classic", "editorial", "signal"]);
 
   if (!allowedSourceTypes.has(sourceType)) {
     return json({ error: "invalid_source_type" }, 400);
@@ -83,7 +85,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   let resolvedSource: ResolvedSource;
   try {
-    resolvedSource = await resolveSourceInput(sourceContent, sourceUrl);
+    resolvedSource = await resolveSourceInput(
+      sourceContent,
+      sourceUrl,
+      fetch,
+      templateStyle === "remix",
+    );
   } catch (error) {
     if (error instanceof SourceInputError) {
       return json({ error: error.code, detail: error.message }, error.status);
@@ -110,6 +117,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_content: resolvedSource.content,
           source_type: sourceType,
           source_url: resolvedSource.url,
+          source_image_url: resolvedSource.imageUrl,
           mock_mode: body.mock_mode === true,
           template_style: templateStyle,
         }),
@@ -159,10 +167,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
       content_type: result.content_type,
       spec: result.spec,
       source_mode: resolvedSource.mode,
+      source_image_detected: Boolean(resolvedSource.imageUrl),
+      source_image_used: result.source_image_used === true,
+      requested_template_style: result.requested_template_style || templateStyle,
       template_style: result.template_style || templateStyle,
       duration_ms: result.duration_ms,
       image_data_url: imageDataUrl,
-      filename: `${clientId}-${templateStyle}-news-card.png`,
+      filename: `${clientId}-${result.template_style || templateStyle}-news-card.png`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";

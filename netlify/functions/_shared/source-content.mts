@@ -1,9 +1,19 @@
-export type SourceMode = "provided" | "x_oembed";
+export type SourceMode = "provided" | "x_import";
 
 export type ResolvedSource = {
   content: string;
   url: string;
   mode: SourceMode;
+  imageUrl: string;
+};
+
+type SyndicationPhoto = { url?: unknown };
+type SyndicationMedia = { type?: unknown; media_url_https?: unknown; url?: unknown };
+type SyndicationTweet = {
+  text?: unknown;
+  photos?: unknown;
+  mediaDetails?: unknown;
+  video?: { poster?: unknown } | null;
 };
 
 export class SourceInputError extends Error {
@@ -57,6 +67,47 @@ export function canonicalXStatusUrl(value: string): string | null {
   return null;
 }
 
+function xStatusId(statusUrl: string): string | null {
+  return new URL(statusUrl).pathname.match(/\/status\/(\d+)/)?.[1] ?? null;
+}
+
+export function xSyndicationToken(tweetId: string): string {
+  return ((Number(tweetId) / 1e15) * Math.PI)
+    .toString(36)
+    .replace(/(0+|\.)/g, "");
+}
+
+function normalizeXImageUrl(value: unknown): string {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "pbs.twimg.com") return "";
+    url.searchParams.set("name", "orig");
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function extractXMediaUrl(payload: SyndicationTweet): string {
+  if (Array.isArray(payload.photos)) {
+    for (const photo of payload.photos as SyndicationPhoto[]) {
+      const imageUrl = normalizeXImageUrl(photo?.url);
+      if (imageUrl) return imageUrl;
+    }
+  }
+
+  if (Array.isArray(payload.mediaDetails)) {
+    for (const media of payload.mediaDetails as SyndicationMedia[]) {
+      if (media?.type !== "photo") continue;
+      const imageUrl = normalizeXImageUrl(media.media_url_https);
+      if (imageUrl) return imageUrl;
+    }
+  }
+
+  return normalizeXImageUrl(payload.video?.poster);
+}
+
 function decodeHtmlEntities(value: string): string {
   const namedEntities: Record<string, string> = {
     amp: "&",
@@ -90,7 +141,7 @@ export function extractXPostText(html: string): string {
     .trim();
 }
 
-async function fetchXPostText(
+async function fetchXOEmbedText(
   statusUrl: string,
   fetchImpl: typeof fetch,
 ): Promise<string> {
@@ -130,10 +181,60 @@ async function fetchXPostText(
   return text;
 }
 
+function cleanSyndicatedText(payload: SyndicationTweet): string {
+  if (typeof payload.text !== "string") return "";
+  let text = payload.text;
+  if (Array.isArray(payload.mediaDetails)) {
+    for (const media of payload.mediaDetails as SyndicationMedia[]) {
+      if (typeof media?.url === "string") text = text.replace(media.url, "");
+    }
+  }
+  return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function fetchXSyndicatedPost(
+  statusUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<{ content: string; imageUrl: string }> {
+  const tweetId = xStatusId(statusUrl);
+  if (!tweetId) return { content: "", imageUrl: "" };
+
+  const endpoint = new URL("https://cdn.syndication.twimg.com/tweet-result");
+  endpoint.searchParams.set("id", tweetId);
+  endpoint.searchParams.set("lang", "en");
+  endpoint.searchParams.set("token", xSyndicationToken(tweetId));
+
+  try {
+    const response = await fetchImpl(endpoint, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return { content: "", imageUrl: "" };
+    const payload = (await response.json()) as SyndicationTweet;
+    return {
+      content: cleanSyndicatedText(payload),
+      imageUrl: extractXMediaUrl(payload),
+    };
+  } catch {
+    return { content: "", imageUrl: "" };
+  }
+}
+
+async function fetchXPost(
+  statusUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<{ content: string; imageUrl: string }> {
+  const syndicated = await fetchXSyndicatedPost(statusUrl, fetchImpl);
+  if (syndicated.content.length >= 10) return syndicated;
+  const content = await fetchXOEmbedText(statusUrl, fetchImpl);
+  return { content, imageUrl: syndicated.imageUrl };
+}
+
 export async function resolveSourceInput(
   sourceContent: string,
   sourceUrl: string,
   fetchImpl: typeof fetch = fetch,
+  includeMedia = false,
 ): Promise<ResolvedSource> {
   const content = sourceContent.trim();
   const normalizedUrl = normalizeSourceUrl(sourceUrl);
@@ -147,6 +248,10 @@ export async function resolveSourceInput(
   const xStatusUrl = fieldXUrl || contentXUrl;
   const resolvedUrl = xStatusUrl || normalizedUrl || "";
   const contentIsOnlyXLink = contentXUrl !== null;
+  const shouldImportX = Boolean(xStatusUrl) && (includeMedia || content.length < 10 || contentIsOnlyXLink);
+  const imported = shouldImportX && xStatusUrl
+    ? await fetchXPost(xStatusUrl, fetchImpl)
+    : { content: "", imageUrl: "" };
 
   if (content.length > 20_000 && !contentIsOnlyXLink) {
     throw new SourceInputError(
@@ -165,12 +270,29 @@ export async function resolveSourceInput(
   }
 
   if (content.length >= 10 && content.length <= 20_000 && !contentIsOnlyXLink) {
-    return { content, url: resolvedUrl, mode: "provided" };
+    return {
+      content,
+      url: resolvedUrl,
+      mode: "provided",
+      imageUrl: imported.imageUrl,
+    };
   }
 
   if (xStatusUrl) {
-    const fetchedContent = await fetchXPostText(xStatusUrl, fetchImpl);
-    return { content: fetchedContent.slice(0, 20_000), url: xStatusUrl, mode: "x_oembed" };
+    const importedPost = shouldImportX ? imported : await fetchXPost(xStatusUrl, fetchImpl);
+    if (importedPost.content.length < 10) {
+      throw new SourceInputError(
+        "source_fetch_failed",
+        422,
+        "X post text was unavailable",
+      );
+    }
+    return {
+      content: importedPost.content.slice(0, 20_000),
+      url: xStatusUrl,
+      mode: "x_import",
+      imageUrl: importedPost.imageUrl,
+    };
   }
 
   throw new SourceInputError(

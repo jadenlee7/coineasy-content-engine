@@ -26,6 +26,7 @@ from typing import Literal, Optional
 
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
+from core.sources.source_image import PreparedSourceImage
 
 
 # ────────────────────────────────────────────────────
@@ -63,6 +64,8 @@ NOT a carousel. NOT multiple slides. One card.
 - body_lines = 핵심 디테일 1-3줄 (불릿 형태)
 - "What changed" + "Why it matters" 두 가지가 카드 안에 다 들어가야 함
 - 광고 톤 아닌 뉴스 톤 (홍보가 아니라 사실 전달)
+- 한국 GTM 시즈닝: 단순 번역을 피하고, 한국 사용자·빌더가 이해할 수 있는 의미를 한 줄에 담을 것
+- 한국 출시·지원 여부가 원문에 없으면 한국에서 제공된다고 추정하거나 과장하지 말 것
 
 ## 3. Output Schema (FIXED — do not add or remove keys)
 
@@ -119,6 +122,15 @@ Source content:
 {source_content}
 >>>
 
+Original visual context:
+{visual_guidance}
+
+When an original visual is attached:
+- Read visible product names, feature labels, token pairs, UI states, and numbers.
+- Use the visual only as factual supporting context; do not invent hidden details.
+- Write Korean copy that complements the original visual instead of merely repeating its English headline.
+- Preserve important brand and product terms visible in the image.
+
 ## 7. Output Format (STRICT JSON)
 
 Return JSON only. No markdown. No prose. No code fences.
@@ -149,6 +161,7 @@ def _build_user_prompt(
     source_content: str,
     source_type: str,
     source_url: str,
+    has_source_image: bool = False,
 ) -> str:
     """Build the client-specific user prompt."""
     llm = config.llm.news_card
@@ -166,6 +179,11 @@ def _build_user_prompt(
         glossary_block = "  (use standard crypto Korean terminology)"
 
     tone = llm.tone_guidance or "professional but approachable, 경어체"
+    visual_guidance = (
+        "An original post image is attached before this prompt. Analyze its visible text and product UI."
+        if has_source_image
+        else "No original post image is attached. Use the source text only."
+    )
 
     return BASE_USER_PROMPT.format(
         preserve_terms_block=preserve_block,
@@ -176,6 +194,7 @@ def _build_user_prompt(
         source_type=source_type,
         source_url=source_url or "(none)",
         source_content=source_content.strip(),
+        visual_guidance=visual_guidance,
         today_date=_today_kst_date(),
     )
 
@@ -191,6 +210,7 @@ def generate_news_card_spec(
     source_url: str = "",
     mock_mode: bool = False,
     mock_response: Optional[dict] = None,
+    source_image: Optional[PreparedSourceImage] = None,
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -213,7 +233,13 @@ def generate_news_card_spec(
     config = get_client_config(client_id)
     llm_cfg = config.llm.news_card
 
-    prompt = _build_user_prompt(config, source_content, source_type, source_url)
+    prompt = _build_user_prompt(
+        config,
+        source_content,
+        source_type,
+        source_url,
+        has_source_image=source_image is not None,
+    )
 
     try:
         from anthropic import Anthropic
@@ -222,13 +248,27 @@ def generate_news_card_spec(
 
     client = Anthropic()
 
+    message_content: str | list[dict] = prompt
+    if source_image is not None:
+        message_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": source_image.media_type,
+                    "data": source_image.base64_data,
+                },
+            },
+            {"type": "text", "text": prompt},
+        ]
+
     response = create_message(
         client,
         model=llm_cfg.model,
         max_tokens=1500,
         temperature=llm_cfg.temperature,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": message_content}],
     )
 
     raw_text = response.content[0].text.strip()

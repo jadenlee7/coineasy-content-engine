@@ -115,11 +115,11 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/
   }'
 ```
 
-**Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `mock_mode` (default `false`, skips LLM for smoke), `template_style` (`"classic"` | `"editorial"` | `"signal"`, default `"classic"`).
+**Request** (`NewsCardRequest`): `source_content` (required), `source_type` (default `"tweet"`), `source_url` (default `""`), `source_image_url` (optional, restricted to X's image CDN), `mock_mode` (default `false`, skips LLM for smoke), `template_style` (`"remix"` | `"classic"` | `"editorial"` | `"signal"`, default `"classic"`).
 
-The Netlify console accepts a public X status URL by itself. Its server-side function imports the post text through X's oEmbed endpoint, then forwards both the extracted content and canonical source URL to the Railway API. Article and blog URLs still require pasted source text.
+The Netlify console accepts a public X status URL by itself. Its server-side function imports the post text and first attached photo, then forwards the extracted content, canonical source URL, and allowlisted image URL to the Railway API. The recommended `remix` style reads visible banner text with Claude vision, preserves the complete original visual, and adds a branded Korean GTM panel. Posts without an available image automatically fall back to `classic`. Article and blog URLs still require pasted source text.
 
-**Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `template_style`, `manifest_path`, `duration_ms`.
+**Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `requested_template_style`, `template_style` (actual style after fallback), `source_image_used`, `manifest_path`, `duration_ms`.
 
 ---
 
