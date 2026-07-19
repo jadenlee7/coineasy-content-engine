@@ -64,6 +64,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "official creative as the final composition" in content[1]["text"]
     assert "no meaningful translatable copy" in content[1]["text"]
     assert "source_text must transcribe the visible source phrase exactly" in content[1]["text"]
+    assert "same line count and approximately the same rendered width" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
     assert "transparent, expanded outline and shadow" in content[1]["text"]
@@ -119,7 +120,7 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
             payload = {
                 "translations": [{
                     "index": 0,
-                    "text": "스택은 사랑, 스택은 인생.",
+                    "text": "stack이 곧 사랑,\nstack이 곧 인생.",
                 }],
             }
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
@@ -144,8 +145,8 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
     assert calls[1]["system"].startswith("You are a Korean localization editor")
     assert "stack is love, stack is life." in calls[1]["messages"][0]["content"]
     assert result["translation_regions"] == [{
-        "text": "스택은 사랑, 스택은 인생.",
-        "x": 28.0,
+        "text": "stack이 곧 사랑,\nstack이 곧 인생.",
+        "x": 31.7,
         "y": 60.0,
         "width": 36.6,
         "height": 21.0,
