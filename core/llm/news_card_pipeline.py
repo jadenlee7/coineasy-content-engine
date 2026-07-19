@@ -46,6 +46,12 @@ sentence, and 1-3 body bullet lines.
 Return STRICT JSON ONLY. No markdown fences, no prose, no commentary.
 Do not use em dashes (—) in any output text values. Use commas or periods instead."""
 
+VISUAL_TRANSLATION_REPAIR_SYSTEM_PROMPT = """You are a Korean localization editor for Squid social banners.
+Translate only the supplied visible English marketing copy into concise, natural Korean.
+Keep product names, token symbols, handles, URLs, and protected terms unchanged.
+Preserve the original humor, claim strength, and short cadence. Do not add facts.
+Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
+
 
 # ────────────────────────────────────────────────────
 # User Prompt Builder (injects client-specific config)
@@ -220,6 +226,7 @@ def _build_user_prompt(
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
 - If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols.
+- Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, and token symbols inside an otherwise Korean translation.
 - Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Include enough padding to hide the original copy without covering characters, products, or logos.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
 - The renderer uses a transparent, feathered source-image blur only to remove the original glyphs. Never request or imply a solid caption box, panel, chip, or opaque background behind the Korean text.
@@ -245,6 +252,9 @@ def _build_user_prompt(
 
 
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_HANGUL = re.compile(r"[가-힣]")
+_ASCII_WORD = re.compile(r"[A-Za-z]{2,}")
+_IDENTIFIER_TOKEN = re.compile(r"[A-Z0-9]{2,6}")
 _REGION_ALIGNMENTS = {"left", "center", "right"}
 _REGION_FONT_ROLES = {"display", "body"}
 
@@ -256,6 +266,161 @@ def _number(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_json_response(response: object, purpose: str) -> dict:
+    """Parse a JSON object from an Anthropic response, tolerating code fences."""
+    try:
+        raw_text = response.content[0].text.strip()
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ValueError(f"LLM returned no text for {purpose}") from exc
+    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+    raw_text = re.sub(r"\s*```$", "", raw_text)
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM returned invalid JSON for {purpose}: {raw_text[:500]}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"LLM returned non-object JSON for {purpose}")
+    return parsed
+
+
+def _has_untranslated_english(text: str, preserve_terms: list[str]) -> bool:
+    """Return true for English prose, including partial Korean translations."""
+    tokens = re.findall(r"[A-Za-z0-9@#.$:/_-]+", text)
+    if not tokens:
+        return False
+    protected = {term.strip().lower() for term in preserve_terms if term.strip()}
+    for token in tokens:
+        normalized = token.strip(".,:;!?()[]{}\"'")
+        if not normalized:
+            continue
+        if normalized.lower() in protected:
+            continue
+        if normalized.startswith(("@", "#")) or "://" in normalized:
+            continue
+        if _IDENTIFIER_TOKEN.fullmatch(normalized):
+            continue
+        return True
+    return not _HANGUL.search(text)
+
+
+def _untranslated_region_indexes(result: dict, preserve_terms: list[str]) -> list[int]:
+    """Find visual regions with untranslated or partially translated English."""
+    if result.get("source_text_visible") is not True:
+        return []
+    regions = result.get("translation_regions")
+    if not isinstance(regions, list):
+        return []
+    return [
+        index
+        for index, region in enumerate(regions)
+        if isinstance(region, dict)
+        and isinstance(region.get("text"), str)
+        and _ASCII_WORD.search(region["text"])
+        and _has_untranslated_english(region["text"], preserve_terms)
+    ]
+
+
+def _is_protected_identifier_only(text: str, preserve_terms: list[str]) -> bool:
+    """Allow a region to be removed when it contains identifiers, not prose."""
+    tokens = re.findall(r"[A-Za-z0-9@#.$:/_-]+", text)
+    if not tokens:
+        return False
+    protected = {term.strip().lower() for term in preserve_terms if term.strip()}
+    for token in tokens:
+        normalized = token.strip(".,:;!?()[]{}\"'")
+        if not normalized:
+            continue
+        if normalized.lower() in protected:
+            continue
+        if normalized.startswith(("@", "#")) or "://" in normalized:
+            continue
+        if _IDENTIFIER_TOKEN.fullmatch(normalized):
+            continue
+        return False
+    return True
+
+
+def _repair_untranslated_visual_copy(
+    api_client: object,
+    model: str,
+    result: dict,
+    preserve_terms: list[str],
+    source_content: str,
+) -> dict:
+    """Translate English visual copy that the first vision pass copied verbatim."""
+    indexes = _untranslated_region_indexes(result, preserve_terms)
+    if not indexes:
+        return result
+
+    regions = result.get("translation_regions")
+    assert isinstance(regions, list)
+    inputs = [
+        {"index": index, "text": regions[index]["text"]}
+        for index in indexes
+    ]
+    protected = ", ".join(preserve_terms) or "Squid"
+    repair_prompt = f"""Correct untranslated text in a Squid banner.
+
+Protected terms: {protected}
+Source caption context (facts only):
+<<<
+{source_content.strip()[:2000]}
+>>>
+
+Translate every natural-language phrase below into brief, playful Korean suitable for the same banner position.
+- Preserve the punchline and line hierarchy.
+- Keep protected terms, product names, token symbols, handles, URLs, and numbers unchanged.
+- Each translated text must contain at least one Korean Hangul syllable.
+- If an input is only a protected identifier or token pair with no natural-language copy, return an empty text for that index.
+- Do not change, combine, omit, or reorder indexes.
+
+Inputs:
+{json.dumps(inputs, ensure_ascii=False)}
+
+Return exactly:
+{{"translations":[{{"index":0,"text":"한국어 번역"}}]}}
+"""
+    repair_response = create_message(
+        api_client,
+        model=model,
+        max_tokens=600,
+        temperature=0,
+        system=VISUAL_TRANSLATION_REPAIR_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": repair_prompt}],
+    )
+    repair = _parse_json_response(repair_response, "visual translation repair")
+    translations = repair.get("translations")
+    if not isinstance(translations, list):
+        raise ValueError("LLM visual translation repair omitted translations")
+
+    replacements: dict[int, str] = {}
+    for item in translations:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        text = item.get("text")
+        if isinstance(index, int) and not isinstance(index, bool) and index in indexes and isinstance(text, str):
+            replacements[index] = text.strip()[:240]
+
+    for index in indexes:
+        original = regions[index]["text"]
+        replacement = replacements.get(index, "")
+        if replacement and _HANGUL.search(replacement):
+            regions[index]["text"] = replacement
+            continue
+        if not replacement and _is_protected_identifier_only(original, preserve_terms):
+            regions[index]["text"] = ""
+            continue
+        raise ValueError(f"LLM left visual copy untranslated at region {index}")
+
+    result["translation_regions"] = [
+        region for region in regions
+        if isinstance(region, dict) and isinstance(region.get("text"), str) and region["text"].strip()
+    ]
+    result["source_text_visible"] = bool(result["translation_regions"])
+    return result
 
 
 def _normalize_visual_localization(
@@ -397,14 +562,16 @@ def generate_news_card_spec(
         messages=[{"role": "user", "content": message_content}],
     )
 
-    raw_text = response.content[0].text.strip()
-    raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
-    raw_text = re.sub(r"\s*```$", "", raw_text)
+    result = _parse_json_response(response, "news card generation")
 
-    try:
-        result = json.loads(raw_text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"LLM returned invalid JSON: {raw_text[:500]}") from e
+    if client_id == "squid" and source_image is not None:
+        result = _repair_untranslated_visual_copy(
+            client,
+            llm_cfg.model,
+            result,
+            llm_cfg.preserve_terms,
+            source_content,
+        )
 
     # Force-stamp source_url: LLM occasionally truncates or normalizes URLs;
     # the caller's URL is the source of truth.
