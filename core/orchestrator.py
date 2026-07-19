@@ -28,6 +28,7 @@ from core.client_config import get_client_config
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
 from core.llm.news_card_pipeline import generate_news_card_spec
 from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
+from core.sources.source_image import SourceImageError, fetch_source_image
 
 
 # ────────────────────────────────────────────────────
@@ -46,6 +47,7 @@ LAYOUT_TEMPLATES = {
 }
 
 NEWS_CARD_TEMPLATES = {
+    "remix": "news/news_remix_card.html",
     "classic": "news/news_title_card.html",
     "editorial": "news/news_editorial_card.html",
     "signal": "news/news_signal_card.html",
@@ -119,6 +121,8 @@ class NewsCardResult:
     spec: dict                  # full {label,date,headline,body_lines,source_url,theme}
     png_path: str               # 1 card → single PNG, not a list
     template_style: str
+    requested_template_style: str
+    source_image_used: bool
     manifest_path: str
     duration_ms: int
     llm_cost_usd: Optional[float] = None
@@ -299,6 +303,7 @@ async def generate_news_card(
     mock_mode: bool = False,
     mock_response: Optional[dict] = None,
     template_style: str = "classic",
+    source_image_url: str = "",
 ) -> NewsCardResult:
     """
     End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
@@ -315,10 +320,29 @@ async def generate_news_card(
     if not config.feature_flags.news_card:
         raise ValueError(f"Client '{client_id}' has news_card disabled in feature_flags")
 
-    template_path = NEWS_CARD_TEMPLATES.get(template_style)
-    if not template_path:
+    if template_style not in NEWS_CARD_TEMPLATES:
         allowed = ", ".join(sorted(NEWS_CARD_TEMPLATES))
         raise ValueError(f"Unknown news card template '{template_style}'. Allowed: {allowed}")
+
+    requested_template_style = template_style
+    actual_template_style = template_style
+    source_image = None
+    if requested_template_style == "remix":
+        if source_image_url:
+            try:
+                source_image = await fetch_source_image(source_image_url)
+                print(
+                    f"[{client_id}] Source visual ready: "
+                    f"{source_image.width}x{source_image.height}"
+                )
+            except SourceImageError as exc:
+                print(f"[{client_id}] ⚠ Source visual unavailable, falling back to classic: {exc}")
+                actual_template_style = "classic"
+        else:
+            print(f"[{client_id}] ⚠ Remix requested without an image, falling back to classic")
+            actual_template_style = "classic"
+
+    template_path = NEWS_CARD_TEMPLATES[actual_template_style]
 
     if output_dir is None:
         ts = start.strftime("%Y%m%d_%H%M%S")
@@ -335,6 +359,7 @@ async def generate_news_card(
             source_url=source_url,
             mock_mode=mock_mode,
             mock_response=mock_response,
+            source_image=source_image,
         )
     except Exception as e:
         print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")
@@ -345,12 +370,15 @@ async def generate_news_card(
 
     # ── Stage 2: Rendering ────────────────────────
     print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
-    output_png = output_dir / f"news_card_{template_style}.png"
+    output_png = output_dir / f"news_card_{actual_template_style}.png"
+    render_slots = dict(spec)
+    if source_image is not None:
+        render_slots["source_image_data_url"] = source_image.data_url
     try:
         await render_png(
             client_id=client_id,
             template_path=template_path,
-            slots=spec,
+            slots=render_slots,
             output_path=output_png,
             theme=spec["theme"],
             viewport=NEWS_CARD_1x1,
@@ -370,9 +398,12 @@ async def generate_news_card(
         "generated_at": start.isoformat(),
         "source_type": source_type,
         "source_url": source_url,
+        "source_image_url": source_image_url,
+        "source_image_used": source_image is not None,
         "source_content_preview": source_content[:200],
         "spec": spec,
-        "template_style": template_style,
+        "requested_template_style": requested_template_style,
+        "template_style": actual_template_style,
         "png_path": str(output_png),
     }
     manifest_path = output_dir / "manifest.json"
@@ -386,7 +417,9 @@ async def generate_news_card(
         content_type="news_card",
         spec=spec,
         png_path=str(output_png),
-        template_style=template_style,
+        template_style=actual_template_style,
+        requested_template_style=requested_template_style,
+        source_image_used=source_image is not None,
         manifest_path=str(manifest_path),
         duration_ms=duration,
     )

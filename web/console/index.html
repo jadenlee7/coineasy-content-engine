@@ -126,7 +126,7 @@
     .client strong { display: block; font-size: 12px; letter-spacing: -.2px; }
     .client small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 
-    .template-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .template-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .template-option {
       min-height: 66px;
       padding: 10px;
@@ -144,6 +144,8 @@
     .template-option small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.35; }
     .template-swatch { display: flex; gap: 3px; height: 12px; margin-bottom: 8px; }
     .template-swatch i { display: block; border-radius: 3px; background: #20232a; }
+    .template-option[data-template="remix"] .template-swatch i:first-child { width: 64%; background: linear-gradient(135deg, #152832, #5b3c7d 52%, #d3d8dc); }
+    .template-option[data-template="remix"] .template-swatch i:last-child { flex: 1; background: #e6fa36; }
     .template-option[data-template="classic"] .template-swatch i:first-child { width: 26%; background: #f1f2f4; }
     .template-option[data-template="classic"] .template-swatch i:last-child { flex: 1; }
     .template-option[data-template="editorial"] .template-swatch i:first-child { flex: 1; }
@@ -263,6 +265,16 @@
     .preview-shell[data-template="signal"] .mock-headline { font-size: clamp(24px, 4.6vw, 56px); }
     .preview-shell[data-template="signal"] .mock-line { border-left: 4px solid var(--brand-primary); border-radius: 2px; }
 
+    .preview-shell[data-template="remix"] { background: #111; }
+    .preview-shell[data-template="remix"] .mock-card { padding: 4.5%; justify-content: flex-end; background: radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--brand-primary) 35%, #17242b), transparent 34%), linear-gradient(135deg, #101a20, var(--brand-bg)); }
+    .preview-shell[data-template="remix"] .mock-top { position: absolute; inset: 4.5% 4.5% auto; }
+    .preview-shell[data-template="remix"] .mock-top::after { content: "ORIGINAL VISUAL"; padding: 7px 10px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: #fff; font: 700 7px/1 Inter, sans-serif; letter-spacing: 1px; }
+    .preview-shell[data-template="remix"] .mock-inner { flex: 0 0 42%; padding: 4.6%; border-radius: 16px; background: color-mix(in srgb, var(--brand-bg) 94%, #000); box-shadow: 0 -12px 36px rgba(0,0,0,.22); }
+    .preview-shell[data-template="remix"] .mock-headline { margin-bottom: 3%; color: #fff; font-size: clamp(21px, 4vw, 48px); }
+    .preview-shell[data-template="remix"] .mock-lines { grid-template-columns: 1fr 1fr; gap: 7px; }
+    .preview-shell[data-template="remix"] .mock-line { padding: 0; color: rgba(255,255,255,.76); background: transparent; }
+    .preview-shell[data-template="remix"] .mock-foot { color: rgba(255,255,255,.48); border-top-color: rgba(255,255,255,.16); }
+
     .result-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
     .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(10,13,18,.82); backdrop-filter: blur(7px); }
     .loading-inner { text-align: center; }
@@ -356,9 +368,12 @@
         </div>
 
         <div class="field">
-          <div class="field-label">배너 템플릿 <span class="optional">3가지</span></div>
+          <div class="field-label">배너 스타일 <span class="optional">4가지</span></div>
           <div class="template-grid" id="templates">
-            <button class="template-option active" type="button" data-template="classic">
+            <button class="template-option active" type="button" data-template="remix">
+              <span class="template-swatch"><i></i><i></i></span><strong>원본 비주얼 리믹스 · 추천</strong><small>원본 배너 + 한국 GTM</small>
+            </button>
+            <button class="template-option" type="button" data-template="classic">
               <span class="template-swatch"><i></i><i></i></span><strong>클래식</strong><small>뉴스 요약 카드</small>
             </button>
             <button class="template-option" type="button" data-template="editorial">
@@ -415,7 +430,7 @@
         </div>
 
         <div class="stage">
-            <div class="preview-shell" id="preview-shell" data-client="yellow" data-template="classic">
+            <div class="preview-shell" id="preview-shell" data-client="yellow" data-template="remix">
             <div class="mock-card" id="mock-card">
               <div class="mock-top">
                 <span>CoinEasy · branded news</span>
@@ -488,12 +503,13 @@
       };
 
       const TEMPLATE = {
+        remix: "원본 비주얼 리믹스",
         classic: "클래식",
         editorial: "에디토리얼",
         signal: "시그널"
       };
 
-      const state = { client: "yellow", template: "classic", imageUrl: "" };
+      const state = { client: "yellow", template: "remix", imageUrl: "" };
       const form = document.getElementById("generator-form");
       const clients = document.getElementById("clients");
       const templates = document.getElementById("templates");
@@ -657,8 +673,13 @@
           resultImage.hidden = false;
           mockCard.hidden = true;
           resultKind.textContent = "· 실제 Railway 렌더 결과";
-          const sourceNote = payload.source_mode === "x_oembed" ? " · X 원문 자동 불러오기" : "";
-          resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 템플릿으로 생성했습니다${sourceNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+          const sourceNote = ["x_import", "x_oembed"].includes(payload.source_mode) ? " · X 원문 자동 불러오기" : "";
+          const remixNote = payload.source_image_used
+            ? " · 원본 배너 반영"
+            : payload.requested_template_style === "remix" && payload.template_style !== "remix"
+              ? " · 원본 배너가 없어 클래식으로 자동 전환"
+              : "";
+          resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 스타일로 생성했습니다${sourceNote}${remixNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
           download.href = state.imageUrl;
           download.download = payload.filename || `${state.client}-news-card.png`;
           download.hidden = false;

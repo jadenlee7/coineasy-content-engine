@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>News Card · Original Visual Remix</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+{{ brand_font_links | default('') | safe }}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --primary: {{ brand_primary_color | default('#FFDE00') }};
+    --dark: {{ brand_bg_dark | default('#000000') }};
+    --accent: {{ brand_bg_yellow | default('#FFDE00') }};
+    --ink: {{ brand_text_primary | default('#0A0A0A') }};
+    --font: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
+    --display: {% if font_display %}"{{ font_display }}", {% endif %}var(--font);
+  }
+  html, body { width: 1080px; height: 1080px; overflow: hidden; font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  .canvas { width: 1080px; height: 1080px; display: grid; grid-template-rows: 710px 370px; overflow: hidden; color: #fff; background: var(--dark); }
+
+  .visual { position: relative; overflow: hidden; padding-top: 78px; background: var(--dark); }
+  .visual::after { content: ""; position: absolute; inset: auto 0 0; z-index: 2; height: 130px; background: linear-gradient(transparent, var(--dark)); pointer-events: none; }
+  .visual-blur { position: absolute; inset: 48px -30px -30px; background: center / cover no-repeat url('{{ source_image_data_url }}'); filter: blur(24px) saturate(.9); transform: scale(1.08); opacity: .56; }
+  .visual-shade { position: absolute; inset: 78px 0 0; background: rgba(5,8,12,.3); }
+  .source-image { position: absolute; inset: 78px 0 0; z-index: 1; width: 100%; height: calc(100% - 78px); object-fit: contain; }
+  .visual-top { position: absolute; inset: 0 0 auto; z-index: 3; height: 78px; display: flex; align-items: center; justify-content: space-between; padding: 12px 34px; background: var(--dark); }
+  .origin-pill { display: inline-flex; align-items: center; gap: 10px; padding: 9px 14px; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; background: rgba(255,255,255,.05); font-size: 12px; font-weight: 750; letter-spacing: 1.5px; text-transform: uppercase; }
+  .origin-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 20%, transparent); }
+  .logo-wrap { min-width: 128px; height: 50px; display: flex; align-items: center; justify-content: center; padding: 8px 13px; border: 1px solid rgba(255,255,255,.18); border-radius: 14px; background: rgba(255,255,255,.05); }
+  .logo { max-width: 112px; max-height: 36px; object-fit: contain; }
+
+  .content { position: relative; display: flex; flex-direction: column; padding: 28px 44px 26px; background: var(--dark); }
+  .content::before { content: ""; position: absolute; inset: 0 44px auto; height: 5px; border-radius: 999px; background: var(--primary); }
+  .meta { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+  .label { display: inline-flex; align-items: center; min-height: 38px; padding: 0 15px; border-radius: 8px; color: var(--ink); background: var(--primary); font-size: 16px; font-weight: 850; }
+  .edit-note { color: rgba(255,255,255,.5); font-size: 12px; font-weight: 750; letter-spacing: 2.4px; text-transform: uppercase; }
+  h1 { max-width: 960px; margin-top: 17px; font: 850 45px/1.14 var(--display); letter-spacing: -1.8px; word-break: keep-all; }
+  .insights { display: flex; flex-wrap: wrap; gap: 9px 22px; margin-top: 18px; }
+  .insight { position: relative; max-width: 47%; padding-left: 18px; color: rgba(255,255,255,.78); font-size: 18px; font-weight: 600; line-height: 1.38; letter-spacing: -.25px; word-break: keep-all; }
+  .insight::before { content: ""; position: absolute; left: 0; top: .55em; width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+  .footer { display: flex; justify-content: space-between; gap: 30px; margin-top: auto; padding-top: 15px; border-top: 1px solid rgba(255,255,255,.14); color: rgba(255,255,255,.46); font-size: 13px; font-weight: 600; }
+  .source { max-width: 720px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <section class="visual">
+    <div class="visual-blur"></div>
+    <div class="visual-shade"></div>
+    <img class="source-image" src="{{ source_image_data_url }}" alt="Original post visual">
+    <div class="visual-top">
+      <div class="origin-pill">Original visual remix</div>
+      <div class="logo-wrap"><img class="logo" src="{{ logo_dark_path }}" alt="{{ client_name | default('') }}"></div>
+    </div>
+  </section>
+
+  <section class="content">
+    <div class="meta">
+      {% if label %}<div class="label">{{ label | safe }}</div>{% endif %}
+      <div class="edit-note">Korea GTM edit</div>
+    </div>
+    {% if headline %}<h1>{{ headline | safe }}</h1>{% endif %}
+    {% if body_lines %}
+    <div class="insights">
+      {% for line in body_lines[:2] %}<div class="insight">{{ line | safe }}</div>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="footer">
+      <span>{{ date | default('') }}</span>
+      {% if source_url %}<span class="source">{{ source_url | replace('https://', '') | replace('http://', '') }}</span>{% endif %}
+    </div>
+  </section>
+</div>
+</body>
+</html>
