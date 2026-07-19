@@ -121,6 +121,8 @@ The Netlify console accepts a public X status URL by itself. Its server-side fun
 
 After generation, the console also returns channel-ready copy in `channel_copy`: `telegram` is a Korean GTM announcement with the generated headline and bullets, CTA, canonical original link, and client hashtags; `x` preserves only the imported or pasted source content without adding translated copy, CTA, or hashtags. Both are available as one-click copy blocks below the card preview.
 
+The console provides two design outputs for every generated card: the production-ready 2160×2160 PNG and a 1080×1080 Figma-editable SVG. The SVG uses named native text, shape, logo, and source-image layers rather than `foreignObject`; drag the downloaded SVG onto a Figma Design canvas to adjust copy, colors, spacing, logo placement, and image cropping. Designers need the configured brand fonts installed for exact typography.
+
 **Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `requested_template_style`, `template_style` (actual style after fallback), `source_image_used`, `manifest_path`, `duration_ms`.
 
 ---

@@ -174,6 +174,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       content_type: result.content_type,
       spec: result.spec,
       source_mode: resolvedSource.mode,
+      source_image_url: resolvedSource.imageUrl,
       source_image_detected: Boolean(resolvedSource.imageUrl),
       source_image_used: result.source_image_used === true,
       requested_template_style: result.requested_template_style || templateStyle,
