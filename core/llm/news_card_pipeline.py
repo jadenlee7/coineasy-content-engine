@@ -20,6 +20,7 @@ USAGE:
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
@@ -50,6 +51,11 @@ VISUAL_TRANSLATION_REPAIR_SYSTEM_PROMPT = """You are a Korean localization edito
 Translate only the supplied visible English marketing copy into concise, natural Korean.
 Keep product names, token symbols, handles, URLs, and protected terms unchanged.
 Preserve the original humor, claim strength, and short cadence. Do not add facts.
+Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
+
+VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual placement QA for transparent Korean subtitles on official Squid creatives.
+Inspect the attached image pixel composition. Existing image pixels are never removed, so Korean subtitles must sit only in genuinely empty negative space.
+Map every protected visual first, then place the supplied Korean subtitles without covering any original lettering, logo, character, face, limb, product, product UI, or token icon.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 
@@ -226,13 +232,13 @@ def _build_user_prompt(
 - Treat the attached image as the final composition. Preserve its character, product, background, crop, layout, and official logo.
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
-- If meaningful copy exists and there is a genuinely clear subtitle area, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
-- source_text must transcribe the visible source phrase exactly, including its line breaks. It is used only to preserve the translation meaning, rhythm, and approximate width; do not use the source lettering's position as the Korean subtitle box.
+- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
+- source_text must transcribe the visible source phrase exactly, including its line breaks. x/y/width/height must tightly cover that ORIGINAL source phrase and its outline or shadow. These coordinates are a source-detection box, not the final Korean subtitle placement. A separate image-aware safety pass chooses the Korean target box.
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
-- source_text must transcribe the original visible phrase, but x/y/width/height define the NEW Korean subtitle placement, not the OCR box. Choose a clear negative-space area inside the image using percentages from 0 to 100. Every region must be at least 24% wide and 12% high. The Korean box must not touch or cover the original source lettering, an official logo, a character or face, a product, or product UI. Prefer left or right negative space over the central subject and keep a safe 3% margin from protected visual elements. Translation regions must not overlap one another.
-- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Use a compact readable size, preserve the source alignment when it fits the safe area, and keep translation text to at most 2 lines.
-- The renderer preserves the full source crop and places Korean in a nearby clear area inside the original banner without covering source lettering. The subtitle background stays fully transparent with only a thin readability outline. Never request or imply a separate footer, Squid-colored caption area, gradient, solid caption box, blurred patch, thick text outline, panel, or chip.
-- If no non-overlapping clear area of at least 24% x 12% exists, set source_text_visible=false and translation_regions=[]. Preserve the official creative unchanged instead of covering any protected visual.
+- Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Keep translation text to at most 2 lines.
+- After this response, a separate visual safety audit preserves each source-detection box as protected, maps the remaining logo, character, product, and UI areas, and moves Korean into a clear target box of at least 24% x 12% with a 3% safety gap.
+- The renderer preserves the full source crop and places audited Korean in a nearby clear area inside the original banner without covering source lettering. The subtitle background stays fully transparent with only a thin readability outline. Never request or imply a separate footer, Squid-colored caption area, gradient, solid caption box, blurred patch, thick text outline, panel, or chip.
+- If the safety audit cannot place every translation, it removes every Korean overlay and preserves the official creative unchanged.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -467,6 +473,253 @@ Return exactly:
     return result
 
 
+_PLACEMENT_PROTECTED_KINDS = {
+    "source_text",
+    "other_text",
+    "logo",
+    "character",
+    "face",
+    "limb",
+    "product",
+    "product_ui",
+    "token_icon",
+}
+
+
+def _clear_visual_localization(result: dict) -> dict:
+    """Fail safe: preserve the official creative without any Korean overlay."""
+    result["source_text_visible"] = False
+    result["translation_regions"] = []
+    return result
+
+
+def _strict_percent_box(
+    value: object,
+    *,
+    minimum_width: float,
+    minimum_height: float,
+) -> Optional[dict[str, float]]:
+    """Parse an image-relative box without silently repairing unsafe geometry."""
+    if not isinstance(value, dict):
+        return None
+    numbers: dict[str, float] = {}
+    for key in ("x", "y", "width", "height"):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        parsed = float(raw)
+        if not math.isfinite(parsed):
+            return None
+        numbers[key] = parsed
+    if (
+        numbers["x"] < 0
+        or numbers["y"] < 0
+        or numbers["width"] < minimum_width
+        or numbers["height"] < minimum_height
+        or numbers["x"] + numbers["width"] > 100
+        or numbers["y"] + numbers["height"] > 100
+    ):
+        return None
+    return numbers
+
+
+def _percent_boxes_overlap(
+    first: dict[str, float],
+    second: dict[str, float],
+    *,
+    margin: float = 0.0,
+) -> bool:
+    """Return whether two image-relative boxes overlap after expanding the second."""
+    return (
+        first["x"] < second["x"] + second["width"] + margin
+        and first["x"] + first["width"] > second["x"] - margin
+        and first["y"] < second["y"] + second["height"] + margin
+        and first["y"] + first["height"] > second["y"] - margin
+    )
+
+
+def _audit_visual_subtitle_placement(
+    api_client: object,
+    model: str,
+    result: dict,
+    source_image: PreparedSourceImage,
+) -> dict:
+    """Run a fresh image-aware placement pass and atomically accept only safe boxes."""
+    raw_regions = result.get("translation_regions")
+    if result.get("source_text_visible") is not True or not isinstance(raw_regions, list) or not raw_regions:
+        return result
+
+    if len(raw_regions) > 4:
+        return _clear_visual_localization(result)
+
+    inputs: list[dict] = []
+    first_pass_source_boxes: list[dict[str, float]] = []
+    for index, region in enumerate(raw_regions):
+        if not isinstance(region, dict):
+            return _clear_visual_localization(result)
+        text = region.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _clear_visual_localization(result)
+        source_text = region.get("source_text")
+        if not isinstance(source_text, str) or not source_text.strip():
+            return _clear_visual_localization(result)
+        if len([line for line in text.splitlines() if line.strip()]) > 2:
+            return _clear_visual_localization(result)
+        source_box = _strict_percent_box(region, minimum_width=0.25, minimum_height=0.25)
+        if source_box is None:
+            return _clear_visual_localization(result)
+        first_pass_source_boxes.append(source_box)
+        inputs.append({
+            "index": index,
+            "source_text": source_text.strip(),
+            "korean_text": text.strip(),
+            "protected_source_box": source_box,
+        })
+
+    audit_prompt = f"""Audit fresh subtitle placement on the attached official creative.
+
+The original pixels remain visible. Korean is an additional subtitle, NOT replacement text. protected_source_box is the first vision pass's detected ORIGINAL lettering box. It is mandatory protected geometry, never a placement suggestion. Scan the remaining image from scratch for a new target.
+
+Subtitles:
+{json.dumps(inputs, ensure_ascii=False)}
+
+Rules:
+- First map one tight protected_regions box per contiguous source-language phrase or visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes.
+- protected_regions must include exactly one kind=source_text box for each subtitle index, marked with that exact source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
+- Then find genuinely blank or low-detail negative space for every Korean subtitle. Prefer a uniform left or right background away from the central subject.
+- A translation box must be at least 24% wide and 12% high, fit at most 2 lines, stay at least 2% inside every image edge, and keep at least a 3% gap from every protected box and protected_source_box.
+- Translation boxes must keep at least a 3% gap from one another.
+- Never place Korean over the source phrase it translates. This would show English and Korean on top of each other.
+- Never use a lower caption band merely because the original English is there. Never cover a logo, character, product, product UI, or icon.
+- Preserve every subtitle index exactly once. Do not translate or rewrite korean_text.
+- If the image has no safe negative-space box for every subtitle, return safe=false and empty translation_regions. Preserving the original creative unchanged is required.
+
+Return exactly:
+{{
+  "safe": true,
+  "protected_regions": [
+    {{"kind":"source_text","source_index":0,"x":0,"y":0,"width":10,"height":10}}
+  ],
+  "translation_regions": [
+    {{"index":0,"x":2,"y":2,"width":24,"height":12}}
+  ]
+}}
+or:
+{{"safe":false,"protected_regions":[],"translation_regions":[]}}
+"""
+
+    try:
+        audit_response = create_message(
+            api_client,
+            model=model,
+            max_tokens=1400,
+            temperature=0,
+            system=VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": source_image.media_type,
+                            "data": source_image.base64_data,
+                        },
+                    },
+                    {"type": "text", "text": audit_prompt},
+                ],
+            }],
+        )
+        audit = _parse_json_response(audit_response, "visual subtitle placement audit")
+    except Exception as exc:
+        print(f"[squid] placement audit failed safely: {type(exc).__name__}")
+        return _clear_visual_localization(result)
+
+    if audit.get("safe") is not True:
+        return _clear_visual_localization(result)
+
+    raw_protected = audit.get("protected_regions")
+    raw_placements = audit.get("translation_regions")
+    if (
+        not isinstance(raw_protected, list)
+        or not raw_protected
+        or len(raw_protected) > 32
+        or not isinstance(raw_placements, list)
+        or len(raw_placements) != len(raw_regions)
+    ):
+        return _clear_visual_localization(result)
+
+    protected: list[tuple[str, Optional[int], dict[str, float]]] = [
+        ("source_text", index, box)
+        for index, box in enumerate(first_pass_source_boxes)
+    ]
+    audited_source_counts = {index: 0 for index in range(len(raw_regions))}
+    for raw in raw_protected:
+        if not isinstance(raw, dict) or raw.get("kind") not in _PLACEMENT_PROTECTED_KINDS:
+            return _clear_visual_localization(result)
+        box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
+        if box is None:
+            return _clear_visual_localization(result)
+        source_index: Optional[int] = None
+        if raw["kind"] == "source_text":
+            raw_source_index = raw.get("source_index")
+            if (
+                isinstance(raw_source_index, bool)
+                or not isinstance(raw_source_index, int)
+                or raw_source_index < 0
+                or raw_source_index >= len(raw_regions)
+            ):
+                return _clear_visual_localization(result)
+            source_index = raw_source_index
+            audited_source_counts[source_index] += 1
+        protected.append((raw["kind"], source_index, box))
+    if any(count != 1 for count in audited_source_counts.values()):
+        return _clear_visual_localization(result)
+
+    placements: dict[int, tuple[dict, dict[str, float]]] = {}
+    for raw in raw_placements:
+        if not isinstance(raw, dict):
+            return _clear_visual_localization(result)
+        index = raw.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index in placements:
+            return _clear_visual_localization(result)
+        if index < 0 or index >= len(raw_regions):
+            return _clear_visual_localization(result)
+        box = _strict_percent_box(raw, minimum_width=24.0, minimum_height=12.0)
+        if box is None:
+            return _clear_visual_localization(result)
+        if box["x"] < 2.0 or box["y"] < 2.0 or box["x"] + box["width"] > 98.0 or box["y"] + box["height"] > 98.0:
+            return _clear_visual_localization(result)
+        if any(_percent_boxes_overlap(box, protected_box, margin=3.0) for _, _, protected_box in protected):
+            return _clear_visual_localization(result)
+        placements[index] = (raw, box)
+    if set(placements) != set(range(len(raw_regions))):
+        return _clear_visual_localization(result)
+
+    accepted_boxes = [placements[index][1] for index in range(len(raw_regions))]
+    for index, box in enumerate(accepted_boxes):
+        if any(
+            _percent_boxes_overlap(box, other, margin=3.0)
+            for other in accepted_boxes[:index]
+        ):
+            return _clear_visual_localization(result)
+
+    audited_regions: list[dict] = []
+    for index, original in enumerate(raw_regions):
+        _, box = placements[index]
+        box_right = box["x"] + box["width"]
+        align = "left" if box_right <= 50.0 else "right" if box["x"] >= 50.0 else "center"
+        audited_regions.append({
+            **original,
+            **box,
+            "align": align,
+        })
+
+    result["translation_regions"] = audited_regions
+    result["source_text_visible"] = True
+    return result
+
+
 def _normalize_visual_localization(
     result: dict,
     client_id: str,
@@ -645,6 +898,12 @@ def generate_news_card_spec(
             result,
             llm_cfg.preserve_terms,
             source_content,
+        )
+        result = _audit_visual_subtitle_placement(
+            client,
+            llm_cfg.model,
+            result,
+            source_image,
         )
 
     # Force-stamp source_url: LLM occasionally truncates or normalizes URLs;
