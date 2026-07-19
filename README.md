@@ -119,6 +119,8 @@ curl -X POST https://coineasy-content-engine.up.railway.app/clients/origintrail/
 
 The Netlify console accepts a public X status URL by itself. Its server-side function imports the post text and first attached photo, then forwards the extracted content, canonical source URL, and allowlisted image URL to the Railway API. The recommended `remix` style reads visible banner text with Claude vision, preserves the complete original visual, and adds a branded Korean GTM panel. Posts without an available image automatically fall back to `classic`. Article and blog URLs still require pasted source text.
 
+After generation, the console also returns channel-ready copy in `channel_copy`: `telegram` is a Korean GTM announcement with the generated headline and bullets, CTA, canonical original link, and client hashtags; `x` preserves only the imported or pasted source content without adding translated copy, CTA, or hashtags. Both are available as one-click copy blocks below the card preview.
+
 **Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme}`), `png_path` (**str, single card — not a list**), `requested_template_style`, `template_style` (actual style after fallback), `source_image_used`, `manifest_path`, `duration_ms`.
 
 ---
