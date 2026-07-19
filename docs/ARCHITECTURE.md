@@ -253,7 +253,7 @@ def resolve_template(client_id: str, template_name: str) -> Path:
 
 ```bash
 # 1. scaffold 생성
-python scripts/new_client.py --id squid --name "Squid Router"
+python scripts/new_client.py --id squid --name "Squid"
 
 # → clients/squid/ 디렉토리 + 기본 config.yaml 생성
 

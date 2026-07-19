@@ -15,7 +15,7 @@ Each slide is 1080×1080 PNG with client branding automatically applied.
 
 **Current clients:**
 - Yellow Network (`yellow`)
-- Squid Router (`squid`)
+- Squid (`squid`)
 - OriginTrail Korea (`origintrail`) — news_card only; 브랜드 팔레트 확정 대기 (placeholder)
 
 **Cost:** Approximate and model-dependent — budget on the order of a few dollars/month per client.
@@ -55,7 +55,7 @@ python scripts/generate_cli.py --client yellow \
 
 ```bash
 # 1. Scaffold (creates clients/<id>/ with starter config)
-python scripts/new_client.py --id squid --name "Squid Router"
+python scripts/new_client.py --id squid --name "Squid"
 
 # 2. Add logos
 cp ~/logos/squid_white.png   clients/squid/assets/logo_dark.png
@@ -67,7 +67,7 @@ vim clients/squid/config.yaml
 
 # 4. Test
 python scripts/generate_cli.py --client squid --mock \
-  --source "Squid Router just integrated with..."
+  --source "Squid just integrated with..."
 
 # 5. Activate
 # Edit config.yaml: active: true

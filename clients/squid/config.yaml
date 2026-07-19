@@ -1,5 +1,5 @@
 client_id: squid
-name: Squid Router
+name: Squid
 locale: ko-KR
 active: true
 
@@ -31,7 +31,7 @@ llm:
       Approachable and builder-focused. 경어체.
       Emphasize cross-chain UX and developer simplicity.
     preserve_terms:
-      - "Squid Router"
+      - "Squid"
       - "Axelar"
       - "ITS"
       - "GMP"
@@ -49,7 +49,7 @@ llm:
       Approachable and builder-focused. 경어체.
       Emphasize cross-chain UX and developer simplicity.
     preserve_terms:
-      - "Squid Router"
+      - "Squid"
       - "Axelar"
       - "ITS"
       - "GMP"

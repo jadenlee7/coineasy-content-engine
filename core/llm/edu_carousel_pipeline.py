@@ -23,6 +23,7 @@ import json
 import re
 from typing import Literal, Optional
 
+from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
 
@@ -240,7 +241,10 @@ def generate_carousel_spec(
         }
     """
     if mock_mode:
-        return mock_response or _get_default_mock(client_id)
+        return enforce_client_display_name(
+            client_id,
+            mock_response or _get_default_mock(client_id),
+        )
     
     config = get_client_config(client_id)
     llm_cfg = config.llm.edu_carousel
@@ -274,6 +278,8 @@ def generate_carousel_spec(
     
     if series_number:
         result["series"]["series_number"] = series_number
+
+    result = enforce_client_display_name(client_id, result)
     
     _validate_result(result)
     return result

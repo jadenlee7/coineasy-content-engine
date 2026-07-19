@@ -57,7 +57,7 @@ const BRANDS: Record<EditableClientId, Brand> = {
     displayFont: "Gmarket Sans",
   },
   squid: {
-    name: "Squid Router",
+    name: "Squid",
     primary: "#E6FA36",
     dark: "#1A0E2E",
     accent: "#BC8EE4",
