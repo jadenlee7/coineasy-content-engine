@@ -234,7 +234,7 @@
     .mock-card { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4.45%; font-family: var(--brand-font); }
     .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: space-between; margin-bottom: 2.4%; }
     .mock-top span { color: color-mix(in srgb, #fff 58%, transparent); font: 700 8px/1 Inter, sans-serif; letter-spacing: 1.4px; text-transform: uppercase; }
-    .mock-logo { width: 10%; max-height: 42px; object-fit: contain; }
+    .mock-logo { width: 12%; height: 42px; object-fit: contain; object-position: right center; }
     .mock-inner { flex: 1; display: flex; flex-direction: column; padding: 5.2% 4.8%; border-radius: 18px; background: #fff; }
     .mock-label { align-self: flex-start; margin-bottom: 3%; padding: 1.2% 2.2%; border-radius: 7px; color: var(--brand-ink); background: var(--brand-primary); font-size: clamp(9px, 1.45vw, 17px); font-weight: 800; }
     .preview-shell[data-client="yellow"] .mock-label { color: #fdda16; background: #000; }
@@ -290,6 +290,17 @@
     .spec { padding: 0 14px 14px; color: #656b75; font-size: 11px; line-height: 1.6; }
     .spec h3 { margin: 3px 0 7px; color: var(--ink); font-size: 13px; }
     .spec ul { margin: 7px 0 0; padding-left: 18px; }
+
+    .channel-copy { margin-top: 16px; }
+    .channel-copy > h3 { margin: 0 0 10px; color: var(--ink); font-size: 13px; }
+    .channel-copy-grid { display: grid; gap: 10px; }
+    .channel-copy-card { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #fbfbfc; }
+    .channel-copy-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .channel-copy-head strong { color: #4e5560; font-size: 11px; }
+    .copy-button { min-width: 58px; min-height: 36px; padding: 0 12px; border: 1px solid #d7dae0; border-radius: 9px; color: var(--ink); background: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 750; }
+    .copy-button:hover { border-color: #aeb3bc; background: #f5f6f8; }
+    .copy-button:focus-visible { outline: 3px solid rgba(39,99,255,.2); outline-offset: 2px; }
+    .channel-copy-text { max-height: 230px; overflow: auto; margin: 0; padding: 13px 14px 15px; color: #565d68; white-space: pre-wrap; overflow-wrap: anywhere; font: 500 11px/1.65 "Pretendard Variable", Pretendard, sans-serif; }
 
     .privacy { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #8b919a; font-size: 10px; }
     .privacy svg { flex: 0 0 auto; }
@@ -456,6 +467,19 @@
             <summary>생성된 문구 보기</summary>
             <div class="spec" id="spec"></div>
           </details>
+          <section class="channel-copy" id="channel-copy" hidden>
+            <h3>채널별 게시 문구</h3>
+            <div class="channel-copy-grid">
+              <article class="channel-copy-card">
+                <div class="channel-copy-head"><strong>텔레그램 공지방 · 한국 GTM</strong><button class="copy-button" type="button" data-copy-target="telegram-copy">복사</button></div>
+                <pre class="channel-copy-text" id="telegram-copy"></pre>
+              </article>
+              <article class="channel-copy-card">
+                <div class="channel-copy-head"><strong>X · 원문 내용만</strong><button class="copy-button" type="button" data-copy-target="x-copy">복사</button></div>
+                <pre class="channel-copy-text" id="x-copy"></pre>
+              </article>
+            </div>
+          </section>
         </div>
       </section>
     </section>
@@ -535,6 +559,9 @@
       const download = document.getElementById("download");
       const specDetails = document.getElementById("spec-details");
       const spec = document.getElementById("spec");
+      const channelCopy = document.getElementById("channel-copy");
+      const telegramCopy = document.getElementById("telegram-copy");
+      const xCopy = document.getElementById("x-copy");
 
       function escapeHtml(value) {
         return String(value ?? "").replace(/[&<>\"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#039;" }[char]));
@@ -563,6 +590,9 @@
         resultNote.textContent = `현재 화면은 ${TEMPLATE[state.template]} 템플릿에 공식 로고와 Figma 브랜드 토큰을 적용한 예시입니다. ‘뉴스 카드 생성’을 누르면 실제 PNG로 교체됩니다.`;
         download.hidden = true;
         specDetails.hidden = true;
+        channelCopy.hidden = true;
+        telegramCopy.textContent = "";
+        xCopy.textContent = "";
         state.imageUrl = "";
       }
 
@@ -624,6 +654,21 @@
         sourceUrl.value = normalizeUserUrl(sourceUrl.value);
       });
 
+      channelCopy.addEventListener("click", async event => {
+        const button = event.target.closest("[data-copy-target]");
+        if (!button) return;
+        const target = document.getElementById(button.dataset.copyTarget);
+        if (!target?.textContent) return;
+        try {
+          await navigator.clipboard.writeText(target.textContent);
+          const originalLabel = button.textContent;
+          button.textContent = "복사됨";
+          window.setTimeout(() => { button.textContent = originalLabel; }, 1400);
+        } catch {
+          setStatus("복사 권한을 확인하거나 문구를 직접 선택해 복사해주세요.", "error");
+        }
+      });
+
       form.addEventListener("submit", async event => {
         event.preventDefault();
         const content = sourceContent.value.trim();
@@ -649,6 +694,7 @@
         loading.hidden = false;
         download.hidden = true;
         specDetails.hidden = true;
+        channelCopy.hidden = true;
         setStatus(contentIsXLink || (content.length < 10 && isXStatusUrl(normalizedUrl))
           ? "X 게시물을 불러와 카드로 만들고 있습니다…"
           : mockMode.checked ? "브랜딩 테스트 카드를 렌더링하고 있습니다…" : "원문을 요약하고 고해상도 카드를 생성하고 있습니다…");
@@ -690,13 +736,18 @@
             (generatedSpec.label ? `<div>분류: ${escapeHtml(generatedSpec.label)}</div>` : "") +
             (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "");
           specDetails.hidden = false;
-          setStatus("카드가 완성되었습니다. 오른쪽 위 ‘PNG 저장’을 눌러 내려받을 수 있습니다.", "success");
+
+          telegramCopy.textContent = payload.channel_copy?.telegram || "";
+          xCopy.textContent = payload.channel_copy?.x || "";
+          channelCopy.hidden = !(telegramCopy.textContent || xCopy.textContent);
+          setStatus("카드가 완성되었습니다. PNG를 저장하고 아래에서 채널별 문구를 복사할 수 있습니다.", "success");
           document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
         } catch (error) {
           const payload = error?.payload || {};
           setStatus(errorMessage(payload, error?.status), "error");
           mockCard.hidden = false;
           resultImage.hidden = true;
+          channelCopy.hidden = true;
         } finally {
           loading.hidden = true;
           generate.disabled = false;

@@ -4,6 +4,7 @@ import {
   SourceInputError,
   type ResolvedSource,
 } from "./_shared/source-content.mts";
+import { buildChannelCopy } from "./_shared/channel-copy.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -161,6 +162,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
     const contentType = imageResponse.headers.get("content-type") || "image/png";
     const imageBytes = Buffer.from(await imageResponse.arrayBuffer());
     const imageDataUrl = `data:${contentType};base64,${imageBytes.toString("base64")}`;
+    const channelCopy = buildChannelCopy(
+      clientId as "yellow" | "origintrail" | "squid" | "babylon",
+      result.spec,
+      resolvedSource.content,
+      resolvedSource.url,
+    );
 
     return json({
       client_id: result.client_id,
@@ -172,6 +179,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       requested_template_style: result.requested_template_style || templateStyle,
       template_style: result.template_style || templateStyle,
       duration_ms: result.duration_ms,
+      channel_copy: channelCopy,
       image_data_url: imageDataUrl,
       filename: `${clientId}-${result.template_style || templateStyle}-news-card.png`,
     });
