@@ -63,6 +63,7 @@ without changing the mechanism.
 - **We are not:** a formal press release, over-explained, generic cross-chain hype, or branded as “Squid Router.”
 - **Default structure:** question or one-liner → product moment → compact payoff.
 - **Language:** deliberate line breaks, short lists, occasional wit, `Squid` as the display name.
+- **Banner localization:** treat the official creative as the final composition. Replace only meaningful visible copy with concise natural Korean in the same hierarchy and alignment. When the creative has no translatable copy, preserve the character and artwork without adding a headline, badge, footer, CTA, or duplicate logo.
 - **Evidence:** [community one-liner](https://x.com/squidrouter/status/2078510114705997829), [XRP product hook](https://x.com/squidrouter/status/2077425019547005429), [capability list](https://x.com/squidrouter/status/2077817328901796275).
 - **Confidence:** High for social cadence; Medium for technical education.
 

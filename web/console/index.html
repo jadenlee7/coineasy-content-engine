@@ -799,9 +799,13 @@
               ? " · 원본 배너가 없어 클래식으로 자동 전환"
               : "";
           const logoNote = payload.template_style === "remix"
-            ? payload.spec?.source_logo_visible === true
-              ? " · 원본 공식 로고 유지, 추가 로고 생략"
-              : " · 공식 로고 안전영역에 1회 배치"
+            ? state.client === "squid"
+              ? payload.spec?.source_text_visible === true
+                ? " · 원본 문구만 자연스러운 한국어로 교체"
+                : " · 번역할 문구가 없어 원본 비주얼 그대로 유지"
+              : payload.spec?.source_logo_visible === true
+                ? " · 원본 공식 로고 유지, 추가 로고 생략"
+                : " · 공식 로고 안전영역에 1회 배치"
             : "";
           resultNote.textContent = `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 스타일로 생성했습니다${sourceNote}${remixNote}${logoNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
           download.href = state.imageUrl;

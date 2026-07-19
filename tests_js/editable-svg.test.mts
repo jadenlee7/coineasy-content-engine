@@ -32,17 +32,52 @@ test("creates a native-layer classic SVG for Figma without foreignObject", () =>
   assert.doesNotMatch(svg, /foreignObject|<style/);
 });
 
-test("omits an extra official logo when the source visual already contains it", () => {
-  const svg = buildEditableSvg("squid", "remix", { ...SPEC, source_logo_visible: true }, {
+test("creates a Squid official-creative translation layer without extra card chrome", () => {
+  const svg = buildEditableSvg("squid", "remix", {
+    ...SPEC,
+    source_logo_visible: true,
+    source_text_visible: true,
+    source_image_width: 1600,
+    source_image_height: 900,
+    translation_regions: [{
+      text: "어디서나 XRP를 사용하세요",
+      x: 8,
+      y: 12,
+      width: 54,
+      height: 18,
+      align: "left",
+      font_role: "display",
+      font_size: 5.5,
+      text_color: "#FFFFFF",
+      background_color: "#1A0E2E",
+      background_opacity: 0.94,
+    }],
+  }, {
     logoDark: "data:image/png;base64,bG9nbw==",
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
   assert.match(svg, /id="Source-Visual"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
-  assert.match(svg, /id="Localized-Content-Panel"/);
+  assert.match(svg, /id="Korean-Translation-Layer"/);
+  assert.match(svg, /id="Translated-Region-1-Cover"/);
+  assert.match(svg, /어디서나 XRP를/);
+  assert.match(svg, /사용하세요/);
   assert.match(svg, /<title id="Title">Squid editable Korean news card<\/title>/);
   assert.doesNotMatch(svg, /Squid Router/);
-  assert.doesNotMatch(svg, /Official-Logo-Safe-Area|CoinEasy|COINEASY/i);
+  assert.doesNotMatch(svg, /Localized-Content-Panel|Official-Logo-Safe-Area|Brand-Logo|Footer|Label-Text|CoinEasy|COINEASY/i);
+});
+
+test("keeps a textless Squid creative free of generated copy", () => {
+  const svg = buildEditableSvg("squid", "remix", {
+    ...SPEC,
+    source_text_visible: false,
+    translation_regions: [{ text: "이 문구는 나타나면 안 됩니다" }],
+  }, {
+    sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
+  });
+  assert.match(svg, /id="Source-Visual"/);
+  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assert.doesNotMatch(svg, /이 문구는 나타나면 안 됩니다|Headline-Line|Footer|Label-Text|Brand-Logo/);
 });
 
 test("places one official logo in the safe area when the source visual lacks it", () => {

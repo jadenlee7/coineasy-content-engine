@@ -44,7 +44,12 @@ brand_voice:
   channel_guidance:
     x: "Mirror the original post's brevity, line breaks, humor, and energy; do not turn a one-liner into a formal explainer."
     telegram: "Keep the Squid hook, add only the context Korean readers need, then CTA, original link, and focused hashtags."
-    banner: "Keep the source visual and product moment primary; add one short Korean headline and minimal supporting copy."
+    banner: >-
+      Treat the official creative as the final composition. If it contains meaningful
+      editorial copy, replace only that copy with concise natural Korean in the same
+      hierarchy and alignment. If it contains no translatable copy, preserve the
+      character and visual untouched. Never add a headline panel, badge, footer, CTA,
+      or duplicate logo.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
   reference_examples:
     - type: "community one-liner"
