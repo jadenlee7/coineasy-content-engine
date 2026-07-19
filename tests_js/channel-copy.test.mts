@@ -24,8 +24,8 @@ test("builds a Korean GTM Telegram announcement with CTA, original link, and has
   assert.match(copy.telegram, /#Yellow #YellowNetwork #YellowKorea #Web3/);
 });
 
-test("builds a concise Korean GTM X post with source CTA and focused hashtags", () => {
-  const original = "Original post line one.\nOriginal post line two.";
+test("builds a source-locked Korean X post without generic CTA or hashtags", () => {
+  const original = "Original @aave post line one.\nOriginal post line two.";
   const copy = buildChannelCopy(
     "babylon",
     { headline: "바빌론이 비트코인 스테이킹의 활용 범위를 넓힙니다", body_lines: ["BTC를 브릿지 없이 직접 활용합니다", "비트코인 보안을 다양한 네트워크로 확장합니다"] },
@@ -35,8 +35,9 @@ test("builds a concise Korean GTM X post with source CTA and focused hashtags", 
 
   assert.match(copy.x, /바빌론이 비트코인 스테이킹의 활용 범위를 넓힙니다/);
   assert.match(copy.x, /• BTC를 브릿지 없이 직접 활용합니다/);
-  assert.match(copy.x, /🔗 원문 확인: https:\/\/x\.com\/babylonlabs_io\/status\/123/);
-  assert.match(copy.x, /#Babylon #BabylonKorea/);
+  assert.match(copy.x, /@aave/);
+  assert.doesNotMatch(copy.x, /🔗 원문 확인:/);
+  assert.doesNotMatch(copy.x, /#BabylonKorea/);
   assert.doesNotMatch(copy.x, /Original post line/);
   assert.ok(copy.x.length <= 280);
 });
@@ -52,4 +53,36 @@ test("omits the original-link line when no source URL is available", () => {
   assert.doesNotMatch(copy.telegram, /🔗 원문:/);
   assert.doesNotMatch(copy.x, /🔗 원문 확인:/);
   assert.match(copy.telegram, /#SquidRouter/);
+});
+
+test("keeps Squid X copy minimal when the official source is a one-liner", () => {
+  const copy = buildChannelCopy(
+    "squid",
+    {
+      headline: "어디서든 XRP가 필요하신가요?",
+      body_lines: ["D-CENT Wallet에서 XRP와 RLUSD를 바로 스왑합니다", "Squid가 연결합니다"],
+    },
+    "Need XRP anywhere? we got you @DCENTWALLETS",
+    "https://x.com/squidrouter/status/123",
+  );
+
+  assert.match(copy.x, /^어디서든 XRP가 필요하신가요\?/);
+  assert.match(copy.x, /@DCENTWALLETS/);
+  assert.doesNotMatch(copy.x, /Squid가 연결합니다/);
+  assert.doesNotMatch(copy.x, /📌|▪️/);
+});
+
+test("uses a causal structure for OriginTrail X copy", () => {
+  const copy = buildChannelCopy(
+    "origintrail",
+    {
+      headline: "분산된 신호는 검증 가능한 맥락이 필요합니다",
+      body_lines: ["모든 신호가 출처로 연결됩니다", "맥락이 네트워크 전반에 유지됩니다"],
+    },
+    "Threat analysis breaks when signals scatter.",
+    "https://x.com/origin_trail/status/123",
+  );
+
+  assert.match(copy.x, /→ 모든 신호가 출처로 연결됩니다/);
+  assert.match(copy.x, /→ 맥락이 네트워크 전반에 유지됩니다/);
 });

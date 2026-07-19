@@ -19,6 +19,54 @@ brand:
   logo_light: assets/logo_light.png
   font_family: "Inter"                     # Figma 본문 폰트 (라틴). 한글은 Pretendard fallback
 
+brand_voice:
+  identity:
+    - "Bitcoin-native and technically precise"
+    - "Direct about product status and user action"
+    - "Educational without diluting custody or collateral mechanics"
+    - "Measured, credible, and infrastructure-led"
+  avoid:
+    - "Price speculation or yield promises"
+    - "Language implying custody, wrapping, or bridging when the source says otherwise"
+    - "Generic staking hype without product status or mechanism"
+    - "Unsupported mainnet, reward, or Korea availability claims"
+  writing_patterns:
+    - "Lead with what is live, what changed, or a direct user question"
+    - "State the Bitcoin-native mechanism in plain language"
+    - "Use numbered steps for guides and one-line CTAs for follow-ups"
+    - "Keep collateral, custody, staking status, and network terms exact"
+  source_fidelity:
+    default: 90
+    x: 95
+    telegram: 85
+    banner: 90
+    education: 82
+  channel_guidance:
+    x: "Preserve the original product status, question or guide structure, and Bitcoin terminology; do not add reward or launch implications."
+    telegram: "Add a concise Korean user takeaway, then exact steps or mechanics, CTA, original link, and focused hashtags."
+    banner: "Lead with the verified product state and one Bitcoin-native benefit explicitly present in the source."
+    education: "Explain custody, collateral, staking, and security mechanics precisely with no investment framing."
+  reference_examples:
+    - type: "product launch"
+      url: "https://x.com/babylonlabs_io/status/2061801513488429361"
+      text: >-
+        Native Bitcoin-backed borrowing is live on Public Testnet with Aave v4.
+        Users can post Bitcoin as collateral without giving up custody, wrapping,
+        or bridging.
+    - type: "user guide"
+      url: "https://x.com/babylonlabs_io/status/2077787192668160499"
+      text: >-
+        Do you have BTC staked on Babylon? Here's your guide to check your
+        status and extend staking for further rewards.
+    - type: "one-line CTA"
+      url: "https://x.com/babylonlabs_io/status/2077787195469918330"
+      text: "Check your staking status."
+
+content_sources:
+  twitter:
+    handle: "@babylonlabs_io"
+    poll_interval_min: 30
+
 llm:
   news_card:
     # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-4-8 상속.

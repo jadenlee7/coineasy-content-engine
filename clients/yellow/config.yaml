@@ -14,6 +14,51 @@ brand:
   logo_light: assets/logo_light.svg      # Figma 공식 검정 워드마크
   font_family: "Pretendard Variable"
 
+brand_voice:
+  identity:
+    - "Institutional and infrastructure-led"
+    - "Analytical, direct, and evidence-aware"
+    - "Confident about settlement and clearing without hype"
+    - "Explains market friction before presenting Yellow's role"
+  avoid:
+    - "Meme-first or overly casual phrasing"
+    - "Generic excitement such as 혁신적, 게임체인저, 대박"
+    - "Claims of adoption, compliance, or availability absent from the source"
+    - "More emojis or hashtags than the original post needs"
+  writing_patterns:
+    - "Open with a structural problem or market transition"
+    - "Connect the problem to infrastructure, clearing, or settlement"
+    - "Use complete, measured paragraphs with precise terminology"
+    - "Close with a factual implication or a restrained read-more CTA"
+  source_fidelity:
+    default: 90
+    x: 95
+    telegram: 85
+    banner: 90
+    education: 80
+  channel_guidance:
+    x: "Preserve the original thesis, paragraph flow, certainty, and restrained energy; add no generic Korean marketing hook."
+    telegram: "Add one short Korean relevance sentence, then facts, CTA, original link, and focused hashtags."
+    banner: "Use one infrastructure-led headline and only source-supported details; keep the original visual dominant."
+    education: "Explain the original mechanism accessibly while preserving technical causality and terminology."
+  reference_examples:
+    - type: "infrastructure thesis"
+      url: "https://x.com/Yellow/status/2078087351893414295"
+      text: >-
+        Executing every single micro-transaction on-chain is operationally
+        unsustainable for modern trading strategies. The future of digital
+        assets belongs to off-chain clearing networks.
+    - type: "market shift"
+      url: "https://x.com/Yellow/status/2078328954574750124"
+      text: >-
+        Traditional payment rails were engineered for human-speed commerce.
+        The agentic economy demands frictionless, machine-speed settlement layers.
+    - type: "product utility"
+      url: "https://x.com/Yellow/status/2077374193218285825"
+      text: >-
+        Splitting expenses with crypto friends is a mess. SplitChain, built on
+        Yellow SDK, fixes it.
+
 content_sources:
   twitter:
     handle: "@Yellow"                     # 글로벌 공식 계정

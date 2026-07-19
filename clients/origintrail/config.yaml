@@ -16,6 +16,55 @@ brand:
   logo_light: assets/logo_light.png       # Figma 공식 검정 워드마크 · 밝은 배경용
   font_family: "Gmarket Sans"             # Figma 헤딩/본문 폰트
 
+brand_voice:
+  identity:
+    - "Trust, provenance, and verifiability first"
+    - "Thesis-led and logically structured"
+    - "Technically credible with real-world proof"
+    - "Clear about why connected context matters for AI"
+  avoid:
+    - "Unverifiable superlatives or token-price language"
+    - "Abstract DKG claims without a source, mechanism, or example"
+    - "Generic Web3 hype detached from trusted knowledge"
+    - "Over-simplification that changes technical meaning"
+  writing_patterns:
+    - "Start with a short contrast, problem, or trust question"
+    - "Explain the causal break in data, memory, or provenance"
+    - "Show how shared verifiable context resolves it"
+    - "Use a concrete healthcare, security, science, or AI example"
+  source_fidelity:
+    default: 90
+    x: 95
+    telegram: 85
+    banner: 90
+    education: 82
+  channel_guidance:
+    x: "Keep the source's problem-to-proof logic and terminology; avoid adding a broader AI thesis unless it is explicit."
+    telegram: "Lead with the trust problem, explain the verified mechanism, then include CTA, original link, and focused hashtags."
+    banner: "Use a concise problem-versus-verifiable-context headline with no unsupported benefits."
+    education: "Teach provenance as a causal chain using one source-grounded real-world example."
+  reference_examples:
+    - type: "contrast hook"
+      url: "https://x.com/origin_trail/status/2078063452996661578"
+      text: >-
+        Individual memory doesn't scale. Shared context does. Isolated agents
+        rebuild the same context again and again.
+    - type: "provenance problem"
+      url: "https://x.com/origin_trail/status/2076973514217709978"
+      text: >-
+        Pharma already solved provenance. Every claim traces back. Then
+        knowledge reaches an AI model, and the chain breaks.
+    - type: "mechanism and proof"
+      url: "https://x.com/origin_trail/status/2076757788097724762"
+      text: >-
+        DKG gives agents shared, verifiable memory. Every signal traces back to
+        its source and context stays attached across networks.
+
+content_sources:
+  twitter:
+    handle: "@origin_trail"
+    poll_interval_min: 30
+
 llm:
   news_card:
     # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-4-8 상속.

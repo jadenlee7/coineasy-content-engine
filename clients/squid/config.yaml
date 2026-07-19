@@ -19,6 +19,46 @@ brand:
   font_display: "Bagoss Condensed"
   font_display_file: "assets/BagossCondensed.woff2"
 
+brand_voice:
+  identity:
+    - "Short, playful, and unmistakably human"
+    - "Product-sharp about seamless cross-chain execution"
+    - "Community-aware without becoming generic crypto slang"
+    - "Confident through brevity rather than formal explanation"
+  avoid:
+    - "Corporate press-release tone"
+    - "Long explanatory intros before the product point"
+    - "Generic cross-chain hype or invented performance claims"
+    - "Any legacy two-word variant as the display brand name"
+  writing_patterns:
+    - "Use a question, one-liner, or compact list as the hook"
+    - "Keep deliberate line breaks and short sentence rhythm"
+    - "Let product names, integrations, and visuals carry the proof"
+    - "Use wit sparingly and only when the source is playful"
+  source_fidelity:
+    default: 90
+    x: 95
+    telegram: 85
+    banner: 92
+    education: 80
+  channel_guidance:
+    x: "Mirror the original post's brevity, line breaks, humor, and energy; do not turn a one-liner into a formal explainer."
+    telegram: "Keep the Squid hook, add only the context Korean readers need, then CTA, original link, and focused hashtags."
+    banner: "Keep the source visual and product moment primary; add one short Korean headline and minimal supporting copy."
+    education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
+  reference_examples:
+    - type: "community one-liner"
+      url: "https://x.com/squidrouter/status/2078510114705997829"
+      text: "how it feels to be a Squid / iykyk"
+    - type: "product hook"
+      url: "https://x.com/squidrouter/status/2077425019547005429"
+      text: >-
+        Need XRP anywhere? we got you. Swap between XRP and RLUSD directly in
+        D-CENT Wallets. Powered by yours truly.
+    - type: "compact capability list"
+      url: "https://x.com/squidrouter/status/2077817328901796275"
+      text: "App. API. SDK. Widget. Protocol. Accounts. Aggregator. EVERYTHING. full stack Squid."
+
 content_sources:
   twitter:
     handle: "@SquidRouter"

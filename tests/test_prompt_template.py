@@ -6,6 +6,7 @@ def test_prompt_has_only_expected_placeholders():
     fields = {fname for _, fname, _, _ in fmt.parse(BASE_USER_PROMPT) if fname}
     expected = {
         'preserve_terms_block', 'glossary_block', 'tone_guidance',
+        'brand_voice_block',
         'client_name', 'client_id', 'source_type', 'source_url',
         'source_content',
     }
