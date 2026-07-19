@@ -47,12 +47,13 @@ brand_voice:
     banner: >-
       Treat the official creative as the final composition. If it contains meaningful
       editorial copy, replace only that copy with concise natural Korean in the same
-      hierarchy and rhythm. If it contains no translatable copy, preserve the character
-      and visual untouched. Never add an unrelated headline panel, badge, CTA, or
-      duplicate logo. Never place Korean text on top of source lettering. Crop away
-      a lower-third source-copy strip when safe, then place Korean in the separate
-      Squid-dark footer without a box or blurred patch. Keep the source line count and
-      rhythm; a short repeated Latin keyword may remain when it carries the visual.
+      hierarchy and rhythm inside the original banner. If it contains no translatable
+      copy, preserve the character and visual untouched. Never add an unrelated headline
+      panel, badge, CTA, or duplicate logo. Preserve the full source crop and use only a
+      transparent, feathered Squid-dark subtitle gradient around the detected copy. Never
+      use a separate footer, solid caption box, blurred patch, or thick text outline. Keep
+      the source line count and rhythm; a short repeated Latin keyword may remain when it
+      carries the visual.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
   reference_examples:
     - type: "community one-liner"

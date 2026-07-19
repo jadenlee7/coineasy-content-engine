@@ -231,7 +231,7 @@ def _build_user_prompt(
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
 - Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Keep the box tight around the visible copy without covering characters, products, or logos.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
-- The renderer never places Korean text on top of source lettering. For lower-third source copy it crops away the text-bearing strip and places Korean in a separate Squid-dark footer; otherwise it preserves the source image and places the translation below it. Never request or imply image blur, an overlaid caption box, panel, or chip.
+- The renderer preserves the full source crop and places Korean inside the original banner over a transparent, feathered Squid-dark subtitle gradient around the detected copy. Never request or imply a separate footer, solid caption box, blurred patch, thick text outline, panel, or chip.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
