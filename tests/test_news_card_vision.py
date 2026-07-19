@@ -84,6 +84,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
         "align": "center",
         "font_role": "display",
         "font_size": 12.0,
+        "scale_x": 0.85,
         "text_color": "#E6FA36",
     }]
 
@@ -153,6 +154,7 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
         "align": "center",
         "font_role": "display",
         "font_size": 5.0,
+        "scale_x": 0.91,
         "text_color": "#FFFFFF",
     }]
 

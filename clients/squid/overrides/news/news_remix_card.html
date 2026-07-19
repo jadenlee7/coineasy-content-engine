@@ -63,10 +63,14 @@
   }
   .translation-region > span {
     position: relative;
+    display: block;
     z-index: 1;
-    width: 100%;
+    width: max-content;
+    max-width: 100%;
+    transform: scaleX(var(--region-scale-x));
+    transform-origin: var(--region-origin) center;
     paint-order: stroke fill;
-    -webkit-text-stroke: .22em rgba(0, 0, 0, .97);
+    -webkit-text-stroke: .28em rgba(0, 0, 0, .97);
     text-shadow:
       0 0 .08em rgba(0, 0, 0, 1),
       0 .045em .1em rgba(0, 0, 0, .94),
@@ -91,6 +95,8 @@
           --region-align: {{ region.align }};
           --region-font: {% if region.font_role == 'display' %}var(--display){% else %}var(--font){% endif %};
           --region-size: {{ '%.2f' | format(region.font_size * frame_width / 100.0) }}px;
+          --region-scale-x: {{ region.scale_x | default(1) }};
+          --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
           --region-text: {{ region.text_color }};
         "
       ><span>{{ region.text | e }}</span></div>
@@ -103,8 +109,9 @@
     const text = region.querySelector('span');
     if (!text) continue;
     let size = parseFloat(getComputedStyle(region).fontSize);
+    const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
     const minimum = Math.max(14, {{ '%.3f' | format(frame_width) }} * 0.02);
-    while ((text.scrollHeight > region.clientHeight || text.scrollWidth > region.clientWidth) && size > minimum) {
+    while ((text.scrollHeight > region.clientHeight || text.scrollWidth * scaleX > region.clientWidth) && size > minimum) {
       size = Math.max(minimum, size * 0.92);
       region.style.fontSize = `${size}px`;
     }
