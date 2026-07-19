@@ -67,8 +67,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "same line count and approximately the same rendered width" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "transparent, expanded outline and shadow" in content[1]["text"]
-    assert "solid caption box" in content[1]["text"]
+    assert "never places Korean text on top of source lettering" in content[1]["text"]
+    assert "separate Squid-dark footer" in content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
     assert "Squid Router" not in content[1]["text"]
@@ -87,6 +87,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
         "scale_x": 0.85,
         "text_color": "#E6FA36",
     }]
+    assert result["source_crop_bottom"] == 100.0
 
 
 def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
@@ -157,6 +158,7 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
         "scale_x": 0.91,
         "text_color": "#FFFFFF",
     }]
+    assert result["source_crop_bottom"] == 58.0
 
 
 def test_squid_lower_caption_keeps_the_image_center_when_vision_box_is_oversized():
@@ -188,6 +190,28 @@ def test_squid_lower_caption_keeps_the_image_center_when_vision_box_is_oversized
         "scale_x": 1.24,
         "text_color": "#FFFFFF",
     }
+    assert result["source_crop_bottom"] == 70.0
+
+
+def test_squid_lower_third_boundary_uses_the_raw_vision_coordinate():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "A lower-third caption",
+            "text": "하단 자막",
+            "x": 20,
+            "y": 67,
+            "width": 60,
+            "height": 10,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 5,
+            "text_color": "#FFFFFF",
+        }],
+    }, "squid", True)
+
+    assert result["translation_regions"][0]["y"] == 57.0
+    assert result["source_crop_bottom"] == 55.0
 
 
 def test_squid_untranslated_visual_copy_cannot_succeed_after_failed_repair(monkeypatch):
@@ -267,6 +291,7 @@ def test_source_logo_is_never_reported_without_an_attached_image(monkeypatch):
     assert result["source_logo_visible"] is False
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
+    assert result["source_crop_bottom"] == 100.0
 
 
 def test_squid_textless_visual_keeps_translation_layer_empty():
@@ -297,3 +322,4 @@ def test_squid_textless_visual_keeps_translation_layer_empty():
 
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
+    assert result["source_crop_bottom"] == 100.0

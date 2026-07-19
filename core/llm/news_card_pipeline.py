@@ -229,9 +229,9 @@ def _build_user_prompt(
 - If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep the same line count and approximately the same rendered width; retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
 - source_text must transcribe the visible source phrase exactly, including its line breaks. Use one tight region around the actual glyphs and shadows, not the full lower third or an empty background area.
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
-- Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Include enough padding to hide the original copy without covering characters, products, or logos.
+- Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Keep the box tight around the visible copy without covering characters, products, or logos.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
-- The renderer uses only a transparent, expanded outline and shadow attached to the Korean glyphs to cover the original copy. Never request or imply image blur, a solid caption box, panel, chip, or opaque background behind the Korean text.
+- The renderer never places Korean text on top of source lettering. For lower-third source copy it crops away the text-bearing strip and places Korean in a separate Squid-dark footer; otherwise it preserves the source image and places the translation below it. Never request or imply image blur, an overlaid caption box, panel, or chip.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -476,13 +476,14 @@ def _normalize_visual_localization(
     client_id: str,
     has_source_image: bool,
 ) -> dict:
-    """Keep Squid visual translation overlays bounded and renderer-safe."""
+    """Keep Squid visual translation regions bounded and renderer-safe."""
     enabled = (
         client_id == "squid"
         and has_source_image
         and result.get("source_text_visible") is True
     )
     normalized_regions: list[dict] = []
+    lower_third_crop_candidates: list[float] = []
     raw_regions = result.get("translation_regions")
     if enabled and isinstance(raw_regions, list):
         for raw in raw_regions[:4]:
@@ -535,9 +536,15 @@ def _normalize_visual_localization(
                 "scale_x": round(scale_x, 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
             })
+            if raw_y >= 65.0:
+                lower_third_crop_candidates.append(max(55.0, min(92.0, raw_y - 12.0)))
 
     result["translation_regions"] = normalized_regions
     result["source_text_visible"] = bool(normalized_regions)
+    result["source_crop_bottom"] = round(
+        min(lower_third_crop_candidates),
+        2,
+    ) if normalized_regions and len(lower_third_crop_candidates) == len(normalized_regions) else 100.0
     return result
 
 

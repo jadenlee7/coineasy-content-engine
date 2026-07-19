@@ -801,7 +801,7 @@
           const logoNote = payload.template_style === "remix"
             ? state.client === "squid"
               ? payload.spec?.source_text_visible === true
-                ? " · 원본 문구만 자연스러운 한국어로 교체"
+                ? " · 자연스러운 한국어 번역 적용"
                 : " · 번역할 문구가 없어 원본 비주얼 그대로 유지"
               : payload.spec?.source_logo_visible === true
                 ? " · 원본 공식 로고 유지, 추가 로고 생략"
