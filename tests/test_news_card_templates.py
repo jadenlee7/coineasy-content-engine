@@ -19,7 +19,9 @@ MOCK_SPEC = {
 def test_news_card_templates_are_allowlisted_and_present():
     assert set(NEWS_CARD_TEMPLATES) == {"remix", "classic", "editorial", "signal"}
     for relative_path in NEWS_CARD_TEMPLATES.values():
-        assert (Path("core/templates") / relative_path).is_file()
+        template_path = Path("core/templates") / relative_path
+        assert template_path.is_file()
+        assert "coineasy" not in template_path.read_text().lower()
 
 
 @pytest.mark.asyncio
@@ -76,12 +78,13 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
         source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
         output_dir=tmp_path,
         mock_mode=True,
-        mock_response=MOCK_SPEC,
+        mock_response={**MOCK_SPEC, "source_logo_visible": True},
         template_style="remix",
     )
 
     assert captured["template_path"] == "news/news_remix_card.html"
     assert captured["slots"]["source_image_data_url"].startswith("data:image/jpeg;base64,")
+    assert captured["slots"]["source_logo_visible"] is True
     assert result.template_style == "remix"
     assert result.requested_template_style == "remix"
     assert result.source_image_used is True

@@ -118,7 +118,7 @@ class CarouselResult:
 class NewsCardResult:
     client_id: str
     content_type: str  # "news_card"
-    spec: dict                  # full {label,date,headline,body_lines,source_url,theme}
+    spec: dict                  # full card copy + source_logo_visible placement signal
     png_path: str               # 1 card → single PNG, not a list
     template_style: str
     requested_template_style: str

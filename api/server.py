@@ -85,7 +85,7 @@ class NewsCardRequest(BaseModel):
 class NewsCardResponse(BaseModel):
     client_id: str
     content_type: str
-    spec: dict          # {label, date, headline, body_lines, source_url, theme}
+    spec: dict          # localized card copy + source_logo_visible placement signal
     png_path: str       # single 1080×1080 card, not a list
     template_style: str
     requested_template_style: str

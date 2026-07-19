@@ -32,16 +32,25 @@ test("creates a native-layer classic SVG for Figma without foreignObject", () =>
   assert.doesNotMatch(svg, /foreignObject|<style/);
 });
 
-test("keeps the source visual as a separate embedded image layer without production labels", () => {
-  const svg = buildEditableSvg("squid", "remix", SPEC, {
+test("omits an extra official logo when the source visual already contains it", () => {
+  const svg = buildEditableSvg("squid", "remix", { ...SPEC, source_logo_visible: true }, {
     logoDark: "data:image/png;base64,bG9nbw==",
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
   assert.match(svg, /id="Source-Visual"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
-  assert.match(svg, /id="CoinEasy-Content-Panel"/);
-  assert.match(svg, />COINEASY<\/text>/);
-  assert.doesNotMatch(svg, /ORIGINAL VISUAL REMIX|KOREA GTM EDIT/i);
+  assert.match(svg, /id="Localized-Content-Panel"/);
+  assert.doesNotMatch(svg, /Official-Logo-Safe-Area|CoinEasy|COINEASY/i);
+});
+
+test("places one official logo in the safe area when the source visual lacks it", () => {
+  const svg = buildEditableSvg("yellow", "remix", { ...SPEC, source_logo_visible: false }, {
+    logoDark: "data:image/svg+xml;base64,bG9nbw==",
+    sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
+  });
+  assert.match(svg, /id="Official-Logo-Safe-Area"/);
+  assert.equal((svg.match(/id="Brand-Logo"/g) || []).length, 1);
+  assert.doesNotMatch(svg, /CoinEasy|COINEASY/i);
 });
 
 test("supports all four editable layout styles", () => {
@@ -49,5 +58,6 @@ test("supports all four editable layout styles", () => {
     const svg = buildEditableSvg("babylon", style, SPEC);
     assert.match(svg, new RegExp(`Figma Editable · ${style}`));
     assert.match(svg, /<text id="Headline-Line-1"/);
+    assert.doesNotMatch(svg, /CoinEasy|COINEASY/i);
   }
 });
