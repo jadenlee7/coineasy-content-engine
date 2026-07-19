@@ -17,6 +17,7 @@ type EditableSpec = {
   source_logo_visible?: unknown;
   source_text_visible?: unknown;
   translation_regions?: unknown;
+  source_crop_bottom?: unknown;
   source_image_width?: unknown;
   source_image_height?: unknown;
 };
@@ -44,6 +45,7 @@ type NormalizedSpec = {
   sourceLogoVisible: boolean;
   sourceTextVisible: boolean;
   translationRegions: NormalizedTranslationRegion[];
+  sourceCropBottom: number;
   sourceImageWidth: number;
   sourceImageHeight: number;
 };
@@ -122,14 +124,6 @@ function normalizedColor(value: unknown, fallback: string): string {
     : fallback;
 }
 
-function outlineColor(textColor: string): string {
-  const red = Number.parseInt(textColor.slice(1, 3), 16);
-  const green = Number.parseInt(textColor.slice(3, 5), 16);
-  const blue = Number.parseInt(textColor.slice(5, 7), 16);
-  const luminance = (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255;
-  return luminance > 0.5 ? "#000000" : "#FFFFFF";
-}
-
 function normalizeSpec(spec: EditableSpec): NormalizedSpec {
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines
@@ -170,6 +164,7 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     sourceLogoVisible: spec.source_logo_visible === true,
     sourceTextVisible: translationRegions.length > 0,
     translationRegions,
+    sourceCropBottom: boundedNumber(spec.source_crop_bottom, 100, 55, 100),
     sourceImageWidth: boundedNumber(spec.source_image_width, 1080, 1, 10_000),
     sourceImageHeight: boundedNumber(spec.source_image_height, 1080, 1, 10_000),
   };
@@ -370,46 +365,79 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
 
 function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
   const sourceRatio = spec.sourceImageWidth / spec.sourceImageHeight;
-  const frame = sourceRatio >= 1
-    ? { x: 0, y: (1080 - 1080 / sourceRatio) / 2, width: 1080, height: 1080 / sourceRatio }
-    : { x: (1080 - 1080 * sourceRatio) / 2, y: 0, width: 1080 * sourceRatio, height: 1080 };
+  const localized = spec.sourceTextVisible && spec.translationRegions.length > 0;
+  const cropFraction = localized ? spec.sourceCropBottom / 100 : 1;
+  const croppedRatio = sourceRatio / cropFraction;
+  let frame: { x: number; y: number; width: number; height: number; cropWidth: number; cropHeight: number };
+  if (localized && croppedRatio >= 1.5) {
+    const width = 1080;
+    const height = width / sourceRatio;
+    const cropHeight = height * cropFraction;
+    frame = { x: 0, y: 720 - cropHeight, width, height, cropWidth: width, cropHeight };
+  } else if (localized) {
+    const cropHeight = 720;
+    const height = cropHeight / cropFraction;
+    const width = height * sourceRatio;
+    frame = { x: (1080 - width) / 2, y: 0, width, height, cropWidth: width, cropHeight };
+  } else if (sourceRatio >= 1) {
+    const height = 1080 / sourceRatio;
+    frame = { x: 0, y: (1080 - height) / 2, width: 1080, height, cropWidth: 1080, cropHeight: height };
+  } else {
+    const width = 1080 * sourceRatio;
+    frame = { x: (1080 - width) / 2, y: 0, width, height: 1080, cropWidth: width, cropHeight: 1080 };
+  }
+  const clip = localized
+    ? `<defs><clipPath id="Source-Visual-Crop"><rect x="${frame.x.toFixed(2)}" y="${frame.y.toFixed(2)}" width="${frame.cropWidth.toFixed(2)}" height="${frame.cropHeight.toFixed(2)}"/></clipPath></defs>`
+    : "";
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const translations = spec.sourceTextVisible
-    ? spec.translationRegions.map((region, index) => {
-      const x = frame.x + frame.width * region.x / 100;
-      const y = frame.y + frame.height * region.y / 100;
-      const width = frame.width * region.width / 100;
-      const height = frame.height * region.height / 100;
-      let fontSize = frame.width * region.fontSize / 100;
-      const minFontSize = Math.max(14, frame.width * 0.02);
-      let lineHeight = fontSize * 1.08;
-      let lines: string[] = [];
-      while (true) {
-        const maxUnits = Math.max(6, width / Math.max(fontSize * region.scaleX, 1) * 1.65);
-        const maxLines = Math.max(1, Math.min(5, Math.floor(height / Math.max(lineHeight, 1))));
-        lines = wrapSvgText(region.text, maxUnits, maxLines);
-        const truncated = lines.at(-1)?.endsWith("…") === true;
-        if ((!truncated && lines.length * lineHeight <= height) || fontSize <= minFontSize) break;
-        fontSize = Math.max(minFontSize, fontSize * 0.92);
-        lineHeight = fontSize * 1.08;
+  const sourceLayer = localized
+    ? `<g id="Source-Visual-Layer" clip-path="url(#Source-Visual-Crop)">${visual}</g>`
+    : `<g id="Source-Visual-Layer">${visual}</g>`;
+  let translations = "";
+  if (localized) {
+    const maximumFontSize = spec.translationRegions.length === 1 ? 76 : spec.translationRegions.length === 2 ? 56 : 42;
+    const blocks = spec.translationRegions.map((region, index) => {
+      const fontSize = Math.min(maximumFontSize, Math.max(32, region.fontSize * 10.8));
+      const lines: string[] = [];
+      for (const paragraph of region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean)) {
+        if (lines.length >= 6) break;
+        lines.push(...wrapSvgText(paragraph, Math.max(12, 952 / fontSize * 1.65), 6 - lines.length));
       }
-      const blockHeight = lines.length * lineHeight;
-      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize);
-      const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width - fontSize * 0.22 : x + fontSize * 0.22;
-      const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
-      const font = region.fontRole === "display" ? brand.displayFont : brand.font;
-      const regionId = `Translated-Region-${index + 1}`;
-      const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      return `<g id="Translated-Region-${index + 1}">
-        ${textLayers(`${regionId}-Text`, lines, textX, firstBaseline, lineHeight, `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="${region.textColor}" stroke="${outlineColor(region.textColor)}" stroke-opacity="0.97" stroke-width="${Math.max(1, fontSize * 0.28).toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
-      </g>`;
-    }).join("\n")
-    : "";
+      const lineHeight = fontSize * 1.06;
+      return {
+        id: `Korean-Translation-Region-${index + 1}`,
+        lines: lines.slice(0, 6),
+        font: region.fontRole === "display" ? brand.displayFont : brand.font,
+        fontSize,
+        lineHeight,
+        height: lines.length * lineHeight,
+      };
+    });
+    const footerTop = 752;
+    const footerHeight = 286;
+    const gap = 12;
+    const totalHeight = blocks.reduce((sum, block) => sum + block.height, 0) + gap * Math.max(0, blocks.length - 1);
+    let cursor = footerTop + (footerHeight - totalHeight) / 2;
+    translations = blocks.map((block) => {
+      const firstBaseline = cursor + block.fontSize;
+      cursor += block.height + gap;
+      return `<g id="${block.id}">${textLayers(
+        `${block.id}-Text`,
+        block.lines,
+        540,
+        firstBaseline,
+        block.lineHeight,
+        `text-anchor="middle" fill="#FFFFFF" font-family="${escapeXml(block.font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${block.fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(block.fontSize * 0.045).toFixed(2)}"`,
+      )}</g>`;
+    }).join("\n");
+  }
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
-  <g id="Source-Visual-Layer">${visual}</g>
-  <g id="Korean-Translation-Layer">${translations}</g>`;
+  ${clip}
+  ${sourceLayer}
+  ${localized ? `<rect id="Translation-Footer-Background" x="0" y="720" width="1080" height="360" fill="${brand.dark}"/>` : ""}
+  <g id="Korean-Translation-Footer">${translations}</g>`;
 }
 
 export function buildEditableSvg(

@@ -30,10 +30,11 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "logo_dark_path" not in override_html
     assert "translation-region::after" not in override_html
     assert "--region-tint" not in override_html
-    assert ".translation-region::before" in override_html
-    assert "content: none" in override_html
+    assert 'class="translation-footer"' in override_html
+    assert "source_crop_bottom" in override_html
+    assert "translation-region" not in override_html
     assert "filter: blur" not in override_html
-    assert "-webkit-text-stroke" in override_html
+    assert "-webkit-text-stroke" not in override_html
 
 
 @pytest.mark.asyncio
@@ -114,6 +115,7 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
     assert captured["slots"]["source_logo_visible"] is True
     assert captured["slots"]["source_text_visible"] is True
     assert captured["slots"]["translation_regions"][0]["text"] == "어디서나 XRP를 사용하세요"
+    assert captured["slots"]["source_crop_bottom"] == 100.0
     assert captured["slots"]["source_image_width"] == 1080
     assert captured["slots"]["source_image_height"] == 1080
     assert result.template_style == "remix"
