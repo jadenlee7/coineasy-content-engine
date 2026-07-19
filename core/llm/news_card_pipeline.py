@@ -226,9 +226,9 @@ def _build_user_prompt(
 - Treat the attached image as the final composition. Preserve its character, product, background, crop, layout, and official logo.
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
-- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols.
+- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep the same line count and approximately the same rendered width; retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
 - source_text must transcribe the visible source phrase exactly, including its line breaks. Use one tight region around the actual glyphs and shadows, not the full lower third or an empty background area.
-- Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, and token symbols inside an otherwise Korean translation.
+- Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
 - Each region must cover the original text area using image-relative percentages: x/y are its top-left corner, width/height its full box, all from 0 to 100. Include enough padding to hide the original copy without covering characters, products, or logos.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Match the original alignment and foreground color.
 - The renderer uses only a transparent, expanded outline and shadow attached to the Korean glyphs to cover the original copy. Never request or imply image blur, a solid caption box, panel, chip, or opaque background behind the Korean text.
@@ -339,14 +339,59 @@ def _untranslated_region_indexes(result: dict, preserve_terms: list[str]) -> lis
     regions = result.get("translation_regions")
     if not isinstance(regions, list):
         return []
-    return [
-        index
-        for index, region in enumerate(regions)
-        if isinstance(region, dict)
-        and isinstance(region.get("text"), str)
-        and _ASCII_WORD.search(region["text"])
-        and _has_untranslated_english(region["text"], preserve_terms)
-    ]
+    indexes: list[int] = []
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict) or not isinstance(region.get("text"), str):
+            continue
+        text = region["text"]
+        if not _ASCII_WORD.search(text):
+            continue
+        source_keyword = _repeated_leading_keyword(region.get("source_text"))
+        allowed_terms = [*preserve_terms, *([source_keyword] if source_keyword else [])]
+        if _has_untranslated_english(text, allowed_terms):
+            indexes.append(index)
+    return indexes
+
+
+def _repeated_leading_keyword(source_text: object) -> str | None:
+    """Return a short Latin keyword that leads every line of a visual phrase."""
+    if not isinstance(source_text, str):
+        return None
+    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    matches = [re.match(r"^([A-Za-z][A-Za-z0-9_-]{1,23})\b", line) for line in lines]
+    if any(match is None for match in matches):
+        return None
+    keywords = [match.group(1) for match in matches if match is not None]
+    return keywords[0] if all(keyword.lower() == keywords[0].lower() for keyword in keywords) else None
+
+
+def _visual_alignment_region_indexes(result: dict) -> list[int]:
+    """Find translations that lost a repeated source keyword or line rhythm."""
+    if result.get("source_text_visible") is not True:
+        return []
+    regions = result.get("translation_regions")
+    if not isinstance(regions, list):
+        return []
+    indexes: list[int] = []
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict):
+            continue
+        source_text = region.get("source_text")
+        text = region.get("text")
+        keyword = _repeated_leading_keyword(source_text)
+        if not keyword or not isinstance(text, str):
+            continue
+        source_lines = [line for line in source_text.splitlines() if line.strip()]
+        translated_lines = [line for line in text.splitlines() if line.strip()]
+        has_keyword = re.search(
+            rf"(?i)(?<![A-Za-z0-9_-]){re.escape(keyword)}(?![A-Za-z0-9_-])",
+            text,
+        ) is not None
+        if not has_keyword or len(source_lines) != len(translated_lines):
+            indexes.append(index)
+    return indexes
 
 
 def _is_protected_identifier_only(text: str, preserve_terms: list[str]) -> bool:
@@ -376,17 +421,21 @@ def _repair_untranslated_visual_copy(
     preserve_terms: list[str],
     source_content: str,
 ) -> dict:
-    """Translate English visual copy that the first vision pass copied verbatim."""
-    indexes = _untranslated_region_indexes(result, preserve_terms)
+    """Repair untranslated copy and restore the source visual line rhythm."""
+    indexes = sorted(set(
+        _untranslated_region_indexes(result, preserve_terms)
+        + _visual_alignment_region_indexes(result)
+    ))
     if not indexes:
         return result
 
     regions = result.get("translation_regions")
     assert isinstance(regions, list)
-    inputs = [
-        {"index": index, "text": regions[index]["text"]}
-        for index in indexes
-    ]
+    inputs = [{
+        "index": index,
+        "source_text": regions[index].get("source_text", ""),
+        "text": regions[index]["text"],
+    } for index in indexes]
     protected = ", ".join(preserve_terms) or "Squid"
     repair_prompt = f"""Correct untranslated text in a Squid banner.
 
@@ -398,6 +447,8 @@ Source caption context (facts only):
 
 Translate every natural-language phrase below into brief, playful Korean suitable for the same banner position.
 - Preserve the punchline and line hierarchy.
+- Keep the same non-empty line count and approximately the same rendered width as source_text.
+- When the same short Latin keyword leads multiple source_text lines, keep that keyword unchanged at the start of each corresponding Korean line.
 - Keep protected terms, product names, token symbols, handles, URLs, and numbers unchanged.
 - Each translated text must contain at least one Korean Hangul syllable.
 - If an input is only a protected identifier or token pair with no natural-language copy, return an empty text for that index.
@@ -436,6 +487,8 @@ Return exactly:
         replacement = replacements.get(index, "")
         if replacement and _HANGUL.search(replacement):
             regions[index]["text"] = replacement
+            if index in _visual_alignment_region_indexes(result):
+                raise ValueError(f"LLM broke visual line alignment at region {index}")
             continue
         if not replacement and _is_protected_identifier_only(original, preserve_terms):
             regions[index]["text"] = ""
@@ -481,14 +534,9 @@ def _normalize_visual_localization(
                 source_text = source_text.strip()
                 estimated_width = _source_text_width_percent(source_text, font_size)
                 if raw_width > estimated_width * 1.2:
+                    raw_center = raw_x + raw_width / 2.0
                     raw_width = estimated_width
-                translation_units = _text_width_units(text.strip())
-                source_units = _text_width_units(source_text)
-                if translation_units > 0 and source_units > translation_units:
-                    width_ratio = source_units / translation_units
-                    if _ASCII_WORD.search(source_text) and _HANGUL.search(text):
-                        width_ratio *= 1.25
-                    font_size = min(12.0, font_size * min(1.7, width_ratio))
+                    raw_x = max(0.0, min(100.0 - raw_width, raw_center - raw_width / 2.0))
 
             # Lower-third caption detections frequently anchor near the first
             # baseline. Give multi-line replacement copy enough room above.
