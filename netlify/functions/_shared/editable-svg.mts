@@ -15,6 +15,24 @@ type EditableSpec = {
   source_url?: unknown;
   theme?: unknown;
   source_logo_visible?: unknown;
+  source_text_visible?: unknown;
+  translation_regions?: unknown;
+  source_image_width?: unknown;
+  source_image_height?: unknown;
+};
+
+type NormalizedTranslationRegion = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  align: "left" | "center" | "right";
+  fontRole: "display" | "body";
+  fontSize: number;
+  textColor: string;
+  backgroundColor: string;
+  backgroundOpacity: number;
 };
 
 type NormalizedSpec = {
@@ -25,6 +43,10 @@ type NormalizedSpec = {
   sourceUrl: string;
   theme: "dark" | "yellow";
   sourceLogoVisible: boolean;
+  sourceTextVisible: boolean;
+  translationRegions: NormalizedTranslationRegion[];
+  sourceImageWidth: number;
+  sourceImageHeight: number;
 };
 
 type Brand = {
@@ -90,12 +112,47 @@ function cleanText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function normalizedColor(value: unknown, fallback: string): string {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)
+    ? value.toUpperCase()
+    : fallback;
+}
+
 function normalizeSpec(spec: EditableSpec): NormalizedSpec {
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines
       .map((line) => cleanText(line, 240))
       .filter(Boolean)
       .slice(0, 3)
+    : [];
+  const sourceTextVisible = spec.source_text_visible === true;
+  const translationRegions: NormalizedTranslationRegion[] = sourceTextVisible && Array.isArray(spec.translation_regions)
+    ? spec.translation_regions
+      .filter((region): region is Record<string, unknown> => Boolean(region) && typeof region === "object" && !Array.isArray(region))
+      .map((region) => {
+        const x = boundedNumber(region.x, 8, 0, 99);
+        const y = boundedNumber(region.y, 8, 0, 99);
+        return {
+          text: cleanText(region.text, 240),
+          x,
+          y,
+          width: boundedNumber(region.width, 84, 1, 100 - x),
+          height: boundedNumber(region.height, 20, 1, 100 - y),
+          align: region.align === "center" || region.align === "right" ? region.align : "left",
+          fontRole: region.font_role === "body" ? "body" : "display",
+          fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
+          textColor: normalizedColor(region.text_color, "#FFFFFF"),
+          backgroundColor: normalizedColor(region.background_color, "#1A0E2E"),
+          backgroundOpacity: boundedNumber(region.background_opacity, 0.94, 0.82, 1),
+        };
+      })
+      .filter((region) => region.text)
+      .slice(0, 4)
     : [];
   return {
     label: cleanText(spec.label, 40) || "업데이트",
@@ -105,6 +162,10 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     sourceUrl: cleanText(spec.source_url, 2_048),
     theme: spec.theme === "yellow" ? "yellow" : "dark",
     sourceLogoVisible: spec.source_logo_visible === true,
+    sourceTextVisible: translationRegions.length > 0,
+    translationRegions,
+    sourceImageWidth: boundedNumber(spec.source_image_width, 1080, 1, 10_000),
+    sourceImageHeight: boundedNumber(spec.source_image_height, 1080, 1, 10_000),
   };
 }
 
@@ -301,6 +362,49 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
   </g>`;
 }
 
+function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
+  const sourceRatio = spec.sourceImageWidth / spec.sourceImageHeight;
+  const frame = sourceRatio >= 1
+    ? { x: 0, y: (1080 - 1080 / sourceRatio) / 2, width: 1080, height: 1080 / sourceRatio }
+    : { x: (1080 - 1080 * sourceRatio) / 2, y: 0, width: 1080 * sourceRatio, height: 1080 };
+  const visual = assets.sourceImage
+    ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
+    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
+  const translations = spec.sourceTextVisible
+    ? spec.translationRegions.map((region, index) => {
+      const x = frame.x + frame.width * region.x / 100;
+      const y = frame.y + frame.height * region.y / 100;
+      const width = frame.width * region.width / 100;
+      const height = frame.height * region.height / 100;
+      let fontSize = frame.width * region.fontSize / 100;
+      const minFontSize = Math.max(14, frame.width * 0.02);
+      let lineHeight = fontSize * 1.08;
+      let lines: string[] = [];
+      while (true) {
+        const maxUnits = Math.max(6, width / Math.max(fontSize, 1) * 1.65);
+        const maxLines = Math.max(1, Math.min(5, Math.floor(height / Math.max(lineHeight, 1))));
+        lines = wrapSvgText(region.text, maxUnits, maxLines);
+        const truncated = lines.at(-1)?.endsWith("…") === true;
+        if ((!truncated && lines.length * lineHeight <= height) || fontSize <= minFontSize) break;
+        fontSize = Math.max(minFontSize, fontSize * 0.92);
+        lineHeight = fontSize * 1.08;
+      }
+      const blockHeight = lines.length * lineHeight;
+      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize);
+      const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width - fontSize * 0.22 : x + fontSize * 0.22;
+      const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
+      const font = region.fontRole === "display" ? brand.displayFont : brand.font;
+      return `<g id="Translated-Region-${index + 1}">
+        <rect id="Translated-Region-${index + 1}-Cover" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" fill="${region.backgroundColor}" fill-opacity="${region.backgroundOpacity}"/>
+        ${textLayers(`Translated-Region-${index + 1}-Text`, lines, textX, firstBaseline, lineHeight, `text-anchor="${textAnchor}" fill="${region.textColor}" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.045).toFixed(2)}"`)}
+      </g>`;
+    }).join("\n")
+    : "";
+  return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
+  <g id="Source-Visual-Layer">${visual}</g>
+  <g id="Korean-Translation-Layer">${translations}</g>`;
+}
+
 export function buildEditableSvg(
   clientId: EditableClientId,
   templateStyle: EditableTemplateStyle,
@@ -314,7 +418,9 @@ export function buildEditableSvg(
     : templateStyle === "signal"
       ? signalSvg(brand, spec, assets)
       : templateStyle === "remix"
-        ? remixSvg(brand, spec, assets)
+        ? clientId === "squid"
+          ? squidTranslationSvg(brand, spec, assets)
+          : remixSvg(brand, spec, assets)
         : classicSvg(brand, spec, assets);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-labelledby="Title Description">

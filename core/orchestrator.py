@@ -368,6 +368,12 @@ async def generate_news_card(
 
     print(f"  → label: {spec['label']} · theme: {spec['theme']}")
 
+    # Renderer/editable SVG need the prepared image aspect ratio so LLM-provided
+    # translation regions stay image-relative instead of drifting into letterbox space.
+    if source_image is not None:
+        spec["source_image_width"] = source_image.width
+        spec["source_image_height"] = source_image.height
+
     # ── Stage 2: Rendering ────────────────────────
     print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
     output_png = output_dir / f"news_card_{actual_template_style}.png"

@@ -22,6 +22,12 @@ def test_news_card_templates_are_allowlisted_and_present():
         template_path = Path("core/templates") / relative_path
         assert template_path.is_file()
         assert "coineasy" not in template_path.read_text().lower()
+    squid_override = Path("clients/squid/overrides/news/news_remix_card.html")
+    assert squid_override.is_file()
+    override_html = squid_override.read_text()
+    assert "translation_regions" in override_html
+    assert "headline | safe" not in override_html
+    assert "logo_dark_path" not in override_html
 
 
 @pytest.mark.asyncio
@@ -78,13 +84,34 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
         source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
         output_dir=tmp_path,
         mock_mode=True,
-        mock_response={**MOCK_SPEC, "source_logo_visible": True},
+        mock_response={
+            **MOCK_SPEC,
+            "source_logo_visible": True,
+            "source_text_visible": True,
+            "translation_regions": [{
+                "text": "어디서나 XRP를 사용하세요",
+                "x": 8,
+                "y": 12,
+                "width": 52,
+                "height": 16,
+                "align": "left",
+                "font_role": "display",
+                "font_size": 6,
+                "text_color": "#FFFFFF",
+                "background_color": "#1A0E2E",
+                "background_opacity": 0.94,
+            }],
+        },
         template_style="remix",
     )
 
     assert captured["template_path"] == "news/news_remix_card.html"
     assert captured["slots"]["source_image_data_url"].startswith("data:image/jpeg;base64,")
     assert captured["slots"]["source_logo_visible"] is True
+    assert captured["slots"]["source_text_visible"] is True
+    assert captured["slots"]["translation_regions"][0]["text"] == "어디서나 XRP를 사용하세요"
+    assert captured["slots"]["source_image_width"] == 1080
+    assert captured["slots"]["source_image_height"] == 1080
     assert result.template_style == "remix"
     assert result.requested_template_style == "remix"
     assert result.source_image_used is True
