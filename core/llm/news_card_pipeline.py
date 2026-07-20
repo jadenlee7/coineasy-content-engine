@@ -525,6 +525,53 @@ def _strict_percent_box(
     return numbers
 
 
+def _strict_protected_pixel_box_as_percent(
+    value: object,
+    *,
+    image_width: int,
+    image_height: int,
+) -> Optional[dict[str, float]]:
+    """Convert an unmistakable in-bounds pixel protection box to percentages."""
+    if not isinstance(value, dict) or image_width <= 100 or image_height <= 100:
+        return None
+    numbers: dict[str, float] = {}
+    for key in ("x", "y", "width", "height"):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        parsed = float(raw)
+        if not math.isfinite(parsed):
+            return None
+        numbers[key] = parsed
+    right = numbers["x"] + numbers["width"]
+    bottom = numbers["y"] + numbers["height"]
+    # Do not reinterpret a malformed percentage box merely because its far
+    # edge crosses 100. Pixel conversion is allowed only when an original
+    # coordinate or dimension is itself unmistakably pixel-sized.
+    if max(numbers.values()) <= 100.0:
+        return None
+    if (
+        numbers["x"] < 0
+        or numbers["y"] < 0
+        or numbers["width"] <= 0
+        or numbers["height"] <= 0
+        or right > image_width
+        or bottom > image_height
+    ):
+        return None
+    converted = {
+        "x": numbers["x"] / image_width * 100.0,
+        "y": numbers["y"] / image_height * 100.0,
+        "width": numbers["width"] / image_width * 100.0,
+        "height": numbers["height"] / image_height * 100.0,
+    }
+    return _strict_percent_box(
+        converted,
+        minimum_width=0.25,
+        minimum_height=0.25,
+    )
+
+
 def _percent_boxes_overlap(
     first: dict[str, float],
     second: dict[str, float],
@@ -569,6 +616,8 @@ def _validate_visual_placement_audit(
     raw_regions: list[dict],
     first_pass_source_boxes: list[dict[str, float]],
     audit: dict,
+    source_image_width: int,
+    source_image_height: int,
 ) -> tuple[Optional[list[dict]], str]:
     """Validate an audit without repairing geometry or weakening overlap rules."""
     if audit.get("safe") is False:
@@ -602,6 +651,12 @@ def _validate_visual_placement_audit(
             return None, f"protected_regions[{position}].kind is invalid"
         box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
         is_redundant_anchor = False
+        if box is None and kind != "source_text":
+            box = _strict_protected_pixel_box_as_percent(
+                raw,
+                image_width=source_image_width,
+                image_height=source_image_height,
+            )
         if box is None and kind != "source_text":
             point = _strict_percent_box(raw, minimum_width=0.0, minimum_height=0.0)
             if point is not None and point["width"] == 0.0 and point["height"] == 0.0:
@@ -786,6 +841,8 @@ or:
         raw_regions,
         first_pass_source_boxes,
         audit,
+        source_image.width,
+        source_image.height,
     )
 
     if audited_regions is None and rejection != "unsafe":
@@ -835,6 +892,8 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
                 raw_regions,
                 first_pass_source_boxes,
                 corrected_audit,
+                source_image.width,
+                source_image.height,
             )
         except Exception as exc:
             print(f"[squid] placement audit correction failed safely: {type(exc).__name__}")

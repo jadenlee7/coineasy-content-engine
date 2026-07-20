@@ -7,6 +7,7 @@ import pytest
 from core.llm.news_card_pipeline import (
     _audit_visual_subtitle_placement,
     _normalize_visual_localization,
+    _strict_protected_pixel_box_as_percent,
     generate_news_card_spec,
 )
 from core.sources.source_image import PreparedSourceImage
@@ -315,7 +316,17 @@ def _audit_result(monkeypatch, raw_result, audit_payload):
     return _audit_visual_subtitle_placement(object(), "test-model", raw_result, image)
 
 
-def test_squid_placement_audit_retries_live_mixed_coordinate_response(monkeypatch):
+def test_squid_pixel_protection_does_not_reinterpret_ambiguous_percent_overflow():
+    result = _strict_protected_pixel_box_as_percent(
+        {"x": 95, "y": 30, "width": 10, "height": 20},
+        image_width=480,
+        image_height=320,
+    )
+
+    assert result is None
+
+
+def test_squid_placement_audit_normalizes_live_pixel_protection_boxes(monkeypatch):
     calls = []
     malformed_live_audit = {
         "safe": True,
@@ -327,21 +338,9 @@ def test_squid_placement_audit_retries_live_mixed_coordinate_response(monkeypatc
         ],
         "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
-    corrected_audit = {
-        "safe": True,
-        "protected_regions": [
-            {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
-            {"kind": "character", "x": 19.8, "y": 9.4, "width": 22.9, "height": 68.7},
-            {"kind": "product", "x": 62.5, "y": 53.1, "width": 25, "height": 37.5},
-            {"kind": "other_visual", "x": 0, "y": 71.9, "width": 41.6, "height": 28.1},
-        ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
-    }
-
     def fake_create_message(client, **kwargs):
         calls.append(kwargs)
-        payload = malformed_live_audit if len(calls) == 1 else corrected_audit
-        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(malformed_live_audit, ensure_ascii=False))])
 
     monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
     raw = {
@@ -368,18 +367,41 @@ def test_squid_placement_audit_retries_live_mixed_coordinate_response(monkeypatc
 
     result = _audit_visual_subtitle_placement(object(), "test-model", raw, image)
 
-    assert len(calls) == 2
-    retry_prompt = calls[1]["messages"][0]["content"][1]["text"]
-    assert "0-100 percentage coordinates" in retry_prompt
-    assert "never pixels" in retry_prompt
-    assert "Use other_visual, never other" in retry_prompt
-    assert "do not merely mirror it to the other middle side" in retry_prompt
-    assert "top-right (x=68,y=2,w=30,h=12)" in retry_prompt
+    assert len(calls) == 1
     assert result["source_text_visible"] is True
     assert result["translation_regions"][0]["text"] == "여유롭게"
     assert result["translation_regions"][0]["x"] == 68.0
     assert result["translation_regions"][0]["y"] == 3.0
     assert result["translation_regions"][0]["align"] == "right"
+
+
+def test_squid_placement_audit_normalizes_latest_pixel_face_box(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 33,
+            "y": 84,
+            "width": 34,
+            "height": 10,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 33, "y": 84, "width": 34, "height": 10},
+            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 60},
+            {"kind": "face", "x": 15, "y": 85, "width": 320, "height": 10},
+            {"kind": "other_visual", "x": 10, "y": 75, "width": 80, "height": 25},
+        ],
+        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
+    })
+
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"][0]["text"] == "여유롭게"
+    assert result["translation_regions"][0]["x"] == 68.0
+    assert result["translation_regions"][0]["y"] == 2.0
 
 
 def test_squid_placement_audit_accepts_top_right_space_above_central_character(monkeypatch):
@@ -499,7 +521,7 @@ def test_squid_placement_audit_fails_closed_after_invalid_retry(monkeypatch):
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
-            {"kind": "other", "x": 95, "y": 30, "width": 110, "height": 220},
+            {"kind": "other", "x": 470, "y": 30, "width": 110, "height": 220},
         ],
         "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
@@ -563,7 +585,7 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
-            {"kind": "other", "x": 95, "y": 30, "width": 110, "height": 220},
+            {"kind": "other", "x": 470, "y": 30, "width": 110, "height": 220},
         ],
         "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
@@ -602,6 +624,71 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "unsafe_placement"
+
+
+def test_squid_live_flow_reports_translated_status_after_pixel_protection_normalization(monkeypatch):
+    calls = []
+    main_payload = {
+        "label": "커뮤니티",
+        "date": "2026.07.20",
+        "headline": "Squid가 여유로운 주말 분위기를 전합니다",
+        "body_lines": ["원본의 짧은 밈 문구를 현지화합니다"],
+        "source_url": "ignored",
+        "theme": "dark",
+        "source_logo_visible": False,
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 33,
+            "y": 84,
+            "width": 34,
+            "height": 10,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 6,
+            "text_color": "#FFFFFF",
+        }],
+    }
+    pixel_audit = {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 33, "y": 84, "width": 34, "height": 10},
+            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 60},
+            {"kind": "face", "x": 15, "y": 85, "width": 320, "height": 10},
+            {"kind": "other_visual", "x": 10, "y": 75, "width": 80, "height": 25},
+        ],
+        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        payload = main_payload if len(calls) == 1 else pixel_audit
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Long week? Sundays are for",
+        source_url="https://x.com/squidrouter/status/2078872512038142211",
+        source_image=image,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["messages"][0]["content"][0]["source"]["data"] == "aW1hZ2U="
+    assert result["source_text_visible"] is True
+    assert result["visual_localization_status"] == "translated"
+    assert result["translation_regions"][0]["text"] == "여유롭게"
+    assert result["translation_regions"][0]["x"] == 68.0
+    assert result["translation_regions"][0]["y"] == 2.0
 
 
 def test_squid_placement_audit_rejects_live_source_text_overlap(monkeypatch):
