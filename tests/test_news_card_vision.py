@@ -96,6 +96,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "never a placement suggestion" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
+    assert "top-right (x=68,y=2,w=30,h=12)" in audit_content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
     assert "Squid Router" not in content[1]["text"]
@@ -372,10 +373,46 @@ def test_squid_placement_audit_retries_live_mixed_coordinate_response(monkeypatc
     assert "must use 0-100 percentage coordinates" in retry_prompt
     assert "never pixels" in retry_prompt
     assert "Use other_visual, never other" in retry_prompt
+    assert "do not merely mirror it to the other middle side" in retry_prompt
+    assert "top-right (x=68,y=2,w=30,h=12)" in retry_prompt
     assert result["source_text_visible"] is True
     assert result["translation_regions"][0]["text"] == "여유롭게"
     assert result["translation_regions"][0]["x"] == 68.0
     assert result["translation_regions"][0]["y"] == 3.0
+    assert result["translation_regions"][0]["align"] == "right"
+
+
+def test_squid_placement_audit_accepts_top_right_space_above_central_character(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 41,
+            "y": 84,
+            "width": 22,
+            "height": 8,
+            "font_role": "display",
+            "font_size": 6,
+            "text_color": "#FFFFFF",
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
+            {"kind": "character", "x": 6, "y": 18, "width": 80, "height": 58},
+            {"kind": "other_visual", "x": 0, "y": 72, "width": 100, "height": 28},
+        ],
+        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
+    })
+
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"][0]["text"] == "여유롭게"
+    assert result["translation_regions"][0]["x"] == 68.0
+    assert result["translation_regions"][0]["y"] == 2.0
+    assert result["translation_regions"][0]["width"] == 30.0
+    assert result["translation_regions"][0]["height"] == 12.0
     assert result["translation_regions"][0]["align"] == "right"
 
 
