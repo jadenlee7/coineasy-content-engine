@@ -54,7 +54,7 @@ Preserve the original humor, claim strength, and short cadence. Do not add facts
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual placement QA for transparent Korean subtitles on official Squid creatives.
-Inspect the attached image pixel composition. Existing image pixels are never removed, so Korean subtitles must sit only in genuinely empty negative space.
+Inspect the attached image composition. Existing image pixels are never removed, so Korean subtitles must sit only in genuinely empty negative space.
 Map every protected visual first, then place the supplied Korean subtitles without covering any original lettering, logo, character, face, limb, product, product UI, or token icon.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
@@ -231,6 +231,7 @@ def _build_user_prompt(
         """Squid official-creative translation mode is active.
 - Treat the attached image as the final composition. Preserve its character, product, background, crop, layout, and official logo.
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
+- A short natural-language punchline still counts. Translate single-word slang, reaction text, and meme captions such as "chillin'" when they are visibly printed in the creative. Never infer image text from the post caption.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
 - If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
 - source_text must transcribe the visible source phrase exactly, including its line breaks. x/y/width/height must tightly cover that ORIGINAL source phrase and its outline or shadow. These coordinates are a source-detection box, not the final Korean subtitle placement. A separate image-aware safety pass chooses the Korean target box.
@@ -483,6 +484,7 @@ _PLACEMENT_PROTECTED_KINDS = {
     "product",
     "product_ui",
     "token_icon",
+    "other_visual",
 }
 
 
@@ -538,6 +540,117 @@ def _percent_boxes_overlap(
     )
 
 
+def _audit_log_payload(audit: dict) -> dict:
+    """Return coordinates and kinds only, without source or translated copy."""
+    return {
+        "safe": audit.get("safe"),
+        "protected_regions": [
+            {key: item.get(key) for key in ("kind", "source_index", "x", "y", "width", "height")}
+            for item in audit.get("protected_regions", [])
+            if isinstance(item, dict)
+        ][:32] if isinstance(audit.get("protected_regions"), list) else "invalid",
+        "translation_regions": [
+            {key: item.get(key) for key in ("index", "x", "y", "width", "height")}
+            for item in audit.get("translation_regions", [])
+            if isinstance(item, dict)
+        ][:4] if isinstance(audit.get("translation_regions"), list) else "invalid",
+    }
+
+
+def _validate_visual_placement_audit(
+    raw_regions: list[dict],
+    first_pass_source_boxes: list[dict[str, float]],
+    audit: dict,
+) -> tuple[Optional[list[dict]], str]:
+    """Validate an audit without repairing geometry or weakening overlap rules."""
+    if audit.get("safe") is False:
+        return None, "unsafe"
+    if audit.get("safe") is not True:
+        return None, "safe must be a boolean"
+
+    raw_protected = audit.get("protected_regions")
+    raw_placements = audit.get("translation_regions")
+    if not isinstance(raw_protected, list) or not raw_protected:
+        return None, "protected_regions must be a non-empty array"
+    if len(raw_protected) > 32:
+        return None, "protected_regions exceeds 32 boxes"
+    if not isinstance(raw_placements, list) or len(raw_placements) != len(raw_regions):
+        return None, "translation_regions must contain every subtitle exactly once"
+
+    protected: list[tuple[str, Optional[int], dict[str, float]]] = [
+        ("source_text", index, box)
+        for index, box in enumerate(first_pass_source_boxes)
+    ]
+    audited_source_counts = {index: 0 for index in range(len(raw_regions))}
+    for position, raw in enumerate(raw_protected):
+        if not isinstance(raw, dict):
+            return None, f"protected_regions[{position}] must be an object"
+        raw_kind = raw.get("kind")
+        # `other` is accepted only as a conservative alias: it still protects
+        # the full box and never becomes a placement target.
+        kind = "other_visual" if raw_kind == "other" else raw_kind
+        if kind not in _PLACEMENT_PROTECTED_KINDS:
+            return None, f"protected_regions[{position}].kind is invalid"
+        box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
+        if box is None:
+            return None, f"protected_regions[{position}] must use 0-100 percentage coordinates"
+        source_index: Optional[int] = None
+        if kind == "source_text":
+            raw_source_index = raw.get("source_index")
+            if (
+                isinstance(raw_source_index, bool)
+                or not isinstance(raw_source_index, int)
+                or raw_source_index < 0
+                or raw_source_index >= len(raw_regions)
+            ):
+                return None, f"protected_regions[{position}].source_index is invalid"
+            source_index = raw_source_index
+            audited_source_counts[source_index] += 1
+        protected.append((kind, source_index, box))
+    if any(count < 1 for count in audited_source_counts.values()):
+        return None, "every subtitle requires an audited source_text box"
+
+    placements: dict[int, tuple[dict, dict[str, float]]] = {}
+    for position, raw in enumerate(raw_placements):
+        if not isinstance(raw, dict):
+            return None, f"translation_regions[{position}] must be an object"
+        index = raw.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index in placements:
+            return None, f"translation_regions[{position}].index is invalid or duplicated"
+        if index < 0 or index >= len(raw_regions):
+            return None, f"translation_regions[{position}].index is out of range"
+        box = _strict_percent_box(raw, minimum_width=24.0, minimum_height=12.0)
+        if box is None:
+            return None, f"translation_regions[{position}] must use valid 0-100 percentage coordinates"
+        if box["x"] < 2.0 or box["y"] < 2.0 or box["x"] + box["width"] > 98.0 or box["y"] + box["height"] > 98.0:
+            return None, f"translation_regions[{position}] violates the 2% canvas inset"
+        if any(_percent_boxes_overlap(box, protected_box, margin=3.0) for _, _, protected_box in protected):
+            return None, f"translation_regions[{position}] overlaps protected geometry"
+        placements[index] = (raw, box)
+    if set(placements) != set(range(len(raw_regions))):
+        return None, "translation_regions omitted a subtitle index"
+
+    accepted_boxes = [placements[index][1] for index in range(len(raw_regions))]
+    for index, box in enumerate(accepted_boxes):
+        if any(
+            _percent_boxes_overlap(box, other, margin=3.0)
+            for other in accepted_boxes[:index]
+        ):
+            return None, f"translation_regions[{index}] overlaps another subtitle"
+
+    audited_regions: list[dict] = []
+    for index, original in enumerate(raw_regions):
+        _, box = placements[index]
+        box_right = box["x"] + box["width"]
+        align = "left" if box_right <= 50.0 else "right" if box["x"] >= 50.0 else "center"
+        audited_regions.append({
+            **original,
+            **box,
+            "align": align,
+        })
+    return audited_regions, ""
+
+
 def _audit_visual_subtitle_placement(
     api_client: object,
     model: str,
@@ -584,6 +697,8 @@ Subtitles:
 {json.dumps(inputs, ensure_ascii=False)}
 
 Rules:
+- Every x, y, width, and height in both protected_regions and translation_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates. Ensure x + width <= 100 and y + height <= 100.
+- Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
 - First map one tight protected_regions box per contiguous source-language phrase or visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Then find genuinely blank or low-detail negative space for every Korean subtitle. Prefer a uniform left or right background away from the central subject.
@@ -599,10 +714,11 @@ Return exactly:
 {{
   "safe": true,
   "protected_regions": [
-    {{"kind":"source_text","source_index":0,"x":0,"y":0,"width":10,"height":10}}
+    {{"kind":"source_text","source_index":0,"x":35,"y":80,"width":30,"height":10}},
+    {{"kind":"other_visual","x":35,"y":25,"width":30,"height":40}}
   ],
   "translation_regions": [
-    {{"index":0,"x":2,"y":2,"width":24,"height":12}}
+    {{"index":0,"x":3,"y":3,"width":24,"height":12}}
   ]
 }}
 or:
@@ -636,100 +752,68 @@ or:
         print(f"[squid] placement audit failed safely: {type(exc).__name__}")
         return _clear_visual_localization(result)
 
-    audit_log = {
-        "safe": audit.get("safe"),
-        "protected_regions": [
-            {key: item.get(key) for key in ("kind", "source_index", "x", "y", "width", "height")}
-            for item in audit.get("protected_regions", [])
-            if isinstance(item, dict)
-        ][:32] if isinstance(audit.get("protected_regions"), list) else "invalid",
-        "translation_regions": [
-            {key: item.get(key) for key in ("index", "x", "y", "width", "height")}
-            for item in audit.get("translation_regions", [])
-            if isinstance(item, dict)
-        ][:4] if isinstance(audit.get("translation_regions"), list) else "invalid",
-    }
-    print(f"[squid] placement audit proposal: {json.dumps(audit_log, ensure_ascii=True)}")
+    print(f"[squid] placement audit proposal: {json.dumps(_audit_log_payload(audit), ensure_ascii=True)}")
+    audited_regions, rejection = _validate_visual_placement_audit(
+        raw_regions,
+        first_pass_source_boxes,
+        audit,
+    )
 
-    if audit.get("safe") is not True:
+    if audited_regions is None and rejection != "unsafe":
+        print(f"[squid] placement audit rejected: {rejection}; retrying once")
+        correction_prompt = f"""Your previous placement audit failed deterministic validation:
+{rejection}
+
+Return a complete fresh audit after reinspecting the attached image. Do not reuse malformed coordinates.
+- All coordinates must be image-relative percentages from 0 to 100, never pixels.
+- Allowed protected kinds are exactly: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual.
+- Use other_visual, never other, when an object is ambiguous.
+- Return safe=false if you cannot satisfy the schema and every clearance rule.
+
+{audit_prompt}"""
+        try:
+            correction_response = create_message(
+                api_client,
+                model=model,
+                max_tokens=1400,
+                temperature=0,
+                system=VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": source_image.media_type,
+                                "data": source_image.base64_data,
+                            },
+                        },
+                        {"type": "text", "text": correction_prompt},
+                    ],
+                }],
+            )
+            corrected_audit = _parse_json_response(
+                correction_response,
+                "visual subtitle placement audit correction",
+            )
+            print(
+                "[squid] placement audit correction: "
+                f"{json.dumps(_audit_log_payload(corrected_audit), ensure_ascii=True)}"
+            )
+            audited_regions, rejection = _validate_visual_placement_audit(
+                raw_regions,
+                first_pass_source_boxes,
+                corrected_audit,
+            )
+        except Exception as exc:
+            print(f"[squid] placement audit correction failed safely: {type(exc).__name__}")
+            return _clear_visual_localization(result)
+
+    if audited_regions is None:
+        if rejection != "unsafe":
+            print(f"[squid] placement audit correction rejected safely: {rejection}")
         return _clear_visual_localization(result)
-
-    raw_protected = audit.get("protected_regions")
-    raw_placements = audit.get("translation_regions")
-    if (
-        not isinstance(raw_protected, list)
-        or not raw_protected
-        or len(raw_protected) > 32
-        or not isinstance(raw_placements, list)
-        or len(raw_placements) != len(raw_regions)
-    ):
-        return _clear_visual_localization(result)
-
-    protected: list[tuple[str, Optional[int], dict[str, float]]] = [
-        ("source_text", index, box)
-        for index, box in enumerate(first_pass_source_boxes)
-    ]
-    audited_source_counts = {index: 0 for index in range(len(raw_regions))}
-    for raw in raw_protected:
-        if not isinstance(raw, dict) or raw.get("kind") not in _PLACEMENT_PROTECTED_KINDS:
-            return _clear_visual_localization(result)
-        box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
-        if box is None:
-            return _clear_visual_localization(result)
-        source_index: Optional[int] = None
-        if raw["kind"] == "source_text":
-            raw_source_index = raw.get("source_index")
-            if (
-                isinstance(raw_source_index, bool)
-                or not isinstance(raw_source_index, int)
-                or raw_source_index < 0
-                or raw_source_index >= len(raw_regions)
-            ):
-                return _clear_visual_localization(result)
-            source_index = raw_source_index
-            audited_source_counts[source_index] += 1
-        protected.append((raw["kind"], source_index, box))
-    if any(count < 1 for count in audited_source_counts.values()):
-        return _clear_visual_localization(result)
-
-    placements: dict[int, tuple[dict, dict[str, float]]] = {}
-    for raw in raw_placements:
-        if not isinstance(raw, dict):
-            return _clear_visual_localization(result)
-        index = raw.get("index")
-        if isinstance(index, bool) or not isinstance(index, int) or index in placements:
-            return _clear_visual_localization(result)
-        if index < 0 or index >= len(raw_regions):
-            return _clear_visual_localization(result)
-        box = _strict_percent_box(raw, minimum_width=24.0, minimum_height=12.0)
-        if box is None:
-            return _clear_visual_localization(result)
-        if box["x"] < 2.0 or box["y"] < 2.0 or box["x"] + box["width"] > 98.0 or box["y"] + box["height"] > 98.0:
-            return _clear_visual_localization(result)
-        if any(_percent_boxes_overlap(box, protected_box, margin=3.0) for _, _, protected_box in protected):
-            return _clear_visual_localization(result)
-        placements[index] = (raw, box)
-    if set(placements) != set(range(len(raw_regions))):
-        return _clear_visual_localization(result)
-
-    accepted_boxes = [placements[index][1] for index in range(len(raw_regions))]
-    for index, box in enumerate(accepted_boxes):
-        if any(
-            _percent_boxes_overlap(box, other, margin=3.0)
-            for other in accepted_boxes[:index]
-        ):
-            return _clear_visual_localization(result)
-
-    audited_regions: list[dict] = []
-    for index, original in enumerate(raw_regions):
-        _, box = placements[index]
-        box_right = box["x"] + box["width"]
-        align = "left" if box_right <= 50.0 else "right" if box["x"] >= 50.0 else "center"
-        audited_regions.append({
-            **original,
-            **box,
-            "align": align,
-        })
 
     result["translation_regions"] = audited_regions
     result["source_text_visible"] = True
@@ -820,6 +904,23 @@ def _normalize_visual_localization(
     return result
 
 
+def _stamp_visual_localization_status(
+    result: dict,
+    client_id: str,
+    has_source_image: bool,
+    had_detected_copy: bool,
+) -> dict:
+    """Tell the console whether copy was absent or rejected by placement QA."""
+    if client_id == "squid" and has_source_image:
+        if result.get("source_text_visible") is True:
+            result["visual_localization_status"] = "translated"
+        elif had_detected_copy:
+            result["visual_localization_status"] = "unsafe_placement"
+        else:
+            result["visual_localization_status"] = "no_text"
+    return result
+
+
 # ────────────────────────────────────────────────────
 # Main Pipeline Function
 # ────────────────────────────────────────────────────
@@ -851,10 +952,21 @@ def generate_news_card_spec(
     """
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
+        had_detected_copy = (
+            result.get("source_text_visible") is True
+            and isinstance(result.get("translation_regions"), list)
+            and bool(result["translation_regions"])
+        )
         result = _normalize_visual_localization(
             result,
             client_id,
             source_image is not None,
+        )
+        result = _stamp_visual_localization_status(
+            result,
+            client_id,
+            source_image is not None,
+            had_detected_copy,
         )
         result = enforce_client_display_name(client_id, result)
         result["source_logo_visible"] = (
@@ -906,6 +1018,11 @@ def generate_news_card_spec(
     )
 
     result = _parse_json_response(response, "news card generation")
+    had_detected_copy = (
+        result.get("source_text_visible") is True
+        and isinstance(result.get("translation_regions"), list)
+        and bool(result["translation_regions"])
+    )
 
     if client_id == "squid" and source_image is not None:
         result = _repair_untranslated_visual_copy(
@@ -914,6 +1031,13 @@ def generate_news_card_spec(
             result,
             llm_cfg.preserve_terms,
             source_content,
+        )
+        # A repair may discard an identifier-only region. Status should reflect
+        # whether natural-language copy still reached placement QA.
+        had_detected_copy = (
+            result.get("source_text_visible") is True
+            and isinstance(result.get("translation_regions"), list)
+            and bool(result["translation_regions"])
         )
         result = _audit_visual_subtitle_placement(
             client,
@@ -929,6 +1053,12 @@ def generate_news_card_spec(
         result,
         client_id,
         source_image is not None,
+    )
+    result = _stamp_visual_localization_status(
+        result,
+        client_id,
+        source_image is not None,
+        had_detected_copy,
     )
     result = enforce_client_display_name(client_id, result)
     result["source_logo_visible"] = (
