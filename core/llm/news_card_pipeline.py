@@ -239,7 +239,7 @@ def _build_user_prompt(
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Keep translation text to at most 2 lines.
 - After this response, a separate visual QA pass tightens the exact source-phrase geometry before rendering.
 - The renderer first hides the complete source phrase with a fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically on the 1080px output, then places concise white Korean directly in the same x/y/width/height area. This required cover has opacity 1. Never use blur, cloned texture, generated fill, transparency, gradient, a separate footer, an unrelated headline panel, or a duplicate caption area.
-- The cover must not overlap any official or partner logo, character, face, limb, product UI, token icon, unrelated text, or ambiguous other_visual. A product already directly behind the original lettering may remain the caption substrate, but the fixed padding must not newly intrude into a separate visual. If that clearance is unavailable, preserve the original creative unchanged.
+- The cover must not overlap any official or partner logo, face, product UI, token icon, unrelated text, or ambiguous other_visual. A character, limb, or product already directly behind the original lettering may remain the caption substrate only inside that existing caption footprint; the fixed padding must not newly intrude into a separate visual. If that clearance is unavailable, preserve the original creative unchanged.
 - If the QA pass cannot confidently locate every source phrase or the Korean cannot fit the same line count and area, it removes every localization layer and preserves the official creative unchanged.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
@@ -490,8 +490,10 @@ _PLACEMENT_PROTECTED_KINDS = {
 }
 _SOURCE_TEXT_COVER_PADDING_X_PX = 12.0
 _SOURCE_TEXT_COVER_PADDING_Y_PX = 8.0
-_SOURCE_TEXT_COVER_SUBSTRATE_KINDS = {"product"}
-_SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO = 0.75
+_SOURCE_TEXT_COVER_SUBSTRATE_KINDS = {"character", "limb", "product"}
+_SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO = 0.50
+_PLACEMENT_MIN_AUDITED_AREA_RATIO = 0.28
+_PLACEMENT_MIN_SOURCE_IOU = 0.28
 
 
 def _clear_visual_localization(result: dict) -> dict:
@@ -647,8 +649,8 @@ def _validate_visual_placement_audit(
         first_center_x = first_box["x"] + first_box["width"] / 2.0
         first_center_y = first_box["y"] + first_box["height"] / 2.0
         if (
-            not 0.45 <= area_ratio <= 1.80
-            or iou < 0.35
+            not _PLACEMENT_MIN_AUDITED_AREA_RATIO <= area_ratio <= 1.80
+            or iou < _PLACEMENT_MIN_SOURCE_IOU
             or abs(source_center_x - first_center_x) > max(2.0, first_box["width"] * 0.20)
             or abs(source_center_y - first_center_y) > max(2.0, first_box["height"] * 0.25)
         ):
@@ -774,8 +776,8 @@ Rules:
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow. It must materially overlap the corresponding first-pass source_phrase_box and must not include unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
-- Check the required opaque cover clearance. Return safe=false if its 12px horizontal or 8px vertical padding would touch any protected logo, character, face, limb, product UI, token icon, unrelated text, or a separate important visual.
-- A product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report that product accurately so deterministic validation can confirm that at least 75% of the cover/product intersection was already inside the original phrase box. If the padding newly reaches a product that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
+- Check the required opaque cover clearance. Return safe=false if its 12px horizontal or 8px vertical padding would touch any protected logo, face, product UI, token icon, unrelated text, ambiguous other_visual, or a separate important visual.
+- A character, limb, or product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report it accurately so deterministic validation can confirm that at least 50% of the cover/object intersection was already inside the original phrase box. If the padding newly reaches one that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
 - The required source-text cover is the only allowed panel. Never propose transparency, blur, cloned texture, generated fill, gradient, scrim, a second caption panel, or a separate footer.
 - If any source phrase cannot be located confidently, the opaque cover lacks clearance, or Korean cannot fit its same area, return safe=false. Preserving the original creative unchanged is required.
 

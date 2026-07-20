@@ -87,8 +87,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in content[1]["text"]
     assert "This required cover has opacity 1" in content[1]["text"]
     assert "Never use blur, cloned texture, generated fill, transparency, gradient" in content[1]["text"]
-    assert "The cover must not overlap any official or partner logo, character, face, limb" in content[1]["text"]
-    assert "A product already directly behind the original lettering" in content[1]["text"]
+    assert "The cover must not overlap any official or partner logo, face, product UI" in content[1]["text"]
+    assert "A character, limb, or product already directly behind the original lettering" in content[1]["text"]
     assert "ambiguous other_visual" in content[1]["text"]
     assert "These coordinates are the source-removal box and the final Korean text area" in content[1]["text"]
     assert "Do not move the Korean translation" in content[1]["text"]
@@ -100,7 +100,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in audit_content[1]["text"]
     assert "Check the required opaque cover clearance" in audit_content[1]["text"]
     assert "12px horizontal or 8px vertical padding would touch any protected logo" in audit_content[1]["text"]
-    assert "at least 75% of the cover/product intersection" in audit_content[1]["text"]
+    assert "at least 50% of the cover/object intersection" in audit_content[1]["text"]
     assert "An ambiguous other_visual is never a caption substrate" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
@@ -556,6 +556,44 @@ def test_squid_placement_audit_allows_product_already_behind_source_caption(monk
     # narrow edge around that existing caption footprint.
     assert result["source_text_visible"] is True
     assert result["translation_regions"][0]["text"] == "여유롭게"
+
+
+def test_squid_placement_audit_accepts_live_tightened_caption_geometry(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 12,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 46,
+                "y": 84.5,
+                "width": 19,
+                "height": 7.5,
+            },
+            {"kind": "character", "x": 6, "y": 6, "width": 78, "height": 86},
+            {"kind": "face", "x": 30, "y": 22, "width": 30, "height": 30},
+            {"kind": "product", "x": 58, "y": 52, "width": 22, "height": 38},
+        ],
+    })
+
+    # Exact geometry returned by the production correction audit: the second
+    # pass legitimately tightens a coarse first-pass box around the real glyphs.
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"][0]["x"] == 46.0
+    assert result["translation_regions"][0]["y"] == 84.5
+    assert result["translation_regions"][0]["width"] == 19.0
+    assert result["translation_regions"][0]["height"] == 7.5
 
 
 @pytest.mark.parametrize("protected_kind", ["other", "other_visual"])
@@ -1050,6 +1088,34 @@ def test_squid_placement_audit_rejects_whole_canvas_source_box(monkeypatch):
         "protected_regions": [{
             "kind": "source_text", "source_index": 0,
             "x": 0, "y": 0, "width": 100, "height": 100,
+        }],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_rejects_over_tightened_source_box(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Original phrase",
+            "text": "한국어 자막",
+            "x": 30,
+            "y": 20,
+            "width": 20,
+            "height": 20,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [{
+            "kind": "source_text",
+            "source_index": 0,
+            "x": 35.5,
+            "y": 25.5,
+            "width": 9,
+            "height": 9,
         }],
     })
 
