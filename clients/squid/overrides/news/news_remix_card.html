@@ -44,7 +44,7 @@
     align-items: center;
     min-width: 1px;
     min-height: 1px;
-    overflow: hidden;
+    overflow: visible;
     isolation: isolate;
     color: var(--region-text);
     text-align: var(--region-align);
@@ -55,7 +55,7 @@
     letter-spacing: -.035em;
     word-break: keep-all;
     overflow-wrap: anywhere;
-    white-space: pre-line;
+    white-space: pre;
   }
   .translation-region > span {
     position: relative;
@@ -63,9 +63,9 @@
     z-index: 1;
     width: max-content;
     max-width: 100%;
-    transform: scaleX(var(--region-scale-x));
+    transform: translateY(-0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
-    -webkit-text-stroke: 2px rgba(16, 13, 22, .78);
+    -webkit-text-stroke: var(--region-cover-stroke) #100D16;
     paint-order: stroke fill;
   }
 </style>
@@ -76,9 +76,17 @@
     <img class="source-image" src="{{ source_image_data_url }}" alt="">
     {% if source_text_visible and translation_regions %}
       {% for region in translation_regions %}
+        {% set source_line_count = region.source_text.split('\n') | length %}
         {% set caption_font_size = region.font_size * frame_width / 100.0 * 0.72 %}
+        {% set caption_stroke = region.height * frame_height / 100.0 * 0.185 %}
+        {% if caption_stroke < 6.0 %}
+          {% set caption_stroke = 6.0 %}
+        {% elif caption_stroke > 16.0 %}
+          {% set caption_stroke = 16.0 %}
+        {% endif %}
       <div
         class="translation-region"
+        data-source-line-count="{{ source_line_count }}"
         style="
           left: {{ region.x }}%;
           top: {{ region.y }}%;
@@ -89,6 +97,7 @@
           --region-font: {% if region.font_role == 'display' %}var(--display){% else %}var(--font){% endif %};
           --region-size: {{ '%.2f' | format(caption_font_size) }}px;
           --region-scale-x: {{ region.scale_x | default(1) }};
+          --region-cover-stroke: {{ '%.2f' | format(caption_stroke) }}px;
           --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
           --region-text: #FFFFFF;
         "
@@ -103,13 +112,14 @@
   for (const region of translationRegions) {
     const text = region.querySelector('span');
     if (!text) continue;
+    const allowedLineCount = Math.max(1, Math.min(2, Number(region.dataset.sourceLineCount) || 2));
     let size = parseFloat(getComputedStyle(region).fontSize);
     const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
     const minimum = Math.max(14, {{ '%.3f' | format(frame_width) }} * 0.02);
     const doesNotFit = () => {
       const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
       const renderedLineCount = lineHeight > 0 ? Math.round(text.scrollHeight / lineHeight) : 3;
-      return renderedLineCount > 2
+      return renderedLineCount > allowedLineCount
         || text.scrollHeight > region.clientHeight
         || text.scrollWidth * scaleX > region.clientWidth;
     };

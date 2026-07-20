@@ -23,11 +23,16 @@ type EditableSpec = {
 };
 
 type NormalizedTranslationRegion = {
+  sourceText: string;
   text: string;
   x: number;
   y: number;
   width: number;
   height: number;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
   align: "left" | "center" | "right";
   fontRole: "display" | "body";
   fontSize: number;
@@ -123,6 +128,27 @@ function normalizedColor(value: unknown, fallback: string): string {
     : fallback;
 }
 
+type PercentBox = { x: number; y: number; width: number; height: number };
+
+function strictPercentBox(
+  value: Record<string, unknown>,
+  keys: [string, string, string, string],
+  minimumWidth = 6,
+  minimumHeight = 3,
+): PercentBox | null {
+  const parsed = keys.map((key) => {
+    if (typeof value[key] === "boolean") return Number.NaN;
+    return typeof value[key] === "number" ? value[key] : Number(value[key]);
+  });
+  if (parsed.some((number) => !Number.isFinite(number))) return null;
+  const [x, y, width, height] = parsed;
+  if (
+    x < 0 || y < 0 || width < minimumWidth || height < minimumHeight
+    || x + width > 100 || y + height > 100
+  ) return null;
+  return { x, y, width, height };
+}
+
 function normalizeSpec(spec: EditableSpec): NormalizedSpec {
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines
@@ -142,15 +168,32 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
         break;
       }
       const region = rawRegion as Record<string, unknown>;
+      const sourceText = cleanText(region.source_text, 240);
       const text = cleanText(region.text, 240);
-      const x = boundedNumber(region.x, 8, 0, 99);
-      const y = boundedNumber(region.y, 8, 0, 99);
+      const target = strictPercentBox(region, ["x", "y", "width", "height"]);
+      const source = strictPercentBox(region, ["source_x", "source_y", "source_width", "source_height"]);
+      if (!target || !source) {
+        invalidTranslationRegions = true;
+        break;
+      }
+      const sameTarget = ["x", "y", "width", "height"].every((key) => (
+        Math.abs(target[key as keyof PercentBox] - source[key as keyof PercentBox]) <= 0.01
+      ));
+      if (!sameTarget) {
+        invalidTranslationRegions = true;
+        break;
+      }
       const candidate: NormalizedTranslationRegion = {
+        sourceText,
         text,
-        x,
-        y,
-        width: boundedNumber(region.width, 84, 1, 100 - x),
-        height: boundedNumber(region.height, 20, 1, 100 - y),
+        x: target.x,
+        y: target.y,
+        width: target.width,
+        height: target.height,
+        sourceX: source.x,
+        sourceY: source.y,
+        sourceWidth: source.width,
+        sourceHeight: source.height,
         align: region.align === "center" || region.align === "right" ? region.align : "left",
         fontRole: region.font_role === "body" ? "body" : "display",
         fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
@@ -164,7 +207,7 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
         && candidate.y < existing.y + existing.height
         && candidate.y + candidate.height > existing.y
       ));
-      if (!text || explicitLines.length > 2 || candidate.width < 24 || candidate.height < 12 || overlapsExisting) {
+      if (!sourceText || !text || explicitLines.length > 2 || overlapsExisting) {
         invalidTranslationRegions = true;
         break;
       }
@@ -385,11 +428,11 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const frame = sourceRatio >= 1
     ? { x: 0, y: (1080 - 1080 / sourceRatio) / 2, width: 1080, height: 1080 / sourceRatio }
     : { x: (1080 - 1080 * sourceRatio) / 2, y: 0, width: 1080 * sourceRatio, height: 1080 };
-  const localized = spec.sourceTextVisible && spec.translationRegions.length > 0;
+  const localized = Boolean(assets.sourceImage) && spec.sourceTextVisible && spec.translationRegions.length > 0;
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const translationLayers = localized
+  const replacementLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
       const y = frame.y + frame.height * region.y / 100;
@@ -398,46 +441,47 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       let fontSize = frame.width * region.fontSize / 100 * 0.72;
       const minFontSize = Math.max(14, frame.width * 0.02);
       let lineHeight = fontSize * 1.02;
-      let lines: string[] = [];
       const paragraphs = region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean);
-      if (paragraphs.length > 2) return "";
+      const sourceLines = region.sourceText.split(/\n+/).map((value) => value.trim()).filter(Boolean);
+      if (
+        paragraphs.length < 1 || paragraphs.length > 2
+        || sourceLines.length < 1 || sourceLines.length > 4
+        || (sourceLines.length <= 2 && paragraphs.length !== sourceLines.length)
+      ) return null;
+      const lines = paragraphs;
+      const renderedWidth = () => Math.max(...lines.map((line) => (
+        [...line].reduce((sum, character) => sum + characterUnits(character), 0)
+        * fontSize * region.scaleX / 2.0
+      )));
       while (true) {
-        const maxUnits = Math.max(6, width / Math.max(fontSize * region.scaleX, 1) * 2.5);
-        const maxLines = Math.max(1, Math.min(2, Math.floor(height / Math.max(lineHeight, 1))));
-        lines = [];
-        for (const paragraph of paragraphs) {
-          if (lines.length >= maxLines) break;
-          lines.push(...wrapSvgText(paragraph, maxUnits, maxLines - lines.length));
-        }
-        const truncated = lines.at(-1)?.endsWith("…") === true;
-        if ((!truncated && lines.length * lineHeight <= height) || fontSize <= minFontSize) break;
+        if ((renderedWidth() <= width && lines.length * lineHeight <= height) || fontSize <= minFontSize) break;
         fontSize = Math.max(minFontSize, fontSize * 0.92);
         lineHeight = fontSize * 1.02;
       }
-      const fits = lines.length > 0
-        && lines.at(-1)?.endsWith("…") !== true
-        && lines.length * lineHeight <= height;
-      if (!fits) return "";
+      const fits = renderedWidth() <= width && lines.length * lineHeight <= height;
+      if (!fits) return null;
       const blockHeight = lines.length * lineHeight;
-      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize);
+      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize) - fontSize * 0.22;
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
-      const clipId = `${regionId}-Clip`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      return `<defs><clipPath id="${clipId}"><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}"/></clipPath></defs><g id="${regionId}" clip-path="url(#${clipId})">${textLayers(
+      const coverStrokeWidth = Math.min(16, Math.max(6, height * 0.185));
+      const translation = `<g id="${regionId}">${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-opacity="0.78" stroke-width="2" paint-order="stroke fill" stroke-linejoin="round" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-width="${coverStrokeWidth.toFixed(2)}" paint-order="stroke fill" stroke-linecap="round" stroke-linejoin="round" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
+      return translation;
     })
     : [];
-  const translations = translationLayers.length > 0 && translationLayers.every(Boolean)
-    ? translationLayers.join("\n")
+  const completeReplacement = replacementLayers.length > 0 && replacementLayers.every(Boolean);
+  const translations = completeReplacement
+    ? replacementLayers.join("\n")
     : "";
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
   <g id="Source-Visual-Layer">${visual}</g>

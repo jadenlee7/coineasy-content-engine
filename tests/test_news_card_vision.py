@@ -7,7 +7,6 @@ import pytest
 from core.llm.news_card_pipeline import (
     _audit_visual_subtitle_placement,
     _normalize_visual_localization,
-    _strict_protected_pixel_box_as_percent,
     generate_news_card_spec,
 )
 from core.sources.source_image import PreparedSourceImage
@@ -45,10 +44,9 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
             payload = {
                 "safe": True,
                 "protected_regions": [
-                    {"kind": "source_text", "source_index": 0, "x": 28, "y": 78, "width": 44, "height": 20},
-                    {"kind": "character", "x": 34, "y": 18, "width": 62, "height": 58},
+                    {"kind": "source_text", "source_index": 0, "x": 31, "y": 83, "width": 38, "height": 11},
+                    {"kind": "character", "x": 34, "y": 18, "width": 62, "height": 45},
                 ],
-                "translation_regions": [{"index": 0, "x": 3, "y": 34, "width": 24, "height": 18}],
             }
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
 
@@ -83,21 +81,24 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "Never infer image text from the post caption" in content[1]["text"]
     assert "source_text must transcribe the visible source phrase exactly" in content[1]["text"]
     assert "Keep a 1-2 line source at the same line count" in content[1]["text"]
+    assert "prefer a 2-5 syllable Korean expression" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "places audited Korean in a nearby clear area inside the original banner" in content[1]["text"]
-    assert "subtitle background stays fully transparent" in content[1]["text"]
-    assert "coordinates are a source-detection box" in content[1]["text"]
-    assert "separate image-aware safety pass chooses the Korean target box" in content[1]["text"]
+    assert "opaque dark outline is shaped only around the Korean glyphs" in content[1]["text"]
+    assert "without a rectangle, blur, cloned texture, separate footer" in content[1]["text"]
+    assert "both the removal box and the final Korean text area" in content[1]["text"]
+    assert "Do not move the Korean translation" in content[1]["text"]
     assert "Use one tight region around the actual glyphs" not in content[1]["text"]
     audit_content = calls[1]["messages"][0]["content"]
-    assert calls[1]["system"].startswith("You are the final visual placement QA")
+    assert calls[1]["system"].startswith("You are the final visual replacement QA")
     assert audit_content[0]["source"]["data"] == "aW1hZ2U="
-    assert '"protected_source_box": {"x": 30.0, "y": 82.0, "width": 40.0, "height": 13.0}' in audit_content[1]["text"]
-    assert "never a placement suggestion" in audit_content[1]["text"]
+    assert '"source_phrase_box": {"x": 30.0, "y": 82.0, "width": 40.0, "height": 13.0}' in audit_content[1]["text"]
+    assert "dark outline shaped only around the Korean glyphs" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
-    assert "top-right (x=68,y=2,w=30,h=12)" in audit_content[1]["text"]
+    assert '"protected_regions"' in audit_content[1]["text"]
+    assert "patch_regions" not in audit_content[1]["text"]
+    assert "sample_x" not in audit_content[1]["text"]
     assert "translation_regions may contain only text visibly present" in content[1]["text"]
     assert "Client: Squid (squid)" in content[1]["text"]
     assert "Squid Router" not in content[1]["text"]
@@ -106,15 +107,20 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert result["source_text_visible"] is True
     assert result["visual_localization_status"] == "translated"
     assert result["translation_regions"] == [{
+        "source_text": "Need XRP anywhere?",
         "text": "어디서나 XRP가 필요하신가요?",
-        "x": 3.0,
-        "y": 34.0,
-        "width": 24.0,
-        "height": 18.0,
-        "align": "left",
+        "x": 31.0,
+        "y": 83.0,
+        "width": 38.0,
+        "height": 11.0,
+        "source_x": 31.0,
+        "source_y": 83.0,
+        "source_width": 38.0,
+        "source_height": 11.0,
+        "align": "center",
         "font_role": "display",
         "font_size": 12.0,
-        "scale_x": 0.85,
+        "scale_x": 0.9,
         "text_color": "#E6FA36",
     }]
     assert result["source_crop_bottom"] == 100.0
@@ -159,10 +165,9 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
             payload = {
                 "safe": True,
                 "protected_regions": [
-                    {"kind": "source_text", "source_index": 0, "x": 28, "y": 78, "width": 44, "height": 20},
-                    {"kind": "character", "x": 34, "y": 18, "width": 62, "height": 58},
+                    {"kind": "source_text", "source_index": 0, "x": 28, "y": 68, "width": 44, "height": 18},
+                    {"kind": "character", "x": 34, "y": 18, "width": 62, "height": 30},
                 ],
-                "translation_regions": [{"index": 0, "x": 3, "y": 34, "width": 24, "height": 18}],
             }
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
 
@@ -185,18 +190,23 @@ def test_squid_untranslated_visual_copy_is_repaired_in_korean(monkeypatch):
     assert len(calls) == 3
     assert calls[1]["system"].startswith("You are a Korean localization editor")
     assert "stack is love, stack is life." in calls[1]["messages"][0]["content"]
-    assert calls[2]["system"].startswith("You are the final visual placement QA")
+    assert calls[2]["system"].startswith("You are the final visual replacement QA")
     assert "stack이 곧 사랑" in calls[2]["messages"][0]["content"][1]["text"]
     assert result["translation_regions"] == [{
+        "source_text": "stack is love,\nstack is life.",
         "text": "stack이 곧 사랑,\nstack이 곧 인생.",
-        "x": 3.0,
-        "y": 34.0,
-        "width": 24.0,
+        "x": 28.0,
+        "y": 68.0,
+        "width": 44.0,
         "height": 18.0,
-        "align": "left",
+        "source_x": 28.0,
+        "source_y": 68.0,
+        "source_width": 44.0,
+        "source_height": 18.0,
+        "align": "center",
         "font_role": "display",
         "font_size": 5.0,
-        "scale_x": 0.91,
+        "scale_x": 1.35,
         "text_color": "#FFFFFF",
     }]
     assert result["source_crop_bottom"] == 100.0
@@ -212,6 +222,10 @@ def test_squid_safe_subtitle_box_is_preserved_from_vision():
             "y": 82,
             "width": 60,
             "height": 14,
+            "source_x": 20,
+            "source_y": 82,
+            "source_width": 60,
+            "source_height": 14,
             "align": "center",
             "font_role": "display",
             "font_size": 6,
@@ -220,15 +234,20 @@ def test_squid_safe_subtitle_box_is_preserved_from_vision():
     }, "squid", True)
 
     assert result["translation_regions"][0] == {
+        "source_text": "stack is love,\nstack is life.",
         "text": "스택은 사랑,\n스택은 인생.",
         "x": 20.0,
         "y": 82.0,
         "width": 60.0,
         "height": 14.0,
+        "source_x": 20.0,
+        "source_y": 82.0,
+        "source_width": 60.0,
+        "source_height": 14.0,
         "align": "center",
         "font_role": "display",
         "font_size": 6.0,
-        "scale_x": 1.24,
+        "scale_x": 1.35,
         "text_color": "#FFFFFF",
     }
     assert result["source_crop_bottom"] == 100.0
@@ -244,6 +263,10 @@ def test_squid_safe_subtitle_coordinates_are_not_shifted_by_the_renderer():
             "y": 67,
             "width": 60,
             "height": 12,
+            "source_x": 20,
+            "source_y": 67,
+            "source_width": 60,
+            "source_height": 12,
             "align": "center",
             "font_role": "display",
             "font_size": 5,
@@ -263,8 +286,33 @@ def test_squid_unsafe_small_subtitle_box_is_dropped():
             "text": "한국어 자막",
             "x": 4,
             "y": 4,
-            "width": 20,
-            "height": 8,
+            "width": 5,
+            "height": 2,
+            "source_x": 4,
+            "source_y": 4,
+            "source_width": 5,
+            "source_height": 2,
+        }],
+    }, "squid", True)
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_target_and_audited_source_geometry_must_match():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "A caption",
+            "text": "한국어 자막",
+            "x": 20,
+            "y": 70,
+            "width": 30,
+            "height": 10,
+            "source_x": 21,
+            "source_y": 70,
+            "source_width": 30,
+            "source_height": 10,
         }],
     }, "squid", True)
 
@@ -276,8 +324,16 @@ def test_squid_overlapping_subtitle_boxes_preserve_the_original_creative():
     result = _normalize_visual_localization({
         "source_text_visible": True,
         "translation_regions": [
-            {"source_text": "First", "text": "첫 번째", "x": 4, "y": 4, "width": 30, "height": 16},
-            {"source_text": "Second", "text": "두 번째", "x": 20, "y": 10, "width": 30, "height": 16},
+            {
+                "source_text": "First", "text": "첫 번째",
+                "x": 4, "y": 4, "width": 30, "height": 16,
+                "source_x": 4, "source_y": 4, "source_width": 30, "source_height": 16,
+            },
+            {
+                "source_text": "Second", "text": "두 번째",
+                "x": 20, "y": 10, "width": 30, "height": 16,
+                "source_x": 20, "source_y": 10, "source_width": 30, "source_height": 16,
+            },
         ],
     }, "squid", True)
 
@@ -295,8 +351,34 @@ def test_squid_three_line_subtitle_preserves_the_original_creative():
             "y": 4,
             "width": 40,
             "height": 24,
+            "source_x": 4,
+            "source_y": 4,
+            "source_width": 40,
+            "source_height": 24,
         }],
     }, "squid", True)
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_subtitle_that_cannot_fit_renderer_minimum_is_dropped_before_status():
+    result = _normalize_visual_localization({
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Short",
+            "text": "이 문구는 같은 작은 자막 영역에 절대로 들어갈 수 없습니다",
+            "x": 40,
+            "y": 80,
+            "width": 8,
+            "height": 4,
+            "source_x": 40,
+            "source_y": 80,
+            "source_width": 8,
+            "source_height": 4,
+            "font_size": 5,
+        }],
+    }, "squid", True, 480, 320)
 
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
@@ -316,27 +398,14 @@ def _audit_result(monkeypatch, raw_result, audit_payload):
     return _audit_visual_subtitle_placement(object(), "test-model", raw_result, image)
 
 
-def test_squid_pixel_protection_does_not_reinterpret_ambiguous_percent_overflow():
-    result = _strict_protected_pixel_box_as_percent(
-        {"x": 95, "y": 30, "width": 10, "height": 20},
-        image_width=480,
-        image_height=320,
-    )
-
-    assert result is None
-
-
-def test_squid_placement_audit_normalizes_live_pixel_protection_boxes(monkeypatch):
+def test_squid_placement_audit_rejects_pixel_protection_boxes_after_retry(monkeypatch):
     calls = []
     malformed_live_audit = {
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
-            {"kind": "other", "x": 95, "y": 30, "width": 110, "height": 220},
-            {"kind": "other", "x": 300, "y": 170, "width": 120, "height": 120},
-            {"kind": "other", "x": 0, "y": 230, "width": 200, "height": 90},
+            {"kind": "other", "x": 300, "y": 20, "width": 120, "height": 120},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
     def fake_create_message(client, **kwargs):
         calls.append(kwargs)
@@ -367,15 +436,12 @@ def test_squid_placement_audit_normalizes_live_pixel_protection_boxes(monkeypatc
 
     result = _audit_visual_subtitle_placement(object(), "test-model", raw, image)
 
-    assert len(calls) == 1
-    assert result["source_text_visible"] is True
-    assert result["translation_regions"][0]["text"] == "여유롭게"
-    assert result["translation_regions"][0]["x"] == 68.0
-    assert result["translation_regions"][0]["y"] == 3.0
-    assert result["translation_regions"][0]["align"] == "right"
+    assert len(calls) == 2
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
-def test_squid_placement_audit_normalizes_latest_pixel_face_box(monkeypatch):
+def test_squid_placement_audit_accepts_percentage_protection_boxes(monkeypatch):
     raw = {
         "source_text_visible": True,
         "translation_regions": [{
@@ -391,20 +457,20 @@ def test_squid_placement_audit_normalizes_latest_pixel_face_box(monkeypatch):
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 84, "width": 34, "height": 10},
-            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 60},
-            {"kind": "face", "x": 15, "y": 85, "width": 320, "height": 10},
-            {"kind": "other_visual", "x": 10, "y": 75, "width": 80, "height": 25},
+            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 42},
+            {"kind": "face", "x": 15, "y": 65, "width": 20, "height": 10},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
     })
 
     assert result["source_text_visible"] is True
     assert result["translation_regions"][0]["text"] == "여유롭게"
-    assert result["translation_regions"][0]["x"] == 68.0
-    assert result["translation_regions"][0]["y"] == 2.0
+    assert result["translation_regions"][0]["x"] == 33.0
+    assert result["translation_regions"][0]["y"] == 84.0
+    assert result["translation_regions"][0]["source_y"] == 84.0
+    assert not any(key.startswith("sample_") for key in result["translation_regions"][0])
 
 
-def test_squid_placement_audit_accepts_top_right_space_above_central_character(monkeypatch):
+def test_squid_placement_audit_uses_audited_source_text_geometry(monkeypatch):
     raw = {
         "source_text_visible": True,
         "translation_regions": [{
@@ -423,20 +489,19 @@ def test_squid_placement_audit_accepts_top_right_space_above_central_character(m
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
-            {"kind": "character", "x": 6, "y": 18, "width": 80, "height": 58},
-            {"kind": "face", "x": 15, "y": 100, "width": 0, "height": 0},
-            {"kind": "other_visual", "x": 0, "y": 72, "width": 100, "height": 28},
+            {"kind": "character", "x": 6, "y": 18, "width": 80, "height": 48},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
     })
 
     assert result["source_text_visible"] is True
     assert result["translation_regions"][0]["text"] == "여유롭게"
-    assert result["translation_regions"][0]["x"] == 68.0
-    assert result["translation_regions"][0]["y"] == 2.0
-    assert result["translation_regions"][0]["width"] == 30.0
-    assert result["translation_regions"][0]["height"] == 12.0
-    assert result["translation_regions"][0]["align"] == "right"
+    assert result["translation_regions"][0]["x"] == 41.0
+    assert result["translation_regions"][0]["y"] == 84.0
+    assert result["translation_regions"][0]["width"] == 22.0
+    assert result["translation_regions"][0]["height"] == 8.0
+    assert result["translation_regions"][0]["source_x"] == 41.0
+    assert result["translation_regions"][0]["source_y"] == 84.0
+    assert not any(key.startswith("sample_") for key in result["translation_regions"][0])
 
 
 def test_squid_uncovered_zero_size_optional_protection_fails_closed(monkeypatch):
@@ -457,7 +522,6 @@ def test_squid_uncovered_zero_size_optional_protection_fails_closed(monkeypatch)
             {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
             {"kind": "face", "x": 68, "y": 15, "width": 0, "height": 0},
         ],
-        "translation_regions": [{"index": 0, "x": 3, "y": 2, "width": 30, "height": 12}],
     })
 
     assert result["source_text_visible"] is False
@@ -482,7 +546,6 @@ def test_squid_source_text_box_cannot_cover_zero_size_visual_anchor(monkeypatch)
             {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
             {"kind": "face", "x": 50, "y": 88, "width": 0, "height": 0},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
     })
 
     assert result["source_text_visible"] is False
@@ -508,7 +571,6 @@ def test_squid_line_shaped_optional_protection_fails_closed(monkeypatch):
             {"kind": "other_visual", "x": 0, "y": 72, "width": 100, "height": 28},
             {"kind": "face", "x": 15, "y": 90, "width": 0, "height": 5},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
     })
 
     assert result["source_text_visible"] is False
@@ -523,7 +585,6 @@ def test_squid_placement_audit_fails_closed_after_invalid_retry(monkeypatch):
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
             {"kind": "other", "x": 470, "y": 30, "width": 110, "height": 220},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
 
     def fake_create_message(client, **kwargs):
@@ -587,7 +648,6 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 82, "width": 34, "height": 10},
             {"kind": "other", "x": 470, "y": 30, "width": 110, "height": 220},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 3, "width": 30, "height": 14}],
     }
 
     def fake_create_message(client, **kwargs):
@@ -595,7 +655,6 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
         payload = main_payload if len(calls) == 1 else malformed_audit if len(calls) == 2 else {
             "safe": False,
             "protected_regions": [],
-            "translation_regions": [],
         }
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
 
@@ -617,8 +676,8 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
 
     assert len(calls) == 3
     assert calls[0]["system"].startswith("You are the content brain")
-    assert calls[1]["system"].startswith("You are the final visual placement QA")
-    assert calls[2]["system"].startswith("You are the final visual placement QA")
+    assert calls[1]["system"].startswith("You are the final visual replacement QA")
+    assert calls[2]["system"].startswith("You are the final visual replacement QA")
     assert calls[1]["messages"][0]["content"][0]["source"]["data"] == "aW1hZ2U="
     assert calls[2]["messages"][0]["content"][0]["source"]["data"] == "aW1hZ2U="
     assert result["source_text_visible"] is False
@@ -626,7 +685,7 @@ def test_squid_live_flow_reports_unsafe_status_after_rejected_audit_retry(monkey
     assert result["visual_localization_status"] == "unsafe_placement"
 
 
-def test_squid_live_flow_reports_translated_status_after_pixel_protection_normalization(monkeypatch):
+def test_squid_live_flow_reports_translated_status_after_source_geometry_audit(monkeypatch):
     calls = []
     main_payload = {
         "label": "커뮤니티",
@@ -650,20 +709,18 @@ def test_squid_live_flow_reports_translated_status_after_pixel_protection_normal
             "text_color": "#FFFFFF",
         }],
     }
-    pixel_audit = {
+    source_geometry_audit = {
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 33, "y": 84, "width": 34, "height": 10},
-            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 60},
-            {"kind": "face", "x": 15, "y": 85, "width": 320, "height": 10},
-            {"kind": "other_visual", "x": 10, "y": 75, "width": 80, "height": 25},
+            {"kind": "character", "x": 0, "y": 18, "width": 100, "height": 42},
+            {"kind": "face", "x": 15, "y": 65, "width": 20, "height": 10},
         ],
-        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
     }
 
     def fake_create_message(client, **kwargs):
         calls.append(kwargs)
-        payload = main_payload if len(calls) == 1 else pixel_audit
+        payload = main_payload if len(calls) == 1 else source_geometry_audit
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))])
 
     monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
@@ -687,11 +744,13 @@ def test_squid_live_flow_reports_translated_status_after_pixel_protection_normal
     assert result["source_text_visible"] is True
     assert result["visual_localization_status"] == "translated"
     assert result["translation_regions"][0]["text"] == "여유롭게"
-    assert result["translation_regions"][0]["x"] == 68.0
-    assert result["translation_regions"][0]["y"] == 2.0
+    assert result["translation_regions"][0]["x"] == 33.0
+    assert result["translation_regions"][0]["y"] == 84.0
+    assert result["translation_regions"][0]["source_y"] == 84.0
+    assert not any(key.startswith("sample_") for key in result["translation_regions"][0])
 
 
-def test_squid_placement_audit_rejects_live_source_text_overlap(monkeypatch):
+def test_squid_placement_audit_replaces_copy_in_the_source_text_area(monkeypatch):
     raw = {
         "source_text_visible": True,
         "translation_regions": [{
@@ -713,20 +772,22 @@ def test_squid_placement_audit_rejects_live_source_text_overlap(monkeypatch):
             "kind": "source_text", "source_index": 0,
             "x": 29, "y": 79, "width": 42, "height": 18,
         }],
-        "translation_regions": [{"index": 0, "x": 30, "y": 82, "width": 40, "height": 13}],
     })
 
-    assert result["source_text_visible"] is False
-    assert result["translation_regions"] == []
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"][0]["x"] == 29.0
+    assert result["translation_regions"][0]["y"] == 79.0
+    assert result["translation_regions"][0]["source_x"] == 29.0
+    assert result["translation_regions"][0]["source_y"] == 79.0
 
 
 @pytest.mark.parametrize(
-    ("target_width", "expected_visible"),
-    [(24.0, True), (24.01, False), (23.99, False)],
+    ("audited_x", "expected_visible"),
+    [(30.0, True), (34.0, True), (34.01, False)],
 )
-def test_squid_placement_audit_enforces_clearance_and_minimum_size(
+def test_squid_placement_audit_enforces_source_geometry_overlap(
     monkeypatch,
-    target_width,
+    audited_x,
     expected_visible,
 ):
     raw = {
@@ -748,22 +809,60 @@ def test_squid_placement_audit_enforces_clearance_and_minimum_size(
         "safe": True,
         "protected_regions": [{
             "kind": "source_text", "source_index": 0,
-            "x": 30, "y": 20, "width": 20, "height": 20,
-        }],
-        "translation_regions": [{
-            "index": 0, "x": 3, "y": 20, "width": target_width, "height": 12,
+            "x": audited_x, "y": 20, "width": 20, "height": 20,
         }],
     })
 
     assert result["source_text_visible"] is expected_visible
     if expected_visible:
         assert result["translation_regions"][0]["text"] == "한국어 자막"
-        assert result["translation_regions"][0]["x"] == 3.0
-        assert result["translation_regions"][0]["align"] == "left"
+        assert result["translation_regions"][0]["x"] == audited_x
+        assert result["translation_regions"][0]["source_x"] == audited_x
+        assert result["translation_regions"][0]["align"] == "center"
         assert result["translation_regions"][0]["font_role"] == "display"
         assert result["translation_regions"][0]["font_size"] == 5
     else:
         assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_rejects_whole_canvas_source_box(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Original phrase", "text": "한국어 자막",
+            "x": 30, "y": 70, "width": 20, "height": 10,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [{
+            "kind": "source_text", "source_index": 0,
+            "x": 0, "y": 0, "width": 100, "height": 100,
+        }],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_rejects_distant_split_source_boxes(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Line one\nLine two", "text": "첫째 줄\n둘째 줄",
+            "x": 30, "y": 70, "width": 20, "height": 12,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 31, "y": 71, "width": 18, "height": 4},
+            {"kind": "source_text", "source_index": 0, "x": 70, "y": 20, "width": 18, "height": 4},
+        ],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_placement_audit_requires_source_box_for_every_index(monkeypatch):
@@ -780,14 +879,31 @@ def test_squid_placement_audit_requires_source_box_for_every_index(monkeypatch):
             "kind": "source_text", "source_index": 0,
             "x": 30, "y": 70, "width": 20, "height": 10,
         }],
-        "translation_regions": [
-            {"index": 0, "x": 3, "y": 3, "width": 24, "height": 12},
-            {"index": 1, "x": 73, "y": 3, "width": 24, "height": 12},
-        ],
     })
 
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_preserves_every_source_index(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [
+            {"source_text": "First", "text": "첫 번째", "x": 20, "y": 70, "width": 20, "height": 10},
+            {"source_text": "Second", "text": "두 번째", "x": 60, "y": 70, "width": 20, "height": 10},
+        ],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 21, "y": 71, "width": 18, "height": 8},
+            {"kind": "source_text", "source_index": 1, "x": 61, "y": 71, "width": 18, "height": 8},
+        ],
+    })
+
+    assert result["source_text_visible"] is True
+    assert [region["text"] for region in result["translation_regions"]] == ["첫 번째", "두 번째"]
+    assert [region["source_x"] for region in result["translation_regions"]] == [21.0, 61.0]
 
 
 def test_squid_placement_audit_rejects_one_unsafe_region_atomically(monkeypatch):
@@ -802,11 +918,7 @@ def test_squid_placement_audit_rejects_one_unsafe_region_atomically(monkeypatch)
         "safe": True,
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 30, "y": 70, "width": 20, "height": 10},
-            {"kind": "source_text", "source_index": 1, "x": 60, "y": 70, "width": 20, "height": 10},
-        ],
-        "translation_regions": [
-            {"index": 0, "x": 3, "y": 3, "width": 24, "height": 12},
-            {"index": 1, "x": 58, "y": 68, "width": 24, "height": 12},
+            {"kind": "source_text", "source_index": 1, "x": 85, "y": 70, "width": 15, "height": 10},
         ],
     })
 
