@@ -463,7 +463,7 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       if (!fits) return null;
       const blockHeight = lines.length * lineHeight;
       // SVG uses an explicit text baseline rather than the browser's flex line
-      // box. Its centered baseline matches the browser's visual +0.22em shift.
+      // box. Its centered baseline matches the calibrated browser placement.
       const firstBaseline = Number((
         y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize)
       ).toFixed(2));
@@ -472,16 +472,17 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      // Figma/standalone SVG font fallback leaves wider counters than the HTML
-      // renderer, so a stronger glyph-only outline is needed to hide source type.
-      const coverStrokeWidth = Math.min(20, Math.max(6, height * 0.31));
-      const outlineMarginX = coverStrokeWidth * region.scaleX / 2;
-      const outlineMarginY = coverStrokeWidth / 2;
+      const coverPaddingX = 12;
+      const coverPaddingY = 8;
+      const coverX = x - coverPaddingX;
+      const coverY = y - coverPaddingY;
+      const coverWidth = width + coverPaddingX * 2;
+      const coverHeight = height + coverPaddingY * 2;
       const replacementBound = {
-        left: x - outlineMarginX,
-        top: y - outlineMarginY,
-        right: x + width + outlineMarginX,
-        bottom: y + height + outlineMarginY,
+        left: coverX,
+        top: coverY,
+        right: coverX + coverWidth,
+        bottom: coverY + coverHeight,
       };
       const staysInsideSourceFrame = (
         replacementBound.left >= frame.x
@@ -489,21 +490,22 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
         && replacementBound.right <= frame.x + frame.width
         && replacementBound.bottom <= frame.y + frame.height
       );
-      const overlapsExistingOutline = replacementBounds.some((existing) => (
+      const overlapsExistingCover = replacementBounds.some((existing) => (
         replacementBound.left < existing.right
         && replacementBound.right > existing.left
         && replacementBound.top < existing.bottom
         && replacementBound.bottom > existing.top
       ));
-      if (!staysInsideSourceFrame || overlapsExistingOutline) return null;
+      if (!staysInsideSourceFrame || overlapsExistingCover) return null;
       replacementBounds.push(replacementBound);
-      const translation = `<g id="${regionId}">${textLayers(
+      const cover = `<rect id="Source-Text-Cover-${index + 1}" x="${coverX.toFixed(2)}" y="${coverY.toFixed(2)}" width="${coverWidth.toFixed(2)}" height="${coverHeight.toFixed(2)}" rx="8" fill="#100D16"/>`;
+      const translation = `<g id="${regionId}">${cover}${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-width="${coverStrokeWidth.toFixed(2)}" paint-order="stroke fill" stroke-linecap="round" stroke-linejoin="round" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
       return translation;
     })

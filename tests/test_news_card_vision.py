@@ -84,16 +84,20 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "prefer a 2-5 syllable Korean expression" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "opaque dark outline is shaped only around the Korean glyphs" in content[1]["text"]
-    assert "without a rectangle, blur, cloned texture, separate footer" in content[1]["text"]
-    assert "both the removal box and the final Korean text area" in content[1]["text"]
+    assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in content[1]["text"]
+    assert "This required cover has opacity 1" in content[1]["text"]
+    assert "Never use blur, cloned texture, generated fill, transparency, gradient" in content[1]["text"]
+    assert "The cover must not overlap any official or partner logo, character, face, limb" in content[1]["text"]
+    assert "These coordinates are the source-removal box and the final Korean text area" in content[1]["text"]
     assert "Do not move the Korean translation" in content[1]["text"]
     assert "Use one tight region around the actual glyphs" not in content[1]["text"]
     audit_content = calls[1]["messages"][0]["content"]
     assert calls[1]["system"].startswith("You are the final visual replacement QA")
     assert audit_content[0]["source"]["data"] == "aW1hZ2U="
     assert '"source_phrase_box": {"x": 30.0, "y": 82.0, "width": 40.0, "height": 13.0}' in audit_content[1]["text"]
-    assert "dark outline shaped only around the Korean glyphs" in audit_content[1]["text"]
+    assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in audit_content[1]["text"]
+    assert "Check the required opaque cover clearance" in audit_content[1]["text"]
+    assert "12px horizontal or 8px vertical padding would touch any protected logo" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
     assert '"protected_regions"' in audit_content[1]["text"]
@@ -468,6 +472,131 @@ def test_squid_placement_audit_accepts_percentage_protection_boxes(monkeypatch):
     assert result["translation_regions"][0]["y"] == 84.0
     assert result["translation_regions"][0]["source_y"] == 84.0
     assert not any(key.startswith("sample_") for key in result["translation_regions"][0])
+
+
+@pytest.mark.parametrize("protected_kind", ["logo", "character"])
+def test_squid_placement_audit_rejects_expanded_cover_over_protected_visual(
+    monkeypatch,
+    protected_kind,
+):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Original phrase",
+            "text": "한국어 자막",
+            "x": 30,
+            "y": 70,
+            "width": 20,
+            "height": 10,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 30,
+                "y": 70,
+                "width": 20,
+                "height": 10,
+            },
+            {
+                "kind": protected_kind,
+                "x": 50.5,
+                "y": 72,
+                "width": 5,
+                "height": 5,
+            },
+        ],
+    })
+
+    # On a 480x320 source fitted to 1080x720, the required 12px horizontal
+    # cover padding is 1.111...% of the source frame. The audited glyph box
+    # ends at x=50, so only the expanded opaque cover reaches this visual.
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_rejects_expanded_cover_outside_source_frame(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Edge phrase",
+            "text": "가장자리 자막",
+            "x": 0.5,
+            "y": 20,
+            "width": 10,
+            "height": 10,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [{
+            "kind": "source_text",
+            "source_index": 0,
+            "x": 0.5,
+            "y": 20,
+            "width": 10,
+            "height": 10,
+        }],
+    })
+
+    # The glyph box itself is inside the image, but its fixed 12px cover
+    # padding extends beyond the left edge of the fitted source frame.
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_rejects_padding_only_cover_collision(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [
+            {
+                "source_text": "First phrase",
+                "text": "첫 번째",
+                "x": 20,
+                "y": 40,
+                "width": 20,
+                "height": 10,
+            },
+            {
+                "source_text": "Second phrase",
+                "text": "두 번째",
+                "x": 41.5,
+                "y": 40,
+                "width": 20,
+                "height": 10,
+            },
+        ],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 20,
+                "y": 40,
+                "width": 20,
+                "height": 10,
+            },
+            {
+                "kind": "source_text",
+                "source_index": 1,
+                "x": 41.5,
+                "y": 40,
+                "width": 20,
+                "height": 10,
+            },
+        ],
+    })
+
+    # The audited glyph boxes have a 1.5% gap, so neither expanded cover
+    # reaches the other glyph box. Their two 1.111...% horizontal padding
+    # bands still overlap and must be rejected before the renderers disagree.
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_placement_audit_uses_audited_source_text_geometry(monkeypatch):

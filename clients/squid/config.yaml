@@ -50,11 +50,12 @@ brand_voice:
       hierarchy and rhythm inside the original banner. If it contains no translatable
       copy, preserve the character and visual untouched. Never add an unrelated headline
       panel, badge, CTA, or duplicate logo. Preserve the full source crop and place a concise
-      Korean translation directly in the exact source-phrase area. Use an opaque dark outline
-      shaped only around the Korean glyphs to visually cover the original lettering while the
-      rest of the background remains fully transparent. Never use a separate footer,
-      Squid-colored caption area, gradient, solid box, cloned patch, generated fill, or blur.
-      If the phrase cannot be located confidently or Korean cannot fit the same area, preserve
+      Korean translation directly in the exact source-phrase area. First remove the original
+      lettering with a fully opaque #100D16 rounded cover that follows the audited phrase box,
+      then place clear white Korean on that cover. Use only the minimal fixed cover padding;
+      never use transparency, gradient, cloned texture, generated fill, blur, a separate footer,
+      or an unrelated headline panel. If the cover would obscure a logo, character, face,
+      product UI, token icon, or unrelated text, or Korean cannot fit the same area, preserve
       the official creative untouched. Keep the source line count and rhythm. Translate a
       one-word reaction into a short 2-5 syllable Korean expression; a repeated Latin keyword
       may remain only when it carries the visual.

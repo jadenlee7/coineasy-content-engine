@@ -41,23 +41,32 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "filter:" not in override_html
     assert "feGaussianBlur" not in override_html
     assert "box-shadow" not in override_html
-    assert "-webkit-text-stroke: var(--region-cover-stroke) #100D16" in override_html
-    assert "paint-order: stroke fill" in override_html
-    assert "--region-cover-stroke" in override_html
+    assert "-webkit-text-stroke" not in override_html
+    assert "paint-order" not in override_html
+    assert "--region-cover-stroke" not in override_html
     assert "text-shadow:" not in override_html
     assert "translateY(-0.22em)" not in override_html
     assert "translateY(0.22em) scaleX(var(--region-scale-x))" in override_html
     translation_css = override_html.split(".translation-region {", 1)[1].split("}", 1)[0]
+    translation_cover_css = override_html.split(".translation-region::before {", 1)[1].split("}", 1)[0]
     translation_text_css = override_html.split(".translation-region > span {", 1)[1].split("}", 1)[0]
     assert "background" not in translation_css + translation_text_css
     assert "border" not in translation_css + translation_text_css
+    assert "inset: -8px -12px" in translation_cover_css
+    assert "border-radius: 8px" in translation_cover_css
+    assert "background: #100D16" in translation_cover_css
+    assert "opacity" not in translation_cover_css
+    assert "rgba(" not in translation_cover_css
+    assert "gradient" not in translation_cover_css
     assert "overflow: hidden" in override_html
     assert "data-source-line-count" in override_html
     assert "renderedLineCount > allowedLineCount" in override_html
-    assert "const safetyStroke = Math.min(20, Math.max(6, region.clientHeight * 0.31))" in override_html
+    assert "const coverPaddingX = 12" in override_html
+    assert "const coverPaddingY = 8" in override_html
     assert "staysInsideSourceFrame" in override_html
-    assert "overlapsExistingOutline" in override_html
+    assert "overlapsExistingCover" in override_html
     assert "anyRegionFailed" in override_html
+    assert "if (!text)" in override_html
     assert "for (const region of translationRegions) region.hidden = true" in override_html
     assert ".28em" not in override_html
 

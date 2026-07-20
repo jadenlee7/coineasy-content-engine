@@ -12,6 +12,24 @@ const SPEC = {
   theme: "dark",
 };
 
+function assertOpaqueSquidCovers(svg: string, regionCount: number): void {
+  assert.equal((svg.match(/id="Source-Text-Cover-\d+"/g) || []).length, regionCount);
+  for (let index = 1; index <= regionCount; index += 1) {
+    assert.match(
+      svg,
+      new RegExp(
+        `<g id="Korean-Translation-Region-${index}"><rect id="Source-Text-Cover-${index}"[^>]+fill="#100D16"\\/><text id="Korean-Translation-Region-${index}-Text-Line-1"`,
+      ),
+    );
+  }
+  assert.doesNotMatch(svg, /\b(?:fill-opacity|stroke|stroke-opacity|stroke-width|opacity|paint-order)=/);
+}
+
+function assertNoSquidTranslation(svg: string): void {
+  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assert.doesNotMatch(svg, /Source-Text-Cover/);
+}
+
 test("escapes XML content and wraps long editable text", () => {
   assert.equal(escapeXml('<Yellow & "Squid">'), "&lt;Yellow &amp; &quot;Squid&quot;&gt;");
   const lines = wrapSvgText("아주 긴 한국어 헤드라인을 여러 줄로 안전하게 나눕니다", 12, 3);
@@ -71,8 +89,8 @@ test("creates a Squid official-creative translation layer without extra card chr
   assert.match(svg, /<title id="Title">Squid editable Korean news card<\/title>/);
   assert.doesNotMatch(svg, /Squid Router/);
   assert.match(svg, /scale\(1\.24 1\)/);
-  assert.match(svg, /stroke="#100D16" stroke-width="20\.00" paint-order="stroke fill"/);
-  assert.doesNotMatch(svg, /stroke-opacity=/);
+  assert.match(svg, /<rect id="Source-Text-Cover-1" x="74\.40" y="301\.15" width="607\.20" height="125\.35" rx="8" fill="#100D16"\/>/);
+  assertOpaqueSquidCovers(svg, 1);
   assert.doesNotMatch(svg, /Source-Text-Replacement|Source-Text-Clean-Patch|Korean-Translation-Region-1-Clip|clipPath|clip-path|<mask|filter=|feGaussianBlur/);
   assert.doesNotMatch(svg, /Korean-Subtitle-Scrim|Source-Visual-Crop|Translation-Footer|Korean-Translation-Footer|Blur-Patch|Feather-Mask/);
   assert.doesNotMatch(svg, /Localized-Content-Panel|Official-Logo-Safe-Area|Brand-Logo|Label-Text|CoinEasy|COINEASY/i);
@@ -107,7 +125,7 @@ test("keeps explicit Squid translation line breaks as separate editable text lay
   });
   assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"[^>]+fill="#FFFFFF"[^>]*font-size="46\.66"[^>]*>stack이 곧 사랑,<\/text>/);
   assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-2"[^>]*>stack이 곧 인생\.<\/text>/);
-  assert.match(svg, /stroke="#100D16" stroke-width="20\.00" paint-order="stroke fill"/);
+  assertOpaqueSquidCovers(svg, 1);
   assert.doesNotMatch(svg, /Source-Text-Replacement|Source-Text-Clean-Patch|clipPath|clip-path|Korean-Subtitle-Scrim|Translation-Footer/);
 });
 
@@ -140,8 +158,9 @@ test("calibrates the editable Squid subtitle for standalone SVG font metrics", (
 
   assert.match(
     svg,
-    /id="Korean-Translation-Region-1-Text-Line-1" x="540" y="840\.06"[^>]+scale\(1\.35 1\)[^>]+stroke-width="20\.00"/,
+    /<rect id="Source-Text-Cover-1" x="344\.40" y="776\.80" width="391\.20" height="80\.80" rx="8" fill="#100D16"\/><text id="Korean-Translation-Region-1-Text-Line-1" x="540" y="840\.06"[^>]+scale\(1\.35 1\)/,
   );
+  assertOpaqueSquidCovers(svg, 1);
   assert.match(svg, />여유롭게<\/text>/);
 });
 
@@ -165,9 +184,10 @@ test("keeps each Squid in-banner region's own font role and PNG size", () => {
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
   assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"[^>]+font-family="Bagoss Condensed,[^"]+"[^>]+font-size="46\.66"/);
   assert.match(svg, /id="Korean-Translation-Region-2-Text-Line-1"[^>]+font-family="Pretendard,[^"]+"[^>]+font-size="31\.10"/);
+  assertOpaqueSquidCovers(svg, 2);
 });
 
-test("uses an opaque dynamic glyph outline between 6px and 20px", () => {
+test("uses one fully opaque fixed-padding cover per Squid translation", () => {
   const svg = buildEditableSvg("squid", "remix", {
     ...SPEC,
     source_text_visible: true,
@@ -186,9 +206,9 @@ test("uses an opaque dynamic glyph outline between 6px and 20px", () => {
       },
     ],
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
-  assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"[^>]+stroke-width="6\.70"/);
-  assert.match(svg, /id="Korean-Translation-Region-2-Text-Line-1"[^>]+stroke-width="20\.00"/);
-  assert.doesNotMatch(svg, /stroke-opacity=|opacity=/);
+  assert.match(svg, /<rect id="Source-Text-Cover-1" x="31\.20" y="200\.80" width="456\.00" height="37\.60" rx="8" fill="#100D16"\/>/);
+  assert.match(svg, /<rect id="Source-Text-Cover-2" x="592\.80" y="316\.00" width="456\.00" height="160\.00" rx="8" fill="#100D16"\/>/);
+  assertOpaqueSquidCovers(svg, 2);
 });
 
 test("rejects a Squid translation whose target differs from the audited source box", () => {
@@ -201,7 +221,7 @@ test("rejects a Squid translation whose target differs from the audited source b
       font_size: 4,
     }],
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, />번역<\/text>/);
 });
 
@@ -214,7 +234,7 @@ test("keeps a textless Squid creative free of generated copy", () => {
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
   assert.match(svg, /id="Source-Visual"/);
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, /Korean-Subtitle-Scrim|Source-Visual-Crop|Translation-Footer|이 문구는 나타나면 안 됩니다|Headline-Line|Label-Text|Brand-Logo/);
 });
 
@@ -238,7 +258,7 @@ test("drops a Squid subtitle that cannot fit a safe region", () => {
   }, {
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, /이 문구는 안전 영역 밖으로/);
 });
 
@@ -266,10 +286,10 @@ test("preserves the original Squid creative when subtitle regions overlap", () =
   assert.doesNotMatch(svg, />첫 번째<\/text>/);
   assert.doesNotMatch(svg, />겹치는 문구<\/text>/);
   assert.doesNotMatch(svg, />세 번째<\/text>/);
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
 });
 
-test("preserves the source when a Squid outline would leave the image frame", () => {
+test("preserves the source when a Squid cover would leave the image frame", () => {
   const svg = buildEditableSvg("squid", "remix", {
     ...SPEC,
     source_text_visible: true,
@@ -279,11 +299,11 @@ test("preserves the source when a Squid outline would leave the image frame", ()
     }],
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
 
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, />가장자리<\/text>/);
 });
 
-test("preserves the source when separate Squid boxes have colliding outlines", () => {
+test("preserves the source when separate Squid boxes have colliding covers", () => {
   const svg = buildEditableSvg("squid", "remix", {
     ...SPEC,
     source_text_visible: true,
@@ -299,7 +319,7 @@ test("preserves the source when separate Squid boxes have colliding outlines", (
     ],
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
 
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, />첫째<\/text>|>둘째<\/text>/);
 });
 
@@ -323,7 +343,7 @@ test("preserves the original Squid creative for a three-line subtitle", () => {
   }, {
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, /첫째 줄|둘째 줄|셋째 줄/);
 });
 
@@ -353,7 +373,7 @@ test("preserves the original Squid creative when any subtitle cannot fit", () =>
   }, {
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
-  assert.match(svg, /id="Korean-Translation-Layer"><\/g>/);
+  assertNoSquidTranslation(svg);
   assert.doesNotMatch(svg, /짧은 자막|아주 긴 한국어 자막/);
 });
 
