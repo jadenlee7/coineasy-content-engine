@@ -636,7 +636,8 @@
             body: JSON.stringify({
               spec: payload.spec || {},
               template_style: payload.template_style || state.template,
-              source_image_url: payload.source_image_url || ""
+              source_image_url: payload.source_image_url || "",
+              source_visual_file: payload.source_visual_file || ""
             })
           });
           if (!response.ok) return false;
@@ -708,6 +709,7 @@
         if (payload?.error === "source_fetch_failed") return "X 게시물을 읽지 못했습니다. 공개 게시물인지 확인하거나 원문 본문을 붙여넣어주세요.";
         if (payload?.error === "source_content_must_be_10_to_20000_chars") return "원문 본문을 10자 이상 입력하거나 공개 X 게시물 링크를 넣어주세요.";
         if (payload?.error === "generation_failed") return `카드 생성에 실패했습니다. (${payload.upstream_status || status})`;
+        if (payload?.error === "cleaned_source_unavailable" || payload?.error === "cleaned_source_required") return "원문 자막 제거 이미지를 준비하지 못했습니다. 다시 생성해주세요.";
         if (status === 401) return "API 인증 설정을 확인해주세요.";
         return "카드를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.";
       }
@@ -821,6 +823,8 @@
                 ? " · 원문 자막을 같은 위치의 한국어로 교체"
                 : payload.spec?.visual_localization_status === "unsafe_placement"
                   ? " · 원문 자막을 자연스럽게 교체하기 어려워 원본 비주얼 유지"
+                  : payload.spec?.visual_localization_status === "cleanup_failed"
+                    ? " · 원문 자막 픽셀을 깔끔하게 지우기 어려워 원본 비주얼 유지"
                   : " · 번역할 문구가 없어 원본 비주얼 그대로 유지"
               : payload.spec?.source_logo_visible === true
                 ? " · 원본 공식 로고 유지, 추가 로고 생략"

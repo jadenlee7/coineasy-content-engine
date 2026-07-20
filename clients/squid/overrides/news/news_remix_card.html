@@ -45,7 +45,6 @@
     min-width: 1px;
     min-height: 1px;
     overflow: visible;
-    isolation: isolate;
     color: var(--region-text);
     text-align: var(--region-align);
     font-family: var(--region-font);
@@ -57,22 +56,16 @@
     overflow-wrap: anywhere;
     white-space: pre;
   }
-  .translation-region::before {
-    content: '';
-    position: absolute;
-    z-index: 0;
-    inset: -8px -12px;
-    border-radius: 8px;
-    background: #100D16;
-  }
   .translation-region > span {
     position: relative;
     display: block;
-    z-index: 1;
     width: max-content;
     max-width: 100%;
-    /* Keep the calibrated Korean baseline while the opaque panel removes the
-       original source lettering underneath. */
+    /* The source image has already had the original glyphs removed. Keep the
+       Korean layer transparent and use only the same 1px glyph outline as the
+       editable SVG. */
+    -webkit-text-stroke: 1px rgba(16, 13, 22, .76);
+    paint-order: stroke fill;
     transform: translateY(0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
   }
@@ -100,7 +93,7 @@
           --region-size: {{ '%.2f' | format(caption_font_size) }}px;
           --region-scale-x: {{ region.scale_x | default(1) }};
           --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
-          --region-text: #FFFFFF;
+          --region-text: {{ region.text_color | default('#FFFFFF') }};
         "
       ><span>{{ region.text | e }}</span></div>
       {% endfor %}
@@ -135,28 +128,24 @@
     }
     if (doesNotFit()) anyRegionFailed = true;
 
-    // The fully opaque source-text cover expands by the same fixed padding in
-    // PNG and SVG. Both formats fail closed for identical geometry.
-    const coverPaddingX = 12;
-    const coverPaddingY = 8;
     const replacementBound = {
-      left: region.offsetLeft - coverPaddingX,
-      top: region.offsetTop - coverPaddingY,
-      right: region.offsetLeft + region.offsetWidth + coverPaddingX,
-      bottom: region.offsetTop + region.offsetHeight + coverPaddingY,
+      left: region.offsetLeft,
+      top: region.offsetTop,
+      right: region.offsetLeft + region.offsetWidth,
+      bottom: region.offsetTop + region.offsetHeight,
     };
     const staysInsideSourceFrame = sourceFrame
       && replacementBound.left >= 0
       && replacementBound.top >= 0
       && replacementBound.right <= sourceFrame.clientWidth
       && replacementBound.bottom <= sourceFrame.clientHeight;
-    const overlapsExistingCover = replacementBounds.some((existing) => (
+    const overlapsExistingRegion = replacementBounds.some((existing) => (
       replacementBound.left < existing.right
       && replacementBound.right > existing.left
       && replacementBound.top < existing.bottom
       && replacementBound.bottom > existing.top
     ));
-    if (!staysInsideSourceFrame || overlapsExistingCover) anyRegionFailed = true;
+    if (!staysInsideSourceFrame || overlapsExistingRegion) anyRegionFailed = true;
     replacementBounds.push(replacementBound);
   }
   if (anyRegionFailed) {

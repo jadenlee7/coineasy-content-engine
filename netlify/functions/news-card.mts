@@ -22,6 +22,7 @@ type RailwayNewsCardResponse = {
   template_style: string;
   requested_template_style?: string;
   source_image_used?: boolean;
+  source_visual_path?: unknown;
   manifest_path: string;
   duration_ms: number;
 };
@@ -45,6 +46,35 @@ function generatedFilePath(pngPath: string, clientId: string): string | null {
   const markerIndex = pngPath.lastIndexOf(marker);
   if (markerIndex < 0) return null;
   return pngPath.slice(markerIndex + 1);
+}
+
+export function normalizedSourceVisualFile(value: unknown, clientId: string): string | null {
+  if (typeof value !== "string" || value.length > 1_024) return null;
+  const marker = `/${clientId}/`;
+  const markerIndex = value.lastIndexOf(marker);
+  const candidate = value.startsWith(`${clientId}/`)
+    ? value
+    : markerIndex >= 0
+      ? value.slice(markerIndex + 1)
+      : "";
+  const escapedClientId = clientId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^${escapedClientId}/news_[0-9]+/source_visual_cleaned\\.jpg$`,
+  ).test(candidate)
+    ? candidate
+    : null;
+}
+
+function needsCleanedSquidVisual(
+  clientId: string,
+  templateStyle: string,
+  spec: Record<string, unknown>,
+): boolean {
+  return clientId === "squid"
+    && templateStyle === "remix"
+    && spec.source_text_visible === true
+    && Array.isArray(spec.translation_regions)
+    && spec.translation_regions.length > 0;
 }
 
 export default async (req: Request, context: Context): Promise<Response> => {
@@ -143,6 +173,11 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (!filePath) {
       return json({ error: "invalid_generated_file_path" }, 502);
     }
+    const actualTemplateStyle = result.template_style || templateStyle;
+    const sourceVisualFile = normalizedSourceVisualFile(result.source_visual_path, clientId);
+    if (needsCleanedSquidVisual(clientId, actualTemplateStyle, result.spec) && !sourceVisualFile) {
+      return json({ error: "cleaned_source_unavailable" }, 502);
+    }
 
     const imageResponse = await fetch(
       `${railwayUrl}/files/${filePath.split("/").map(encodeURIComponent).join("/")}`,
@@ -175,14 +210,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
       spec: result.spec,
       source_mode: resolvedSource.mode,
       source_image_url: resolvedSource.imageUrl,
+      source_visual_file: sourceVisualFile,
       source_image_detected: Boolean(resolvedSource.imageUrl),
       source_image_used: result.source_image_used === true,
       requested_template_style: result.requested_template_style || templateStyle,
-      template_style: result.template_style || templateStyle,
+      template_style: actualTemplateStyle,
       duration_ms: result.duration_ms,
       channel_copy: channelCopy,
       image_data_url: imageDataUrl,
-      filename: `${clientId}-${result.template_style || templateStyle}-news-card.png`,
+      filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";

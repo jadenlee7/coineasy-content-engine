@@ -54,8 +54,8 @@ Preserve the original humor, claim strength, and short cadence. Do not add facts
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual replacement QA for Korean localization of official Squid creatives.
-Inspect the attached image composition and precisely map the visible source-language phrase boxes. The renderer will completely hide each original phrase with a fully opaque dark rounded cover, then place Korean directly in that exact phrase area.
-Confirm only geometry that you can locate confidently and enough clearance for the cover. Never move the Korean to a different part of the creative.
+Inspect the attached image composition and precisely map the visible source-language phrase boxes. The renderer will detect and content-aware reconstruct only the original lettering pixels inside each audited box, then place Korean over the cleaned visual with no caption panel.
+Confirm only geometry that you can locate confidently and enough clearance for a 1-3 source-pixel cleanup dilation. Never move the Korean to a different part of the creative.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 
@@ -238,8 +238,8 @@ def _build_user_prompt(
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Keep translation text to at most 2 lines.
 - After this response, a separate visual QA pass tightens the exact source-phrase geometry before rendering.
-- The renderer first hides the complete source phrase with a fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically on the 1080px output, then places concise white Korean directly in the same x/y/width/height area. This required cover has opacity 1. Never use blur, cloned texture, generated fill, transparency, gradient, a separate footer, an unrelated headline panel, or a duplicate caption area.
-- The cover must not overlap any official or partner logo, face, product UI, token icon, unrelated text, or ambiguous other_visual. A character, limb, or product already directly behind the original lettering may remain the caption substrate only inside that existing caption footprint; the fixed padding must not newly intrude into a separate visual. If that clearance is unavailable, preserve the original creative unchanged.
+- The renderer detects the original glyph/outline silhouette inside each audited phrase box, reconstructs only those pixels from the surrounding visual, and places concise Korean directly in the same x/y/width/height area. The Korean layer has a transparent background: never add a rectangle, rounded panel, scrim, tint, gradient, blur patch, separate footer, unrelated headline panel, or duplicate caption area.
+- The small 1-3 source-pixel cleanup dilation must not reach any official or partner logo, face, product UI, token icon, unrelated text, or ambiguous other_visual. A character, limb, or product already directly behind the original lettering may remain the caption substrate only inside that existing caption footprint. If the source phrase cannot be tightly isolated, preserve the original creative unchanged.
 - If the QA pass cannot confidently locate every source phrase or the Korean cannot fit the same line count and area, it removes every localization layer and preserves the official creative unchanged.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
@@ -488,10 +488,9 @@ _PLACEMENT_PROTECTED_KINDS = {
     "token_icon",
     "other_visual",
 }
-_SOURCE_TEXT_COVER_PADDING_X_PX = 12.0
-_SOURCE_TEXT_COVER_PADDING_Y_PX = 8.0
-_SOURCE_TEXT_COVER_SUBSTRATE_KINDS = {"character", "limb", "product"}
-_SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO = 0.50
+_SOURCE_TEXT_CLEANUP_PADDING_PX = 3.0
+_SOURCE_TEXT_CLEANUP_SUBSTRATE_KINDS = {"character", "limb", "product"}
+_SOURCE_TEXT_CLEANUP_SUBSTRATE_MIN_RATIO = 0.50
 _PLACEMENT_MIN_AUDITED_AREA_RATIO = 0.28
 _PLACEMENT_MIN_SOURCE_IOU = 0.28
 
@@ -551,7 +550,7 @@ def _validate_visual_placement_audit(
     audit: dict,
     source_image: PreparedSourceImage,
 ) -> tuple[Optional[list[dict]], str]:
-    """Validate source geometry and opaque-cover clearance for every phrase."""
+    """Validate source geometry and conservative cleanup clearance."""
     if audit.get("safe") is False:
         return None, "unsafe"
     if audit.get("safe") is not True:
@@ -596,18 +595,11 @@ def _validate_visual_placement_audit(
     if any(not boxes for boxes in audited_source_boxes.values()):
         return None, "every subtitle requires an audited source_text box"
 
-    source_ratio = source_image.width / source_image.height
-    if source_ratio >= 1:
-        frame_width = 1080.0
-        frame_height = 1080.0 / source_ratio
-    else:
-        frame_width = 1080.0 * source_ratio
-        frame_height = 1080.0
-    cover_padding_x = _SOURCE_TEXT_COVER_PADDING_X_PX / frame_width * 100.0
-    cover_padding_y = _SOURCE_TEXT_COVER_PADDING_Y_PX / frame_height * 100.0
+    cleanup_padding_x = _SOURCE_TEXT_CLEANUP_PADDING_PX / source_image.width * 100.0
+    cleanup_padding_y = _SOURCE_TEXT_CLEANUP_PADDING_PX / source_image.height * 100.0
 
     audited_regions: list[dict] = []
-    accepted_cover_boxes: list[dict[str, float]] = []
+    accepted_cleanup_boxes: list[dict[str, float]] = []
     for index, original in enumerate(raw_regions):
         line_boxes = audited_source_boxes[index]
         first_box = first_pass_source_boxes[index]
@@ -655,44 +647,44 @@ def _validate_visual_placement_audit(
             or abs(source_center_y - first_center_y) > max(2.0, first_box["height"] * 0.25)
         ):
             return None, f"source_text geometry for subtitle {index} does not match the first pass"
-        cover_box = {
-            "x": source_box["x"] - cover_padding_x,
-            "y": source_box["y"] - cover_padding_y,
-            "width": source_box["width"] + cover_padding_x * 2,
-            "height": source_box["height"] + cover_padding_y * 2,
+        cleanup_box = {
+            "x": source_box["x"] - cleanup_padding_x,
+            "y": source_box["y"] - cleanup_padding_y,
+            "width": source_box["width"] + cleanup_padding_x * 2,
+            "height": source_box["height"] + cleanup_padding_y * 2,
         }
         if (
-            cover_box["x"] < 0
-            or cover_box["y"] < 0
-            or cover_box["x"] + cover_box["width"] > 100
-            or cover_box["y"] + cover_box["height"] > 100
+            cleanup_box["x"] < 0
+            or cleanup_box["y"] < 0
+            or cleanup_box["x"] + cleanup_box["width"] > 100
+            or cleanup_box["y"] + cleanup_box["height"] > 100
         ):
-            return None, f"opaque cover for subtitle {index} leaves the source frame"
-        cover_right = cover_box["x"] + cover_box["width"]
-        cover_bottom = cover_box["y"] + cover_box["height"]
-        overlaps_existing_cover = any(
-            cover_box["x"] < existing["x"] + existing["width"]
-            and cover_right > existing["x"]
-            and cover_box["y"] < existing["y"] + existing["height"]
-            and cover_bottom > existing["y"]
-            for existing in accepted_cover_boxes
+            return None, f"cleanup mask for subtitle {index} leaves the source frame"
+        cleanup_right = cleanup_box["x"] + cleanup_box["width"]
+        cleanup_bottom = cleanup_box["y"] + cleanup_box["height"]
+        overlaps_existing_cleanup = any(
+            cleanup_box["x"] < existing["x"] + existing["width"]
+            and cleanup_right > existing["x"]
+            and cleanup_box["y"] < existing["y"] + existing["height"]
+            and cleanup_bottom > existing["y"]
+            for existing in accepted_cleanup_boxes
         )
-        if overlaps_existing_cover:
-            return None, f"opaque cover for subtitle {index} overlaps another opaque cover"
+        if overlaps_existing_cleanup:
+            return None, f"cleanup mask for subtitle {index} overlaps another cleanup mask"
         for kind, protected_source_index, protected in protected_boxes:
             if kind == "source_text" and protected_source_index == index:
                 continue
             protected_right = protected["x"] + protected["width"]
             protected_bottom = protected["y"] + protected["height"]
-            cover_overlap_width = max(
+            cleanup_overlap_width = max(
                 0.0,
-                min(cover_right, protected_right) - max(cover_box["x"], protected["x"]),
+                min(cleanup_right, protected_right) - max(cleanup_box["x"], protected["x"]),
             )
-            cover_overlap_height = max(
+            cleanup_overlap_height = max(
                 0.0,
-                min(cover_bottom, protected_bottom) - max(cover_box["y"], protected["y"]),
+                min(cleanup_bottom, protected_bottom) - max(cleanup_box["y"], protected["y"]),
             )
-            cover_overlap_area = cover_overlap_width * cover_overlap_height
+            cleanup_overlap_area = cleanup_overlap_width * cleanup_overlap_height
             source_overlap_width = max(
                 0.0,
                 min(source_box["x"] + source_box["width"], protected_right)
@@ -705,14 +697,14 @@ def _validate_visual_placement_audit(
             )
             source_overlap_area = source_overlap_width * source_overlap_height
             existing_caption_substrate = (
-                kind in _SOURCE_TEXT_COVER_SUBSTRATE_KINDS
-                and cover_overlap_area > 0
-                and source_overlap_area / cover_overlap_area
-                >= _SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO
+                kind in _SOURCE_TEXT_CLEANUP_SUBSTRATE_KINDS
+                and cleanup_overlap_area > 0
+                and source_overlap_area / cleanup_overlap_area
+                >= _SOURCE_TEXT_CLEANUP_SUBSTRATE_MIN_RATIO
             )
-            if cover_overlap_area > 0 and not existing_caption_substrate:
-                return None, f"opaque cover for subtitle {index} overlaps protected {kind}"
-        accepted_cover_boxes.append(cover_box)
+            if cleanup_overlap_area > 0 and not existing_caption_substrate:
+                return None, f"cleanup mask for subtitle {index} overlaps protected {kind}"
+        accepted_cleanup_boxes.append(cleanup_box)
         audited_regions.append({
             **original,
             **source_box,
@@ -764,7 +756,7 @@ def _audit_visual_subtitle_placement(
 
     audit_prompt = f"""Audit in-place source-phrase replacement on the attached official creative.
 
-Each source_phrase_box is the first-pass location of ORIGINAL lettering. The renderer will completely hide that lettering with a fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically on the final 1080px canvas, then place korean_text directly in the exact phrase area. Korean must not be moved elsewhere.
+Each source_phrase_box is the first-pass location of ORIGINAL lettering. The renderer will isolate and content-aware reconstruct only the lettering/outline pixels inside the final audited box, then place korean_text directly in that exact phrase area with no caption panel. Korean must not be moved elsewhere.
 
 Subtitles:
 {json.dumps(inputs, ensure_ascii=False)}
@@ -776,10 +768,10 @@ Rules:
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow. It must materially overlap the corresponding first-pass source_phrase_box and must not include unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
-- Check the required opaque cover clearance. Return safe=false if its 12px horizontal or 8px vertical padding would touch any protected logo, face, product UI, token icon, unrelated text, ambiguous other_visual, or a separate important visual.
-- A character, limb, or product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report it accurately so deterministic validation can confirm that at least 50% of the cover/object intersection was already inside the original phrase box. If the padding newly reaches one that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
-- The required source-text cover is the only allowed panel. Never propose transparency, blur, cloned texture, generated fill, gradient, scrim, a second caption panel, or a separate footer.
-- If any source phrase cannot be located confidently, the opaque cover lacks clearance, or Korean cannot fit its same area, return safe=false. Preserving the original creative unchanged is required.
+- Check the 1-3 source-pixel cleanup dilation. Return safe=false if it would touch any protected logo, face, product UI, token icon, unrelated text, ambiguous other_visual, or a separate important visual.
+- A character, limb, or product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report it accurately so deterministic validation can confirm that at least 50% of the cleanup/object intersection was already inside the original phrase box. If cleanup would newly reach one that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
+- Korean must sit on a transparent layer over the reconstructed source visual. Never propose a rectangle, rounded panel, tint, gradient, blur patch, scrim, a second caption panel, or a separate footer.
+- If any source phrase cannot be located confidently, cleanup lacks clearance, or Korean cannot fit its same area, return safe=false. Preserving the original creative unchanged is required.
 
 Return exactly:
 {{
@@ -839,7 +831,7 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
 - Use other_visual, never other, when an object is ambiguous.
 - Return safe=false if you cannot satisfy the schema and every clearance rule.
 - Re-scan each source phrase and return tight percentage geometry around its actual visible glyphs, outline, and shadow.
-- Include every important visual near the required 12px by 8px opaque cover so deterministic clearance validation can fail safely.
+- Include every important visual near the audited glyphs so deterministic cleanup-clearance validation can fail safely.
 
 {audit_prompt}"""
         try:

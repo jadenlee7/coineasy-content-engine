@@ -90,6 +90,7 @@ class NewsCardResponse(BaseModel):
     template_style: str
     requested_template_style: str
     source_image_used: bool
+    source_visual_path: Optional[str] = None
     manifest_path: str
     duration_ms: int
 
@@ -232,7 +233,9 @@ async def generate_news(
     except FileNotFoundError:
         raise HTTPException(404, f"Client '{client_id}' not found")
 
-    ts = int(time.time())
+    # Nanosecond-resolution directory names keep simultaneous card requests
+    # from overwriting each other's cleaned source visual before Netlify fetches it.
+    ts = time.time_ns()
     output_dir = OUTPUT_ROOT / client_id / f"news_{ts}"
 
     try:
@@ -260,6 +263,7 @@ async def generate_news(
         template_style=result.template_style,
         requested_template_style=result.requested_template_style,
         source_image_used=result.source_image_used,
+        source_visual_path=result.source_visual_path,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
     )
@@ -443,7 +447,7 @@ async def publish_daily_news(
 
 @app.get("/files/{path:path}")
 async def serve_file(path: str, x_api_key: str = Header(default="")):
-    """Serve generated PNG files with per-client scope validation."""
+    """Serve generated assets with per-client scope validation."""
     safe_path = resolve_safe_path(path)
     validate_client_scope(x_api_key, safe_path)
     if not safe_path.exists() or not safe_path.is_file():

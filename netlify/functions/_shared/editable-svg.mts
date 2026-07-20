@@ -432,14 +432,16 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const replacementBounds: Array<{ left: number; top: number; right: number; bottom: number }> = [];
   const replacementLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
       const y = frame.y + frame.height * region.y / 100;
       const width = frame.width * region.width / 100;
       const height = frame.height * region.height / 100;
-      let fontSize = frame.width * region.fontSize / 100 * 0.72;
+      // The browser template emits the initial CSS size at two decimals. Start
+      // from that same value so its 0.92 fit loop and this SVG fit loop share
+      // identical font-size math.
+      let fontSize = Number((frame.width * region.fontSize / 100 * 0.72).toFixed(2));
       const minFontSize = Math.max(14, frame.width * 0.02);
       let lineHeight = fontSize * 1.02;
       const paragraphs = region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean);
@@ -463,49 +465,23 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       if (!fits) return null;
       const blockHeight = lines.length * lineHeight;
       // SVG uses an explicit text baseline rather than the browser's flex line
-      // box. Its centered baseline matches the calibrated browser placement.
+      // box. Match the browser span's +0.22em transparent-caption offset.
       const firstBaseline = Number((
         y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize)
+        + fontSize * 0.22
       ).toFixed(2));
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      const coverPaddingX = 12;
-      const coverPaddingY = 8;
-      const coverX = x - coverPaddingX;
-      const coverY = y - coverPaddingY;
-      const coverWidth = width + coverPaddingX * 2;
-      const coverHeight = height + coverPaddingY * 2;
-      const replacementBound = {
-        left: coverX,
-        top: coverY,
-        right: coverX + coverWidth,
-        bottom: coverY + coverHeight,
-      };
-      const staysInsideSourceFrame = (
-        replacementBound.left >= frame.x
-        && replacementBound.top >= frame.y
-        && replacementBound.right <= frame.x + frame.width
-        && replacementBound.bottom <= frame.y + frame.height
-      );
-      const overlapsExistingCover = replacementBounds.some((existing) => (
-        replacementBound.left < existing.right
-        && replacementBound.right > existing.left
-        && replacementBound.top < existing.bottom
-        && replacementBound.bottom > existing.top
-      ));
-      if (!staysInsideSourceFrame || overlapsExistingCover) return null;
-      replacementBounds.push(replacementBound);
-      const cover = `<rect id="Source-Text-Cover-${index + 1}" x="${coverX.toFixed(2)}" y="${coverY.toFixed(2)}" width="${coverWidth.toFixed(2)}" height="${coverHeight.toFixed(2)}" rx="8" fill="#100D16"/>`;
-      const translation = `<g id="${regionId}">${cover}${textLayers(
+      const translation = `<g id="${regionId}">${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="${region.textColor}" stroke="#100D16" stroke-opacity="0.76" stroke-width="1" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
       return translation;
     })
