@@ -432,6 +432,7 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
+  const replacementBounds: Array<{ left: number; top: number; right: number; bottom: number }> = [];
   const replacementLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
@@ -461,13 +462,41 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const fits = renderedWidth() <= width && lines.length * lineHeight <= height;
       if (!fits) return null;
       const blockHeight = lines.length * lineHeight;
-      const firstBaseline = y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize) - fontSize * 0.22;
+      // SVG uses an explicit text baseline rather than the browser's flex line
+      // box. Its centered baseline matches the browser's visual +0.22em shift.
+      const firstBaseline = Number((
+        y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize)
+      ).toFixed(2));
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      const coverStrokeWidth = Math.min(16, Math.max(6, height * 0.185));
+      // Figma/standalone SVG font fallback leaves wider counters than the HTML
+      // renderer, so a stronger glyph-only outline is needed to hide source type.
+      const coverStrokeWidth = Math.min(20, Math.max(6, height * 0.31));
+      const outlineMarginX = coverStrokeWidth * region.scaleX / 2;
+      const outlineMarginY = coverStrokeWidth / 2;
+      const replacementBound = {
+        left: x - outlineMarginX,
+        top: y - outlineMarginY,
+        right: x + width + outlineMarginX,
+        bottom: y + height + outlineMarginY,
+      };
+      const staysInsideSourceFrame = (
+        replacementBound.left >= frame.x
+        && replacementBound.top >= frame.y
+        && replacementBound.right <= frame.x + frame.width
+        && replacementBound.bottom <= frame.y + frame.height
+      );
+      const overlapsExistingOutline = replacementBounds.some((existing) => (
+        replacementBound.left < existing.right
+        && replacementBound.right > existing.left
+        && replacementBound.top < existing.bottom
+        && replacementBound.bottom > existing.top
+      ));
+      if (!staysInsideSourceFrame || overlapsExistingOutline) return null;
+      replacementBounds.push(replacementBound);
       const translation = `<g id="${regionId}">${textLayers(
         `${regionId}-Text`,
         lines,

@@ -63,7 +63,9 @@
     z-index: 1;
     width: max-content;
     max-width: 100%;
-    transform: translateY(-0.22em) scaleX(var(--region-scale-x));
+    /* Korean glyphs sit higher than the audited Latin subtitle box at the same
+       flex center. Lower the replacement so its outline covers the source text. */
+    transform: translateY(0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
     -webkit-text-stroke: var(--region-cover-stroke) #100D16;
     paint-order: stroke fill;
@@ -108,6 +110,8 @@
 </main>
 <script>
   const translationRegions = [...document.querySelectorAll('.translation-region')];
+  const sourceFrame = document.querySelector('.source-frame');
+  const replacementBounds = [];
   let anyRegionFailed = false;
   for (const region of translationRegions) {
     const text = region.querySelector('span');
@@ -128,6 +132,31 @@
       region.style.fontSize = `${size}px`;
     }
     if (doesNotFit()) anyRegionFailed = true;
+
+    // Use the stricter standalone-SVG outline as the shared safety envelope.
+    // PNG and Figma output must both fail closed for the same geometry.
+    const safetyStroke = Math.min(20, Math.max(6, region.clientHeight * 0.31));
+    const outlineMarginX = safetyStroke * scaleX / 2;
+    const outlineMarginY = safetyStroke / 2;
+    const replacementBound = {
+      left: region.offsetLeft - outlineMarginX,
+      top: region.offsetTop - outlineMarginY,
+      right: region.offsetLeft + region.offsetWidth + outlineMarginX,
+      bottom: region.offsetTop + region.offsetHeight + outlineMarginY,
+    };
+    const staysInsideSourceFrame = sourceFrame
+      && replacementBound.left >= 0
+      && replacementBound.top >= 0
+      && replacementBound.right <= sourceFrame.clientWidth
+      && replacementBound.bottom <= sourceFrame.clientHeight;
+    const overlapsExistingOutline = replacementBounds.some((existing) => (
+      replacementBound.left < existing.right
+      && replacementBound.right > existing.left
+      && replacementBound.top < existing.bottom
+      && replacementBound.bottom > existing.top
+    ));
+    if (!staysInsideSourceFrame || overlapsExistingOutline) anyRegionFailed = true;
+    replacementBounds.push(replacementBound);
   }
   if (anyRegionFailed) {
     for (const region of translationRegions) region.hidden = true;

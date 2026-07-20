@@ -45,6 +45,8 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "paint-order: stroke fill" in override_html
     assert "--region-cover-stroke" in override_html
     assert "text-shadow:" not in override_html
+    assert "translateY(-0.22em)" not in override_html
+    assert "translateY(0.22em) scaleX(var(--region-scale-x))" in override_html
     translation_css = override_html.split(".translation-region {", 1)[1].split("}", 1)[0]
     translation_text_css = override_html.split(".translation-region > span {", 1)[1].split("}", 1)[0]
     assert "background" not in translation_css + translation_text_css
@@ -52,6 +54,9 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "overflow: hidden" in override_html
     assert "data-source-line-count" in override_html
     assert "renderedLineCount > allowedLineCount" in override_html
+    assert "const safetyStroke = Math.min(20, Math.max(6, region.clientHeight * 0.31))" in override_html
+    assert "staysInsideSourceFrame" in override_html
+    assert "overlapsExistingOutline" in override_html
     assert "anyRegionFailed" in override_html
     assert "for (const region of translationRegions) region.hidden = true" in override_html
     assert ".28em" not in override_html
