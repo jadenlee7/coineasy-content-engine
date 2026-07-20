@@ -702,7 +702,8 @@ Rules:
 - First map one tight protected_regions box per contiguous source-language phrase or visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Then find genuinely blank or low-detail negative space for every Korean subtitle. Prefer a uniform left or right background away from the central subject.
-- Inspect these common target shapes first, then adjust only when needed: left-middle (x=3,y=34,w=24,h=20), right-middle (x=73,y=34,w=24,h=20), top-center (x=30,y=3,w=40,h=14), left-upper (x=3,y=16,w=24,h=16), right-upper (x=73,y=16,w=24,h=16). Use one only when its actual pixels satisfy every safety rule.
+- For a large central subject, inspect the thin top edge first: top-right (x=68,y=2,w=30,h=12), then top-left (x=2,y=2,w=30,h=12). These are especially useful for one-line captions, but use one only when its actual pixels are empty.
+- Then inspect these common target shapes and adjust only when needed: left-middle (x=3,y=34,w=24,h=20), right-middle (x=73,y=34,w=24,h=20), top-center (x=30,y=3,w=40,h=14), left-upper (x=3,y=16,w=24,h=16), right-upper (x=73,y=16,w=24,h=16).
 - A translation box must be at least 24% wide and 12% high, fit at most 2 lines, stay at least 2% inside every image edge, and keep at least a 3% gap from every protected box and protected_source_box.
 - Translation boxes must keep at least a 3% gap from one another.
 - Never place Korean over the source phrase it translates. This would show English and Korean on top of each other.
@@ -718,7 +719,7 @@ Return exactly:
     {{"kind":"other_visual","x":35,"y":25,"width":30,"height":40}}
   ],
   "translation_regions": [
-    {{"index":0,"x":3,"y":3,"width":24,"height":12}}
+    {{"index":0,"x":68,"y":2,"width":30,"height":12}}
   ]
 }}
 or:
@@ -769,6 +770,7 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
 - Allowed protected kinds are exactly: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual.
 - Use other_visual, never other, when an object is ambiguous.
 - Return safe=false if you cannot satisfy the schema and every clearance rule.
+- If a middle target overlaps a large central subject, do not merely mirror it to the other middle side. Re-scan the thin top edge, especially top-right (x=68,y=2,w=30,h=12), and use it only if those pixels are genuinely empty.
 
 {audit_prompt}"""
         try:
