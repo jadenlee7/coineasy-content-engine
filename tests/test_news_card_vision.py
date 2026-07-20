@@ -370,7 +370,7 @@ def test_squid_placement_audit_retries_live_mixed_coordinate_response(monkeypatc
 
     assert len(calls) == 2
     retry_prompt = calls[1]["messages"][0]["content"][1]["text"]
-    assert "must use 0-100 percentage coordinates" in retry_prompt
+    assert "0-100 percentage coordinates" in retry_prompt
     assert "never pixels" in retry_prompt
     assert "Use other_visual, never other" in retry_prompt
     assert "do not merely mirror it to the other middle side" in retry_prompt
@@ -402,6 +402,7 @@ def test_squid_placement_audit_accepts_top_right_space_above_central_character(m
         "protected_regions": [
             {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
             {"kind": "character", "x": 6, "y": 18, "width": 80, "height": 58},
+            {"kind": "face", "x": 15, "y": 100, "width": 0, "height": 0},
             {"kind": "other_visual", "x": 0, "y": 72, "width": 100, "height": 28},
         ],
         "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
@@ -414,6 +415,82 @@ def test_squid_placement_audit_accepts_top_right_space_above_central_character(m
     assert result["translation_regions"][0]["width"] == 30.0
     assert result["translation_regions"][0]["height"] == 12.0
     assert result["translation_regions"][0]["align"] == "right"
+
+
+def test_squid_uncovered_zero_size_optional_protection_fails_closed(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 41,
+            "y": 84,
+            "width": 22,
+            "height": 8,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
+            {"kind": "face", "x": 68, "y": 15, "width": 0, "height": 0},
+        ],
+        "translation_regions": [{"index": 0, "x": 3, "y": 2, "width": 30, "height": 12}],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_source_text_box_cannot_cover_zero_size_visual_anchor(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 41,
+            "y": 84,
+            "width": 22,
+            "height": 8,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
+            {"kind": "face", "x": 50, "y": 88, "width": 0, "height": 0},
+        ],
+        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_line_shaped_optional_protection_fails_closed(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 41,
+            "y": 84,
+            "width": 22,
+            "height": 8,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 41, "y": 84, "width": 22, "height": 8},
+            {"kind": "other_visual", "x": 0, "y": 72, "width": 100, "height": 28},
+            {"kind": "face", "x": 15, "y": 90, "width": 0, "height": 5},
+        ],
+        "translation_regions": [{"index": 0, "x": 68, "y": 2, "width": 30, "height": 12}],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_placement_audit_fails_closed_after_invalid_retry(monkeypatch):
