@@ -636,7 +636,8 @@
             body: JSON.stringify({
               spec: payload.spec || {},
               template_style: payload.template_style || state.template,
-              source_image_url: payload.source_image_url || ""
+              source_image_url: payload.source_image_url || "",
+              source_visual_file: payload.source_visual_file || ""
             })
           });
           if (!response.ok) return false;

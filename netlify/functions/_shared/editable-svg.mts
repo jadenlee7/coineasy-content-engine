@@ -432,7 +432,6 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
-  const replacementBounds: Array<{ left: number; top: number; right: number; bottom: number }> = [];
   const replacementLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
@@ -472,40 +471,14 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      const coverPaddingX = 12;
-      const coverPaddingY = 8;
-      const coverX = x - coverPaddingX;
-      const coverY = y - coverPaddingY;
-      const coverWidth = width + coverPaddingX * 2;
-      const coverHeight = height + coverPaddingY * 2;
-      const replacementBound = {
-        left: coverX,
-        top: coverY,
-        right: coverX + coverWidth,
-        bottom: coverY + coverHeight,
-      };
-      const staysInsideSourceFrame = (
-        replacementBound.left >= frame.x
-        && replacementBound.top >= frame.y
-        && replacementBound.right <= frame.x + frame.width
-        && replacementBound.bottom <= frame.y + frame.height
-      );
-      const overlapsExistingCover = replacementBounds.some((existing) => (
-        replacementBound.left < existing.right
-        && replacementBound.right > existing.left
-        && replacementBound.top < existing.bottom
-        && replacementBound.bottom > existing.top
-      ));
-      if (!staysInsideSourceFrame || overlapsExistingCover) return null;
-      replacementBounds.push(replacementBound);
-      const cover = `<rect id="Source-Text-Cover-${index + 1}" x="${coverX.toFixed(2)}" y="${coverY.toFixed(2)}" width="${coverWidth.toFixed(2)}" height="${coverHeight.toFixed(2)}" rx="8" fill="#100D16"/>`;
-      const translation = `<g id="${regionId}">${cover}${textLayers(
+      const strokeWidth = Math.max(1, fontSize * 0.035);
+      const translation = `<g id="${regionId}">${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-opacity="0.76" stroke-width="${strokeWidth.toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
       return translation;
     })

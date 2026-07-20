@@ -10,6 +10,7 @@ type EditableCardRequest = {
   spec?: unknown;
   template_style?: unknown;
   source_image_url?: unknown;
+  source_visual_file?: unknown;
 };
 
 const CLIENT_ASSETS: Record<EditableClientId, { dark: string; light: string }> = {
@@ -36,8 +37,41 @@ function allowlistedSourceImage(value: unknown): string {
   }
 }
 
-async function fetchImageDataUrl(url: string, maxBytes: number): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+function cleanBaseUrl(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+export function clientScopedSourceVisualFile(
+  value: unknown,
+  clientId: EditableClientId,
+): string {
+  if (typeof value !== "string" || value.length > 512) return "";
+  const escapedClientId = clientId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^${escapedClientId}/news_[0-9]+/source_visual_cleaned\\.jpg$`,
+  ).test(value)
+    ? value
+    : "";
+}
+
+export function needsCleanedSquidVisual(
+  clientId: EditableClientId,
+  templateStyle: EditableTemplateStyle,
+  spec: Record<string, unknown>,
+): boolean {
+  return clientId === "squid"
+    && templateStyle === "remix"
+    && spec.source_text_visible === true
+    && Array.isArray(spec.translation_regions)
+    && spec.translation_regions.length > 0;
+}
+
+async function fetchImageDataUrl(
+  url: string,
+  maxBytes: number,
+  headers?: HeadersInit,
+): Promise<string> {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(12_000) });
   if (!response.ok) throw new Error("image_fetch_failed");
   const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
   if (!/^image\/(?:png|jpeg|webp|svg\+xml)$/.test(contentType)) throw new Error("unsupported_image_type");
@@ -63,6 +97,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!body.spec || typeof body.spec !== "object" || Array.isArray(body.spec)) {
     return jsonError("invalid_spec", 400);
   }
+  const spec = body.spec as Record<string, unknown>;
   const allowedStyles = new Set<EditableTemplateStyle>(["remix", "classic", "editorial", "signal"]);
   const templateStyle = typeof body.template_style === "string" && allowedStyles.has(body.template_style as EditableTemplateStyle)
     ? body.template_style as EditableTemplateStyle
@@ -71,6 +106,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const assetPaths = CLIENT_ASSETS[clientId];
   const siteOrigin = new URL(context.site.url).origin;
   const sourceImageUrl = allowlistedSourceImage(body.source_image_url);
+  const sourceVisualFile = clientScopedSourceVisualFile(body.source_visual_file, clientId);
+  const cleanedSourceRequired = needsCleanedSquidVisual(clientId, templateStyle, spec);
+  if (typeof body.source_visual_file === "string" && body.source_visual_file && !sourceVisualFile) {
+    return jsonError("invalid_source_visual_file", 400);
+  }
+  if (cleanedSourceRequired && !sourceVisualFile) {
+    return jsonError("cleaned_source_required", 422);
+  }
   const assets: EditableCardAssets = {};
   const assetRequests: Array<Promise<void>> = [
     fetchImageDataUrl(new URL(assetPaths.dark, siteOrigin).toString(), 512_000)
@@ -80,7 +123,23 @@ export default async (req: Request, context: Context): Promise<Response> => {
       .then((value) => { assets.logoLight = value; })
       .catch(() => undefined),
   ];
-  if (templateStyle === "remix" && sourceImageUrl) {
+  if (cleanedSourceRequired) {
+    const apiSecret = Netlify.env.get("API_SECRET");
+    if (!apiSecret) return jsonError("server_not_configured", 503);
+    const railwayUrl = cleanBaseUrl(
+      Netlify.env.get("RAILWAY_API_URL")
+        || "https://coineasy-content-engine-production.up.railway.app",
+    );
+    const generatedSourceUrl = `${railwayUrl}/files/${sourceVisualFile
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`;
+    assetRequests.push(
+      fetchImageDataUrl(generatedSourceUrl, 8_000_000, { "X-API-Key": apiSecret })
+        .then((value) => { assets.sourceImage = value; })
+        .catch(() => undefined),
+    );
+  } else if (templateStyle === "remix" && sourceImageUrl) {
     assetRequests.push(
       fetchImageDataUrl(sourceImageUrl, 4_000_000)
         .then((value) => { assets.sourceImage = value; })
@@ -89,7 +148,11 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   await Promise.all(assetRequests);
 
-  const svg = buildEditableSvg(clientId, templateStyle, body.spec, assets);
+  if (cleanedSourceRequired && !assets.sourceImage) {
+    return jsonError("cleaned_source_unavailable", 502);
+  }
+
+  const svg = buildEditableSvg(clientId, templateStyle, spec, assets);
   const filename = `${clientId}-${templateStyle}-figma-editable.svg`;
   return new Response(svg, {
     status: 200,

@@ -45,7 +45,6 @@
     min-width: 1px;
     min-height: 1px;
     overflow: visible;
-    isolation: isolate;
     color: var(--region-text);
     text-align: var(--region-align);
     font-family: var(--region-font);
@@ -57,22 +56,16 @@
     overflow-wrap: anywhere;
     white-space: pre;
   }
-  .translation-region::before {
-    content: '';
-    position: absolute;
-    z-index: 0;
-    inset: -8px -12px;
-    border-radius: 8px;
-    background: #100D16;
-  }
   .translation-region > span {
     position: relative;
     display: block;
-    z-index: 1;
     width: max-content;
     max-width: 100%;
-    /* Keep the calibrated Korean baseline while the opaque panel removes the
-       original source lettering underneath. */
+    /* The source image has already had the original glyphs removed. Keep the
+       Korean layer transparent and use only a modest glyph outline/shadow. */
+    -webkit-text-stroke: 1px rgba(16, 13, 22, .76);
+    paint-order: stroke fill;
+    text-shadow: 0 2px 4px rgba(16, 13, 22, .48);
     transform: translateY(0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
   }
@@ -135,15 +128,11 @@
     }
     if (doesNotFit()) anyRegionFailed = true;
 
-    // The fully opaque source-text cover expands by the same fixed padding in
-    // PNG and SVG. Both formats fail closed for identical geometry.
-    const coverPaddingX = 12;
-    const coverPaddingY = 8;
     const replacementBound = {
-      left: region.offsetLeft - coverPaddingX,
-      top: region.offsetTop - coverPaddingY,
-      right: region.offsetLeft + region.offsetWidth + coverPaddingX,
-      bottom: region.offsetTop + region.offsetHeight + coverPaddingY,
+      left: region.offsetLeft,
+      top: region.offsetTop,
+      right: region.offsetLeft + region.offsetWidth,
+      bottom: region.offsetTop + region.offsetHeight,
     };
     const staysInsideSourceFrame = sourceFrame
       && replacementBound.left >= 0
