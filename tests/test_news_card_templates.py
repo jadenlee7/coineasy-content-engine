@@ -31,14 +31,27 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "translation-region::after" not in override_html
     assert "--region-tint" not in override_html
     assert 'class="translation-region"' in override_html
+    assert 'class="source-text-patch"' not in override_html
+    assert 'class="source-clean-patch-image"' not in override_html
+    assert "sample_x" not in override_html
+    assert "sample_y" not in override_html
     assert "subtitle-scrim" not in override_html
     assert "translation-footer" not in override_html
     assert "source_crop_bottom" not in override_html
-    assert "filter: blur" not in override_html
-    assert "-webkit-text-stroke: 2px" in override_html
+    assert "filter:" not in override_html
+    assert "feGaussianBlur" not in override_html
+    assert "box-shadow" not in override_html
+    assert "-webkit-text-stroke: var(--region-cover-stroke) #100D16" in override_html
+    assert "paint-order: stroke fill" in override_html
+    assert "--region-cover-stroke" in override_html
     assert "text-shadow:" not in override_html
+    translation_css = override_html.split(".translation-region {", 1)[1].split("}", 1)[0]
+    translation_text_css = override_html.split(".translation-region > span {", 1)[1].split("}", 1)[0]
+    assert "background" not in translation_css + translation_text_css
+    assert "border" not in translation_css + translation_text_css
     assert "overflow: hidden" in override_html
-    assert "renderedLineCount > 2" in override_html
+    assert "data-source-line-count" in override_html
+    assert "renderedLineCount > allowedLineCount" in override_html
     assert "anyRegionFailed" in override_html
     assert "for (const region of translationRegions) region.hidden = true" in override_html
     assert ".28em" not in override_html
@@ -103,11 +116,16 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
             "source_logo_visible": True,
             "source_text_visible": True,
             "translation_regions": [{
+                "source_text": "Use XRP anywhere",
                 "text": "어디서나 XRP를 사용하세요",
                 "x": 8,
                 "y": 12,
                 "width": 52,
                 "height": 16,
+                "source_x": 8,
+                "source_y": 12,
+                "source_width": 52,
+                "source_height": 16,
                 "align": "left",
                 "font_role": "display",
                 "font_size": 6,
@@ -122,6 +140,8 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
     assert captured["slots"]["source_logo_visible"] is True
     assert captured["slots"]["source_text_visible"] is True
     assert captured["slots"]["translation_regions"][0]["text"] == "어디서나 XRP를 사용하세요"
+    assert captured["slots"]["translation_regions"][0]["source_y"] == 12.0
+    assert "sample_y" not in captured["slots"]["translation_regions"][0]
     assert captured["slots"]["source_crop_bottom"] == 100.0
     assert captured["slots"]["source_image_width"] == 1080
     assert captured["slots"]["source_image_height"] == 1080

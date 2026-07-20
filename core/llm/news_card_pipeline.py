@@ -53,9 +53,9 @@ Keep product names, token symbols, handles, URLs, and protected terms unchanged.
 Preserve the original humor, claim strength, and short cadence. Do not add facts.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
-VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual placement QA for transparent Korean subtitles on official Squid creatives.
-Inspect the attached image composition. Existing image pixels are never removed, so Korean subtitles must sit only in genuinely empty negative space.
-Map every protected visual first, then place the supplied Korean subtitles without covering any original lettering, logo, character, face, limb, product, product UI, or token icon.
+VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual replacement QA for Korean localization of official Squid creatives.
+Inspect the attached image composition and precisely map the visible source-language phrase boxes. Korean will be rendered directly in each exact phrase area with an opaque subtitle outline that visually covers the original lettering.
+Confirm only geometry that you can locate confidently. Never move the Korean to a different part of the creative.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 
@@ -233,13 +233,13 @@ def _build_user_prompt(
 - Detect only meaningful marketing/editorial copy that a Korean reader should read. A logo, wordmark, handle, URL, token symbol, product name, decorative letters, or text inside product UI alone does NOT count.
 - A short natural-language punchline still counts. Translate single-word slang, reaction text, and meme captions such as "chillin'" when they are visibly printed in the creative. Never infer image text from the post caption.
 - If there is no meaningful translatable copy, set source_text_visible=false and translation_regions=[]. Do not invent a headline, badge, footer, logo, caption, or Korean angle on the image.
-- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean.
-- source_text must transcribe the visible source phrase exactly, including its line breaks. x/y/width/height must tightly cover that ORIGINAL source phrase and its outline or shadow. These coordinates are a source-detection box, not the final Korean subtitle placement. A separate image-aware safety pass chooses the Korean target box.
+- If meaningful copy exists, set source_text_visible=true and return 1-4 translation_regions. Translate only the visible copy into concise, natural Korean. Preserve the original claim strength, humor, capitalization intent, line hierarchy, product names, handles, numbers, and token symbols. Keep a 1-2 line source at the same line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width and retain a short prominent Latin keyword when it is part of the visual rhythm and remains natural in Korean. For a one-word reaction or meme caption, prefer a 2-5 syllable Korean expression instead of expanding it into an explanatory sentence.
+- source_text must transcribe the visible source phrase exactly, including its line breaks. x/y/width/height must tightly cover that ORIGINAL source phrase including its outline and shadow. These coordinates are both the removal box and the final Korean text area. Do not move the Korean translation to another part of the banner.
 - Every translation_regions[].text containing meaningful English copy must contain Korean Hangul. Never copy the original English sentence back into text. English may remain only for protected product names, handles, URLs, numbers, token symbols, or a short keyword repeated in the source visual rhythm, inside an otherwise Korean translation.
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Keep translation text to at most 2 lines.
-- After this response, a separate visual safety audit preserves each source-detection box as protected, maps the remaining logo, character, product, and UI areas, and moves Korean into a clear target box of at least 24% x 12% with a 3% safety gap.
-- The renderer preserves the full source crop and places audited Korean in a nearby clear area inside the original banner without covering source lettering. The subtitle background stays fully transparent with only a thin readability outline. Never request or imply a separate footer, Squid-colored caption area, gradient, solid caption box, blurred patch, thick text outline, panel, or chip.
-- If the safety audit cannot place every translation, it removes every Korean overlay and preserves the official creative unchanged.
+- After this response, a separate visual QA pass tightens the exact source-phrase geometry before rendering.
+- The renderer places concise Korean directly in the same x/y/width/height area. Its opaque dark outline is shaped only around the Korean glyphs so it covers the original lettering without a rectangle, blur, cloned texture, separate footer, Squid-colored caption area, gradient, panel, or chip.
+- If the QA pass cannot confidently locate every source phrase or the Korean cannot fit the same line count and area, it removes every localization layer and preserves the official creative unchanged.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
@@ -421,6 +421,7 @@ Source caption context (facts only):
 Translate every natural-language phrase below into brief, playful Korean suitable for the same banner position.
 - Preserve the punchline and line hierarchy.
 - Keep a 1-2 line source at the same non-empty line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width as source_text.
+- If source_text is one short reaction or meme word, use a concise 2-5 syllable Korean expression instead of an explanatory phrase.
 - When the same short Latin keyword leads multiple source_text lines, keep that keyword unchanged at the start of each corresponding Korean line.
 - Keep protected terms, product names, token symbols, handles, URLs, and numbers unchanged.
 - Each translated text must contain at least one Korean Hangul syllable.
@@ -525,76 +526,6 @@ def _strict_percent_box(
     return numbers
 
 
-def _strict_protected_pixel_box_as_percent(
-    value: object,
-    *,
-    image_width: int,
-    image_height: int,
-) -> Optional[dict[str, float]]:
-    """Convert an unmistakable in-bounds pixel protection box to percentages."""
-    if not isinstance(value, dict) or image_width <= 100 or image_height <= 100:
-        return None
-    numbers: dict[str, float] = {}
-    for key in ("x", "y", "width", "height"):
-        raw = value.get(key)
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            return None
-        parsed = float(raw)
-        if not math.isfinite(parsed):
-            return None
-        numbers[key] = parsed
-    right = numbers["x"] + numbers["width"]
-    bottom = numbers["y"] + numbers["height"]
-    # Do not reinterpret a malformed percentage box merely because its far
-    # edge crosses 100. Pixel conversion is allowed only when an original
-    # coordinate or dimension is itself unmistakably pixel-sized.
-    if max(numbers.values()) <= 100.0:
-        return None
-    if (
-        numbers["x"] < 0
-        or numbers["y"] < 0
-        or numbers["width"] <= 0
-        or numbers["height"] <= 0
-        or right > image_width
-        or bottom > image_height
-    ):
-        return None
-    converted = {
-        "x": numbers["x"] / image_width * 100.0,
-        "y": numbers["y"] / image_height * 100.0,
-        "width": numbers["width"] / image_width * 100.0,
-        "height": numbers["height"] / image_height * 100.0,
-    }
-    return _strict_percent_box(
-        converted,
-        minimum_width=0.25,
-        minimum_height=0.25,
-    )
-
-
-def _percent_boxes_overlap(
-    first: dict[str, float],
-    second: dict[str, float],
-    *,
-    margin: float = 0.0,
-) -> bool:
-    """Return whether two image-relative boxes overlap after expanding the second."""
-    return (
-        first["x"] < second["x"] + second["width"] + margin
-        and first["x"] + first["width"] > second["x"] - margin
-        and first["y"] < second["y"] + second["height"] + margin
-        and first["y"] + first["height"] > second["y"] - margin
-    )
-
-
-def _percent_box_contains_point(box: dict[str, float], point: dict[str, float]) -> bool:
-    """Return whether a zero-size protected anchor is covered by a real box."""
-    return (
-        box["x"] <= point["x"] <= box["x"] + box["width"]
-        and box["y"] <= point["y"] <= box["y"] + box["height"]
-    )
-
-
 def _audit_log_payload(audit: dict) -> dict:
     """Return coordinates and kinds only, without source or translated copy."""
     return {
@@ -604,11 +535,6 @@ def _audit_log_payload(audit: dict) -> dict:
             for item in audit.get("protected_regions", [])
             if isinstance(item, dict)
         ][:32] if isinstance(audit.get("protected_regions"), list) else "invalid",
-        "translation_regions": [
-            {key: item.get(key) for key in ("index", "x", "y", "width", "height")}
-            for item in audit.get("translation_regions", [])
-            if isinstance(item, dict)
-        ][:4] if isinstance(audit.get("translation_regions"), list) else "invalid",
     }
 
 
@@ -616,30 +542,22 @@ def _validate_visual_placement_audit(
     raw_regions: list[dict],
     first_pass_source_boxes: list[dict[str, float]],
     audit: dict,
-    source_image_width: int,
-    source_image_height: int,
 ) -> tuple[Optional[list[dict]], str]:
-    """Validate an audit without repairing geometry or weakening overlap rules."""
+    """Validate audited source geometry and keep Korean in each phrase box."""
     if audit.get("safe") is False:
         return None, "unsafe"
     if audit.get("safe") is not True:
         return None, "safe must be a boolean"
 
     raw_protected = audit.get("protected_regions")
-    raw_placements = audit.get("translation_regions")
     if not isinstance(raw_protected, list) or not raw_protected:
         return None, "protected_regions must be a non-empty array"
     if len(raw_protected) > 32:
         return None, "protected_regions exceeds 32 boxes"
-    if not isinstance(raw_placements, list) or len(raw_placements) != len(raw_regions):
-        return None, "translation_regions must contain every subtitle exactly once"
 
-    protected: list[tuple[str, Optional[int], dict[str, float]]] = [
-        ("source_text", index, box)
-        for index, box in enumerate(first_pass_source_boxes)
-    ]
-    degenerate_anchors: list[tuple[str, Optional[int], dict[str, float]]] = []
-    audited_source_counts = {index: 0 for index in range(len(raw_regions))}
+    audited_source_boxes: dict[int, list[dict[str, float]]] = {
+        index: [] for index in range(len(raw_regions))
+    }
     for position, raw in enumerate(raw_protected):
         if not isinstance(raw, dict):
             return None, f"protected_regions[{position}] must be an object"
@@ -650,21 +568,8 @@ def _validate_visual_placement_audit(
         if kind not in _PLACEMENT_PROTECTED_KINDS:
             return None, f"protected_regions[{position}].kind is invalid"
         box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
-        is_redundant_anchor = False
-        if box is None and kind != "source_text":
-            box = _strict_protected_pixel_box_as_percent(
-                raw,
-                image_width=source_image_width,
-                image_height=source_image_height,
-            )
-        if box is None and kind != "source_text":
-            point = _strict_percent_box(raw, minimum_width=0.0, minimum_height=0.0)
-            if point is not None and point["width"] == 0.0 and point["height"] == 0.0:
-                box = point
-                is_redundant_anchor = True
         if box is None:
             return None, f"protected_regions[{position}] must use non-degenerate 0-100 percentage coordinates"
-        source_index: Optional[int] = None
         if kind == "source_text":
             raw_source_index = raw.get("source_index")
             if (
@@ -674,62 +579,66 @@ def _validate_visual_placement_audit(
                 or raw_source_index >= len(raw_regions)
             ):
                 return None, f"protected_regions[{position}].source_index is invalid"
-            source_index = raw_source_index
-            audited_source_counts[source_index] += 1
-        if is_redundant_anchor:
-            degenerate_anchors.append((kind, source_index, box))
-        else:
-            protected.append((kind, source_index, box))
-    if any(count < 1 for count in audited_source_counts.values()):
+            audited_source_boxes[raw_source_index].append(box)
+
+    if any(not boxes for boxes in audited_source_boxes.values()):
         return None, "every subtitle requires an audited source_text box"
-    for kind, source_index, anchor in degenerate_anchors:
-        if not any(
-            _percent_box_contains_point(protected_box, anchor)
-            for protected_kind, _, protected_box in protected
-            if protected_kind not in {"source_text", "other_text"}
-        ):
-            return None, "zero-size protected anchor must be covered by non-text visual geometry"
-        # Retain the covered point so the normal 3% collision margin remains
-        # explicit, even though its containing box is already more protective.
-        protected.append((kind, source_index, anchor))
-
-    placements: dict[int, tuple[dict, dict[str, float]]] = {}
-    for position, raw in enumerate(raw_placements):
-        if not isinstance(raw, dict):
-            return None, f"translation_regions[{position}] must be an object"
-        index = raw.get("index")
-        if isinstance(index, bool) or not isinstance(index, int) or index in placements:
-            return None, f"translation_regions[{position}].index is invalid or duplicated"
-        if index < 0 or index >= len(raw_regions):
-            return None, f"translation_regions[{position}].index is out of range"
-        box = _strict_percent_box(raw, minimum_width=24.0, minimum_height=12.0)
-        if box is None:
-            return None, f"translation_regions[{position}] must use valid 0-100 percentage coordinates"
-        if box["x"] < 2.0 or box["y"] < 2.0 or box["x"] + box["width"] > 98.0 or box["y"] + box["height"] > 98.0:
-            return None, f"translation_regions[{position}] violates the 2% canvas inset"
-        if any(_percent_boxes_overlap(box, protected_box, margin=3.0) for _, _, protected_box in protected):
-            return None, f"translation_regions[{position}] overlaps protected geometry"
-        placements[index] = (raw, box)
-    if set(placements) != set(range(len(raw_regions))):
-        return None, "translation_regions omitted a subtitle index"
-
-    accepted_boxes = [placements[index][1] for index in range(len(raw_regions))]
-    for index, box in enumerate(accepted_boxes):
-        if any(
-            _percent_boxes_overlap(box, other, margin=3.0)
-            for other in accepted_boxes[:index]
-        ):
-            return None, f"translation_regions[{index}] overlaps another subtitle"
 
     audited_regions: list[dict] = []
     for index, original in enumerate(raw_regions):
-        _, box = placements[index]
-        box_right = box["x"] + box["width"]
-        align = "left" if box_right <= 50.0 else "right" if box["x"] >= 50.0 else "center"
+        line_boxes = audited_source_boxes[index]
+        first_box = first_pass_source_boxes[index]
+        first_right = first_box["x"] + first_box["width"]
+        first_bottom = first_box["y"] + first_box["height"]
+        for line_index, line_box in enumerate(line_boxes):
+            line_right = line_box["x"] + line_box["width"]
+            line_bottom = line_box["y"] + line_box["height"]
+            line_intersection = (
+                max(0.0, min(line_right, first_right) - max(line_box["x"], first_box["x"]))
+                * max(0.0, min(line_bottom, first_bottom) - max(line_box["y"], first_box["y"]))
+            )
+            line_area = line_box["width"] * line_box["height"]
+            if line_area <= 0 or line_intersection / line_area < 0.50:
+                return None, f"source_text line {line_index} for subtitle {index} is outside the first pass"
+        left = min(box["x"] for box in line_boxes)
+        top = min(box["y"] for box in line_boxes)
+        right = max(box["x"] + box["width"] for box in line_boxes)
+        bottom = max(box["y"] + box["height"] for box in line_boxes)
+        source_box = {"x": left, "y": top, "width": right - left, "height": bottom - top}
+        intersection_width = max(
+            0.0,
+            min(source_box["x"] + source_box["width"], first_right)
+            - max(source_box["x"], first_box["x"]),
+        )
+        intersection_height = max(
+            0.0,
+            min(source_box["y"] + source_box["height"], first_bottom)
+            - max(source_box["y"], first_box["y"]),
+        )
+        source_area = source_box["width"] * source_box["height"]
+        first_area = first_box["width"] * first_box["height"]
+        intersection_area = intersection_width * intersection_height
+        union_area = source_area + first_area - intersection_area
+        area_ratio = source_area / first_area if first_area > 0 else 0.0
+        iou = intersection_area / union_area if union_area > 0 else 0.0
+        source_center_x = source_box["x"] + source_box["width"] / 2.0
+        source_center_y = source_box["y"] + source_box["height"] / 2.0
+        first_center_x = first_box["x"] + first_box["width"] / 2.0
+        first_center_y = first_box["y"] + first_box["height"] / 2.0
+        if (
+            not 0.45 <= area_ratio <= 1.80
+            or iou < 0.35
+            or abs(source_center_x - first_center_x) > max(2.0, first_box["width"] * 0.20)
+            or abs(source_center_y - first_center_y) > max(2.0, first_box["height"] * 0.25)
+        ):
+            return None, f"source_text geometry for subtitle {index} does not match the first pass"
         audited_regions.append({
             **original,
-            **box,
-            "align": align,
+            **source_box,
+            "source_x": source_box["x"],
+            "source_y": source_box["y"],
+            "source_width": source_box["width"],
+            "source_height": source_box["height"],
         })
     return audited_regions, ""
 
@@ -740,7 +649,7 @@ def _audit_visual_subtitle_placement(
     result: dict,
     source_image: PreparedSourceImage,
 ) -> dict:
-    """Run a fresh image-aware placement pass and atomically accept only safe boxes."""
+    """Tighten source-text geometry and atomically accept in-place replacements."""
     raw_regions = result.get("translation_regions")
     if result.get("source_text_visible") is not True or not isinstance(raw_regions, list) or not raw_regions:
         return result
@@ -769,30 +678,25 @@ def _audit_visual_subtitle_placement(
             "index": index,
             "source_text": source_text.strip(),
             "korean_text": text.strip(),
-            "protected_source_box": source_box,
+            "source_phrase_box": source_box,
         })
 
-    audit_prompt = f"""Audit fresh subtitle placement on the attached official creative.
+    audit_prompt = f"""Audit in-place source-phrase replacement on the attached official creative.
 
-The original pixels remain visible. Korean is an additional subtitle, NOT replacement text. protected_source_box is the first vision pass's detected ORIGINAL lettering box. It is mandatory protected geometry, never a placement suggestion. Scan the remaining image from scratch for a new target.
+Each source_phrase_box is the first-pass location of ORIGINAL lettering. The renderer will place korean_text directly in that exact phrase area with a dark outline shaped only around the Korean glyphs. The outline visually covers the original lettering without a box or blur. Korean must not be moved elsewhere.
 
 Subtitles:
 {json.dumps(inputs, ensure_ascii=False)}
 
 Rules:
-- Every x, y, width, and height in both protected_regions and translation_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates. Ensure x + width <= 100 and y + height <= 100.
+- Every coordinate in protected_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates.
 - Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
-- First map one tight protected_regions box per contiguous source-language phrase or visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes.
+- Map one tight protected_regions box per contiguous source-language phrase or important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
-- Then find genuinely blank or low-detail negative space for every Korean subtitle. Prefer a uniform left or right background away from the central subject.
-- For a large central subject, inspect the thin top edge first: top-right (x=68,y=2,w=30,h=12), then top-left (x=2,y=2,w=30,h=12). These are especially useful for one-line captions, but use one only when its actual pixels are empty.
-- Then inspect these common target shapes and adjust only when needed: left-middle (x=3,y=34,w=24,h=20), right-middle (x=73,y=34,w=24,h=20), top-center (x=30,y=3,w=40,h=14), left-upper (x=3,y=16,w=24,h=16), right-upper (x=73,y=16,w=24,h=16).
-- A translation box must be at least 24% wide and 12% high, fit at most 2 lines, stay at least 2% inside every image edge, and keep at least a 3% gap from every protected box and protected_source_box.
-- Translation boxes must keep at least a 3% gap from one another.
-- Never place Korean over the source phrase it translates. This would show English and Korean on top of each other.
-- Never use a lower caption band merely because the original English is there. Never cover a logo, character, product, product UI, or icon.
-- Preserve every subtitle index exactly once. Do not translate or rewrite korean_text.
-- If the image has no safe negative-space box for every subtitle, return safe=false and empty translation_regions. Preserving the original creative unchanged is required.
+- Tighten each source_text box to the actual visible glyphs including outline and shadow. It must materially overlap the corresponding first-pass source_phrase_box and must not include unrelated copy.
+- Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
+- Never propose a blur, cloned patch, generated fill, solid rectangle, gradient, scrim, caption panel, or separate footer.
+- If any source phrase cannot be located confidently or Korean cannot fit its same area, return safe=false. Preserving the original creative unchanged is required.
 
 Return exactly:
 {{
@@ -800,13 +704,10 @@ Return exactly:
   "protected_regions": [
     {{"kind":"source_text","source_index":0,"x":35,"y":80,"width":30,"height":10}},
     {{"kind":"other_visual","x":35,"y":25,"width":30,"height":40}}
-  ],
-  "translation_regions": [
-    {{"index":0,"x":68,"y":2,"width":30,"height":12}}
   ]
 }}
 or:
-{{"safe":false,"protected_regions":[],"translation_regions":[]}}
+{{"safe":false,"protected_regions":[]}}
 """
 
     try:
@@ -841,8 +742,6 @@ or:
         raw_regions,
         first_pass_source_boxes,
         audit,
-        source_image.width,
-        source_image.height,
     )
 
     if audited_regions is None and rejection != "unsafe":
@@ -855,7 +754,7 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
 - Allowed protected kinds are exactly: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual.
 - Use other_visual, never other, when an object is ambiguous.
 - Return safe=false if you cannot satisfy the schema and every clearance rule.
-- If a middle target overlaps a large central subject, do not merely mirror it to the other middle side. Re-scan the thin top edge, especially top-right (x=68,y=2,w=30,h=12), and use it only if those pixels are genuinely empty.
+- Re-scan each source phrase and return tight percentage geometry around its actual visible glyphs, outline, and shadow.
 
 {audit_prompt}"""
         try:
@@ -892,8 +791,6 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
                 raw_regions,
                 first_pass_source_boxes,
                 corrected_audit,
-                source_image.width,
-                source_image.height,
             )
         except Exception as exc:
             print(f"[squid] placement audit correction failed safely: {type(exc).__name__}")
@@ -913,6 +810,8 @@ def _normalize_visual_localization(
     result: dict,
     client_id: str,
     has_source_image: bool,
+    source_image_width: int = 1080,
+    source_image_height: int = 1080,
 ) -> dict:
     """Keep Squid visual translation regions bounded and renderer-safe."""
     enabled = (
@@ -936,36 +835,78 @@ def _normalize_visual_localization(
             if not isinstance(text, str) or not text.strip():
                 invalid_regions = True
                 break
-            if len([line for line in text.splitlines() if line.strip()]) > 2:
+            source_text = raw.get("source_text")
+            if not isinstance(source_text, str) or not source_text.strip():
+                invalid_regions = True
+                break
+            source_text = source_text.strip()
+            source_lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+            translation_lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if (
+                not source_lines
+                or not translation_lines
+                or len(translation_lines) > 2
+                or (len(source_lines) <= 2 and len(translation_lines) != len(source_lines))
+            ):
                 invalid_regions = True
                 break
 
-            raw_x = max(0.0, min(99.0, _number(raw.get("x"), 8.0)))
-            raw_y = max(0.0, min(99.0, _number(raw.get("y"), 8.0)))
-            font_size = max(2.0, min(12.0, _number(raw.get("font_size"), 5.2)))
-            raw_width = max(1.0, min(100.0 - raw_x, _number(raw.get("width"), 84.0)))
-            raw_height = max(1.0, min(100.0 - raw_y, _number(raw.get("height"), 20.0)))
-            if raw_width < 24.0 or raw_height < 12.0:
+            target_box = _strict_percent_box(raw, minimum_width=6.0, minimum_height=3.0)
+            source_box = _strict_percent_box({
+                "x": raw.get("source_x"),
+                "y": raw.get("source_y"),
+                "width": raw.get("source_width"),
+                "height": raw.get("source_height"),
+            }, minimum_width=6.0, minimum_height=3.0)
+            if target_box is None or source_box is None:
                 invalid_regions = True
                 break
+            if any(abs(target_box[key] - source_box[key]) > 0.01 for key in ("x", "y", "width", "height")):
+                invalid_regions = True
+                break
+
+            raw_x = target_box["x"]
+            raw_y = target_box["y"]
+            font_size = max(2.8, min(12.0, _number(raw.get("font_size"), 5.2)))
+            raw_width = target_box["width"]
+            raw_height = target_box["height"]
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
             scale_x = 1.0
-            source_text = raw.get("source_text")
-            if isinstance(source_text, str) and source_text.strip():
-                source_text = source_text.strip()
-                translation_units = _text_width_units(text.strip())
-                if translation_units > 0:
-                    scale_x = max(0.85, min(1.35, _text_width_units(source_text) / translation_units))
+            translation_units = _text_width_units(text.strip())
+            if translation_units > 0:
+                estimated_width = max(0.1, translation_units * font_size * 0.60)
+                scale_x = max(0.9, min(1.35, raw_width * 0.96 / estimated_width))
+
+            # Match the renderer's 2%-of-image-width minimum font and reject
+            # regions that could still disappear after its deterministic shrink.
+            minimum_css_font_percent = 2.0
+            widest_line_units = max((_text_width_units(line) for line in translation_lines), default=0.0)
+            minimum_rendered_width = widest_line_units * minimum_css_font_percent * 1.05 * scale_x
+            source_ratio = source_image_width / max(1, source_image_height)
+            minimum_rendered_height = (
+                len(translation_lines) * minimum_css_font_percent * 1.02 * source_ratio
+            )
+            if (
+                minimum_rendered_width > raw_width * 0.98
+                or minimum_rendered_height > raw_height * 0.98
+            ):
+                invalid_regions = True
+                break
 
             font_role = raw.get("font_role") if raw.get("font_role") in _REGION_FONT_ROLES else "display"
             text_color = raw.get("text_color")
 
             candidate = {
+                "source_text": source_text[:240],
                 "text": text.strip()[:240],
                 "x": round(raw_x, 2),
                 "y": round(raw_y, 2),
                 "width": round(raw_width, 2),
                 "height": round(raw_height, 2),
+                "source_x": round(source_box["x"], 2),
+                "source_y": round(source_box["y"], 2),
+                "source_width": round(source_box["width"], 2),
+                "source_height": round(source_box["height"], 2),
                 "align": align,
                 "font_role": font_role,
                 "font_size": round(font_size, 2),
@@ -1050,6 +991,8 @@ def generate_news_card_spec(
             result,
             client_id,
             source_image is not None,
+            source_image.width if source_image is not None else 1080,
+            source_image.height if source_image is not None else 1080,
         )
         result = _stamp_visual_localization_status(
             result,
@@ -1142,6 +1085,8 @@ def generate_news_card_spec(
         result,
         client_id,
         source_image is not None,
+        source_image.width if source_image is not None else 1080,
+        source_image.height if source_image is not None else 1080,
     )
     result = _stamp_visual_localization_status(
         result,
