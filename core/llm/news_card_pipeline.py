@@ -585,8 +585,9 @@ Subtitles:
 
 Rules:
 - First map one tight protected_regions box per contiguous source-language phrase or visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes.
-- protected_regions must include exactly one kind=source_text box for each subtitle index, marked with that exact source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
+- protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Then find genuinely blank or low-detail negative space for every Korean subtitle. Prefer a uniform left or right background away from the central subject.
+- Inspect these common target shapes first, then adjust only when needed: left-middle (x=3,y=34,w=24,h=20), right-middle (x=73,y=34,w=24,h=20), top-center (x=30,y=3,w=40,h=14), left-upper (x=3,y=16,w=24,h=16), right-upper (x=73,y=16,w=24,h=16). Use one only when its actual pixels satisfy every safety rule.
 - A translation box must be at least 24% wide and 12% high, fit at most 2 lines, stay at least 2% inside every image edge, and keep at least a 3% gap from every protected box and protected_source_box.
 - Translation boxes must keep at least a 3% gap from one another.
 - Never place Korean over the source phrase it translates. This would show English and Korean on top of each other.
@@ -635,6 +636,21 @@ or:
         print(f"[squid] placement audit failed safely: {type(exc).__name__}")
         return _clear_visual_localization(result)
 
+    audit_log = {
+        "safe": audit.get("safe"),
+        "protected_regions": [
+            {key: item.get(key) for key in ("kind", "source_index", "x", "y", "width", "height")}
+            for item in audit.get("protected_regions", [])
+            if isinstance(item, dict)
+        ][:32] if isinstance(audit.get("protected_regions"), list) else "invalid",
+        "translation_regions": [
+            {key: item.get(key) for key in ("index", "x", "y", "width", "height")}
+            for item in audit.get("translation_regions", [])
+            if isinstance(item, dict)
+        ][:4] if isinstance(audit.get("translation_regions"), list) else "invalid",
+    }
+    print(f"[squid] placement audit proposal: {json.dumps(audit_log, ensure_ascii=True)}")
+
     if audit.get("safe") is not True:
         return _clear_visual_localization(result)
 
@@ -673,7 +689,7 @@ or:
             source_index = raw_source_index
             audited_source_counts[source_index] += 1
         protected.append((raw["kind"], source_index, box))
-    if any(count != 1 for count in audited_source_counts.values()):
+    if any(count < 1 for count in audited_source_counts.values()):
         return _clear_visual_localization(result)
 
     placements: dict[int, tuple[dict, dict[str, float]]] = {}
