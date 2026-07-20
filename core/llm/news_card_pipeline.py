@@ -540,6 +540,14 @@ def _percent_boxes_overlap(
     )
 
 
+def _percent_box_contains_point(box: dict[str, float], point: dict[str, float]) -> bool:
+    """Return whether a zero-size protected anchor is covered by a real box."""
+    return (
+        box["x"] <= point["x"] <= box["x"] + box["width"]
+        and box["y"] <= point["y"] <= box["y"] + box["height"]
+    )
+
+
 def _audit_log_payload(audit: dict) -> dict:
     """Return coordinates and kinds only, without source or translated copy."""
     return {
@@ -581,6 +589,7 @@ def _validate_visual_placement_audit(
         ("source_text", index, box)
         for index, box in enumerate(first_pass_source_boxes)
     ]
+    degenerate_anchors: list[tuple[str, Optional[int], dict[str, float]]] = []
     audited_source_counts = {index: 0 for index in range(len(raw_regions))}
     for position, raw in enumerate(raw_protected):
         if not isinstance(raw, dict):
@@ -592,8 +601,14 @@ def _validate_visual_placement_audit(
         if kind not in _PLACEMENT_PROTECTED_KINDS:
             return None, f"protected_regions[{position}].kind is invalid"
         box = _strict_percent_box(raw, minimum_width=0.25, minimum_height=0.25)
+        is_redundant_anchor = False
+        if box is None and kind != "source_text":
+            point = _strict_percent_box(raw, minimum_width=0.0, minimum_height=0.0)
+            if point is not None and point["width"] == 0.0 and point["height"] == 0.0:
+                box = point
+                is_redundant_anchor = True
         if box is None:
-            return None, f"protected_regions[{position}] must use 0-100 percentage coordinates"
+            return None, f"protected_regions[{position}] must use non-degenerate 0-100 percentage coordinates"
         source_index: Optional[int] = None
         if kind == "source_text":
             raw_source_index = raw.get("source_index")
@@ -606,9 +621,22 @@ def _validate_visual_placement_audit(
                 return None, f"protected_regions[{position}].source_index is invalid"
             source_index = raw_source_index
             audited_source_counts[source_index] += 1
-        protected.append((kind, source_index, box))
+        if is_redundant_anchor:
+            degenerate_anchors.append((kind, source_index, box))
+        else:
+            protected.append((kind, source_index, box))
     if any(count < 1 for count in audited_source_counts.values()):
         return None, "every subtitle requires an audited source_text box"
+    for kind, source_index, anchor in degenerate_anchors:
+        if not any(
+            _percent_box_contains_point(protected_box, anchor)
+            for protected_kind, _, protected_box in protected
+            if protected_kind not in {"source_text", "other_text"}
+        ):
+            return None, "zero-size protected anchor must be covered by non-text visual geometry"
+        # Retain the covered point so the normal 3% collision margin remains
+        # explicit, even though its containing box is already more protective.
+        protected.append((kind, source_index, anchor))
 
     placements: dict[int, tuple[dict, dict[str, float]]] = {}
     for position, raw in enumerate(raw_placements):
