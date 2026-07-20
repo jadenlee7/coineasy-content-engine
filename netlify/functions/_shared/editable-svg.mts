@@ -438,7 +438,10 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const y = frame.y + frame.height * region.y / 100;
       const width = frame.width * region.width / 100;
       const height = frame.height * region.height / 100;
-      let fontSize = frame.width * region.fontSize / 100 * 0.72;
+      // The browser template emits the initial CSS size at two decimals. Start
+      // from that same value so its 0.92 fit loop and this SVG fit loop share
+      // identical font-size math.
+      let fontSize = Number((frame.width * region.fontSize / 100 * 0.72).toFixed(2));
       const minFontSize = Math.max(14, frame.width * 0.02);
       let lineHeight = fontSize * 1.02;
       const paragraphs = region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean);
@@ -462,23 +465,23 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       if (!fits) return null;
       const blockHeight = lines.length * lineHeight;
       // SVG uses an explicit text baseline rather than the browser's flex line
-      // box. Its centered baseline matches the calibrated browser placement.
+      // box. Match the browser span's +0.22em transparent-caption offset.
       const firstBaseline = Number((
         y + Math.max(fontSize, (height - blockHeight) / 2 + fontSize)
+        + fontSize * 0.22
       ).toFixed(2));
       const textX = region.align === "center" ? x + width / 2 : region.align === "right" ? x + width : x;
       const textAnchor = region.align === "center" ? "middle" : region.align === "right" ? "end" : "start";
       const font = region.fontRole === "display" ? brand.displayFont : brand.font;
       const regionId = `Korean-Translation-Region-${index + 1}`;
       const horizontalTransform = `translate(${textX.toFixed(2)} 0) scale(${region.scaleX.toFixed(2)} 1) translate(${(-textX).toFixed(2)} 0)`;
-      const strokeWidth = Math.max(1, fontSize * 0.035);
       const translation = `<g id="${regionId}">${textLayers(
         `${regionId}-Text`,
         lines,
         textX,
         firstBaseline,
         lineHeight,
-        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="#FFFFFF" stroke="#100D16" stroke-opacity="0.76" stroke-width="${strokeWidth.toFixed(2)}" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
+        `transform="${horizontalTransform}" text-anchor="${textAnchor}" fill="${region.textColor}" stroke="#100D16" stroke-opacity="0.76" stroke-width="1" stroke-linejoin="round" paint-order="stroke fill" font-family="${escapeXml(font)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${fontSize.toFixed(2)}" font-weight="800" letter-spacing="-${(fontSize * 0.035).toFixed(2)}"`,
       )}</g>`;
       return translation;
     })

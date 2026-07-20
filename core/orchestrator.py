@@ -17,8 +17,12 @@ USAGE:
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +33,7 @@ from core.llm.edu_carousel_pipeline import generate_carousel_spec
 from core.llm.news_card_pipeline import generate_news_card_spec
 from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
 from core.sources.source_image import SourceImageError, fetch_source_image
+from core.sources.source_text_cleanup import SourceTextCleanupError, clean_source_text
 
 
 # ────────────────────────────────────────────────────
@@ -52,6 +57,25 @@ NEWS_CARD_TEMPLATES = {
     "editorial": "news/news_editorial_card.html",
     "signal": "news/news_signal_card.html",
 }
+
+# OpenCV cleanup is CPU-bound. A dedicated single-worker executor keeps it off
+# the event loop, bounds Railway CPU/memory, and stays safe across test/worker
+# event loops (unlike a module-global asyncio.Semaphore).
+_SOURCE_TEXT_CLEANUP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="source-text-cleanup",
+)
+
+
+def _decode_base64_strict(value: str) -> bytes:
+    return base64.b64decode(value, validate=True)
+
+
+async def _unlink_best_effort(path: Path) -> None:
+    try:
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+    except OSError:
+        pass
 
 
 # ────────────────────────────────────────────────────
@@ -123,6 +147,7 @@ class NewsCardResult:
     template_style: str
     requested_template_style: str
     source_image_used: bool
+    source_visual_path: Optional[str]
     manifest_path: str
     duration_ms: int
     llm_cost_usd: Optional[float] = None
@@ -374,12 +399,70 @@ async def generate_news_card(
         spec["source_image_width"] = source_image.width
         spec["source_image_height"] = source_image.height
 
+    # Source copy is baked into the raster. For Squid, remove the audited
+    # lettering before either renderer sees the image. A cleanup failure is
+    # atomic: preserve the official source and hide every Korean overlay.
+    render_source_image = source_image
+    source_visual_path: Optional[Path] = None
+    if (
+        client_id == "squid"
+        and actual_template_style == "remix"
+        and source_image is not None
+        and spec.get("source_text_visible") is True
+        and isinstance(spec.get("translation_regions"), list)
+        and spec["translation_regions"]
+    ):
+        candidate_path = output_dir / "source_visual_cleaned.jpg"
+        temporary_path = output_dir / (
+            f".source_visual_cleaned.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            cleanup = await loop.run_in_executor(
+                _SOURCE_TEXT_CLEANUP_EXECUTOR,
+                clean_source_text,
+                source_image,
+                spec["translation_regions"],
+            )
+            cleaned_bytes = await asyncio.to_thread(
+                _decode_base64_strict,
+                cleanup.image.base64_data,
+            )
+            await asyncio.to_thread(temporary_path.write_bytes, cleaned_bytes)
+            await asyncio.to_thread(temporary_path.replace, candidate_path)
+            # Commit renderer/result state only after the cleaned asset exists.
+            render_source_image = cleanup.image
+            source_visual_path = candidate_path
+            print(
+                f"[{client_id}] Source lettering removed: "
+                f"{cleanup.masked_pixels} pixels"
+            )
+        except SourceTextCleanupError as exc:
+            render_source_image = source_image
+            source_visual_path = None
+            await _unlink_best_effort(temporary_path)
+            print(f"[{client_id}] ⚠ Source lettering cleanup failed safely: {exc}")
+            spec["source_text_visible"] = False
+            spec["translation_regions"] = []
+            spec["visual_localization_status"] = "cleanup_failed"
+        except Exception as exc:
+            render_source_image = source_image
+            source_visual_path = None
+            await _unlink_best_effort(temporary_path)
+            print(
+                f"[{client_id}] ⚠ Source lettering cleanup failed safely: "
+                f"{type(exc).__name__}"
+            )
+            spec["source_text_visible"] = False
+            spec["translation_regions"] = []
+            spec["visual_localization_status"] = "cleanup_failed"
+
     # ── Stage 2: Rendering ────────────────────────
     print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
     output_png = output_dir / f"news_card_{actual_template_style}.png"
     render_slots = dict(spec)
-    if source_image is not None:
-        render_slots["source_image_data_url"] = source_image.data_url
+    if render_source_image is not None:
+        render_slots["source_image_data_url"] = render_source_image.data_url
     try:
         await render_png(
             client_id=client_id,
@@ -406,6 +489,7 @@ async def generate_news_card(
         "source_url": source_url,
         "source_image_url": source_image_url,
         "source_image_used": source_image is not None,
+        "source_visual_path": str(source_visual_path) if source_visual_path else None,
         "source_content_preview": source_content[:200],
         "spec": spec,
         "requested_template_style": requested_template_style,
@@ -426,6 +510,7 @@ async def generate_news_card(
         template_style=actual_template_style,
         requested_template_style=requested_template_style,
         source_image_used=source_image is not None,
+        source_visual_path=str(source_visual_path) if source_visual_path else None,
         manifest_path=str(manifest_path),
         duration_ms=duration,
     )

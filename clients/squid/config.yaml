@@ -50,15 +50,15 @@ brand_voice:
       hierarchy and rhythm inside the original banner. If it contains no translatable
       copy, preserve the character and visual untouched. Never add an unrelated headline
       panel, badge, CTA, or duplicate logo. Preserve the full source crop and place a concise
-      Korean translation directly in the exact source-phrase area. First remove the original
-      lettering with a fully opaque #100D16 rounded cover that follows the audited phrase box,
-      then place clear white Korean on that cover. Use only the minimal fixed cover padding;
-      never use transparency, gradient, cloned texture, generated fill, blur, a separate footer,
-      or an unrelated headline panel. If the cover would obscure a logo, character, face,
+      Korean translation directly in the exact source-phrase area. First isolate the original
+      lettering pixels inside the audited phrase box and reconstruct that small area from the
+      surrounding visual, then place clear Korean on a transparent text layer with no panel,
+      rectangle, scrim, tint, gradient, blur patch, separate footer, or unrelated headline panel.
+      If the cleanup would obscure a logo, character, face,
       product UI, token icon, or unrelated text, or Korean cannot fit the same area, preserve
       the official creative untouched. A character, limb, or product already directly behind
       the original lettering may remain the caption substrate only in that existing footprint;
-      fixed padding must not reach a new or ambiguous visual. Keep the source line count and rhythm. Translate a
+      cleanup dilation must not reach a new or ambiguous visual. Keep the source line count and rhythm. Translate a
       one-word reaction into a short 2-5 syllable Korean expression; a repeated Latin keyword
       may remain only when it carries the visual.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."

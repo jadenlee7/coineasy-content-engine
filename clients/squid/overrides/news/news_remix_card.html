@@ -62,10 +62,10 @@
     width: max-content;
     max-width: 100%;
     /* The source image has already had the original glyphs removed. Keep the
-       Korean layer transparent and use only a modest glyph outline/shadow. */
+       Korean layer transparent and use only the same 1px glyph outline as the
+       editable SVG. */
     -webkit-text-stroke: 1px rgba(16, 13, 22, .76);
     paint-order: stroke fill;
-    text-shadow: 0 2px 4px rgba(16, 13, 22, .48);
     transform: translateY(0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
   }
@@ -93,7 +93,7 @@
           --region-size: {{ '%.2f' | format(caption_font_size) }}px;
           --region-scale-x: {{ region.scale_x | default(1) }};
           --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
-          --region-text: #FFFFFF;
+          --region-text: {{ region.text_color | default('#FFFFFF') }};
         "
       ><span>{{ region.text | e }}</span></div>
       {% endfor %}
@@ -139,13 +139,13 @@
       && replacementBound.top >= 0
       && replacementBound.right <= sourceFrame.clientWidth
       && replacementBound.bottom <= sourceFrame.clientHeight;
-    const overlapsExistingCover = replacementBounds.some((existing) => (
+    const overlapsExistingRegion = replacementBounds.some((existing) => (
       replacementBound.left < existing.right
       && replacementBound.right > existing.left
       && replacementBound.top < existing.bottom
       && replacementBound.bottom > existing.top
     ));
-    if (!staysInsideSourceFrame || overlapsExistingCover) anyRegionFailed = true;
+    if (!staysInsideSourceFrame || overlapsExistingRegion) anyRegionFailed = true;
     replacementBounds.push(replacementBound);
   }
   if (anyRegionFailed) {

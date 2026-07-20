@@ -84,10 +84,10 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "prefer a 2-5 syllable Korean expression" in content[1]["text"]
     assert "must contain Korean Hangul" in content[1]["text"]
     assert "Never copy the original English sentence" in content[1]["text"]
-    assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in content[1]["text"]
-    assert "This required cover has opacity 1" in content[1]["text"]
-    assert "Never use blur, cloned texture, generated fill, transparency, gradient" in content[1]["text"]
-    assert "The cover must not overlap any official or partner logo, face, product UI" in content[1]["text"]
+    assert "reconstructs only those pixels from the surrounding visual" in content[1]["text"]
+    assert "transparent background" in content[1]["text"]
+    assert "never add a rectangle, rounded panel, scrim" in content[1]["text"]
+    assert "cleanup dilation must not reach any official or partner logo, face, product UI" in content[1]["text"]
     assert "A character, limb, or product already directly behind the original lettering" in content[1]["text"]
     assert "ambiguous other_visual" in content[1]["text"]
     assert "These coordinates are the source-removal box and the final Korean text area" in content[1]["text"]
@@ -97,10 +97,10 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert calls[1]["system"].startswith("You are the final visual replacement QA")
     assert audit_content[0]["source"]["data"] == "aW1hZ2U="
     assert '"source_phrase_box": {"x": 30.0, "y": 82.0, "width": 40.0, "height": 13.0}' in audit_content[1]["text"]
-    assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in audit_content[1]["text"]
-    assert "Check the required opaque cover clearance" in audit_content[1]["text"]
-    assert "12px horizontal or 8px vertical padding would touch any protected logo" in audit_content[1]["text"]
-    assert "at least 50% of the cover/object intersection" in audit_content[1]["text"]
+    assert "content-aware reconstruct only the lettering/outline pixels" in audit_content[1]["text"]
+    assert "Check the 1-3 source-pixel cleanup dilation" in audit_content[1]["text"]
+    assert "cleanup dilation" in audit_content[1]["text"]
+    assert "at least 50% of the cleanup/object intersection" in audit_content[1]["text"]
     assert "An ambiguous other_visual is never a caption substrate" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
@@ -479,7 +479,7 @@ def test_squid_placement_audit_accepts_percentage_protection_boxes(monkeypatch):
 
 
 @pytest.mark.parametrize("protected_kind", ["logo", "character", "product"])
-def test_squid_placement_audit_rejects_expanded_cover_over_protected_visual(
+def test_squid_placement_audit_rejects_cleanup_dilation_over_protected_visual(
     monkeypatch,
     protected_kind,
 ):
@@ -515,9 +515,8 @@ def test_squid_placement_audit_rejects_expanded_cover_over_protected_visual(
         ],
     })
 
-    # On a 480x320 source fitted to 1080x720, the required 12px horizontal
-    # cover padding is 1.111...% of the source frame. The audited glyph box
-    # ends at x=50, so only the expanded opaque cover reaches this visual.
+    # On a 480px-wide source, the 3px cleanup dilation is 0.625%. The audited
+    # glyph box ends at x=50, so only that small dilation reaches this visual.
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
 
@@ -639,7 +638,7 @@ def test_squid_placement_audit_never_uses_ambiguous_visual_as_caption_substrate(
     assert result["translation_regions"] == []
 
 
-def test_squid_placement_audit_rejects_expanded_cover_outside_source_frame(monkeypatch):
+def test_squid_placement_audit_rejects_cleanup_dilation_outside_source_frame(monkeypatch):
     raw = {
         "source_text_visible": True,
         "translation_regions": [{
@@ -663,13 +662,13 @@ def test_squid_placement_audit_rejects_expanded_cover_outside_source_frame(monke
         }],
     })
 
-    # The glyph box itself is inside the image, but its fixed 12px cover
-    # padding extends beyond the left edge of the fitted source frame.
+    # The glyph box itself is inside the image, but the small cleanup dilation
+    # extends beyond the left edge of the source image.
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
 
 
-def test_squid_placement_audit_rejects_padding_only_cover_collision(monkeypatch):
+def test_squid_placement_audit_allows_separate_boxes_outside_cleanup_dilation(monkeypatch):
     raw = {
         "source_text_visible": True,
         "translation_regions": [
@@ -713,11 +712,10 @@ def test_squid_placement_audit_rejects_padding_only_cover_collision(monkeypatch)
         ],
     })
 
-    # The audited glyph boxes have a 1.5% gap, so neither expanded cover
-    # reaches the other glyph box. Their two 1.111...% horizontal padding
-    # bands still overlap and must be rejected before the renderers disagree.
-    assert result["source_text_visible"] is False
-    assert result["translation_regions"] == []
+    # A 1.5% gap comfortably exceeds the small source-pixel cleanup dilation,
+    # so two independent glyph masks remain safe.
+    assert result["source_text_visible"] is True
+    assert len(result["translation_regions"]) == 2
 
 
 def test_squid_placement_audit_uses_audited_source_text_geometry(monkeypatch):

@@ -13,6 +13,11 @@ type EditableCardRequest = {
   source_visual_file?: unknown;
 };
 
+// Netlify's buffered Functions response limit is 6 MB. A binary image grows by
+// roughly 4/3 when embedded as a base64 data URL, so 3 MB leaves about 2 MB for
+// the SVG document and response metadata.
+export const CLEANED_SOURCE_IMAGE_MAX_BYTES = 3_000_000;
+
 const CLIENT_ASSETS: Record<EditableClientId, { dark: string; light: string }> = {
   yellow: { dark: "/assets/brands/yellow-dark.svg", light: "/assets/brands/yellow-light.svg" },
   origintrail: { dark: "/assets/brands/origintrail-dark.png", light: "/assets/brands/origintrail-light.png" },
@@ -135,7 +140,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       .map(encodeURIComponent)
       .join("/")}`;
     assetRequests.push(
-      fetchImageDataUrl(generatedSourceUrl, 8_000_000, { "X-API-Key": apiSecret })
+      fetchImageDataUrl(generatedSourceUrl, CLEANED_SOURCE_IMAGE_MAX_BYTES, { "X-API-Key": apiSecret })
         .then((value) => { assets.sourceImage = value; })
         .catch(() => undefined),
     );

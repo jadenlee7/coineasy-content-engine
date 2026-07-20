@@ -17,13 +17,18 @@ const SPEC = {
   theme: "dark",
 };
 
-function assertTransparentSquidCaptions(svg: string, regionCount: number): void {
+function assertTransparentSquidCaptions(
+  svg: string,
+  regionCount: number,
+  expectedTextColors: string[] = Array.from({ length: regionCount }, () => "#FFFFFF"),
+): void {
+  assert.equal(expectedTextColors.length, regionCount);
   assert.doesNotMatch(svg, /Source-Text-Cover|Korean-Subtitle-Scrim|fill="#100D16"\/>/);
   for (let index = 1; index <= regionCount; index += 1) {
     assert.match(
       svg,
       new RegExp(
-        `<g id="Korean-Translation-Region-${index}"><text id="Korean-Translation-Region-${index}-Text-Line-1"[^>]+fill="#FFFFFF"[^>]+stroke="#100D16"[^>]+stroke-opacity="0\\.76"[^>]+stroke-width="[0-9.]+"[^>]+paint-order="stroke fill"`,
+        `<g id="Korean-Translation-Region-${index}"><text id="Korean-Translation-Region-${index}-Text-Line-1"[^>]+fill="${expectedTextColors[index - 1]}"[^>]+stroke="#100D16"[^>]+stroke-opacity="0\\.76"[^>]+stroke-width="1"[^>]+paint-order="stroke fill"`,
       ),
     );
   }
@@ -153,9 +158,9 @@ test("keeps explicit Squid translation line breaks as separate editable text lay
   }, {
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
-  assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"[^>]+fill="#FFFFFF"[^>]*font-size="46\.66"[^>]*>stack이 곧 사랑,<\/text>/);
+  assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"[^>]+fill="#000000"[^>]*font-size="46\.66"[^>]*>stack이 곧 사랑,<\/text>/);
   assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-2"[^>]*>stack이 곧 인생\.<\/text>/);
-  assertTransparentSquidCaptions(svg, 1);
+  assertTransparentSquidCaptions(svg, 1, ["#000000"]);
   assert.doesNotMatch(svg, /Source-Text-Replacement|Source-Text-Clean-Patch|clipPath|clip-path|Korean-Subtitle-Scrim|Translation-Footer/);
 });
 
@@ -188,7 +193,7 @@ test("calibrates the editable Squid subtitle for standalone SVG font metrics", (
 
   assert.match(
     svg,
-    /<g id="Korean-Translation-Region-1"><text id="Korean-Translation-Region-1-Text-Line-1" x="540" y="840\.06"[^>]+scale\(1\.35 1\)/,
+    /<g id="Korean-Translation-Region-1"><text id="Korean-Translation-Region-1-Text-Line-1" x="540" y="850\.33"[^>]+scale\(1\.35 1\)/,
   );
   assertTransparentSquidCaptions(svg, 1);
   assert.match(svg, />여유롭게<\/text>/);
@@ -232,11 +237,11 @@ test("keeps every Squid translation background transparent", () => {
       {
         source_text: "Large", text: "크게", x: 56, y: 20, width: 40, height: 20,
         source_x: 56, source_y: 20, source_width: 40, source_height: 20,
-        font_size: 4,
+        font_size: 4, text_color: "#e6fa36",
       },
     ],
   }, { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" });
-  assertTransparentSquidCaptions(svg, 2);
+  assertTransparentSquidCaptions(svg, 2, ["#FFFFFF", "#E6FA36"]);
   assert.doesNotMatch(svg, /<g id="Korean-Translation-Region-[^>]+><rect/);
 });
 
