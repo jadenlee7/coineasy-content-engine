@@ -88,6 +88,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "This required cover has opacity 1" in content[1]["text"]
     assert "Never use blur, cloned texture, generated fill, transparency, gradient" in content[1]["text"]
     assert "The cover must not overlap any official or partner logo, character, face, limb" in content[1]["text"]
+    assert "A product already directly behind the original lettering" in content[1]["text"]
+    assert "ambiguous other_visual" in content[1]["text"]
     assert "These coordinates are the source-removal box and the final Korean text area" in content[1]["text"]
     assert "Do not move the Korean translation" in content[1]["text"]
     assert "Use one tight region around the actual glyphs" not in content[1]["text"]
@@ -98,6 +100,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically" in audit_content[1]["text"]
     assert "Check the required opaque cover clearance" in audit_content[1]["text"]
     assert "12px horizontal or 8px vertical padding would touch any protected logo" in audit_content[1]["text"]
+    assert "at least 75% of the cover/product intersection" in audit_content[1]["text"]
+    assert "An ambiguous other_visual is never a caption substrate" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
     assert '"protected_regions"' in audit_content[1]["text"]
@@ -474,7 +478,7 @@ def test_squid_placement_audit_accepts_percentage_protection_boxes(monkeypatch):
     assert not any(key.startswith("sample_") for key in result["translation_regions"][0])
 
 
-@pytest.mark.parametrize("protected_kind", ["logo", "character"])
+@pytest.mark.parametrize("protected_kind", ["logo", "character", "product"])
 def test_squid_placement_audit_rejects_expanded_cover_over_protected_visual(
     monkeypatch,
     protected_kind,
@@ -514,6 +518,85 @@ def test_squid_placement_audit_rejects_expanded_cover_over_protected_visual(
     # On a 480x320 source fitted to 1080x720, the required 12px horizontal
     # cover padding is 1.111...% of the source frame. The audited glyph box
     # ends at x=50, so only the expanded opaque cover reaches this visual.
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_placement_audit_allows_product_already_behind_source_caption(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 12,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 30,
+                "y": 82,
+                "width": 40,
+                "height": 12,
+            },
+            {"kind": "character", "x": 8, "y": 8, "width": 78, "height": 72},
+            {"kind": "face", "x": 26, "y": 18, "width": 42, "height": 42},
+            {"kind": "product", "x": 55, "y": 56, "width": 25, "height": 36},
+        ],
+    })
+
+    # This matches the live Squid meme geometry: the product was already
+    # directly beneath the English caption, and fixed padding adds only a
+    # narrow edge around that existing caption footprint.
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"][0]["text"] == "여유롭게"
+
+
+@pytest.mark.parametrize("protected_kind", ["other", "other_visual"])
+def test_squid_placement_audit_never_uses_ambiguous_visual_as_caption_substrate(
+    monkeypatch,
+    protected_kind,
+):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Original phrase",
+            "text": "한국어 자막",
+            "x": 30,
+            "y": 70,
+            "width": 20,
+            "height": 10,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 30,
+                "y": 70,
+                "width": 20,
+                "height": 10,
+            },
+            {
+                "kind": protected_kind,
+                "x": 30,
+                "y": 70,
+                "width": 20,
+                "height": 10,
+            },
+        ],
+    })
+
+    # Even complete overlap with the source phrase cannot make an ambiguous
+    # object eligible for the product-only caption-substrate exception.
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
 

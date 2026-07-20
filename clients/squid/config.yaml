@@ -56,7 +56,9 @@ brand_voice:
       never use transparency, gradient, cloned texture, generated fill, blur, a separate footer,
       or an unrelated headline panel. If the cover would obscure a logo, character, face,
       product UI, token icon, or unrelated text, or Korean cannot fit the same area, preserve
-      the official creative untouched. Keep the source line count and rhythm. Translate a
+      the official creative untouched. A product already directly behind the original lettering
+      may remain the caption substrate; fixed padding must not reach a new or ambiguous visual.
+      Keep the source line count and rhythm. Translate a
       one-word reaction into a short 2-5 syllable Korean expression; a repeated Latin keyword
       may remain only when it carries the visual.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."

@@ -239,7 +239,7 @@ def _build_user_prompt(
 - Choose display for large headline copy and body for supporting copy. font_size is a percentage of the source image width. Keep translation text to at most 2 lines.
 - After this response, a separate visual QA pass tightens the exact source-phrase geometry before rendering.
 - The renderer first hides the complete source phrase with a fully opaque #100D16 rounded cover expanded by 12px horizontally and 8px vertically on the 1080px output, then places concise white Korean directly in the same x/y/width/height area. This required cover has opacity 1. Never use blur, cloned texture, generated fill, transparency, gradient, a separate footer, an unrelated headline panel, or a duplicate caption area.
-- The cover must not overlap any official or partner logo, character, face, limb, product, product UI, token icon, unrelated text, or other important visual. If that clearance is unavailable, preserve the original creative unchanged.
+- The cover must not overlap any official or partner logo, character, face, limb, product UI, token icon, unrelated text, or ambiguous other_visual. A product already directly behind the original lettering may remain the caption substrate, but the fixed padding must not newly intrude into a separate visual. If that clearance is unavailable, preserve the original creative unchanged.
 - If the QA pass cannot confidently locate every source phrase or the Korean cannot fit the same line count and area, it removes every localization layer and preserves the official creative unchanged.
 - Never translate from the source caption into the image. translation_regions may contain only text visibly present in the attached creative."""
         if config.client_id == "squid" and has_source_image
@@ -490,6 +490,8 @@ _PLACEMENT_PROTECTED_KINDS = {
 }
 _SOURCE_TEXT_COVER_PADDING_X_PX = 12.0
 _SOURCE_TEXT_COVER_PADDING_Y_PX = 8.0
+_SOURCE_TEXT_COVER_SUBSTRATE_KINDS = {"product"}
+_SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO = 0.75
 
 
 def _clear_visual_localization(result: dict) -> dict:
@@ -680,13 +682,33 @@ def _validate_visual_placement_audit(
                 continue
             protected_right = protected["x"] + protected["width"]
             protected_bottom = protected["y"] + protected["height"]
-            overlaps_protected = (
-                cover_box["x"] < protected_right
-                and cover_right > protected["x"]
-                and cover_box["y"] < protected_bottom
-                and cover_bottom > protected["y"]
+            cover_overlap_width = max(
+                0.0,
+                min(cover_right, protected_right) - max(cover_box["x"], protected["x"]),
             )
-            if overlaps_protected:
+            cover_overlap_height = max(
+                0.0,
+                min(cover_bottom, protected_bottom) - max(cover_box["y"], protected["y"]),
+            )
+            cover_overlap_area = cover_overlap_width * cover_overlap_height
+            source_overlap_width = max(
+                0.0,
+                min(source_box["x"] + source_box["width"], protected_right)
+                - max(source_box["x"], protected["x"]),
+            )
+            source_overlap_height = max(
+                0.0,
+                min(source_box["y"] + source_box["height"], protected_bottom)
+                - max(source_box["y"], protected["y"]),
+            )
+            source_overlap_area = source_overlap_width * source_overlap_height
+            existing_caption_substrate = (
+                kind in _SOURCE_TEXT_COVER_SUBSTRATE_KINDS
+                and cover_overlap_area > 0
+                and source_overlap_area / cover_overlap_area
+                >= _SOURCE_TEXT_COVER_SUBSTRATE_MIN_RATIO
+            )
+            if cover_overlap_area > 0 and not existing_caption_substrate:
                 return None, f"opaque cover for subtitle {index} overlaps protected {kind}"
         accepted_cover_boxes.append(cover_box)
         audited_regions.append({
@@ -752,7 +774,8 @@ Rules:
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow. It must materially overlap the corresponding first-pass source_phrase_box and must not include unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
-- Check the required opaque cover clearance. Return safe=false if its 12px horizontal or 8px vertical padding would touch any protected logo, character, face, limb, product, product UI, token icon, unrelated text, or other important visual.
+- Check the required opaque cover clearance. Return safe=false if its 12px horizontal or 8px vertical padding would touch any protected logo, character, face, limb, product UI, token icon, unrelated text, or a separate important visual.
+- A product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report that product accurately so deterministic validation can confirm that at least 75% of the cover/product intersection was already inside the original phrase box. If the padding newly reaches a product that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
 - The required source-text cover is the only allowed panel. Never propose transparency, blur, cloned texture, generated fill, gradient, scrim, a second caption panel, or a separate footer.
 - If any source phrase cannot be located confidently, the opaque cover lacks clearance, or Korean cannot fit its same area, return safe=false. Preserving the original creative unchanged is required.
 
