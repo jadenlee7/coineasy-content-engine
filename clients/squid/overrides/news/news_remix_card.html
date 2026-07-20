@@ -57,18 +57,24 @@
     overflow-wrap: anywhere;
     white-space: pre;
   }
+  .translation-region::before {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    inset: -8px -12px;
+    border-radius: 8px;
+    background: #100D16;
+  }
   .translation-region > span {
     position: relative;
     display: block;
     z-index: 1;
     width: max-content;
     max-width: 100%;
-    /* Korean glyphs sit higher than the audited Latin subtitle box at the same
-       flex center. Lower the replacement so its outline covers the source text. */
+    /* Keep the calibrated Korean baseline while the opaque panel removes the
+       original source lettering underneath. */
     transform: translateY(0.22em) scaleX(var(--region-scale-x));
     transform-origin: var(--region-origin) center;
-    -webkit-text-stroke: var(--region-cover-stroke) #100D16;
-    paint-order: stroke fill;
   }
 </style>
 </head>
@@ -80,12 +86,6 @@
       {% for region in translation_regions %}
         {% set source_line_count = region.source_text.split('\n') | length %}
         {% set caption_font_size = region.font_size * frame_width / 100.0 * 0.72 %}
-        {% set caption_stroke = region.height * frame_height / 100.0 * 0.185 %}
-        {% if caption_stroke < 6.0 %}
-          {% set caption_stroke = 6.0 %}
-        {% elif caption_stroke > 16.0 %}
-          {% set caption_stroke = 16.0 %}
-        {% endif %}
       <div
         class="translation-region"
         data-source-line-count="{{ source_line_count }}"
@@ -99,7 +99,6 @@
           --region-font: {% if region.font_role == 'display' %}var(--display){% else %}var(--font){% endif %};
           --region-size: {{ '%.2f' | format(caption_font_size) }}px;
           --region-scale-x: {{ region.scale_x | default(1) }};
-          --region-cover-stroke: {{ '%.2f' | format(caption_stroke) }}px;
           --region-origin: {% if region.align == 'center' %}center{% elif region.align == 'right' %}right{% else %}left{% endif %};
           --region-text: #FFFFFF;
         "
@@ -115,7 +114,10 @@
   let anyRegionFailed = false;
   for (const region of translationRegions) {
     const text = region.querySelector('span');
-    if (!text) continue;
+    if (!text) {
+      anyRegionFailed = true;
+      continue;
+    }
     const allowedLineCount = Math.max(1, Math.min(2, Number(region.dataset.sourceLineCount) || 2));
     let size = parseFloat(getComputedStyle(region).fontSize);
     const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
@@ -133,29 +135,28 @@
     }
     if (doesNotFit()) anyRegionFailed = true;
 
-    // Use the stricter standalone-SVG outline as the shared safety envelope.
-    // PNG and Figma output must both fail closed for the same geometry.
-    const safetyStroke = Math.min(20, Math.max(6, region.clientHeight * 0.31));
-    const outlineMarginX = safetyStroke * scaleX / 2;
-    const outlineMarginY = safetyStroke / 2;
+    // The fully opaque source-text cover expands by the same fixed padding in
+    // PNG and SVG. Both formats fail closed for identical geometry.
+    const coverPaddingX = 12;
+    const coverPaddingY = 8;
     const replacementBound = {
-      left: region.offsetLeft - outlineMarginX,
-      top: region.offsetTop - outlineMarginY,
-      right: region.offsetLeft + region.offsetWidth + outlineMarginX,
-      bottom: region.offsetTop + region.offsetHeight + outlineMarginY,
+      left: region.offsetLeft - coverPaddingX,
+      top: region.offsetTop - coverPaddingY,
+      right: region.offsetLeft + region.offsetWidth + coverPaddingX,
+      bottom: region.offsetTop + region.offsetHeight + coverPaddingY,
     };
     const staysInsideSourceFrame = sourceFrame
       && replacementBound.left >= 0
       && replacementBound.top >= 0
       && replacementBound.right <= sourceFrame.clientWidth
       && replacementBound.bottom <= sourceFrame.clientHeight;
-    const overlapsExistingOutline = replacementBounds.some((existing) => (
+    const overlapsExistingCover = replacementBounds.some((existing) => (
       replacementBound.left < existing.right
       && replacementBound.right > existing.left
       && replacementBound.top < existing.bottom
       && replacementBound.bottom > existing.top
     ));
-    if (!staysInsideSourceFrame || overlapsExistingOutline) anyRegionFailed = true;
+    if (!staysInsideSourceFrame || overlapsExistingCover) anyRegionFailed = true;
     replacementBounds.push(replacementBound);
   }
   if (anyRegionFailed) {
