@@ -533,7 +533,18 @@ or:
                 })
             result["source_text_visible"] = True
             result["translation_regions"] = regions
-            print(f"[squid] stable visual discovery recovered {len(regions)} phrase(s)")
+            discovery_anchors = [
+                {
+                    key: region[key]
+                    for key in ("x", "y", "width", "height")
+                }
+                for region in regions
+            ]
+            print(
+                "[squid] stable visual discovery recovered "
+                f"{len(regions)} phrase(s); anchors="
+                f"{json.dumps(discovery_anchors, ensure_ascii=True)}"
+            )
             return result, calls_used
         except Exception as exc:
             print(
