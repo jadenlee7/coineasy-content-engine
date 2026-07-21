@@ -847,7 +847,7 @@ def _aggregate_lower_band_candidates(
             and protected["width"] >= 99.0
             and protected["y"] >= 65.0
             and protected_bottom >= 99.5
-            and 25.0 <= protected["height"] <= 40.0
+            and 20.0 <= protected["height"] <= 40.0
             and protected["width"] / protected["height"] >= 2.5
         ):
             candidates.append((index, protected))
