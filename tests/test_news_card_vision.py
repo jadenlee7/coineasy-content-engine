@@ -1590,8 +1590,26 @@ def _caption_probe_result(
     )
 
 
-def test_squid_lower_band_scout_recovers_live_wrong_discovery_anchor(monkeypatch):
+@pytest.mark.parametrize(
+    ("band_y", "band_height"),
+    [
+        (70.0, 30.0),
+        # A second live audit described the same lower caption substrate as a
+        # tighter edge-to-edge band. It must still reach raster consensus.
+        (78.0, 22.0),
+        (80.0, 20.0),
+    ],
+)
+def test_squid_lower_band_scout_recovers_live_wrong_discovery_anchor(
+    monkeypatch,
+    band_y,
+    band_height,
+):
     audit, raw, image = _wrong_discovery_scout_inputs()
+    audit["protected_regions"][-1].update({
+        "y": band_y,
+        "height": band_height,
+    })
     message_calls = []
     probe_calls = []
 
@@ -1662,6 +1680,35 @@ def test_squid_lower_band_scout_recovers_live_wrong_discovery_anchor(monkeypatch
         item for item in region["_protected_regions"]
         if item["kind"] == "other_visual"
     ]) == 4
+
+
+def test_squid_lower_band_scout_rejects_too_shallow_scene_band(monkeypatch):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    audit["protected_regions"][-1].update({"y": 81.0, "height": 19.0})
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, regions: probe_calls.append(regions)
+        or _caption_probe_result(),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
 
 
 @pytest.mark.parametrize("outcome", ["too_few", "competing"])
