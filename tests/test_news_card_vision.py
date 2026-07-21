@@ -1528,6 +1528,371 @@ def _live_band_carve_inputs():
     return protections, anchor, image
 
 
+def _wrong_discovery_scout_inputs(*, extra_protections=None):
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "chillin'"}],
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 45,
+                "y": 73,
+                "width": 10.5,
+                "height": 4.5,
+            },
+            {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+            {"kind": "product", "x": 52, "y": 50, "width": 18, "height": 20},
+            {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
+            *(extra_protections or []),
+        ],
+    }
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            # The sampled image-only discovery coordinates from the new live
+            # failure are nowhere near the actual lower caption.
+            "x": 26,
+            "y": 56,
+            "width": 18,
+            "height": 6,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+    return audit, raw, image
+
+
+def _caption_probe_result(
+    *,
+    masked_pixels=2682,
+    x=40.2222,
+    y=85.6667,
+    width=19.8889,
+    height=9.5,
+    mask_sha256="a" * 64,
+):
+    return SimpleNamespace(
+        masked_pixels=masked_pixels,
+        detected_regions=({
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        },),
+        mask_sha256=mask_sha256,
+    )
+
+
+def test_squid_lower_band_scout_recovers_live_wrong_discovery_anchor(monkeypatch):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    message_calls = []
+    probe_calls = []
+
+    def fake_create_message(client, **kwargs):
+        message_calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )])
+
+    def fake_probe(_image, regions):
+        probe_calls.append(regions)
+        if len(probe_calls) >= 21:
+            return _caption_probe_result(
+                masked_pixels=2682,
+                mask_sha256="b" * 64,
+            )
+        return _caption_probe_result()
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr("core.llm.news_card_pipeline.probe_source_text", fake_probe)
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(message_calls) == 1
+    assert len(probe_calls) == 22
+    assert {
+        (
+            call[0]["source_x"],
+            call[0]["source_y"],
+            call[0]["source_width"],
+            call[0]["source_height"],
+        )
+        for call in probe_calls[:20]
+    } == {
+        (center - width / 2, y, width, 16.0)
+        for center in (49.25, 49.75, 50.25, 50.75, 51.25)
+        for width in (30.0, 40.0)
+        for y in (80.0, 82.0)
+    }
+    assert result["source_text_visible"] is True
+    region = result["translation_regions"][0]
+    assert (
+        region["x"],
+        region["y"],
+        region["width"],
+        region["height"],
+    ) == pytest.approx((40.2222, 85.6667, 19.8889, 9.5))
+    assert (
+        region["source_x"],
+        region["source_y"],
+        region["source_width"],
+        region["source_height"],
+    ) == pytest.approx((
+        40.2222 - 3 / 480 * 100,
+        85.6667 - 3 / 320 * 100,
+        19.8889 + 6 / 480 * 100,
+        9.5 + 6 / 320 * 100,
+    ))
+    assert probe_calls[-1][0] == region
+    assert len([
+        item for item in region["_protected_regions"]
+        if item["kind"] == "other_visual"
+    ]) == 4
+
+
+@pytest.mark.parametrize("outcome", ["too_few", "competing"])
+def test_squid_lower_band_scout_rejects_nonunique_raster_consensus(
+    monkeypatch,
+    outcome,
+):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    probe_calls = []
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+
+    def fake_probe(_image, regions):
+        probe_calls.append(regions)
+        index = len(probe_calls)
+        if outcome == "too_few" and index > 7:
+            raise SourceTextCleanupError("no caption in scout crop")
+        if outcome == "competing" and index == 20:
+            return _caption_probe_result(mask_sha256="c" * 64)
+        return _caption_probe_result()
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.probe_source_text", fake_probe)
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(probe_calls) == 20
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_lower_band_scout_rejects_vertically_unrelated_audit(monkeypatch):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    audit["protected_regions"][0].update({"y": 50, "height": 4.5})
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, regions: probe_calls.append(regions) or _caption_probe_result(),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "@squidrouter",
+        "https://squidrouter.com",
+        "www.squidrouter.com",
+        "squidrouter.com",
+        "Squid",
+        "Squid Router",
+    ],
+)
+def test_squid_lower_band_scout_never_targets_brand_or_link_text(
+    monkeypatch,
+    source_text,
+):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    raw["translation_regions"][0]["source_text"] = source_text
+    audit["verified_source_texts"][0]["text"] = source_text
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, regions: probe_calls.append(regions) or _caption_probe_result(),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+
+
+@pytest.mark.parametrize(
+    "detected",
+    [
+        {"x": 40.0, "y": 63.0, "width": 20.0, "height": 6.0},
+        {"x": 34.0, "y": 84.0, "width": 31.0, "height": 8.0},
+        {"x": 40.0, "y": 84.0, "width": 20.0, "height": 16.0},
+    ],
+)
+def test_squid_lower_band_scout_rejects_outside_or_oversize_mask(
+    monkeypatch,
+    detected,
+):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, regions: probe_calls.append(regions)
+        or _caption_probe_result(**detected),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(probe_calls) == 20
+    assert result["source_text_visible"] is False
+
+
+def test_squid_lower_band_scout_requires_final_protected_signature(monkeypatch):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+
+    def fake_probe(_image, regions):
+        probe_calls.append(regions)
+        if len(probe_calls) == 21:
+            return _caption_probe_result(
+                masked_pixels=2682,
+                mask_sha256="b" * 64,
+            )
+        if len(probe_calls) == 22:
+            return _caption_probe_result(
+                masked_pixels=2682,
+                mask_sha256="c" * 64,
+            )
+        return _caption_probe_result()
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.probe_source_text", fake_probe)
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(probe_calls) == 22
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+def test_squid_lower_band_scout_does_not_remove_hard_protection(monkeypatch):
+    audit, raw, image = _wrong_discovery_scout_inputs(
+        extra_protections=[{
+            "kind": "logo",
+            "x": 45,
+            "y": 84,
+            "width": 10,
+            "height": 8,
+        }],
+    )
+    probe_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, regions: probe_calls.append(regions) or _caption_probe_result(),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    # The unprotected scout lattice can agree, but the overlapping logo keeps
+    # the full protected validation from reaching its final raster probe.
+    assert len(probe_calls) == 21
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
 def test_squid_band_carve_rejects_oversized_anchor():
     protections, anchor, image = _live_band_carve_inputs()
     anchor.update({"x": 25.0, "width": 50.0, "height": 14.0})

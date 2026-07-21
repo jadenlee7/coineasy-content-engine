@@ -541,6 +541,13 @@ def test_squid_style_audit_jitter_is_stable_with_production_metadata():
         == results[1].detected_regions
         == results[2].detected_regions
     )
+    assert (
+        results[0].mask_sha256
+        == results[1].mask_sha256
+        == results[2].mask_sha256
+    )
+    assert len(results[0].mask_sha256) == 64
+    assert int(results[0].mask_sha256, 16) >= 0
 
 
 @pytest.mark.parametrize(

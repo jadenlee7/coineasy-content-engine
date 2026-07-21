@@ -808,6 +808,337 @@ def _source_box_in_broad_discovery_vicinity(
     )
 
 
+def _has_meaningful_typed_protection(
+    protections: list[dict],
+    kind: str,
+) -> bool:
+    """Require a material typed object before using a scene-wide band."""
+    thresholds = {
+        "character": (20.0, 20.0, 600.0),
+        "product": (8.0, 8.0, 80.0),
+    }
+    if kind not in thresholds:
+        return False
+    minimum_width, minimum_height, minimum_area = thresholds[kind]
+    return any(
+        item.get("kind") == kind
+        and item["width"] >= minimum_width
+        and item["height"] >= minimum_height
+        and item["width"] * item["height"] >= minimum_area
+        for item in protections
+    )
+
+
+def _aggregate_lower_band_candidates(
+    protections: list[dict],
+    *,
+    kinds: set[str],
+) -> list[tuple[int, dict]]:
+    """Find narrowly shaped, edge-to-edge lower scene aggregates."""
+    candidates: list[tuple[int, dict]] = []
+    for index, protected in enumerate(protections):
+        if protected.get("kind") not in kinds:
+            continue
+        protected_right = protected["x"] + protected["width"]
+        protected_bottom = protected["y"] + protected["height"]
+        if (
+            protected["x"] <= 0.5
+            and protected_right >= 99.5
+            and protected["width"] >= 99.0
+            and protected["y"] >= 65.0
+            and protected_bottom >= 99.5
+            and 25.0 <= protected["height"] <= 40.0
+            and protected["width"] / protected["height"] >= 2.5
+        ):
+            candidates.append((index, protected))
+    return candidates
+
+
+def _source_text_probe_signature(
+    probe: object,
+) -> Optional[tuple[int, tuple[float, float, float, float], str]]:
+    """Return the exact deterministic mask signature for one caption."""
+    masked_pixels = getattr(probe, "masked_pixels", None)
+    detected_regions = getattr(probe, "detected_regions", None)
+    mask_sha256 = getattr(probe, "mask_sha256", None)
+    if (
+        isinstance(masked_pixels, bool)
+        or not isinstance(masked_pixels, int)
+        or masked_pixels <= 0
+        or not isinstance(detected_regions, (list, tuple))
+        or len(detected_regions) != 1
+        or not isinstance(mask_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", mask_sha256) is None
+    ):
+        return None
+    detected = _strict_percent_box(
+        detected_regions[0],
+        minimum_width=0.25,
+        minimum_height=0.25,
+    )
+    if detected is None:
+        return None
+    return (
+        masked_pixels,
+        (
+            detected["x"],
+            detected["y"],
+            detected["width"],
+            detected["height"],
+        ),
+        mask_sha256,
+    )
+
+
+def _scout_lower_band_caption_anchor(
+    raw_regions: list[dict],
+    audit_proposal: dict[str, float],
+    protections: list[dict],
+    source_image: PreparedSourceImage,
+) -> Optional[
+    tuple[
+        dict[str, float],
+        dict[str, float],
+        tuple[int, tuple[float, float, float, float], str],
+    ]
+]:
+    """Recover one lower caption only from a unique bounded-lattice consensus.
+
+    This path is deliberately independent of the sampled discovery geometry.
+    It is available only when an exact placement transcription is accompanied
+    by strong scene evidence and one aggregate lower band.  The production
+    raster detector must resolve the exact same native mask across both widths,
+    both vertical offsets, and at least four nearby horizontal centers, with no
+    competing successful signature.
+    """
+    if (
+        source_image.width <= 0
+        or source_image.height <= 0
+        or source_image.width / source_image.height < 1.2
+        or len(raw_regions) != 1
+    ):
+        return None
+    source_text = raw_regions[0].get("source_text")
+    korean_text = raw_regions[0].get("text")
+    if (
+        not isinstance(source_text, str)
+        or len([line for line in source_text.splitlines() if line.strip()]) != 1
+        or not isinstance(korean_text, str)
+        or len([line for line in korean_text.splitlines() if line.strip()]) != 1
+    ):
+        return None
+    normalized_source_text = re.sub(r"\s+", " ", source_text).strip().casefold()
+    if (
+        normalized_source_text in {"squid", "squid router"}
+        or any(
+            marker in normalized_source_text
+            for marker in ("@", "http", "www.", ".com")
+        )
+    ):
+        return None
+
+    # The caller passes the validator-shaped non-source map. Validate it again
+    # here so the scout cannot become a side door around schema checks.
+    if not protections:
+        return None
+    for protected in protections:
+        if (
+            not isinstance(protected, dict)
+            or protected.get("kind") not in _PLACEMENT_PROTECTED_KINDS
+            or protected.get("kind") == "source_text"
+            or _strict_percent_box(
+                protected,
+                minimum_width=0.25,
+                minimum_height=0.25,
+            ) is None
+        ):
+            return None
+
+    proposal_center_x = audit_proposal["x"] + audit_proposal["width"] / 2.0
+    if (
+        not 35.0 <= proposal_center_x <= 65.0
+        or not 4.0 <= audit_proposal["width"] <= 25.0
+        or not 2.0 <= audit_proposal["height"] <= 12.0
+        or audit_proposal["width"] * audit_proposal["height"] > 250.0
+    ):
+        return None
+
+    bands = _aggregate_lower_band_candidates(
+        protections,
+        kinds={"other_visual", "product"},
+    )
+    if (
+        len(bands) != 1
+        or not _has_meaningful_typed_protection(protections, "character")
+        or not _has_meaningful_typed_protection(protections, "product")
+    ):
+        return None
+    _, band = bands[0]
+    actual_band_bottom = band["y"] + band["height"]
+    # Qualifying bands already end within half a percentage point of the
+    # canvas edge. Canonicalizing the lattice keeps model coordinate jitter
+    # from moving all search crops by one or two native pixels.
+    lattice_bottom = 100.0
+    proposal_bottom = audit_proposal["y"] + audit_proposal["height"]
+    if (
+        audit_proposal["y"] < band["y"] - 8.0
+        or proposal_bottom > actual_band_bottom
+    ):
+        return None
+
+    successes: list[
+        tuple[
+            tuple[int, tuple[float, float, float, float], str],
+            float,
+            float,
+            float,
+        ]
+    ] = []
+    detected_box: Optional[dict[str, float]] = None
+    for center_offset in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        scout_center_x = proposal_center_x + center_offset
+        for width in (30.0, 40.0):
+            for bottom_offset in (20.0, 18.0):
+                scout_box = {
+                    "x": scout_center_x - width / 2.0,
+                    "y": lattice_bottom - bottom_offset,
+                    "width": width,
+                    "height": 16.0,
+                }
+                if _strict_percent_box(
+                    scout_box,
+                    minimum_width=0.25,
+                    minimum_height=0.25,
+                ) is None:
+                    return None
+                scout_region = {
+                    **copy.deepcopy(raw_regions[0]),
+                    "source_x": scout_box["x"],
+                    "source_y": scout_box["y"],
+                    "source_width": scout_box["width"],
+                    "source_height": scout_box["height"],
+                    "_source_line_count": 1,
+                }
+                scout_region.pop("_protected_regions", None)
+                scout_region.pop("_source_index", None)
+                try:
+                    probe = probe_source_text(source_image, [scout_region])
+                except SourceTextCleanupError:
+                    continue
+                except Exception:
+                    return None
+                signature = _source_text_probe_signature(probe)
+                if signature is None:
+                    return None
+                successes.append((
+                    signature,
+                    scout_center_x,
+                    width,
+                    bottom_offset,
+                ))
+                signature_box = signature[1]
+                detected_box = {
+                    "x": signature_box[0],
+                    "y": signature_box[1],
+                    "width": signature_box[2],
+                    "height": signature_box[3],
+                }
+
+    successful_signatures = {success[0] for success in successes}
+    if (
+        len(successes) < 8
+        or len(successful_signatures) != 1
+        or len({success[1] for success in successes}) < 4
+        or {success[2] for success in successes} != {30.0, 40.0}
+        or {success[3] for success in successes} != {20.0, 18.0}
+        or detected_box is None
+    ):
+        return None
+
+    detected_right = detected_box["x"] + detected_box["width"]
+    detected_bottom = detected_box["y"] + detected_box["height"]
+    detected_area = detected_box["width"] * detected_box["height"]
+    scout_signature = next(iter(successful_signatures))
+    masked_fraction = scout_signature[0] / (
+        source_image.width * source_image.height
+    )
+    if (
+        detected_box["width"] < 6.0
+        or detected_box["height"] < 3.0
+        or detected_box["width"] / detected_box["height"] < 1.25
+        or detected_area < 24.0
+        or detected_box["width"] > 30.0
+        or detected_box["height"] > 16.0
+        or detected_area > 250.0
+        or not 0.001 <= masked_fraction <= 0.025
+        or abs(
+            detected_box["x"] + detected_box["width"] / 2.0
+            - proposal_center_x
+        ) > 5.0
+        or detected_box["x"] < band["x"]
+        or detected_box["y"] < band["y"]
+        or detected_right > band["x"] + band["width"]
+        or detected_bottom > actual_band_bottom
+    ):
+        return None
+
+    padding_x = _SOURCE_TEXT_CLEANUP_PADDING_PX / source_image.width * 100.0
+    padding_y = _SOURCE_TEXT_CLEANUP_PADDING_PX / source_image.height * 100.0
+    cleanup_anchor = {
+        "x": detected_box["x"] - padding_x,
+        "y": detected_box["y"] - padding_y,
+        "width": detected_box["width"] + padding_x * 2.0,
+        "height": detected_box["height"] + padding_y * 2.0,
+    }
+    if _strict_percent_box(
+        cleanup_anchor,
+        minimum_width=0.25,
+        minimum_height=0.25,
+    ) is None:
+        return None
+    anchor_center_x = cleanup_anchor["x"] + cleanup_anchor["width"] / 2.0
+    if (
+        cleanup_anchor["y"] < 78.0
+        or cleanup_anchor["height"] > 16.0
+        or cleanup_anchor["width"] * cleanup_anchor["height"] > 650.0
+        or not 35.0 <= anchor_center_x <= 65.0
+        or cleanup_anchor["x"] < band["x"]
+        or cleanup_anchor["y"] < band["y"]
+        or cleanup_anchor["x"] + cleanup_anchor["width"]
+        > band["x"] + band["width"]
+        or cleanup_anchor["y"] + cleanup_anchor["height"]
+        > actual_band_bottom
+    ):
+        return None
+
+    canonical_region = {
+        **copy.deepcopy(raw_regions[0]),
+        **detected_box,
+        "source_x": cleanup_anchor["x"],
+        "source_y": cleanup_anchor["y"],
+        "source_width": cleanup_anchor["width"],
+        "source_height": cleanup_anchor["height"],
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [{
+            "kind": "source_text",
+            "source_index": 0,
+            **detected_box,
+        }],
+    }
+    try:
+        canonical_probe = probe_source_text(source_image, [canonical_region])
+    except Exception:
+        return None
+    canonical_signature = _source_text_probe_signature(canonical_probe)
+    if (
+        canonical_signature is None
+        or canonical_signature[1] != scout_signature[1]
+    ):
+        return None
+    return detected_box, cleanup_anchor, canonical_signature
+
+
 def _carve_aggregate_bottom_visual_band(
     protections: list[dict],
     anchor: dict[str, float],
@@ -852,20 +1183,14 @@ def _carve_aggregate_bottom_visual_band(
         return unchanged
 
     band_candidates: list[tuple[int, dict]] = []
-    for index, protected in enumerate(protections):
-        if protected.get("kind") != "other_visual":
-            continue
+    for index, protected in _aggregate_lower_band_candidates(
+        protections,
+        kinds={"other_visual"},
+    ):
         protected_right = protected["x"] + protected["width"]
         protected_bottom = protected["y"] + protected["height"]
         is_candidate = (
-            protected["x"] <= 0.5
-            and protected_right >= 99.5
-            and protected["width"] >= 99.0
-            and protected["y"] >= 65.0
-            and protected_bottom >= 99.5
-            and 25.0 <= protected["height"] <= 40.0
-            and protected["width"] / protected["height"] >= 2.5
-            and protected["x"] <= hole["x"]
+            protected["x"] <= hole["x"]
             and protected["y"] <= hole["y"]
             and protected_right >= hole_right
             and protected_bottom >= hole_bottom
@@ -882,22 +1207,9 @@ def _carve_aggregate_bottom_visual_band(
     if hole_area / band_area > 0.22:
         return unchanged
 
-    def has_typed_corroborator(kind: str) -> bool:
-        minimum_width, minimum_height, minimum_area = {
-            "character": (20.0, 20.0, 600.0),
-            "product": (8.0, 8.0, 80.0),
-        }[kind]
-        return any(
-            item.get("kind") == kind
-            and item["width"] >= minimum_width
-            and item["height"] >= minimum_height
-            and item["width"] * item["height"] >= minimum_area
-            for item in protections
-        )
-
     if not (
-        has_typed_corroborator("character")
-        and has_typed_corroborator("product")
+        _has_meaningful_typed_protection(protections, "character")
+        and _has_meaningful_typed_protection(protections, "product")
     ):
         return unchanged
 
@@ -969,6 +1281,8 @@ def _discovery_anchor_recovery_audit(
     first_pass_source_boxes: list[Optional[dict[str, float]]],
     audit: dict,
     retained_non_source: list[dict],
+    *,
+    audited_source_boxes: Optional[list[dict[str, float]]] = None,
 ) -> Optional[dict]:
     """Build a single-line recovery map from authoritative discovery anchors.
 
@@ -991,11 +1305,17 @@ def _discovery_anchor_recovery_audit(
     anchor = first_pass_source_boxes[0]
     if anchor is None:
         return None
+    audited_box = (
+        audited_source_boxes[0]
+        if audited_source_boxes is not None
+        and len(audited_source_boxes) == 1
+        else anchor
+    )
     return {
         "safe": True,
         "verified_source_texts": copy.deepcopy(audit.get("verified_source_texts")),
         "protected_regions": [
-            {"kind": "source_text", "source_index": 0, **anchor},
+            {"kind": "source_text", "source_index": 0, **audited_box},
             *copy.deepcopy(retained_non_source),
         ],
     }
@@ -1404,6 +1724,9 @@ or:
         min(_MAX_VISUAL_PLACEMENT_AUDIT_CALLS, int(max_calls)),
     )
     for attempt_index in range(effective_max_calls):
+        required_probe_signature: Optional[
+            tuple[int, tuple[float, float, float, float], str]
+        ] = None
         attempt_number = attempt_index + 1
         attempt_prompt = audit_prompt
         if retry_context:
@@ -1524,17 +1847,40 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 and retry_protections is not None
                 and source_box_unions is not None
             )
-            if (
-                geometry_mismatch
-                and first_pass_source_boxes[0] is not None
-                and _source_box_in_broad_discovery_vicinity(
+            recovery_cleanup_anchor: Optional[dict[str, float]] = None
+            recovery_audited_box: Optional[dict[str, float]] = None
+            if geometry_mismatch and first_pass_source_boxes[0] is not None:
+                if _source_box_in_broad_discovery_vicinity(
                     source_box_unions[0],
                     first_pass_source_boxes[0],
-                )
+                ):
+                    recovery_cleanup_anchor = first_pass_source_boxes[0]
+                    recovery_audited_box = first_pass_source_boxes[0]
+                else:
+                    scout = _scout_lower_band_caption_anchor(
+                        raw_regions,
+                        source_box_unions[0],
+                        retry_protections,
+                        source_image,
+                    )
+                    if scout is not None:
+                        (
+                            recovery_audited_box,
+                            recovery_cleanup_anchor,
+                            required_probe_signature,
+                        ) = scout
+                        print(
+                            "[squid] raster-confirmed lower-band anchor found "
+                            "by fixed crop consensus"
+                        )
+            if (
+                recovery_cleanup_anchor is not None
+                and recovery_audited_box is not None
             ):
+                recovery_first_pass_boxes = [recovery_cleanup_anchor]
                 recovery_protections = _carve_aggregate_bottom_visual_band(
                     retry_protections,
-                    first_pass_source_boxes[0],
+                    recovery_audited_box,
                     source_image,
                 )
                 if len(recovery_protections) > len(retry_protections):
@@ -1545,26 +1891,34 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                     )
                 recovery_audit = _discovery_anchor_recovery_audit(
                     raw_regions,
-                    first_pass_source_boxes,
+                    recovery_first_pass_boxes,
                     audit,
                     recovery_protections,
+                    audited_source_boxes=[recovery_audited_box],
                 )
                 if recovery_audit is not None:
                     recovered_regions, recovery_rejection = (
                         _validate_visual_placement_audit(
                             raw_regions,
-                            first_pass_source_boxes,
+                            recovery_first_pass_boxes,
                             recovery_audit,
                             source_image,
                             require_source_identity=raster_probe,
                         )
                     )
                     if recovered_regions is not None:
-                        print(
-                            "[squid] placement geometry missed a nearby "
-                            "single-line phrase; using the authoritative "
-                            "discovery anchor for deterministic raster recovery"
-                        )
+                        if required_probe_signature is not None:
+                            print(
+                                "[squid] placement geometry missed the "
+                                "single-line phrase; using the raster-confirmed "
+                                "lower-band anchor"
+                            )
+                        else:
+                            print(
+                                "[squid] placement geometry missed a nearby "
+                                "single-line phrase; using the authoritative "
+                                "discovery anchor for deterministic raster recovery"
+                            )
                         audited_regions = recovered_regions
                     else:
                         rejection = recovery_rejection
@@ -1594,6 +1948,14 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
         if raster_probe:
             try:
                 probe = probe_source_text(source_image, audited_regions)
+                if (
+                    required_probe_signature is not None
+                    and _source_text_probe_signature(probe)
+                    != required_probe_signature
+                ):
+                    raise SourceTextCleanupError(
+                        "protected raster mask disagrees with lower-band scout"
+                    )
                 print(
                     "[squid] placement raster probe accepted on attempt "
                     f"{attempt_number}: {probe.masked_pixels} pixels"
