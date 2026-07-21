@@ -22,6 +22,7 @@ def create_message(
     system: str,
     messages: list[dict[str, str]],
     temperature: Optional[float] = None,
+    timeout: Optional[float] = None,
 ) -> Any:
     """Create a message while omitting parameters rejected by newer models."""
     request: dict[str, Any] = {
@@ -32,4 +33,6 @@ def create_message(
     }
     if temperature is not None and model_accepts_temperature(model):
         request["temperature"] = temperature
+    if timeout is not None:
+        request["timeout"] = timeout
     return client.messages.create(**request)

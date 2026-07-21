@@ -19,9 +19,13 @@ USAGE:
 
 from __future__ import annotations
 
+import copy
 import json
 import math
+import os
 import re
+import time
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
@@ -30,6 +34,7 @@ from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
 from core.sources.source_image import PreparedSourceImage
+from core.sources.source_text_cleanup import SourceTextCleanupError, probe_source_text
 
 
 # ────────────────────────────────────────────────────
@@ -47,16 +52,61 @@ sentence, and 1-3 body bullet lines.
 Return STRICT JSON ONLY. No markdown fences, no prose, no commentary.
 Do not use em dashes (—) in any output text values. Use commas or periods instead."""
 
-VISUAL_TRANSLATION_REPAIR_SYSTEM_PROMPT = """You are a Korean localization editor for Squid social banners.
-Translate only the supplied visible English marketing copy into concise, natural Korean.
-Keep product names, token symbols, handles, URLs, and protected terms unchanged.
-Preserve the original humor, claim strength, and short cadence. Do not add facts.
+VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT = """You are a deterministic visual-copy localizer for official Squid social creatives.
+Inspect only the attached image pixels. Find complete, meaningful source-language captions or headlines that are intended to be read as creative copy, transcribe them exactly, and translate them into concise natural Korean.
+Do not infer text from the post caption. Ignore logos, wordmarks, handles, URLs, watermarks, tiny product UI labels, and decorative letter-like shapes. A short meme phrase or slang caption is meaningful copy.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
 VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual replacement QA for Korean localization of official Squid creatives.
 Inspect the attached image composition and precisely map the visible source-language phrase boxes. The renderer will detect and content-aware reconstruct only the original lettering pixels inside each audited box, then place Korean over the cleaned visual with no caption panel.
 Confirm only geometry that you can locate confidently and enough clearance for a 1-3 source-pixel cleanup dilation. Never move the Korean to a different part of the creative.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
+
+# Opus 4.8 no longer accepts the legacy temperature control, so using it for
+# pixel geometry makes identical images sample slightly different boxes. Keep
+# the creative-writing model for copy, but use the existing temperature-capable
+# visual QA model for stable placement coordinates.
+VISUAL_PLACEMENT_AUDIT_MODEL = os.environ.get(
+    "VISUAL_PLACEMENT_AUDIT_MODEL",
+    "claude-sonnet-4-5-20250929",
+)
+# Railway may spend up to 12s fetching the source image before this function,
+# then still needs deterministic cleanup and a ~5s Playwright render. Keep the
+# LLM stage at 30s so Netlify's 55s Railway timeout retains a real margin.
+_SQUID_VISUAL_LLM_BUDGET_SECONDS = 30.0
+_SQUID_MAIN_LLM_MAX_SECONDS = 22.0
+_SQUID_VISUAL_CALL_MAX_SECONDS = 8.0
+_SQUID_VISUAL_CALL_RESERVE_SECONDS = 6.0
+_MAX_SQUID_STABLE_VISUAL_CALLS = 3
+
+
+def _minimum_squid_font_percent(
+    source_image_width: int,
+    source_image_height: int,
+) -> float:
+    """Mirror the renderer's max(14px, 2%-of-frame-width) floor."""
+    if source_image_width <= 0 or source_image_height <= 0:
+        return 2.0
+    frame_width = (
+        1080.0
+        if source_image_width >= source_image_height
+        else 1080.0 * source_image_width / source_image_height
+    )
+    return max(2.0, 14.0 / frame_width * 100.0)
+
+
+def _remaining_llm_timeout(
+    deadline: Optional[float],
+    maximum: float,
+    *,
+    reserve: float = 0.0,
+) -> Optional[float]:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic() - reserve
+    if remaining < 1.0:
+        raise TimeoutError("Squid visual localization time budget is exhausted")
+    return max(1.0, min(maximum, remaining))
 
 
 # ────────────────────────────────────────────────────
@@ -264,8 +314,6 @@ def _build_user_prompt(
 
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _HANGUL = re.compile(r"[가-힣]")
-_ASCII_WORD = re.compile(r"[A-Za-z]{2,}")
-_IDENTIFIER_TOKEN = re.compile(r"[A-Z0-9]{2,6}")
 _REGION_ALIGNMENTS = {"left", "center", "right"}
 _REGION_FONT_ROLES = {"display", "body"}
 
@@ -299,6 +347,43 @@ def _text_width_units(text: str) -> float:
     return max(line_units, default=1.0)
 
 
+def _canonicalize_translation_rows(text: str, row_count: int) -> str:
+    """Make Korean line breaks depend only on audited visual rows."""
+    plain = re.sub(r"\s+", " ", text).strip()
+    if row_count <= 1 or not plain:
+        return plain
+
+    tokens = plain.split(" ")
+    candidates: list[tuple[tuple[float, float, int], str, str]] = []
+    if len(tokens) > 1:
+        for index in range(1, len(tokens)):
+            left = " ".join(tokens[:index])
+            right = " ".join(tokens[index:])
+            left_units = _text_width_units(left)
+            right_units = _text_width_units(right)
+            candidates.append((
+                (max(left_units, right_units), abs(left_units - right_units), index),
+                left,
+                right,
+            ))
+    elif len(plain) > 1:
+        characters = list(plain)
+        for index in range(1, len(characters)):
+            left = "".join(characters[:index])
+            right = "".join(characters[index:])
+            left_units = _text_width_units(left)
+            right_units = _text_width_units(right)
+            candidates.append((
+                (max(left_units, right_units), abs(left_units - right_units), index),
+                left,
+                right,
+            ))
+    if not candidates:
+        return plain
+    _, left, right = min(candidates, key=lambda candidate: candidate[0])
+    return f"{left}\n{right}"
+
+
 def _parse_json_response(response: object, purpose: str) -> dict:
     """Parse a JSON object from an Anthropic response, tolerating code fences."""
     try:
@@ -316,164 +401,149 @@ def _parse_json_response(response: object, purpose: str) -> dict:
     return parsed
 
 
-def _has_untranslated_english(text: str, preserve_terms: list[str]) -> bool:
-    """Return true for English prose, including partial Korean translations."""
-    tokens = re.findall(r"[A-Za-z0-9@#.$:/_-]+", text)
-    if not tokens:
-        return False
-    protected = {term.strip().lower() for term in preserve_terms if term.strip()}
-    for token in tokens:
-        normalized = token.strip(".,:;!?()[]{}\"'")
-        if not normalized:
-            continue
-        if normalized.lower() in protected:
-            continue
-        if normalized.startswith(("@", "#")) or "://" in normalized:
-            continue
-        if _IDENTIFIER_TOKEN.fullmatch(normalized):
-            continue
-        return True
-    return not _HANGUL.search(text)
-
-
-def _untranslated_region_indexes(result: dict, preserve_terms: list[str]) -> list[int]:
-    """Find visual regions with untranslated or partially translated English."""
-    if result.get("source_text_visible") is not True:
-        return []
-    regions = result.get("translation_regions")
-    if not isinstance(regions, list):
-        return []
-    indexes: list[int] = []
-    for index, region in enumerate(regions):
-        if not isinstance(region, dict) or not isinstance(region.get("text"), str):
-            continue
-        text = region["text"]
-        if not _ASCII_WORD.search(text):
-            continue
-        source_keyword = _repeated_leading_keyword(region.get("source_text"))
-        allowed_terms = [*preserve_terms, *([source_keyword] if source_keyword else [])]
-        if _has_untranslated_english(text, allowed_terms):
-            indexes.append(index)
-    return indexes
-
-
-def _repeated_leading_keyword(source_text: object) -> str | None:
-    """Return a short Latin keyword that leads every line of a visual phrase."""
-    if not isinstance(source_text, str):
-        return None
-    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return None
-    matches = [re.match(r"^([A-Za-z][A-Za-z0-9_-]{1,23})\b", line) for line in lines]
-    if any(match is None for match in matches):
-        return None
-    keywords = [match.group(1) for match in matches if match is not None]
-    return keywords[0] if all(keyword.lower() == keywords[0].lower() for keyword in keywords) else None
-
-
-def _is_protected_identifier_only(text: str, preserve_terms: list[str]) -> bool:
-    """Allow a region to be removed when it contains identifiers, not prose."""
-    tokens = re.findall(r"[A-Za-z0-9@#.$:/_-]+", text)
-    if not tokens:
-        return False
-    protected = {term.strip().lower() for term in preserve_terms if term.strip()}
-    for token in tokens:
-        normalized = token.strip(".,:;!?()[]{}\"'")
-        if not normalized:
-            continue
-        if normalized.lower() in protected:
-            continue
-        if normalized.startswith(("@", "#")) or "://" in normalized:
-            continue
-        if _IDENTIFIER_TOKEN.fullmatch(normalized):
-            continue
-        return False
-    return True
-
-
-def _repair_untranslated_visual_copy(
+def _discover_visual_copy(
     api_client: object,
     model: str,
     result: dict,
+    source_image: PreparedSourceImage,
     preserve_terms: list[str],
-    source_content: str,
-) -> dict:
-    """Repair untranslated copy while asking the model to keep visual rhythm."""
-    indexes = _untranslated_region_indexes(result, preserve_terms)
-    if not indexes:
-        return result
-
-    regions = result.get("translation_regions")
-    assert isinstance(regions, list)
-    inputs = [{
-        "index": index,
-        "source_text": regions[index].get("source_text", ""),
-        "text": regions[index]["text"],
-    } for index in indexes]
+    *,
+    deadline: Optional[float] = None,
+) -> tuple[dict, int]:
+    """Make image-only discovery authoritative for every uncached creative."""
     protected = ", ".join(preserve_terms) or "Squid"
-    repair_prompt = f"""Correct untranslated text in a Squid banner.
+    prompt = f"""Independently inspect the attached official Squid creative.
 
-Protected terms: {protected}
-Source caption context (facts only):
-<<<
-{source_content.strip()[:2000]}
->>>
+Protected terms that may remain Latin: {protected}
 
-Translate every natural-language phrase below into brief, playful Korean suitable for the same banner position.
-- Preserve the punchline and line hierarchy.
-- Keep a 1-2 line source at the same non-empty line count; condense a 3+ line source to at most 2 lines. Keep approximately the same rendered width as source_text.
-- If source_text is one short reaction or meme word, use a concise 2-5 syllable Korean expression instead of an explanatory phrase.
-- When the same short Latin keyword leads multiple source_text lines, keep that keyword unchanged at the start of each corresponding Korean line.
-- Keep protected terms, product names, token symbols, handles, URLs, and numbers unchanged.
-- Each translated text must contain at least one Korean Hangul syllable.
-- If an input is only a protected identifier or token pair with no natural-language copy, return an empty text for that index.
-- Do not change, combine, omit, or reorder indexes.
-
-Inputs:
-{json.dumps(inputs, ensure_ascii=False)}
+Find up to four complete, meaningful source-language captions or headlines.
+- Read only visible image pixels. Never infer copy from post context.
+- Include short meme/slang captions such as "chillin'".
+- Ignore logos, wordmarks, handles, URLs, watermarks, decorative shapes, and tiny product/UI labels.
+- Transcribe source_text exactly and translate its meaning into concise natural Korean containing Hangul.
+- Use image-relative percentage coordinates around the complete phrase, including every visible row and outline/shadow.
+- text must contain at most two non-empty lines. Never add a caption panel.
+- Return found=false when no meaningful translatable copy is visibly present.
 
 Return exactly:
-{{"translations":[{{"index":0,"text":"한국어 번역"}}]}}
+{{
+  "found": true,
+  "regions": [
+    {{
+      "source_text": "exact visible phrase",
+      "text": "자연스러운 한국어",
+      "x": 35,
+      "y": 80,
+      "width": 30,
+      "height": 10,
+      "align": "center",
+      "font_role": "display",
+      "font_size": 6,
+      "text_color": "#FFFFFF"
+    }}
+  ]
+}}
+or:
+{{"found":false,"regions":[]}}
 """
-    repair_response = create_message(
-        api_client,
-        model=model,
-        max_tokens=600,
-        temperature=0,
-        system=VISUAL_TRANSLATION_REPAIR_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": repair_prompt}],
+    no_text_votes = 0
+    calls_used = 0
+    for attempt in range(2):
+        try:
+            timeout = _remaining_llm_timeout(
+                deadline,
+                _SQUID_VISUAL_CALL_MAX_SECONDS,
+                reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS,
+            )
+            calls_used += 1
+            response = create_message(
+                api_client,
+                model=model,
+                max_tokens=1200,
+                temperature=0,
+                timeout=timeout,
+                system=VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": source_image.media_type,
+                                "data": source_image.base64_data,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            discovery = _parse_json_response(
+                response,
+                f"visual copy discovery attempt {attempt + 1}",
+            )
+            if discovery.get("found") is False:
+                no_text_votes += 1
+                if no_text_votes == 2:
+                    return _clear_visual_localization(result), calls_used
+                print("[squid] visual discovery found no copy; confirming once")
+                continue
+            raw_regions = discovery.get("regions")
+            if discovery.get("found") is not True or not isinstance(raw_regions, list):
+                raise ValueError("visual copy discovery omitted a boolean found result")
+            if not 1 <= len(raw_regions) <= 4:
+                raise ValueError("visual copy discovery returned an invalid region count")
+            regions: list[dict] = []
+            for raw_region in raw_regions:
+                if not isinstance(raw_region, dict):
+                    raise ValueError("visual copy discovery region must be an object")
+                source_text = raw_region.get("source_text")
+                text = raw_region.get("text")
+                box = _strict_percent_box(
+                    raw_region,
+                    minimum_width=6.0,
+                    minimum_height=3.0,
+                )
+                if (
+                    not isinstance(source_text, str)
+                    or not source_text.strip()
+                    or not isinstance(text, str)
+                    or not text.strip()
+                    or not _HANGUL.search(text)
+                    or len([line for line in text.splitlines() if line.strip()]) > 2
+                    or box is None
+                ):
+                    raise ValueError("visual copy discovery region is invalid")
+                font_size = max(2.8, min(12.0, _number(raw_region.get("font_size"), 5.2)))
+                text_color = raw_region.get("text_color")
+                regions.append({
+                    "source_text": source_text.strip()[:240],
+                    "text": text.strip()[:240],
+                    **box,
+                    "align": raw_region.get("align")
+                    if raw_region.get("align") in _REGION_ALIGNMENTS
+                    else "center",
+                    "font_role": raw_region.get("font_role")
+                    if raw_region.get("font_role") in _REGION_FONT_ROLES
+                    else "display",
+                    "font_size": round(font_size, 2),
+                    "text_color": text_color.upper()
+                    if isinstance(text_color, str) and _HEX_COLOR.match(text_color)
+                    else "#FFFFFF",
+                })
+            result["source_text_visible"] = True
+            result["translation_regions"] = regions
+            print(f"[squid] stable visual discovery recovered {len(regions)} phrase(s)")
+            return result, calls_used
+        except Exception as exc:
+            print(
+                f"[squid] visual copy discovery attempt {attempt + 1} failed safely: "
+                f"{type(exc).__name__}"
+            )
+    return (
+        _clear_visual_localization(result, failure_status="cleanup_failed"),
+        calls_used,
     )
-    repair = _parse_json_response(repair_response, "visual translation repair")
-    translations = repair.get("translations")
-    if not isinstance(translations, list):
-        raise ValueError("LLM visual translation repair omitted translations")
-
-    replacements: dict[int, str] = {}
-    for item in translations:
-        if not isinstance(item, dict):
-            continue
-        index = item.get("index")
-        text = item.get("text")
-        if isinstance(index, int) and not isinstance(index, bool) and index in indexes and isinstance(text, str):
-            replacements[index] = text.strip()[:240]
-
-    for index in indexes:
-        original = regions[index]["text"]
-        replacement = replacements.get(index, "")
-        if replacement and _HANGUL.search(replacement):
-            regions[index]["text"] = replacement
-            continue
-        if not replacement and _is_protected_identifier_only(original, preserve_terms):
-            regions[index]["text"] = ""
-            continue
-        raise ValueError(f"LLM left visual copy untranslated at region {index}")
-
-    result["translation_regions"] = [
-        region for region in regions
-        if isinstance(region, dict) and isinstance(region.get("text"), str) and region["text"].strip()
-    ]
-    result["source_text_visible"] = bool(result["translation_regions"])
-    return result
 
 
 _PLACEMENT_PROTECTED_KINDS = {
@@ -491,14 +561,27 @@ _PLACEMENT_PROTECTED_KINDS = {
 _SOURCE_TEXT_CLEANUP_PADDING_PX = 3.0
 _SOURCE_TEXT_CLEANUP_SUBSTRATE_KINDS = {"character", "limb", "product"}
 _SOURCE_TEXT_CLEANUP_SUBSTRATE_MIN_RATIO = 0.50
-_PLACEMENT_MIN_AUDITED_AREA_RATIO = 0.28
-_PLACEMENT_MIN_SOURCE_IOU = 0.28
+_MAX_VISUAL_PLACEMENT_AUDIT_CALLS = 2
+_VISUAL_LOCALIZATION_FAILURE_KEY = "_visual_localization_failure"
+_VISUAL_AUDIT_PRIVATE_KEYS = (
+    "_source_index",
+    "_source_line_count",
+    "_protected_regions",
+)
 
 
-def _clear_visual_localization(result: dict) -> dict:
+def _clear_visual_localization(
+    result: dict,
+    *,
+    failure_status: Optional[str] = None,
+) -> dict:
     """Fail safe: preserve the official creative without any Korean overlay."""
     result["source_text_visible"] = False
     result["translation_regions"] = []
+    if failure_status == "cleanup_failed":
+        result[_VISUAL_LOCALIZATION_FAILURE_KEY] = failure_status
+    else:
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
     return result
 
 
@@ -544,17 +627,203 @@ def _audit_log_payload(audit: dict) -> dict:
     }
 
 
+def _schema_valid_retry_protections(
+    audit: dict,
+    *,
+    region_count: int,
+) -> Optional[list[dict]]:
+    """Return validator-shaped non-source boxes only for a complete valid map.
+
+    A corrective placement pass may tighten source-text geometry, but it must
+    never forget a logo, character, product, or other protected visual found by
+    the first pass.  If any part of the first map is malformed, there is no safe
+    evidence set to carry forward and the caller must not retry.
+    """
+    if audit.get("safe") is not True:
+        return None
+    raw_protected = audit.get("protected_regions")
+    if (
+        not isinstance(raw_protected, list)
+        or not raw_protected
+        or len(raw_protected) > 32
+    ):
+        return None
+
+    retained: list[dict] = []
+    for raw in raw_protected:
+        if not isinstance(raw, dict):
+            return None
+        raw_kind = raw.get("kind")
+        kind = "other_visual" if raw_kind == "other" else raw_kind
+        if kind not in _PLACEMENT_PROTECTED_KINDS:
+            return None
+        box = _strict_percent_box(
+            raw,
+            minimum_width=0.25,
+            minimum_height=0.25,
+        )
+        if box is None:
+            return None
+        if kind == "source_text":
+            source_index = raw.get("source_index")
+            if (
+                isinstance(source_index, bool)
+                or not isinstance(source_index, int)
+                or source_index < 0
+                or source_index >= region_count
+            ):
+                return None
+            continue
+        retained.append({"kind": kind, **box})
+    return retained
+
+
+def _merge_retry_protections(audit: dict, retained: list[dict]) -> dict:
+    """Union first-pass non-source evidence into a corrective audit response."""
+    if not retained:
+        return audit
+    raw_protected = audit.get("protected_regions")
+    if not isinstance(raw_protected, list):
+        return audit
+
+    merged = copy.deepcopy(raw_protected)
+    fingerprints: set[tuple[object, ...]] = set()
+    for raw in raw_protected:
+        if not isinstance(raw, dict):
+            continue
+        raw_kind = raw.get("kind")
+        kind = "other_visual" if raw_kind == "other" else raw_kind
+        if kind == "source_text" or kind not in _PLACEMENT_PROTECTED_KINDS:
+            continue
+        box = _strict_percent_box(
+            raw,
+            minimum_width=0.25,
+            minimum_height=0.25,
+        )
+        if box is not None:
+            fingerprints.add((
+                kind,
+                box["x"],
+                box["y"],
+                box["width"],
+                box["height"],
+            ))
+
+    for protected in retained:
+        fingerprint = (
+            protected["kind"],
+            protected["x"],
+            protected["y"],
+            protected["width"],
+            protected["height"],
+        )
+        if fingerprint not in fingerprints:
+            merged.append(copy.deepcopy(protected))
+            fingerprints.add(fingerprint)
+    return {**audit, "protected_regions": merged}
+
+
+def _source_text_visual_row_count(boxes: list[dict[str, float]]) -> int:
+    """Count visual rows without treating same-row phrase fragments as lines."""
+    rows: list[list[dict[str, float]]] = []
+
+    def center_y(box: dict[str, float]) -> float:
+        return box["y"] + box["height"] / 2.0
+
+    def same_visual_row(
+        first: dict[str, float],
+        second: dict[str, float],
+    ) -> bool:
+        first_bottom = first["y"] + first["height"]
+        second_bottom = second["y"] + second["height"]
+        overlap = max(
+            0.0,
+            min(first_bottom, second_bottom) - max(first["y"], second["y"]),
+        )
+        minimum_height = min(first["height"], second["height"])
+        center_distance = abs(center_y(first) - center_y(second))
+        return (
+            overlap / max(0.001, minimum_height) >= 0.35
+            or center_distance <= minimum_height * 0.35
+        )
+
+    for box in sorted(boxes, key=lambda item: (center_y(item), item["x"])):
+        compatible_rows = [
+            row
+            for row in rows
+            if all(same_visual_row(box, existing) for existing in row)
+        ]
+        if not compatible_rows:
+            rows.append([box])
+            continue
+        selected = min(
+            compatible_rows,
+            key=lambda row: abs(
+                center_y(box)
+                - sum(center_y(existing) for existing in row) / len(row)
+            ),
+        )
+        selected.append(box)
+    return len(rows)
+
+
+def _normalized_source_identity(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _validate_audit_source_identities(
+    raw_regions: list[dict],
+    audit: dict,
+) -> str:
+    """Bind stable geometry to an independently transcribed source phrase."""
+    raw_identities = audit.get("verified_source_texts")
+    if not isinstance(raw_identities, list) or len(raw_identities) != len(raw_regions):
+        return "verified_source_texts must cover every subtitle exactly once"
+    verified: dict[int, str] = {}
+    for position, raw_identity in enumerate(raw_identities):
+        if not isinstance(raw_identity, dict):
+            return f"verified_source_texts[{position}] must be an object"
+        source_index = raw_identity.get("source_index")
+        text = raw_identity.get("text")
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= len(raw_regions)
+            or source_index in verified
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            return f"verified_source_texts[{position}] is invalid"
+        verified[source_index] = text
+    for index, region in enumerate(raw_regions):
+        expected = _normalized_source_identity(region.get("source_text"))
+        actual = _normalized_source_identity(verified.get(index))
+        if not expected or actual != expected:
+            return f"verified source text for subtitle {index} does not match"
+    return ""
+
+
 def _validate_visual_placement_audit(
     raw_regions: list[dict],
-    first_pass_source_boxes: list[dict[str, float]],
+    first_pass_source_boxes: list[Optional[dict[str, float]]],
     audit: dict,
     source_image: PreparedSourceImage,
+    *,
+    require_source_identity: bool = False,
 ) -> tuple[Optional[list[dict]], str]:
     """Validate source geometry and conservative cleanup clearance."""
     if audit.get("safe") is False:
         return None, "unsafe"
     if audit.get("safe") is not True:
         return None, "safe must be a boolean"
+    if require_source_identity:
+        identity_error = _validate_audit_source_identities(raw_regions, audit)
+        if identity_error:
+            return None, identity_error
 
     raw_protected = audit.get("protected_regions")
     if not isinstance(raw_protected, list) or not raw_protected:
@@ -566,6 +835,7 @@ def _validate_visual_placement_audit(
         index: [] for index in range(len(raw_regions))
     }
     protected_boxes: list[tuple[str, Optional[int], dict[str, float]]] = []
+    normalized_protected_regions: list[dict] = []
     for position, raw in enumerate(raw_protected):
         if not isinstance(raw, dict):
             return None, f"protected_regions[{position}] must be an object"
@@ -591,6 +861,10 @@ def _validate_visual_placement_audit(
             source_index = raw_source_index
             audited_source_boxes[source_index].append(box)
         protected_boxes.append((kind, source_index, box))
+        normalized_protected = {"kind": kind, **box}
+        if source_index is not None:
+            normalized_protected["source_index"] = source_index
+        normalized_protected_regions.append(normalized_protected)
 
     if any(not boxes for boxes in audited_source_boxes.values()):
         return None, "every subtitle requires an audited source_text box"
@@ -602,51 +876,83 @@ def _validate_visual_placement_audit(
     accepted_cleanup_boxes: list[dict[str, float]] = []
     for index, original in enumerate(raw_regions):
         line_boxes = audited_source_boxes[index]
-        first_box = first_pass_source_boxes[index]
-        first_right = first_box["x"] + first_box["width"]
-        first_bottom = first_box["y"] + first_box["height"]
-        for line_index, line_box in enumerate(line_boxes):
-            line_right = line_box["x"] + line_box["width"]
-            line_bottom = line_box["y"] + line_box["height"]
-            line_intersection = (
-                max(0.0, min(line_right, first_right) - max(line_box["x"], first_box["x"]))
-                * max(0.0, min(line_bottom, first_bottom) - max(line_box["y"], first_box["y"]))
-            )
-            line_area = line_box["width"] * line_box["height"]
-            if line_area <= 0 or line_intersection / line_area < 0.50:
-                return None, f"source_text line {line_index} for subtitle {index} is outside the first pass"
         left = min(box["x"] for box in line_boxes)
         top = min(box["y"] for box in line_boxes)
         right = max(box["x"] + box["width"] for box in line_boxes)
         bottom = max(box["y"] + box["height"] for box in line_boxes)
         source_box = {"x": left, "y": top, "width": right - left, "height": bottom - top}
-        intersection_width = max(
-            0.0,
-            min(source_box["x"] + source_box["width"], first_right)
-            - max(source_box["x"], first_box["x"]),
-        )
-        intersection_height = max(
-            0.0,
-            min(source_box["y"] + source_box["height"], first_bottom)
-            - max(source_box["y"], first_box["y"]),
-        )
         source_area = source_box["width"] * source_box["height"]
-        first_area = first_box["width"] * first_box["height"]
-        intersection_area = intersection_width * intersection_height
-        union_area = source_area + first_area - intersection_area
-        area_ratio = source_area / first_area if first_area > 0 else 0.0
-        iou = intersection_area / union_area if union_area > 0 else 0.0
-        source_center_x = source_box["x"] + source_box["width"] / 2.0
-        source_center_y = source_box["y"] + source_box["height"] / 2.0
-        first_center_x = first_box["x"] + first_box["width"] / 2.0
-        first_center_y = first_box["y"] + first_box["height"] / 2.0
+        # Absolute bounds reject canvas-sized or otherwise implausible text
+        # regions before deterministic raster QA.
         if (
-            not _PLACEMENT_MIN_AUDITED_AREA_RATIO <= area_ratio <= 1.80
-            or iou < _PLACEMENT_MIN_SOURCE_IOU
-            or abs(source_center_x - first_center_x) > max(2.0, first_box["width"] * 0.20)
-            or abs(source_center_y - first_center_y) > max(2.0, first_box["height"] * 0.25)
+            source_box["width"] > 96.0
+            or source_box["height"] > 45.0
+            or source_area > 4_000.0
         ):
-            return None, f"source_text geometry for subtitle {index} does not match the first pass"
+            return None, f"source_text geometry for subtitle {index} is implausibly large"
+        first_box = first_pass_source_boxes[index]
+        if require_source_identity and first_box is None:
+            return None, f"source_text geometry for subtitle {index} lacks a discovery anchor"
+        if first_box is not None:
+            source_center_x = source_box["x"] + source_box["width"] / 2.0
+            source_center_y = source_box["y"] + source_box["height"] / 2.0
+            first_center_x = first_box["x"] + first_box["width"] / 2.0
+            first_center_y = first_box["y"] + first_box["height"] / 2.0
+            if require_source_identity:
+                overlap_width = max(
+                    0.0,
+                    min(
+                        source_box["x"] + source_box["width"],
+                        first_box["x"] + first_box["width"],
+                    ) - max(source_box["x"], first_box["x"]),
+                )
+                overlap_height = max(
+                    0.0,
+                    min(
+                        source_box["y"] + source_box["height"],
+                        first_box["y"] + first_box["height"],
+                    ) - max(source_box["y"], first_box["y"]),
+                )
+                anchor_width_coverage = overlap_width / max(
+                    0.001,
+                    first_box["width"],
+                )
+                anchor_height_coverage = overlap_height / max(
+                    0.001,
+                    first_box["height"],
+                )
+                anchor_area_coverage = (
+                    overlap_width * overlap_height
+                    / max(0.001, first_box["width"] * first_box["height"])
+                )
+                if (
+                    overlap_width
+                    / max(0.001, min(source_box["width"], first_box["width"]))
+                    < 0.60
+                    or overlap_height
+                    / max(0.001, min(source_box["height"], first_box["height"]))
+                    < 0.45
+                    # Normalizing only by the smaller proposal lets a tiny,
+                    # centered word box look like a perfect overlap with a
+                    # complete discovery phrase.  Keep audit tightening, but
+                    # require it to retain a material portion of the immutable
+                    # image-only anchor on both axes and by area.
+                    or anchor_width_coverage < 0.45
+                    or anchor_height_coverage < 0.55
+                    or anchor_area_coverage < 0.27
+                    or abs(source_center_x - first_center_x)
+                    > min(8.0, first_box["width"] * 0.30)
+                    or abs(source_center_y - first_center_y)
+                    > min(6.0, first_box["height"] * 0.60)
+                ):
+                    return None, f"source_text geometry for subtitle {index} does not match discovery"
+            elif (
+                abs(source_center_x - first_center_x)
+                > max(35.0, first_box["width"] * 2.0)
+                or abs(source_center_y - first_center_y)
+                > max(30.0, first_box["height"] * 2.5)
+            ):
+                return None, f"source_text geometry for subtitle {index} lacks broad corroboration"
         cleanup_box = {
             "x": source_box["x"] - cleanup_padding_x,
             "y": source_box["y"] - cleanup_padding_y,
@@ -705,13 +1011,31 @@ def _validate_visual_placement_audit(
             if cleanup_overlap_area > 0 and not existing_caption_substrate:
                 return None, f"cleanup mask for subtitle {index} overlaps protected {kind}"
         accepted_cleanup_boxes.append(cleanup_box)
+        visual_row_count = _source_text_visual_row_count(line_boxes)
+        if visual_row_count > 2:
+            return None, f"source_text geometry for subtitle {index} exceeds two visual rows"
+        # Preserve the authoritative image-only discovery box as the cleanup
+        # seed.  The audit owns final Korean placement and the protection map,
+        # but a slightly clipped audit box must never make raster cleanup erase
+        # only one word and leave the rest of the verified source phrase.
+        cleanup_source_box = (
+            first_box
+            if require_source_identity and first_box is not None
+            else source_box
+        )
         audited_regions.append({
             **original,
             **source_box,
-            "source_x": source_box["x"],
-            "source_y": source_box["y"],
-            "source_width": source_box["width"],
-            "source_height": source_box["height"],
+            "source_x": cleanup_source_box["x"],
+            "source_y": cleanup_source_box["y"],
+            "source_width": cleanup_source_box["width"],
+            "source_height": cleanup_source_box["height"],
+            "_source_index": index,
+            # Line structure is visual evidence. Free-form OCR can insert or
+            # omit newlines for the same pixels, so it must not make cleanup
+            # succeed or fail randomly.
+            "_source_line_count": min(4, max(1, visual_row_count)),
+            "_protected_regions": copy.deepcopy(normalized_protected_regions),
         })
     return audited_regions, ""
 
@@ -721,6 +1045,10 @@ def _audit_visual_subtitle_placement(
     model: str,
     result: dict,
     source_image: PreparedSourceImage,
+    *,
+    raster_probe: bool = False,
+    max_calls: int = _MAX_VISUAL_PLACEMENT_AUDIT_CALLS,
+    deadline: Optional[float] = None,
 ) -> dict:
     """Tighten source-text geometry and atomically accept in-place replacements."""
     raw_regions = result.get("translation_regions")
@@ -729,9 +1057,10 @@ def _audit_visual_subtitle_placement(
 
     if len(raw_regions) > 4:
         return _clear_visual_localization(result)
+    raw_regions = copy.deepcopy(raw_regions)
 
     inputs: list[dict] = []
-    first_pass_source_boxes: list[dict[str, float]] = []
+    first_pass_source_boxes: list[Optional[dict[str, float]]] = []
     for index, region in enumerate(raw_regions):
         if not isinstance(region, dict):
             return _clear_visual_localization(result)
@@ -742,10 +1071,9 @@ def _audit_visual_subtitle_placement(
         if not isinstance(source_text, str) or not source_text.strip():
             return _clear_visual_localization(result)
         if len([line for line in text.splitlines() if line.strip()]) > 2:
-            return _clear_visual_localization(result)
+            text = re.sub(r"\s+", " ", text).strip()
+            region["text"] = text
         source_box = _strict_percent_box(region, minimum_width=0.25, minimum_height=0.25)
-        if source_box is None:
-            return _clear_visual_localization(result)
         first_pass_source_boxes.append(source_box)
         inputs.append({
             "index": index,
@@ -756,17 +1084,18 @@ def _audit_visual_subtitle_placement(
 
     audit_prompt = f"""Audit in-place source-phrase replacement on the attached official creative.
 
-Each source_phrase_box is the first-pass location of ORIGINAL lettering. The renderer will isolate and content-aware reconstruct only the lettering/outline pixels inside the final audited box, then place korean_text directly in that exact phrase area with no caption panel. Korean must not be moved elsewhere.
+Each source_phrase_box is an immutable anchor from a separate image-only discovery pass. Independently inspect the attached pixels and tighten it to the actual ORIGINAL lettering, but the final source_text boxes must substantially overlap that anchor and must never jump to another phrase. The renderer will isolate and content-aware reconstruct only the lettering/outline pixels inside the final audited box, then place korean_text directly in that exact phrase area with no caption panel. Korean must not be moved elsewhere.
 
 Subtitles:
 {json.dumps(inputs, ensure_ascii=False)}
 
 Rules:
 - Every coordinate in protected_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates.
+- Independently transcribe each complete source phrase into verified_source_texts. After case, whitespace, and punctuation normalization it must still exactly match the supplied source_text for that source_index. Return safe=false if the pixels do not corroborate that phrase.
 - Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
 - Map one tight protected_regions box per contiguous source-language phrase or important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
-- protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Separate lines may use separate boxes with the same source_index. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
-- Tighten each source_text box to the actual visible glyphs including outline and shadow. It must materially overlap the corresponding first-pass source_phrase_box and must not include unrelated copy.
+- protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Every visible text row MUST use its own tight source_text box with the same source_index; never wrap two or more rows in one box. Same-row phrase fragments may use separate boxes. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
+- Tighten each source_text box to the actual visible glyphs including outline and shadow while staying bound to source_phrase_box. Never move it to unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
 - Check the 1-3 source-pixel cleanup dilation. Return safe=false if it would touch any protected logo, face, product UI, token icon, unrelated text, ambiguous other_visual, or a separate important visual.
 - A character, limb, or product already directly behind the original source lettering is allowed as the existing caption substrate. Keep safe=true and report it accurately so deterministic validation can confirm that at least 50% of the cleanup/object intersection was already inside the original phrase box. If cleanup would newly reach one that was not behind the lettering, return safe=false. An ambiguous other_visual is never a caption substrate and must remain fully protected.
@@ -776,70 +1105,65 @@ Rules:
 Return exactly:
 {{
   "safe": true,
+  "verified_source_texts": [
+    {{"source_index":0,"text":"the exact visible source phrase"}}
+  ],
   "protected_regions": [
     {{"kind":"source_text","source_index":0,"x":35,"y":80,"width":30,"height":10}},
     {{"kind":"other_visual","x":35,"y":25,"width":30,"height":40}}
   ]
 }}
 or:
-{{"safe":false,"protected_regions":[]}}
+{{"safe":false,"verified_source_texts":[],"protected_regions":[]}}
 """
 
-    try:
-        audit_response = create_message(
-            api_client,
-            model=model,
-            max_tokens=1400,
-            temperature=0,
-            system=VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": source_image.media_type,
-                            "data": source_image.base64_data,
-                        },
-                    },
-                    {"type": "text", "text": audit_prompt},
-                ],
-            }],
-        )
-        audit = _parse_json_response(audit_response, "visual subtitle placement audit")
-    except Exception as exc:
-        print(f"[squid] placement audit failed safely: {type(exc).__name__}")
-        return _clear_visual_localization(result)
-
-    print(f"[squid] placement audit proposal: {json.dumps(_audit_log_payload(audit), ensure_ascii=True)}")
-    audited_regions, rejection = _validate_visual_placement_audit(
-        raw_regions,
-        first_pass_source_boxes,
-        audit,
-        source_image,
+    retry_context = ""
+    retained_retry_protections: Optional[list[dict]] = None
+    terminal_failure_status: Optional[str] = None
+    effective_max_calls = max(
+        1,
+        min(_MAX_VISUAL_PLACEMENT_AUDIT_CALLS, int(max_calls)),
     )
+    for attempt_index in range(effective_max_calls):
+        attempt_number = attempt_index + 1
+        attempt_prompt = audit_prompt
+        if retry_context:
+            retry_map_instruction = (
+                "The previous protection map was structurally valid. Re-map the "
+                "whole image; its valid non-source protections will also be "
+                "retained during deterministic validation."
+                if retained_retry_protections is not None
+                else
+                "The previous protection map was missing or malformed and cannot "
+                "be reused. Build a complete fresh map from the image while "
+                "staying anchored to the same supplied source_phrase_box."
+            )
+            attempt_prompt = f"""This is the final bounded reinspection of the attached image.
+Previous attempt outcome: {retry_context}
+{retry_map_instruction}
 
-    if audited_regions is None and rejection != "unsafe":
-        print(f"[squid] placement audit rejected: {rejection}; retrying once")
-        correction_prompt = f"""Your previous placement audit failed deterministic validation:
-{rejection}
-
-Return a complete fresh audit after reinspecting the attached image. Do not reuse malformed coordinates.
-- All coordinates must be image-relative percentages from 0 to 100, never pixels.
-- Allowed protected kinds are exactly: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual.
-- Use other_visual, never other, when an object is ambiguous.
-- Return safe=false if you cannot satisfy the schema and every clearance rule.
-- Re-scan each source phrase and return tight percentage geometry around its actual visible glyphs, outline, and shadow.
-- Include every important visual near the audited glyphs so deterministic cleanup-clearance validation can fail safely.
+Return a complete fresh audit. Do not copy the previous coordinates and do not assume the image is safe.
+- Re-map every protected region from the image.
+- Return safe=false if the source phrase or cleanup clearance remains uncertain.
+- A safe=true answer will still be rejected unless every protected box passes deterministic geometry validation and the raster lettering probe.
 
 {audit_prompt}"""
+
+        print(
+            "[squid] placement audit attempt "
+            f"{attempt_number}/{effective_max_calls} model={model}"
+        )
         try:
-            correction_response = create_message(
+            timeout = _remaining_llm_timeout(
+                deadline,
+                _SQUID_VISUAL_CALL_MAX_SECONDS,
+            )
+            audit_response = create_message(
                 api_client,
                 model=model,
                 max_tokens=1400,
                 temperature=0,
+                timeout=timeout,
                 system=VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
@@ -852,36 +1176,184 @@ Return a complete fresh audit after reinspecting the attached image. Do not reus
                                 "data": source_image.base64_data,
                             },
                         },
-                        {"type": "text", "text": correction_prompt},
+                        {"type": "text", "text": attempt_prompt},
                     ],
                 }],
             )
-            corrected_audit = _parse_json_response(
-                correction_response,
-                "visual subtitle placement audit correction",
-            )
-            print(
-                "[squid] placement audit correction: "
-                f"{json.dumps(_audit_log_payload(corrected_audit), ensure_ascii=True)}"
-            )
-            audited_regions, rejection = _validate_visual_placement_audit(
-                raw_regions,
-                first_pass_source_boxes,
-                corrected_audit,
-                source_image,
+            audit = _parse_json_response(
+                audit_response,
+                f"visual subtitle placement audit attempt {attempt_number}",
             )
         except Exception as exc:
-            print(f"[squid] placement audit correction failed safely: {type(exc).__name__}")
-            return _clear_visual_localization(result)
+            print(
+                f"[squid] placement audit attempt {attempt_number} failed safely: "
+                f"{type(exc).__name__}"
+            )
+            if attempt_number < effective_max_calls:
+                retry_context = (
+                    "the previous visual audit request failed before a valid "
+                    "inspection could be returned"
+                )
+                continue
+            return _clear_visual_localization(
+                result,
+                failure_status=terminal_failure_status,
+            )
 
-    if audited_regions is None:
-        if rejection != "unsafe":
-            print(f"[squid] placement audit correction rejected safely: {rejection}")
-        return _clear_visual_localization(result)
+        if audit.get("safe") is False:
+            print(
+                f"[squid] placement audit attempt {attempt_number} "
+                "returned explicit safe=false; stopping"
+            )
+            break
+        if attempt_number > 1 and retained_retry_protections is not None:
+            audit = _merge_retry_protections(
+                audit,
+                retained_retry_protections,
+            )
 
-    result["translation_regions"] = audited_regions
-    result["source_text_visible"] = True
-    return result
+        print(
+            f"[squid] placement audit attempt {attempt_number} proposal: "
+            f"{json.dumps(_audit_log_payload(audit), ensure_ascii=True)}"
+        )
+        retry_protections = _schema_valid_retry_protections(
+            audit,
+            region_count=len(raw_regions),
+        )
+        audited_regions, rejection = _validate_visual_placement_audit(
+            raw_regions,
+            first_pass_source_boxes,
+            audit,
+            source_image,
+            require_source_identity=raster_probe,
+        )
+        if audited_regions is None:
+            retry_context = (
+                "the independent inspection returned safe=false"
+                if rejection == "unsafe"
+                else f"deterministic protected-region validation rejected it: {rejection}"
+            )
+            if attempt_number < effective_max_calls:
+                retained_retry_protections = retry_protections
+                print(
+                    f"[squid] placement audit attempt {attempt_number} rejected: "
+                    f"{rejection}; using final bounded "
+                    f"{'protected-map' if retry_protections is not None else 'fresh-map'} "
+                    "attempt"
+                )
+                continue
+            if rejection != "unsafe":
+                print(f"[squid] placement audit rejected safely: {rejection}")
+            break
+
+        if raster_probe:
+            try:
+                probe = probe_source_text(source_image, audited_regions)
+                print(
+                    "[squid] placement raster probe accepted on attempt "
+                    f"{attempt_number}: {probe.masked_pixels} pixels"
+                )
+            except SourceTextCleanupError as exc:
+                terminal_failure_status = "cleanup_failed"
+                retry_context = (
+                    "deterministic raster probing could not isolate the complete "
+                    "source lettering inside the proposed boxes"
+                )
+                print(
+                    "[squid] placement raster probe rejected safely on attempt "
+                    f"{attempt_number}: {exc}"
+                )
+                if (
+                    attempt_number < effective_max_calls
+                    and retry_protections is not None
+                ):
+                    retained_retry_protections = retry_protections
+                    continue
+                break
+            except Exception as exc:
+                print(
+                    "[squid] placement raster probe failed closed on attempt "
+                    f"{attempt_number}: {type(exc).__name__}"
+                )
+                return _clear_visual_localization(
+                    result,
+                    failure_status="cleanup_failed",
+                )
+
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+        result["translation_regions"] = audited_regions
+        result["source_text_visible"] = True
+        return result
+
+    return _clear_visual_localization(
+        result,
+        failure_status=terminal_failure_status,
+    )
+
+
+def _normalize_visual_audit_metadata(
+    raw: dict,
+    *,
+    region_index: int,
+    region_count: int,
+) -> Optional[dict]:
+    """Copy only complete validator-produced metadata into render/cache regions."""
+    metadata_present = any(key in raw for key in _VISUAL_AUDIT_PRIVATE_KEYS)
+    if not metadata_present:
+        return None
+    raw_source_index = raw.get("_source_index")
+    raw_line_count = raw.get("_source_line_count")
+    raw_protected = raw.get("_protected_regions")
+    if (
+        isinstance(raw_source_index, bool)
+        or not isinstance(raw_source_index, int)
+        or raw_source_index != region_index
+        or isinstance(raw_line_count, bool)
+        or not isinstance(raw_line_count, int)
+        or raw_line_count < 1
+        or raw_line_count > 4
+        or not isinstance(raw_protected, list)
+        or not raw_protected
+        or len(raw_protected) > 32
+    ):
+        return None
+
+    protected_regions: list[dict] = []
+    protected_source_indexes: set[int] = set()
+    for raw_region in raw_protected:
+        if not isinstance(raw_region, dict):
+            return None
+        kind = raw_region.get("kind")
+        if kind not in _PLACEMENT_PROTECTED_KINDS:
+            return None
+        box = _strict_percent_box(
+            raw_region,
+            minimum_width=0.25,
+            minimum_height=0.25,
+        )
+        if box is None:
+            return None
+        protected_region = {"kind": kind, **box}
+        if kind == "source_text":
+            protected_source_index = raw_region.get("source_index")
+            if (
+                isinstance(protected_source_index, bool)
+                or not isinstance(protected_source_index, int)
+                or protected_source_index < 0
+                or protected_source_index >= region_count
+            ):
+                return None
+            protected_region["source_index"] = protected_source_index
+            protected_source_indexes.add(protected_source_index)
+        protected_regions.append(protected_region)
+
+    if protected_source_indexes != set(range(region_count)):
+        return None
+    return {
+        "_source_index": raw_source_index,
+        "_source_line_count": raw_line_count,
+        "_protected_regions": protected_regions,
+    }
 
 
 def _normalize_visual_localization(
@@ -890,6 +1362,8 @@ def _normalize_visual_localization(
     has_source_image: bool,
     source_image_width: int = 1080,
     source_image_height: int = 1080,
+    *,
+    require_audit_metadata: bool = False,
 ) -> dict:
     """Keep Squid visual translation regions bounded and renderer-safe."""
     enabled = (
@@ -903,7 +1377,7 @@ def _normalize_visual_localization(
     if enabled and isinstance(raw_regions, list):
         if len(raw_regions) > 4:
             invalid_regions = True
-        for raw in raw_regions:
+        for region_index, raw in enumerate(raw_regions):
             if invalid_regions:
                 break
             if not isinstance(raw, dict):
@@ -920,11 +1394,34 @@ def _normalize_visual_localization(
             source_text = source_text.strip()
             source_lines = [line.strip() for line in source_text.splitlines() if line.strip()]
             translation_lines = [line.strip() for line in text.splitlines() if line.strip()]
+            audit_metadata = _normalize_visual_audit_metadata(
+                raw,
+                region_index=region_index,
+                region_count=len(raw_regions),
+            )
+            if require_audit_metadata and audit_metadata is None:
+                invalid_regions = True
+                break
+            if audit_metadata is not None:
+                # OCR/newline formatting can vary for identical pixels. Reflow
+                # Korean deterministically from the audited visual row count
+                # before renderer and Figma fit checks.
+                text = _canonicalize_translation_rows(
+                    text,
+                    audit_metadata["_source_line_count"],
+                )
+                translation_lines = [
+                    line.strip() for line in text.splitlines() if line.strip()
+                ]
             if (
                 not source_lines
                 or not translation_lines
                 or len(translation_lines) > 2
-                or (len(source_lines) <= 2 and len(translation_lines) != len(source_lines))
+                or (
+                    audit_metadata is None
+                    and len(source_lines) <= 2
+                    and len(translation_lines) != len(source_lines)
+                )
             ):
                 invalid_regions = True
                 break
@@ -939,9 +1436,43 @@ def _normalize_visual_localization(
             if target_box is None or source_box is None:
                 invalid_regions = True
                 break
-            if any(abs(target_box[key] - source_box[key]) > 0.01 for key in ("x", "y", "width", "height")):
-                invalid_regions = True
-                break
+            if audit_metadata is None:
+                if any(
+                    abs(target_box[key] - source_box[key]) > 0.01
+                    for key in ("x", "y", "width", "height")
+                ):
+                    invalid_regions = True
+                    break
+            else:
+                # In the production audited path, source_* deliberately keeps
+                # the full image-only discovery phrase for raster cleanup while
+                # x/y/width/height keeps the tighter final Korean placement.
+                overlap_width = max(
+                    0.0,
+                    min(
+                        target_box["x"] + target_box["width"],
+                        source_box["x"] + source_box["width"],
+                    ) - max(target_box["x"], source_box["x"]),
+                )
+                overlap_height = max(
+                    0.0,
+                    min(
+                        target_box["y"] + target_box["height"],
+                        source_box["y"] + source_box["height"],
+                    ) - max(target_box["y"], source_box["y"]),
+                )
+                if (
+                    overlap_width / max(0.001, min(target_box["width"], source_box["width"])) < 0.60
+                    or overlap_height / max(0.001, min(target_box["height"], source_box["height"])) < 0.45
+                    or overlap_width / max(0.001, source_box["width"]) < 0.45
+                    or overlap_height / max(0.001, source_box["height"]) < 0.55
+                    or (
+                        overlap_width * overlap_height
+                        / max(0.001, source_box["width"] * source_box["height"])
+                    ) < 0.27
+                ):
+                    invalid_regions = True
+                    break
 
             raw_x = target_box["x"]
             raw_y = target_box["y"]
@@ -957,7 +1488,10 @@ def _normalize_visual_localization(
 
             # Match the renderer's 2%-of-image-width minimum font and reject
             # regions that could still disappear after its deterministic shrink.
-            minimum_css_font_percent = 2.0
+            minimum_css_font_percent = _minimum_squid_font_percent(
+                source_image_width,
+                source_image_height,
+            )
             widest_line_units = max((_text_width_units(line) for line in translation_lines), default=0.0)
             minimum_rendered_width = widest_line_units * minimum_css_font_percent * 1.05 * scale_x
             source_ratio = source_image_width / max(1, source_image_height)
@@ -990,7 +1524,14 @@ def _normalize_visual_localization(
                 "font_size": round(font_size, 2),
                 "scale_x": round(scale_x, 2),
                 "text_color": text_color.upper() if isinstance(text_color, str) and _HEX_COLOR.match(text_color) else "#FFFFFF",
+                "source_line_count": (
+                    audit_metadata["_source_line_count"]
+                    if audit_metadata is not None
+                    else min(2, len(source_lines))
+                ),
             }
+            if audit_metadata is not None:
+                candidate.update(audit_metadata)
             overlaps_existing = any(
                 candidate["x"] < existing["x"] + existing["width"]
                 and candidate["x"] + candidate["width"] > existing["x"]
@@ -1019,9 +1560,12 @@ def _stamp_visual_localization_status(
     had_detected_copy: bool,
 ) -> dict:
     """Tell the console whether copy was absent or rejected by placement QA."""
+    failure_status = result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
     if client_id == "squid" and has_source_image:
         if result.get("source_text_visible") is True:
             result["visual_localization_status"] = "translated"
+        elif failure_status == "cleanup_failed":
+            result["visual_localization_status"] = "cleanup_failed"
         elif had_detected_copy:
             result["visual_localization_status"] = "unsafe_placement"
         else:
@@ -1041,6 +1585,7 @@ def generate_news_card_spec(
     mock_mode: bool = False,
     mock_response: Optional[dict] = None,
     source_image: Optional[PreparedSourceImage] = None,
+    cached_visual_localization: Optional[list[dict]] = None,
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -1060,6 +1605,7 @@ def generate_news_card_spec(
     """
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
         had_detected_copy = (
             result.get("source_text_visible") is True
             and isinstance(result.get("translation_regions"), list)
@@ -1103,6 +1649,16 @@ def generate_news_card_spec(
         raise ImportError("pip install anthropic")
 
     client = Anthropic()
+    # The SDK retries timeouts by default, which can silently multiply an 8s
+    # visual call past Netlify's 55s upstream limit. Visual discovery/audit has
+    # its own bounded retry policy, so keep each SDK request single-attempt.
+    if client_id == "squid" and source_image is not None and hasattr(client, "with_options"):
+        client = client.with_options(max_retries=0)
+    visual_deadline = (
+        time.monotonic() + _SQUID_VISUAL_LLM_BUDGET_SECONDS
+        if client_id == "squid" and source_image is not None
+        else None
+    )
 
     message_content: str | list[dict] = prompt
     if source_image is not None:
@@ -1123,38 +1679,80 @@ def generate_news_card_spec(
         model=llm_cfg.model,
         max_tokens=1500,
         temperature=llm_cfg.temperature,
+        timeout=_remaining_llm_timeout(
+            visual_deadline,
+            _SQUID_MAIN_LLM_MAX_SECONDS,
+            reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS * 2,
+        ),
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": message_content}],
     )
 
     result = _parse_json_response(response, "news card generation")
+    result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
     had_detected_copy = (
         result.get("source_text_visible") is True
         and isinstance(result.get("translation_regions"), list)
         and bool(result["translation_regions"])
     )
 
-    if client_id == "squid" and source_image is not None:
-        result = _repair_untranslated_visual_copy(
-            client,
-            llm_cfg.model,
-            result,
-            llm_cfg.preserve_terms,
-            source_content,
+    cache_hit = False
+    if (
+        client_id == "squid"
+        and source_image is not None
+        and isinstance(cached_visual_localization, list)
+        and cached_visual_localization
+    ):
+        cached = _normalize_visual_localization(
+            {
+                "source_text_visible": True,
+                "translation_regions": copy.deepcopy(cached_visual_localization),
+            },
+            client_id,
+            True,
+            source_image.width,
+            source_image.height,
+            require_audit_metadata=True,
         )
-        # A repair may discard an identifier-only region. Status should reflect
-        # whether natural-language copy still reached placement QA.
+        if cached.get("source_text_visible") is True:
+            result["source_text_visible"] = True
+            result["translation_regions"] = cached["translation_regions"]
+            result["_visual_localization_cache_hit"] = True
+            had_detected_copy = True
+            cache_hit = True
+            print("[squid] validated visual localization cache hit; placement audit skipped")
+
+    if client_id == "squid" and source_image is not None and not cache_hit:
+        # The sampled creative-writing model never owns destructive image
+        # geometry. A temperature-zero, image-only pass always replaces its
+        # visual OCR so a valid-but-partial first answer cannot make cold
+        # requests alternate between translated and unchanged.
+        result, discovery_calls = _discover_visual_copy(
+            client,
+            VISUAL_PLACEMENT_AUDIT_MODEL,
+            result,
+            source_image,
+            llm_cfg.preserve_terms,
+            deadline=visual_deadline,
+        )
         had_detected_copy = (
             result.get("source_text_visible") is True
             and isinstance(result.get("translation_regions"), list)
             and bool(result["translation_regions"])
         )
-        result = _audit_visual_subtitle_placement(
-            client,
-            llm_cfg.model,
-            result,
-            source_image,
-        )
+        if had_detected_copy:
+            result = _audit_visual_subtitle_placement(
+                client,
+                VISUAL_PLACEMENT_AUDIT_MODEL,
+                result,
+                source_image,
+                raster_probe=True,
+                max_calls=max(
+                    1,
+                    _MAX_SQUID_STABLE_VISUAL_CALLS - discovery_calls,
+                ),
+                deadline=visual_deadline,
+            )
 
     # Force-stamp source_url: LLM occasionally truncates or normalizes URLs;
     # the caller's URL is the source of truth.
@@ -1165,6 +1763,7 @@ def generate_news_card_spec(
         source_image is not None,
         source_image.width if source_image is not None else 1080,
         source_image.height if source_image is not None else 1080,
+        require_audit_metadata=(client_id == "squid" and source_image is not None),
     )
     result = _stamp_visual_localization_status(
         result,

@@ -15,7 +15,7 @@ class _FakeClient:
         self.messages = _FakeMessages()
 
 
-def _call(model: str):
+def _call(model: str, *, timeout=None):
     client = _FakeClient()
     create_message(
         client,
@@ -24,6 +24,7 @@ def _call(model: str):
         temperature=0.2,
         system="system",
         messages=[{"role": "user", "content": "hello"}],
+        timeout=timeout,
     )
     return client.messages.kwargs
 
@@ -37,3 +38,9 @@ def test_opus_4_8_omits_deprecated_temperature():
 def test_older_models_keep_configured_temperature():
     kwargs = _call("claude-sonnet-4-5-20250929")
     assert kwargs["temperature"] == 0.2
+
+
+def test_per_request_timeout_is_forwarded_when_configured():
+    kwargs = _call("claude-sonnet-4-5-20250929", timeout=8.0)
+
+    assert kwargs["timeout"] == 8.0
