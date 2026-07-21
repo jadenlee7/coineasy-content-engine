@@ -788,7 +788,7 @@ def _source_box_in_broad_discovery_vicinity(
     )
     return (
         width_coverage >= 0.25
-        and height_coverage >= 0.35
+        and height_coverage >= 0.33
         and area_coverage >= 0.09
         and abs(proposal_center_x - anchor_center_x)
         <= min(8.0, anchor["width"] * 0.30)

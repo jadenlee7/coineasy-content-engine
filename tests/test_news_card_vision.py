@@ -1439,7 +1439,7 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
             "x": 30,
             "y": 82,
             "width": 40,
-            "height": 12,
+            "height": 13,
         }],
     }
     image = PreparedSourceImage(
@@ -1465,14 +1465,14 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
         30.0,
         82.0,
         40.0,
-        12.0,
+        13.0,
     )
     assert (
         region["source_x"],
         region["source_y"],
         region["source_width"],
         region["source_height"],
-    ) == (30.0, 82.0, 40.0, 12.0)
+    ) == (30.0, 82.0, 40.0, 13.0)
     protected = region["_protected_regions"]
     assert [item["kind"] for item in protected] == [
         "source_text",
