@@ -1394,6 +1394,153 @@ def test_squid_audit_rejects_matching_identity_at_the_wrong_location(monkeypatch
     assert result["translation_regions"] == []
 
 
+def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
+    monkeypatch,
+):
+    """Regress the first misplaced 480x320 coordinate seen in Railway."""
+    calls = []
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "chillin'"}],
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 44.5,
+                "y": 68.0,
+                "width": 11.0,
+                "height": 4.5,
+            },
+            {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+            {"kind": "product", "x": 52, "y": 50, "width": 18, "height": 20},
+        ],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )])
+
+    probed_regions = []
+
+    def fake_probe(_image, regions):
+        probed_regions.append(regions)
+        return SimpleNamespace(masked_pixels=2682)
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr("core.llm.news_card_pipeline.probe_source_text", fake_probe)
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            # Authoritative image-only discovery anchor from the live creative.
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 12,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+    )
+
+    assert len(calls) == 1
+    assert len(probed_regions) == 1
+    assert result["source_text_visible"] is True
+    region = result["translation_regions"][0]
+    assert (region["x"], region["y"], region["width"], region["height"]) == (
+        30.0,
+        82.0,
+        40.0,
+        12.0,
+    )
+    assert (
+        region["source_x"],
+        region["source_y"],
+        region["source_width"],
+        region["source_height"],
+    ) == (30.0, 82.0, 40.0, 12.0)
+    protected = region["_protected_regions"]
+    assert [item["kind"] for item in protected] == [
+        "source_text",
+        "character",
+        "product",
+    ]
+    assert probed_regions[0][0] == region
+
+
+def test_squid_discovery_anchor_recovery_requires_raster_probe(monkeypatch):
+    calls = []
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "chillin'"}],
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 44.5,
+                "y": 68.0,
+                "width": 11.0,
+                "height": 4.5,
+            },
+            {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+        ],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(audit))])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 12,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=False,
+    )
+
+    assert len(calls) == 1
+    assert result["source_text_visible"] is True
+    # Non-raster callers retain the existing broad-audit behavior; they never
+    # receive the discovery-anchor recovery reserved for pixel-confirmed paths.
+    assert result["translation_regions"][0]["x"] == 44.5
+    assert result["translation_regions"][0]["y"] == 68.0
+    assert result["translation_regions"][0]["source_x"] == 44.5
+    assert result["translation_regions"][0]["source_y"] == 68.0
+
+
 def test_squid_audit_rejects_centered_subset_of_discovery_anchor(monkeypatch):
     calls = []
     audit = {

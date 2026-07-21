@@ -723,6 +723,117 @@ def _merge_retry_protections(audit: dict, retained: list[dict]) -> dict:
     return {**audit, "protected_regions": merged}
 
 
+def _audit_source_box_unions(
+    audit: dict,
+    *,
+    region_count: int,
+) -> Optional[list[dict[str, float]]]:
+    """Return one union box per source index from a schema-valid audit map."""
+    raw_protected = audit.get("protected_regions")
+    if not isinstance(raw_protected, list):
+        return None
+    boxes_by_index: list[list[dict[str, float]]] = [
+        [] for _ in range(region_count)
+    ]
+    for raw in raw_protected:
+        if not isinstance(raw, dict) or raw.get("kind") != "source_text":
+            continue
+        source_index = raw.get("source_index")
+        box = _strict_percent_box(
+            raw,
+            minimum_width=0.25,
+            minimum_height=0.25,
+        )
+        if (
+            isinstance(source_index, bool)
+            or not isinstance(source_index, int)
+            or source_index < 0
+            or source_index >= region_count
+            or box is None
+        ):
+            return None
+        boxes_by_index[source_index].append(box)
+    if any(not boxes for boxes in boxes_by_index):
+        return None
+
+    unions: list[dict[str, float]] = []
+    for boxes in boxes_by_index:
+        left = min(box["x"] for box in boxes)
+        top = min(box["y"] for box in boxes)
+        right = max(box["x"] + box["width"] for box in boxes)
+        bottom = max(box["y"] + box["height"] for box in boxes)
+        unions.append({
+            "x": left,
+            "y": top,
+            "width": right - left,
+            "height": bottom - top,
+        })
+    return unions
+
+
+def _source_box_in_broad_discovery_vicinity(
+    proposal: dict[str, float],
+    anchor: dict[str, float],
+) -> bool:
+    """Admit a useful nearby audit seed without requiring vertical overlap."""
+    proposal_center_x = proposal["x"] + proposal["width"] / 2.0
+    proposal_center_y = proposal["y"] + proposal["height"] / 2.0
+    anchor_center_x = anchor["x"] + anchor["width"] / 2.0
+    anchor_center_y = anchor["y"] + anchor["height"] / 2.0
+    width_coverage = proposal["width"] / max(0.001, anchor["width"])
+    height_coverage = proposal["height"] / max(0.001, anchor["height"])
+    area_coverage = (
+        proposal["width"] * proposal["height"]
+        / max(0.001, anchor["width"] * anchor["height"])
+    )
+    return (
+        width_coverage >= 0.25
+        and height_coverage >= 0.35
+        and area_coverage >= 0.09
+        and abs(proposal_center_x - anchor_center_x)
+        <= min(8.0, anchor["width"] * 0.30)
+        and abs(proposal_center_y - anchor_center_y)
+        <= max(30.0, anchor["height"] * 2.5)
+    )
+
+
+def _discovery_anchor_recovery_audit(
+    raw_regions: list[dict],
+    first_pass_source_boxes: list[Optional[dict[str, float]]],
+    audit: dict,
+    retained_non_source: list[dict],
+) -> Optional[dict]:
+    """Build a single-line recovery map from authoritative discovery anchors.
+
+    A structurally valid audit may spatially ground a tiny 480x320 caption a few
+    rows too high even after transcribing it exactly.  Its non-source map remains
+    authoritative; only that contradicted source box is replaced, and the caller
+    must still pass deterministic raster consensus.
+    """
+    if len(raw_regions) != 1 or len(first_pass_source_boxes) != 1:
+        return None
+    source_text = raw_regions[0].get("source_text")
+    korean_text = raw_regions[0].get("text")
+    if (
+        not isinstance(source_text, str)
+        or len([line for line in source_text.splitlines() if line.strip()]) != 1
+        or not isinstance(korean_text, str)
+        or len([line for line in korean_text.splitlines() if line.strip()]) != 1
+    ):
+        return None
+    anchor = first_pass_source_boxes[0]
+    if anchor is None:
+        return None
+    return {
+        "safe": True,
+        "verified_source_texts": copy.deepcopy(audit.get("verified_source_texts")),
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, **anchor},
+            *copy.deepcopy(retained_non_source),
+        ],
+    }
+
+
 def _source_text_visual_row_count(boxes: list[dict[str, float]]) -> int:
     """Count visual rows without treating same-row phrase fragments as lines."""
     rows: list[list[dict[str, float]]] = []
@@ -1228,23 +1339,78 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
             require_source_identity=raster_probe,
         )
         if audited_regions is None:
-            retry_context = (
-                "the independent inspection returned safe=false"
-                if rejection == "unsafe"
-                else f"deterministic protected-region validation rejected it: {rejection}"
+            source_box_unions = _audit_source_box_unions(
+                audit,
+                region_count=len(raw_regions),
             )
-            if attempt_number < effective_max_calls:
-                retained_retry_protections = retry_protections
-                print(
-                    f"[squid] placement audit attempt {attempt_number} rejected: "
-                    f"{rejection}; using final bounded "
-                    f"{'protected-map' if retry_protections is not None else 'fresh-map'} "
-                    "attempt"
+            exact_identity = not _validate_audit_source_identities(
+                raw_regions,
+                audit,
+            )
+            geometry_mismatch = (
+                raster_probe
+                and len(raw_regions) == 1
+                and rejection
+                == "source_text geometry for subtitle 0 does not match discovery"
+                and exact_identity
+                and retry_protections is not None
+                and source_box_unions is not None
+            )
+            if (
+                geometry_mismatch
+                and first_pass_source_boxes[0] is not None
+                and _source_box_in_broad_discovery_vicinity(
+                    source_box_unions[0],
+                    first_pass_source_boxes[0],
                 )
-                continue
-            if rejection != "unsafe":
-                print(f"[squid] placement audit rejected safely: {rejection}")
-            break
+            ):
+                recovery_audit = _discovery_anchor_recovery_audit(
+                    raw_regions,
+                    first_pass_source_boxes,
+                    audit,
+                    retry_protections,
+                )
+                if recovery_audit is not None:
+                    recovered_regions, recovery_rejection = (
+                        _validate_visual_placement_audit(
+                            raw_regions,
+                            first_pass_source_boxes,
+                            recovery_audit,
+                            source_image,
+                            require_source_identity=raster_probe,
+                        )
+                    )
+                    if recovered_regions is not None:
+                        print(
+                            "[squid] placement geometry missed a nearby "
+                            "single-line phrase; using the authoritative "
+                            "discovery anchor for deterministic raster recovery"
+                        )
+                        audited_regions = recovered_regions
+                    else:
+                        rejection = recovery_rejection
+            if audited_regions is not None:
+                # Continue below into the mandatory raster probe.  The recovery
+                # anchor is never accepted on model metadata alone.
+                pass
+            else:
+                retry_context = (
+                    "the independent inspection returned safe=false"
+                    if rejection == "unsafe"
+                    else f"deterministic protected-region validation rejected it: {rejection}"
+                )
+                if attempt_number < effective_max_calls:
+                    retained_retry_protections = retry_protections
+                    print(
+                        f"[squid] placement audit attempt {attempt_number} rejected: "
+                        f"{rejection}; using final bounded "
+                        f"{'protected-map' if retry_protections is not None else 'fresh-map'} "
+                        "attempt"
+                    )
+                    continue
+                if rejection != "unsafe":
+                    print(f"[squid] placement audit rejected safely: {rejection}")
+                break
 
         if raster_probe:
             try:
