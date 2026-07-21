@@ -215,6 +215,58 @@ def _mask_touches_crop_edge(
     return left <= 0 or top <= 0 or right >= crop_width or bottom >= crop_height
 
 
+def _has_nested_dark_caption_panel(gray: np.ndarray, selected_mask: np.ndarray) -> bool:
+    """Reject an inner-glyph mask when a dark panel fills the audited crop."""
+    binary = np.where(gray <= 44, 255, 0).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    crop_height, crop_width = gray.shape
+    crop_area = crop_width * crop_height
+    selected_pixels = int(np.count_nonzero(selected_mask))
+    for index in range(1, count):
+        x, y, width, height, area = (int(value) for value in stats[index])
+        touches_opposite_edges = (
+            (x <= 0 and x + width >= crop_width)
+            or (y <= 0 and y + height >= crop_height)
+        )
+        component = np.where(labels == index, 255, 0).astype(np.uint8)
+        contours, _ = cv2.findContours(
+            component,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        silhouette = np.zeros_like(component)
+        cv2.drawContours(silhouette, contours, -1, 255, cv2.FILLED)
+        selected_containment = int(
+            np.count_nonzero((selected_mask > 0) & (silhouette > 0))
+        ) / max(1, selected_pixels)
+        if (
+            touches_opposite_edges
+            and area / max(1, crop_area) >= 0.55
+            and area / max(1, selected_pixels) >= 2.0
+            and selected_containment >= 0.90
+        ):
+            return True
+    return False
+
+
+def _valid_search_box(
+    box: tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> bool:
+    left, top, right, bottom = box
+    return (
+        left >= 0
+        and top >= 0
+        and right <= image_width
+        and bottom <= image_height
+        and right - left >= 6
+        and bottom - top >= 4
+        and (right - left) * (bottom - top)
+        <= image_width * image_height * MAX_SINGLE_REGION_FRACTION
+    )
+
+
 def _intersection_area(
     first: tuple[int, int, int, int],
     second: tuple[int, int, int, int],
@@ -272,89 +324,114 @@ def _detect_region_text_mask(
     base_left, base_top, base_right, base_bottom = base
     base_width = base_right - base_left
     base_height = base_bottom - base_top
-    recovery = (
+    clipped_recovery = (
         int(math.floor(base_left - base_width * 0.20)),
         int(math.floor(base_top + base_height * 0.20)),
         int(math.ceil(base_right + base_width * 0.05)),
         int(math.ceil(base_bottom + base_height * 0.70)),
     )
+    panel_recovery = (
+        base_left - 3,
+        base_top - 3,
+        base_right + 3,
+        base_bottom + 3,
+    )
 
-    attempts = (base, recovery)
-    last_error: SourceTextCleanupError | None = None
-    clipped_seed: tuple[np.ndarray, tuple[int, int]] | None = None
-    for attempt_index, (left, top, right, bottom) in enumerate(attempts):
-        if (
-            left < 0
-            or top < 0
-            or right > image_width
-            or bottom > image_height
-            or right - left < 6
-            or bottom - top < 4
-            or (right - left) * (bottom - top)
-            > image_width * image_height * MAX_SINGLE_REGION_FRACTION
-        ):
-            continue
-        try:
-            gray_crop = cv2.cvtColor(
-                image[top:bottom, left:right],
-                cv2.COLOR_BGR2GRAY,
-            )
-            mask = _detect_text_mask(gray_crop)
-            local_bounds = _mask_bounds(mask)
-        except SourceTextCleanupError as exc:
-            # Recovery is only allowed to complete a mask that was detected but
-            # visibly clipped. A blank/incorrect audit must remain fail-closed.
-            if attempt_index == 0:
-                raise
-            last_error = exc
-            continue
+    gray_crop = cv2.cvtColor(
+        image[base_top:base_bottom, base_left:base_right],
+        cv2.COLOR_BGR2GRAY,
+    )
+    seed_mask = _detect_text_mask(gray_crop)
+    seed_bounds = _mask_bounds(seed_mask)
+    if _mask_touches_crop_edge(seed_bounds, base_width, base_height):
+        recovery = clipped_recovery
+        recovery_kind = "clipped"
+    elif _has_nested_dark_caption_panel(gray_crop, seed_mask):
+        # The placement audit already reserves three source pixels around text.
+        # Use exactly that halo to expose an opaque panel's real outer edge.
+        recovery = panel_recovery
+        recovery_kind = "panel"
+    else:
+        detected = (
+            base_left + seed_bounds[0],
+            base_top + seed_bounds[1],
+            base_left + seed_bounds[2],
+            base_top + seed_bounds[3],
+        )
+        return seed_mask, (base_left, base_top), detected
 
-        if _mask_touches_crop_edge(
-            local_bounds,
-            right - left,
-            bottom - top,
-        ):
-            last_error = SourceTextCleanupError(
-                "source-text mask is clipped by its audited box"
-            )
-            if attempt_index == 0:
-                clipped_seed = (mask, (left, top))
-            continue
+    if not _valid_search_box(recovery, image_width, image_height):
+        raise SourceTextCleanupError("no safe source-text recovery box found")
+    left, top, right, bottom = recovery
+    recovery_gray = cv2.cvtColor(
+        image[top:bottom, left:right],
+        cv2.COLOR_BGR2GRAY,
+    )
+    mask = _detect_text_mask(recovery_gray)
+    local_bounds = _mask_bounds(mask)
+    if _mask_touches_crop_edge(
+        local_bounds,
+        right - left,
+        bottom - top,
+    ):
+        raise SourceTextCleanupError(
+            "source-text mask is clipped by its recovery box"
+        )
 
+    detected = (
+        left + local_bounds[0],
+        top + local_bounds[1],
+        left + local_bounds[2],
+        top + local_bounds[3],
+    )
+    overlap = _intersection_area(base, detected)
+    detected_area = (detected[2] - detected[0]) * (detected[3] - detected[1])
+    base_area = base_width * base_height
+    pixel_overlap = _mask_overlap_pixels(
+        seed_mask,
+        (base_left, base_top),
+        mask,
+        (left, top),
+    )
+    seed_pixels = int(np.count_nonzero(seed_mask))
+    recovered_pixels = int(np.count_nonzero(mask))
+    minimum_seed_overlap = 0.90 if recovery_kind == "panel" else 0.40
+    recovered_overlap_is_too_small = (
+        recovery_kind == "clipped"
+        and pixel_overlap / max(1, recovered_pixels) < 0.25
+    )
+    panel_recovery_is_too_small = (
+        recovery_kind == "panel"
+        and recovered_pixels / max(1, seed_pixels) < 2.0
+    )
+    if (
+        overlap / max(1, detected_area) < 0.25
+        or overlap / max(1, base_area) < 0.20
+        or pixel_overlap / max(1, seed_pixels) < minimum_seed_overlap
+        or recovered_overlap_is_too_small
+        or panel_recovery_is_too_small
+    ):
+        raise SourceTextCleanupError(
+            "recovered source-text mask left its audited seed"
+        )
+
+    if recovery_kind == "panel":
+        seed_top = base_top - top
+        seed_left = base_left - left
+        seed_bottom = seed_top + seed_mask.shape[0]
+        seed_right = seed_left + seed_mask.shape[1]
+        mask[seed_top:seed_bottom, seed_left:seed_right] = cv2.bitwise_or(
+            mask[seed_top:seed_bottom, seed_left:seed_right],
+            seed_mask,
+        )
+        local_bounds = _mask_bounds(mask)
         detected = (
             left + local_bounds[0],
             top + local_bounds[1],
             left + local_bounds[2],
             top + local_bounds[3],
         )
-        if attempt_index:
-            if clipped_seed is None:
-                raise SourceTextCleanupError("source-text recovery has no clipped seed")
-            overlap = _intersection_area(base, detected)
-            detected_area = (detected[2] - detected[0]) * (detected[3] - detected[1])
-            base_area = base_width * base_height
-            seed_mask, seed_origin = clipped_seed
-            pixel_overlap = _mask_overlap_pixels(
-                seed_mask,
-                seed_origin,
-                mask,
-                (left, top),
-            )
-            if (
-                overlap / max(1, detected_area) < 0.25
-                or overlap / max(1, base_area) < 0.20
-                or pixel_overlap / max(1, np.count_nonzero(seed_mask)) < 0.40
-                or pixel_overlap / max(1, np.count_nonzero(mask)) < 0.25
-            ):
-                last_error = SourceTextCleanupError(
-                    "recovered source-text mask left its audited seed"
-                )
-                continue
-        return mask, (left, top), detected
-
-    if last_error is not None:
-        raise last_error
-    raise SourceTextCleanupError("no safe source-text search box found")
+    return mask, (left, top), detected
 
 
 def _exemplar_inpaint(image: np.ndarray, mask: np.ndarray) -> np.ndarray:

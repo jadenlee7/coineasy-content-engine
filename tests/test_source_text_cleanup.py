@@ -99,6 +99,30 @@ def test_recovers_a_complete_caption_when_the_audited_box_clips_its_top_left():
     assert after_dark < before_dark * 0.08
 
 
+def test_recovers_an_opaque_caption_panel_that_exactly_fills_the_audit_box():
+    source = _caption_source()
+    cleaned = clean_source_text(source, [{
+        "source_x": 30.8333333333,
+        "source_y": 72.5,
+        "source_width": 38.75,
+        "source_height": 19.375,
+    }])
+
+    detected = cleaned.detected_regions[0]
+    assert detected["x"] == pytest.approx(30.833, abs=0.01)
+    assert detected["y"] == pytest.approx(72.5, abs=0.01)
+    assert detected["width"] == pytest.approx(38.75, abs=0.01)
+    assert detected["height"] == pytest.approx(19.375, abs=0.01)
+
+    before = _decode(source)
+    after = _decode(cleaned.image)
+    caption = np.s_[112:153, 70:170]
+    before_dark = np.count_nonzero(cv2.cvtColor(before[caption], cv2.COLOR_BGR2GRAY) < 30)
+    after_dark = np.count_nonzero(cv2.cvtColor(after[caption], cv2.COLOR_BGR2GRAY) < 30)
+    assert cleaned.masked_pixels > 1_000
+    assert after_dark < before_dark * 0.08
+
+
 def test_does_not_expand_search_when_the_audited_box_has_no_text(monkeypatch):
     calls = []
 
@@ -139,6 +163,41 @@ def test_recovery_must_continue_the_clipped_seed_pixels(monkeypatch):
     monkeypatch.setattr(
         "core.sources.source_text_cleanup._detect_text_mask",
         disconnected_masks,
+    )
+    with pytest.raises(SourceTextCleanupError, match="audited seed"):
+        _detect_region_text_mask(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {
+                "source_x": 30,
+                "source_y": 30,
+                "source_width": 20,
+                "source_height": 10,
+            },
+        )
+    assert calls == 2
+
+
+def test_panel_recovery_must_expand_beyond_the_inner_glyph_mask(monkeypatch):
+    calls = 0
+
+    def inner_mask_only(gray):
+        nonlocal calls
+        calls += 1
+        mask = np.zeros(gray.shape, dtype=np.uint8)
+        if calls == 1:
+            mask[2:8, 5:15] = 255
+        else:
+            # Same absolute pixels inside the three-pixel recovery halo.
+            mask[5:11, 8:18] = 255
+        return mask
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        inner_mask_only,
+    )
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._has_nested_dark_caption_panel",
+        lambda gray, mask: True,
     )
     with pytest.raises(SourceTextCleanupError, match="audited seed"):
         _detect_region_text_mask(
