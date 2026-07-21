@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.orchestrator import NEWS_CARD_TEMPLATES, generate_news_card
+from core.orchestrator import (
+    NEWS_CARD_TEMPLATES,
+    _align_regions_to_detected_text,
+    generate_news_card,
+)
 from core.sources.source_image import PreparedSourceImage
 from core.sources.source_text_cleanup import SourceTextCleanupError
 
@@ -69,6 +73,44 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert ".28em" not in override_html
 
 
+def test_detected_source_glyphs_recenter_the_transparent_korean_caption():
+    aligned = _align_regions_to_detected_text(
+        [{
+            "text": "칠링",
+            "x": 44,
+            "y": 81,
+            "width": 22,
+            "height": 9,
+        }],
+        ({
+            "x": 40.208333,
+            "y": 85.625,
+            "width": 20,
+            "height": 9.6875,
+        },),
+        480,
+        320,
+    )
+
+    region = aligned[0]
+    assert region["x"] == pytest.approx(39.208333, abs=0.0001)
+    assert region["y"] == pytest.approx(85.3125, abs=0.0001)
+    assert region["width"] == 22
+    assert region["height"] == pytest.approx(10.3125, abs=0.0001)
+    assert region["source_x"] == region["x"]
+    assert region["source_y"] == region["y"]
+
+
+def test_detected_source_glyphs_fail_closed_instead_of_clamping_at_the_edge():
+    with pytest.raises(SourceTextCleanupError, match="cannot stay centered"):
+        _align_regions_to_detected_text(
+            [{"text": "번역", "x": 0, "y": 20, "width": 20, "height": 10}],
+            ({"x": 0, "y": 20, "width": 4, "height": 8},),
+            480,
+            320,
+        )
+
+
 @pytest.mark.asyncio
 async def test_selected_template_is_used(monkeypatch, tmp_path):
     captured = {}
@@ -125,6 +167,12 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
                 height=image.height,
             ),
             masked_pixels=48,
+            detected_regions=({
+                "x": 20,
+                "y": 20,
+                "width": 30,
+                "height": 10,
+            },),
         ),
     )
 
@@ -164,7 +212,9 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
     assert captured["slots"]["source_logo_visible"] is True
     assert captured["slots"]["source_text_visible"] is True
     assert captured["slots"]["translation_regions"][0]["text"] == "어디서나 XRP를 사용하세요"
-    assert captured["slots"]["translation_regions"][0]["source_y"] == 12.0
+    assert captured["slots"]["translation_regions"][0]["x"] == 9.0
+    assert captured["slots"]["translation_regions"][0]["y"] == 17.0
+    assert captured["slots"]["translation_regions"][0]["source_y"] == 17.0
     assert "sample_y" not in captured["slots"]["translation_regions"][0]
     assert captured["slots"]["source_crop_bottom"] == 100.0
     assert captured["slots"]["source_image_width"] == 1080

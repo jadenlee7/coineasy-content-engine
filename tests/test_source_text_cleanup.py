@@ -7,7 +7,11 @@ import pytest
 from PIL import Image, ImageDraw
 
 from core.sources.source_image import prepare_source_image_bytes
-from core.sources.source_text_cleanup import SourceTextCleanupError, clean_source_text
+from core.sources.source_text_cleanup import (
+    SourceTextCleanupError,
+    _detect_region_text_mask,
+    clean_source_text,
+)
 
 
 def _caption_source():
@@ -69,6 +73,84 @@ def test_removes_a_text_shaped_caption_without_changing_the_whole_audit_box():
     outside[105:156, 57:183] = False
     outside_delta = np.abs(before.astype(np.int16) - after.astype(np.int16))[outside]
     assert float(np.mean(outside_delta)) < 3.5
+
+
+def test_recovers_a_complete_caption_when_the_audited_box_clips_its_top_left():
+    source = _caption_source()
+    cleaned = clean_source_text(source, [{
+        # Deliberately shifted above/right of the actual 30.8%,72.5% caption.
+        "source_x": 35,
+        "source_y": 68,
+        "source_width": 35,
+        "source_height": 17,
+    }])
+
+    detected = cleaned.detected_regions[0]
+    assert detected["x"] == pytest.approx(30.833, abs=0.01)
+    assert detected["y"] == pytest.approx(72.5, abs=0.01)
+    assert detected["width"] == pytest.approx(38.75, abs=0.01)
+    assert detected["height"] == pytest.approx(19.375, abs=0.01)
+
+    before = _decode(source)
+    after = _decode(cleaned.image)
+    caption = np.s_[112:153, 70:170]
+    before_dark = np.count_nonzero(cv2.cvtColor(before[caption], cv2.COLOR_BGR2GRAY) < 30)
+    after_dark = np.count_nonzero(cv2.cvtColor(after[caption], cv2.COLOR_BGR2GRAY) < 30)
+    assert after_dark < before_dark * 0.08
+
+
+def test_does_not_expand_search_when_the_audited_box_has_no_text(monkeypatch):
+    calls = []
+
+    def fail_detection(gray):
+        calls.append(gray.shape)
+        raise SourceTextCleanupError("no reliable source-text mask found")
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        fail_detection,
+    )
+    with pytest.raises(SourceTextCleanupError, match="no reliable source-text mask"):
+        _detect_region_text_mask(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {
+                "source_x": 30,
+                "source_y": 30,
+                "source_width": 20,
+                "source_height": 10,
+            },
+        )
+    assert len(calls) == 1
+
+
+def test_recovery_must_continue_the_clipped_seed_pixels(monkeypatch):
+    calls = 0
+
+    def disconnected_masks(gray):
+        nonlocal calls
+        calls += 1
+        mask = np.zeros(gray.shape, dtype=np.uint8)
+        if calls == 1:
+            mask[2:8, 10:20] = 255  # clipped at the original right edge
+        else:
+            mask[2:10, 1:14] = 255  # overlapping bbox, different pixels
+        return mask
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        disconnected_masks,
+    )
+    with pytest.raises(SourceTextCleanupError, match="audited seed"):
+        _detect_region_text_mask(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {
+                "source_x": 30,
+                "source_y": 30,
+                "source_width": 20,
+                "source_height": 10,
+            },
+        )
+    assert calls == 2
 
 
 def test_fails_closed_when_no_reliable_lettering_mask_exists():

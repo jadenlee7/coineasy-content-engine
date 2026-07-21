@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +70,84 @@ _SOURCE_TEXT_CLEANUP_EXECUTOR = ThreadPoolExecutor(
 
 def _decode_base64_strict(value: str) -> bytes:
     return base64.b64decode(value, validate=True)
+
+
+def _align_regions_to_detected_text(
+    regions: list[dict],
+    detected_regions: object,
+    image_width: int,
+    image_height: int,
+) -> list[dict]:
+    """Center Korean copy on the glyph mask that was actually removed."""
+    if not detected_regions:
+        return regions
+    if (
+        not isinstance(detected_regions, (list, tuple))
+        or len(detected_regions) != len(regions)
+    ):
+        raise SourceTextCleanupError("detected source-text geometry is incomplete")
+
+    aligned: list[dict] = []
+    occupied: list[tuple[float, float, float, float]] = []
+    for region, detected in zip(regions, detected_regions):
+        if not isinstance(region, dict) or not isinstance(detected, dict):
+            raise SourceTextCleanupError("detected source-text geometry is invalid")
+        try:
+            detected_x = float(detected["x"])
+            detected_y = float(detected["y"])
+            detected_width = float(detected["width"])
+            detected_height = float(detected["height"])
+            original_width = float(region["width"])
+            original_height = float(region["height"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SourceTextCleanupError(
+                "detected source-text geometry is invalid"
+            ) from exc
+        values = (
+            detected_x,
+            detected_y,
+            detected_width,
+            detected_height,
+            original_width,
+            original_height,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise SourceTextCleanupError("detected source-text geometry is invalid")
+
+        width = max(original_width, detected_width + 4.0 / image_width * 100.0)
+        height = max(original_height, detected_height + 2.0 / image_height * 100.0)
+        if width <= 0 or height <= 0 or width > 100 or height > 100:
+            raise SourceTextCleanupError("detected source-text geometry is outside the image")
+        center_x = detected_x + detected_width / 2.0
+        center_y = detected_y + detected_height / 2.0
+        x = center_x - width / 2.0
+        y = center_y - height / 2.0
+        if x < 0 or y < 0 or x + width > 100 or y + height > 100:
+            raise SourceTextCleanupError(
+                "detected source-text geometry cannot stay centered in the image"
+            )
+        bounds = (x, y, x + width, y + height)
+        if any(
+            bounds[0] < existing[2]
+            and bounds[2] > existing[0]
+            and bounds[1] < existing[3]
+            and bounds[3] > existing[1]
+            for existing in occupied
+        ):
+            raise SourceTextCleanupError("detected source-text regions overlap")
+        occupied.append(bounds)
+        aligned.append({
+            **region,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "source_x": x,
+            "source_y": y,
+            "source_width": width,
+            "source_height": height,
+        })
+    return aligned
 
 
 async def _unlink_best_effort(path: Path) -> None:
@@ -424,6 +503,12 @@ async def generate_news_card(
                 source_image,
                 spec["translation_regions"],
             )
+            aligned_regions = _align_regions_to_detected_text(
+                spec["translation_regions"],
+                getattr(cleanup, "detected_regions", ()),
+                source_image.width,
+                source_image.height,
+            )
             cleaned_bytes = await asyncio.to_thread(
                 _decode_base64_strict,
                 cleanup.image.base64_data,
@@ -433,6 +518,7 @@ async def generate_news_card(
             # Commit renderer/result state only after the cleaned asset exists.
             render_source_image = cleanup.image
             source_visual_path = candidate_path
+            spec["translation_regions"] = aligned_regions
             print(
                 f"[{client_id}] Source lettering removed: "
                 f"{cleanup.masked_pixels} pixels"

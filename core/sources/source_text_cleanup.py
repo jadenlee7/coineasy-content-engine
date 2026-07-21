@@ -32,6 +32,7 @@ class SourceTextCleanupError(ValueError):
 class SourceTextCleanupResult:
     image: PreparedSourceImage
     masked_pixels: int
+    detected_regions: tuple[dict[str, float], ...]
 
 
 def _odd(value: int) -> int:
@@ -191,6 +192,169 @@ def _detect_text_mask(gray: np.ndarray) -> np.ndarray:
     if score > 1.9:
         raise SourceTextCleanupError("source-text mask confidence is too low")
     return mask
+
+
+def _mask_bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
+    ys, xs = np.where(mask > 0)
+    if not len(xs):
+        raise SourceTextCleanupError("source-text mask is empty")
+    return (
+        int(xs.min()),
+        int(ys.min()),
+        int(xs.max()) + 1,
+        int(ys.max()) + 1,
+    )
+
+
+def _mask_touches_crop_edge(
+    bounds: tuple[int, int, int, int],
+    crop_width: int,
+    crop_height: int,
+) -> bool:
+    left, top, right, bottom = bounds
+    return left <= 0 or top <= 0 or right >= crop_width or bottom >= crop_height
+
+
+def _intersection_area(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> int:
+    return max(0, min(first[2], second[2]) - max(first[0], second[0])) * max(
+        0,
+        min(first[3], second[3]) - max(first[1], second[1]),
+    )
+
+
+def _mask_overlap_pixels(
+    first_mask: np.ndarray,
+    first_origin: tuple[int, int],
+    second_mask: np.ndarray,
+    second_origin: tuple[int, int],
+) -> int:
+    left = max(first_origin[0], second_origin[0])
+    top = max(first_origin[1], second_origin[1])
+    right = min(
+        first_origin[0] + first_mask.shape[1],
+        second_origin[0] + second_mask.shape[1],
+    )
+    bottom = min(
+        first_origin[1] + first_mask.shape[0],
+        second_origin[1] + second_mask.shape[0],
+    )
+    if right <= left or bottom <= top:
+        return 0
+    first_view = first_mask[
+        top - first_origin[1]:bottom - first_origin[1],
+        left - first_origin[0]:right - first_origin[0],
+    ]
+    second_view = second_mask[
+        top - second_origin[1]:bottom - second_origin[1],
+        left - second_origin[0]:right - second_origin[0],
+    ]
+    return int(np.count_nonzero((first_view > 0) & (second_view > 0)))
+
+
+def _detect_region_text_mask(
+    image: np.ndarray,
+    region: object,
+) -> tuple[np.ndarray, tuple[int, int], tuple[int, int, int, int]]:
+    """Detect one complete phrase, retrying one conservative lower search box.
+
+    Vision coordinates can clip a caption even after the placement audit. A
+    clipped detection always touches the crop boundary. In that case, retry a
+    single, modest box biased down and slightly left (the common social-caption
+    baseline error), then require the complete mask to sit inside that retry and
+    still materially overlap the audited box. We never accept a free-ranging
+    search elsewhere in the creative.
+    """
+    image_height, image_width = image.shape[:2]
+    base = _percent_box(region, image_width, image_height)
+    base_left, base_top, base_right, base_bottom = base
+    base_width = base_right - base_left
+    base_height = base_bottom - base_top
+    recovery = (
+        int(math.floor(base_left - base_width * 0.20)),
+        int(math.floor(base_top + base_height * 0.20)),
+        int(math.ceil(base_right + base_width * 0.05)),
+        int(math.ceil(base_bottom + base_height * 0.70)),
+    )
+
+    attempts = (base, recovery)
+    last_error: SourceTextCleanupError | None = None
+    clipped_seed: tuple[np.ndarray, tuple[int, int]] | None = None
+    for attempt_index, (left, top, right, bottom) in enumerate(attempts):
+        if (
+            left < 0
+            or top < 0
+            or right > image_width
+            or bottom > image_height
+            or right - left < 6
+            or bottom - top < 4
+            or (right - left) * (bottom - top)
+            > image_width * image_height * MAX_SINGLE_REGION_FRACTION
+        ):
+            continue
+        try:
+            gray_crop = cv2.cvtColor(
+                image[top:bottom, left:right],
+                cv2.COLOR_BGR2GRAY,
+            )
+            mask = _detect_text_mask(gray_crop)
+            local_bounds = _mask_bounds(mask)
+        except SourceTextCleanupError as exc:
+            # Recovery is only allowed to complete a mask that was detected but
+            # visibly clipped. A blank/incorrect audit must remain fail-closed.
+            if attempt_index == 0:
+                raise
+            last_error = exc
+            continue
+
+        if _mask_touches_crop_edge(
+            local_bounds,
+            right - left,
+            bottom - top,
+        ):
+            last_error = SourceTextCleanupError(
+                "source-text mask is clipped by its audited box"
+            )
+            if attempt_index == 0:
+                clipped_seed = (mask, (left, top))
+            continue
+
+        detected = (
+            left + local_bounds[0],
+            top + local_bounds[1],
+            left + local_bounds[2],
+            top + local_bounds[3],
+        )
+        if attempt_index:
+            if clipped_seed is None:
+                raise SourceTextCleanupError("source-text recovery has no clipped seed")
+            overlap = _intersection_area(base, detected)
+            detected_area = (detected[2] - detected[0]) * (detected[3] - detected[1])
+            base_area = base_width * base_height
+            seed_mask, seed_origin = clipped_seed
+            pixel_overlap = _mask_overlap_pixels(
+                seed_mask,
+                seed_origin,
+                mask,
+                (left, top),
+            )
+            if (
+                overlap / max(1, detected_area) < 0.25
+                or overlap / max(1, base_area) < 0.20
+                or pixel_overlap / max(1, np.count_nonzero(seed_mask)) < 0.40
+                or pixel_overlap / max(1, np.count_nonzero(mask)) < 0.25
+            ):
+                last_error = SourceTextCleanupError(
+                    "recovered source-text mask left its audited seed"
+                )
+                continue
+        return mask, (left, top), detected
+
+    if last_error is not None:
+        raise last_error
+    raise SourceTextCleanupError("no safe source-text search box found")
 
 
 def _exemplar_inpaint(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -379,21 +543,21 @@ def clean_source_text(
     image_height, image_width = image.shape[:2]
 
     full_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    detected_regions: list[dict[str, float]] = []
     for region in translation_regions:
-        left, top, right, bottom = _percent_box(
-            region,
-            image_width,
-            image_height,
-        )
-        gray_crop = cv2.cvtColor(
-            image[top:bottom, left:right],
-            cv2.COLOR_BGR2GRAY,
-        )
-        region_mask = _detect_text_mask(gray_crop)
+        region_mask, (left, top), detected = _detect_region_text_mask(image, region)
+        bottom = top + region_mask.shape[0]
+        right = left + region_mask.shape[1]
         full_mask[top:bottom, left:right] = cv2.bitwise_or(
             full_mask[top:bottom, left:right],
             region_mask,
         )
+        detected_regions.append({
+            "x": detected[0] / image_width * 100.0,
+            "y": detected[1] / image_height * 100.0,
+            "width": (detected[2] - detected[0]) / image_width * 100.0,
+            "height": (detected[3] - detected[1]) / image_height * 100.0,
+        })
 
     dilation_radius = max(1, min(3, round(max(image_width, image_height) / 900)))
     dilation_kernel = cv2.getStructuringElement(
@@ -435,4 +599,5 @@ def clean_source_text(
             height=image_height,
         ),
         masked_pixels=masked_pixels,
+        detected_regions=tuple(detected_regions),
     )
