@@ -9,6 +9,7 @@ the official creative is left untouched.
 from __future__ import annotations
 
 import base64
+import hashlib
 import math
 from dataclasses import dataclass
 from itertools import combinations
@@ -63,6 +64,7 @@ class SourceTextCleanupResult:
 class SourceTextProbeResult:
     masked_pixels: int
     detected_regions: tuple[dict[str, float], ...]
+    mask_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1691,6 +1693,7 @@ def probe_source_text(
     return SourceTextProbeResult(
         masked_pixels=int(np.count_nonzero(full_mask)),
         detected_regions=detected_regions,
+        mask_sha256=hashlib.sha256(full_mask.tobytes()).hexdigest(),
     )
 
 
