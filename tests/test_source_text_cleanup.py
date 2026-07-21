@@ -10,6 +10,7 @@ from core.sources.source_image import prepare_source_image_bytes
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
     _detect_region_text_mask,
+    _detect_text_mask,
     clean_source_text,
 )
 
@@ -97,6 +98,36 @@ def test_recovers_a_complete_caption_when_the_audited_box_clips_its_top_left():
     before_dark = np.count_nonzero(cv2.cvtColor(before[caption], cv2.COLOR_BGR2GRAY) < 30)
     after_dark = np.count_nonzero(cv2.cvtColor(after[caption], cv2.COLOR_BGR2GRAY) < 30)
     assert after_dark < before_dark * 0.08
+
+
+def test_extends_left_only_when_the_first_recovery_still_clips_the_same_caption(
+    monkeypatch,
+):
+    source = _caption_source()
+    calls = 0
+
+    def count_detection(gray):
+        nonlocal calls
+        calls += 1
+        return _detect_text_mask(gray)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        count_detection,
+    )
+    cleaned = clean_source_text(source, [{
+        "source_x": 37,
+        "source_y": 68,
+        "source_width": 32,
+        "source_height": 16,
+    }])
+
+    detected = cleaned.detected_regions[0]
+    assert calls == 3
+    assert detected["x"] == pytest.approx(30.833, abs=0.01)
+    assert detected["y"] == pytest.approx(72.5, abs=0.01)
+    assert detected["width"] == pytest.approx(38.75, abs=0.01)
+    assert detected["height"] == pytest.approx(19.375, abs=0.01)
 
 
 def test_recovers_an_opaque_caption_panel_that_exactly_fills_the_audit_box():
@@ -200,6 +231,68 @@ def test_panel_recovery_must_expand_beyond_the_inner_glyph_mask(monkeypatch):
         lambda gray, mask: True,
     )
     with pytest.raises(SourceTextCleanupError, match="audited seed"):
+        _detect_region_text_mask(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {
+                "source_x": 30,
+                "source_y": 30,
+                "source_width": 20,
+                "source_height": 10,
+            },
+        )
+    assert calls == 2
+
+
+def test_extended_left_recovery_rejects_a_different_component(monkeypatch):
+    calls = 0
+
+    def disconnected_extended_mask(gray):
+        nonlocal calls
+        calls += 1
+        mask = np.zeros(gray.shape, dtype=np.uint8)
+        if calls == 1:
+            mask[2:8, 0:12] = 255
+        elif calls == 2:
+            mask[2:8, 0:16] = 255
+        else:
+            mask[3:9, 20:26] = 255
+        return mask
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        disconnected_extended_mask,
+    )
+    with pytest.raises(SourceTextCleanupError, match="extended source-text mask"):
+        _detect_region_text_mask(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {
+                "source_x": 30,
+                "source_y": 30,
+                "source_width": 20,
+                "source_height": 10,
+            },
+        )
+    assert calls == 3
+
+
+def test_extended_left_recovery_never_opens_for_multiple_clipped_edges(monkeypatch):
+    calls = 0
+
+    def multiply_clipped_masks(gray):
+        nonlocal calls
+        calls += 1
+        mask = np.zeros(gray.shape, dtype=np.uint8)
+        if calls == 1:
+            mask[0:6, 0:12] = 255
+        else:
+            mask[0:4, 0:16] = 255
+        return mask
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_text_mask",
+        multiply_clipped_masks,
+    )
+    with pytest.raises(SourceTextCleanupError, match="clipped by its recovery box"):
         _detect_region_text_mask(
             np.zeros((100, 100, 3), dtype=np.uint8),
             {

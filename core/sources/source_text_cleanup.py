@@ -211,8 +211,22 @@ def _mask_touches_crop_edge(
     crop_width: int,
     crop_height: int,
 ) -> bool:
+    return any(_mask_crop_edges(bounds, crop_width, crop_height))
+
+
+def _mask_crop_edges(
+    bounds: tuple[int, int, int, int],
+    crop_width: int,
+    crop_height: int,
+) -> tuple[bool, bool, bool, bool]:
+    """Return left, top, right, and bottom crop-edge contact."""
     left, top, right, bottom = bounds
-    return left <= 0 or top <= 0 or right >= crop_width or bottom >= crop_height
+    return (
+        left <= 0,
+        top <= 0,
+        right >= crop_width,
+        bottom >= crop_height,
+    )
 
 
 def _has_nested_dark_caption_panel(gray: np.ndarray, selected_mask: np.ndarray) -> bool:
@@ -330,6 +344,12 @@ def _detect_region_text_mask(
         int(math.ceil(base_right + base_width * 0.05)),
         int(math.ceil(base_bottom + base_height * 0.70)),
     )
+    extended_left_recovery = (
+        int(math.floor(base_left - base_width * 0.40)),
+        clipped_recovery[1],
+        clipped_recovery[2],
+        clipped_recovery[3],
+    )
     panel_recovery = (
         base_left - 3,
         base_top - 3,
@@ -369,14 +389,6 @@ def _detect_region_text_mask(
     )
     mask = _detect_text_mask(recovery_gray)
     local_bounds = _mask_bounds(mask)
-    if _mask_touches_crop_edge(
-        local_bounds,
-        right - left,
-        bottom - top,
-    ):
-        raise SourceTextCleanupError(
-            "source-text mask is clipped by its recovery box"
-        )
 
     detected = (
         left + local_bounds[0],
@@ -414,6 +426,76 @@ def _detect_region_text_mask(
         raise SourceTextCleanupError(
             "recovered source-text mask left its audited seed"
         )
+
+    recovery_edges = _mask_crop_edges(
+        local_bounds,
+        right - left,
+        bottom - top,
+    )
+    if any(recovery_edges):
+        if recovery_kind != "clipped" or recovery_edges != (True, False, False, False):
+            raise SourceTextCleanupError(
+                "source-text mask is clipped by its recovery box"
+            )
+        if not _valid_search_box(
+            extended_left_recovery,
+            image_width,
+            image_height,
+        ):
+            raise SourceTextCleanupError("no safe extended source-text recovery box found")
+
+        extended_left, extended_top, extended_right, extended_bottom = (
+            extended_left_recovery
+        )
+        extended_gray = cv2.cvtColor(
+            image[extended_top:extended_bottom, extended_left:extended_right],
+            cv2.COLOR_BGR2GRAY,
+        )
+        extended_mask = _detect_text_mask(extended_gray)
+        extended_bounds = _mask_bounds(extended_mask)
+        if _mask_touches_crop_edge(
+            extended_bounds,
+            extended_right - extended_left,
+            extended_bottom - extended_top,
+        ):
+            raise SourceTextCleanupError(
+                "source-text mask is clipped by its extended recovery box"
+            )
+
+        extended_overlap = _mask_overlap_pixels(
+            mask,
+            (left, top),
+            extended_mask,
+            (extended_left, extended_top),
+        )
+        extended_pixels = int(np.count_nonzero(extended_mask))
+        if (
+            extended_overlap / max(1, recovered_pixels) < 0.95
+            or extended_overlap / max(1, extended_pixels) < 0.80
+        ):
+            raise SourceTextCleanupError(
+                "extended source-text mask left its recovery seed"
+            )
+
+        extended_detected = (
+            extended_left + extended_bounds[0],
+            extended_top + extended_bounds[1],
+            extended_left + extended_bounds[2],
+            extended_top + extended_bounds[3],
+        )
+        extended_detected_area = (
+            (extended_detected[2] - extended_detected[0])
+            * (extended_detected[3] - extended_detected[1])
+        )
+        extended_base_overlap = _intersection_area(base, extended_detected)
+        if (
+            extended_base_overlap / max(1, extended_detected_area) < 0.25
+            or extended_base_overlap / max(1, base_area) < 0.20
+        ):
+            raise SourceTextCleanupError(
+                "extended source-text mask left its audited box"
+            )
+        return extended_mask, (extended_left, extended_top), extended_detected
 
     if recovery_kind == "panel":
         seed_top = base_top - top
