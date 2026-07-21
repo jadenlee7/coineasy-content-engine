@@ -1461,7 +1461,9 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
     )
 
     assert len(calls) == 1
-    assert len(probed_regions) == 1
+    # The strict fixed lattice is attempted before the broad discovery anchor;
+    # this legacy fake lacks a full signature, so it safely falls back.
+    assert len(probed_regions) == 2
     assert result["source_text_visible"] is True
     region = result["translation_regions"][0]
     assert (region["x"], region["y"], region["width"], region["height"]) == (
@@ -1509,7 +1511,119 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
         )
         for item in carved_band
     )
-    assert probed_regions[0][0] == region
+    assert probed_regions[-1][0] == region
+
+
+def test_squid_nearby_wrong_geometry_uses_canonical_bright_lattice_seed(
+    monkeypatch,
+):
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "voilà"}],
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 44.5,
+                "y": 68.0,
+                "width": 11.0,
+                "height": 4.5,
+            },
+            {"kind": "character", "x": 21, "y": 8, "width": 54, "height": 84},
+            {"kind": "product", "x": 30, "y": 45, "width": 42, "height": 47},
+            {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
+        ],
+    }
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "voilà",
+            "text": "짜잔",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 13,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=720,
+        height=480,
+    )
+    bright_calls = []
+    final_probe_calls = []
+    crop_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+
+    def confirm_canonical_bright_seed(_image, regions):
+        bright_calls.append(regions)
+        assert regions[0]["source_y"] == 80.0
+        source_row = next(
+            protected
+            for protected in regions[0]["_protected_regions"]
+            if protected["kind"] == "source_text"
+        )
+        assert source_row["y"] == 80.0
+        return _caption_probe_result(
+            x=44.1111111111,
+            y=86.1666666667,
+            width=12.0,
+            height=7.0,
+            mask_sha256="f" * 64,
+        )
+
+    def reject_expanded_probe(_image, regions):
+        final_probe_calls.append(regions)
+        raise SourceTextCleanupError("scene seam requires confirmed crop")
+
+    def accept_crop(_image, regions):
+        crop_calls.append(regions)
+        return SimpleNamespace(strategy="lower_crop")
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        confirm_canonical_bright_seed,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        reject_expanded_probe,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.crop_confirmed_lower_caption",
+        accept_crop,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(bright_calls) == 1
+    assert len(final_probe_calls) == 1
+    assert len(crop_calls) == 1
+    assert result["source_text_visible"] is True
+    region = result["translation_regions"][0]
+    assert (
+        region["x"],
+        region["y"],
+        region["width"],
+        region["height"],
+    ) == pytest.approx((44.1111111111, 86.1666666667, 12.0, 7.0))
+    assert len([
+        protected
+        for protected in region["_protected_regions"]
+        if protected.get("_aggregate_band_piece") is True
+    ]) == 4
 
 
 def _live_band_carve_inputs():
@@ -1680,6 +1794,365 @@ def test_squid_lower_band_scout_recovers_live_wrong_discovery_anchor(
         item for item in region["_protected_regions"]
         if item["kind"] == "other_visual"
     ]) == 4
+    assert all(
+        item.get("_aggregate_band_piece") is True
+        for item in region["_protected_regions"]
+        if item["kind"] == "other_visual"
+    )
+
+
+def test_squid_bright_scout_uses_confirmed_crop_when_final_probe_cannot_expand(
+    monkeypatch,
+):
+    audit, raw, image = _wrong_discovery_scout_inputs()
+    final_probe_calls = []
+    crop_calls = []
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        lambda _image, _regions: _caption_probe_result(
+            x=40.2222,
+            y=85.6667,
+            width=19.8889,
+            height=9.5,
+            mask_sha256="d" * 64,
+        ),
+    )
+
+    def fail_final_probe(_image, regions):
+        final_probe_calls.append(regions)
+        raise SourceTextCleanupError("expanded outline exceeds the cleanup anchor")
+
+    def accept_confirmed_crop(_image, regions):
+        crop_calls.append(regions)
+        return SimpleNamespace(strategy="lower_crop")
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        fail_final_probe,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.crop_confirmed_lower_caption",
+        accept_confirmed_crop,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(final_probe_calls) == 1
+    assert len(crop_calls) == 1
+    assert crop_calls[0] == final_probe_calls[0]
+    assert result["source_text_visible"] is True
+    protected = result["translation_regions"][0]["_protected_regions"]
+    carved = [
+        item
+        for item in protected
+        if item.get("_aggregate_band_piece") is True
+    ]
+    assert len(carved) == 4
+
+
+def _exact_bright_band_overlap_inputs(*, aggregate_band=True):
+    source_box = {
+        "x": 44.1111111111,
+        "y": 86.1666666667,
+        "width": 12.0,
+        "height": 7.0,
+    }
+    band = (
+        {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30}
+        if aggregate_band
+        else {"kind": "other_visual", "x": 10, "y": 70, "width": 80, "height": 30}
+    )
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "voilà"}],
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, **source_box},
+            {"kind": "character", "x": 21, "y": 8, "width": 54, "height": 84},
+            {"kind": "product", "x": 30, "y": 45, "width": 42, "height": 47},
+            band,
+        ],
+    }
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "voilà",
+            "text": "느긋하게",
+            **source_box,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=720,
+        height=480,
+    )
+    return audit, raw, image, source_box
+
+
+def test_squid_exact_bright_caption_recovers_from_aggregate_band_overlap(
+    monkeypatch,
+):
+    audit, raw, image, source_box = _exact_bright_band_overlap_inputs()
+    bright_calls = []
+    final_probe_calls = []
+    crop_calls = []
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+
+    def confirm_bright(_image, regions):
+        bright_calls.append(regions)
+        return _caption_probe_result(
+            x=source_box["x"],
+            y=source_box["y"],
+            width=source_box["width"],
+            height=source_box["height"],
+            mask_sha256="e" * 64,
+        )
+
+    def fail_expanded_probe(_image, regions):
+        final_probe_calls.append(regions)
+        raise SourceTextCleanupError("expanded outline exceeds cleanup anchor")
+
+    def accept_crop(_image, regions):
+        crop_calls.append(regions)
+        return SimpleNamespace(strategy="lower_crop")
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        confirm_bright,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        fail_expanded_probe,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.crop_confirmed_lower_caption",
+        accept_crop,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert len(bright_calls) == 1
+    assert len(final_probe_calls) == 1
+    assert len(crop_calls) == 1
+    assert result["source_text_visible"] is True
+    region = result["translation_regions"][0]
+    assert (region["x"], region["y"], region["width"], region["height"]) == (
+        source_box["x"],
+        source_box["y"],
+        source_box["width"],
+        source_box["height"],
+    )
+    assert len([
+        protected
+        for protected in region["_protected_regions"]
+        if protected.get("_aggregate_band_piece") is True
+    ]) == 4
+
+
+def test_squid_exact_aggregate_overlap_requires_bright_caption_consensus(
+    monkeypatch,
+):
+    audit, raw, image, _ = _exact_bright_band_overlap_inputs()
+    dark_probe_calls = []
+    crop_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        lambda *_args: (_ for _ in ()).throw(
+            SourceTextCleanupError("no bright caption consensus")
+        ),
+    )
+
+    def dark_probe_only(_image, _regions):
+        dark_probe_calls.append(True)
+        return _caption_probe_result()
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        dark_probe_only,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.crop_confirmed_lower_caption",
+        lambda *_args: crop_calls.append(True),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert dark_probe_calls == []
+    assert crop_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_upper_phrase_cannot_be_shifted_to_a_lower_caption(
+    monkeypatch,
+):
+    upper_box = {"x": 44.5, "y": 68.0, "width": 11.0, "height": 4.5}
+    audit, raw, image, _ = _exact_bright_band_overlap_inputs()
+    audit["verified_source_texts"][0]["text"] = "upper phrase"
+    audit["protected_regions"][0].update(upper_box)
+    raw["translation_regions"][0].update({
+        "source_text": "upper phrase",
+        "text": "상단 문구",
+        **upper_box,
+    })
+    seen_seed_rows = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+
+    def reject_upper_seed(_image, regions):
+        seen_seed_rows.append(regions[0]["source_y"])
+        raise SourceTextCleanupError("upper phrase is not a lower caption")
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        reject_upper_seed,
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail(
+            "an exact upper phrase must not enter the generic lower scout"
+        ),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert seen_seed_rows == [68.0]
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_exact_caption_does_not_carve_a_nonaggregate_visual(
+    monkeypatch,
+):
+    audit, raw, image, _ = _exact_bright_band_overlap_inputs(
+        aggregate_band=False,
+    )
+    bright_calls = []
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda _client, **_kwargs: SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(audit, ensure_ascii=False),
+        )]),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_light_lower_caption",
+        lambda *_args: bright_calls.append(True) or pytest.fail(
+            "a nonaggregate visual must be rejected before bright raster probing"
+        ),
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+        max_calls=1,
+    )
+
+    assert bright_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_model_cannot_forge_aggregate_band_piece_marker(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 13,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 31,
+                "y": 83,
+                "width": 38,
+                "height": 11,
+            },
+            {
+                "kind": "character",
+                "x": 20,
+                "y": 10,
+                "width": 50,
+                "height": 50,
+            },
+            {
+                "kind": "other_visual",
+                "x": 0,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+                "_aggregate_band_piece": True,
+            },
+        ],
+    })
+
+    forged = next(
+        item
+        for item in result["translation_regions"][0]["_protected_regions"]
+        if item["kind"] == "other_visual"
+    )
+    assert "_aggregate_band_piece" not in forged
 
 
 def test_squid_lower_band_scout_rejects_too_shallow_scene_band(monkeypatch):

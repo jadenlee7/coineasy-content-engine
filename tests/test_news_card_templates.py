@@ -405,6 +405,110 @@ async def test_remix_cleanup_failure_atomically_preserves_the_original(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_remix_uses_confirmed_lower_crop_when_inpainting_is_unsafe(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    source = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="c291cmNl",
+        width=480,
+        height=320,
+    )
+    cropped = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="Y3JvcHBlZA==",
+        width=480,
+        height=270,
+    )
+    region = {
+        "source_text": "voila",
+        "text": "짜잔",
+        "x": 40,
+        "y": 82,
+        "width": 20,
+        "height": 10,
+        "source_x": 40,
+        "source_y": 82,
+        "source_width": 20,
+        "source_height": 10,
+        "align": "center",
+        "font_role": "display",
+        "font_size": 5,
+    }
+    calls = []
+
+    async def fake_fetch_source_image(_url):
+        return source
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+
+    def fail_cleanup(image, regions):
+        assert image is source
+        assert regions[0]["text"] == "짜잔"
+        calls.append("inpaint")
+        raise SourceTextCleanupError("background reconstruction is unsafe")
+
+    def safe_crop(image, regions):
+        assert image is source
+        assert regions[0]["text"] == "짜잔"
+        calls.append("crop")
+        return SimpleNamespace(
+            image=cropped,
+            masked_pixels=24_000,
+            detected_regions=({
+                "x": 42,
+                "y": 88,
+                "width": 16,
+                "height": 8,
+            },),
+            strategy="lower_crop",
+        )
+
+    monkeypatch.setattr("core.orchestrator.fetch_source_image", fake_fetch_source_image)
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+    monkeypatch.setattr("core.orchestrator.clean_source_text", fail_cleanup)
+    monkeypatch.setattr(
+        "core.orchestrator.crop_confirmed_lower_caption",
+        safe_crop,
+    )
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="A lower caption whose textured background is unsafe to inpaint.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
+        output_dir=tmp_path,
+        mock_mode=True,
+        mock_response={
+            **MOCK_SPEC,
+            "source_logo_visible": True,
+            "source_text_visible": True,
+            "translation_regions": [region],
+        },
+        template_style="remix",
+    )
+
+    assert calls == ["inpaint", "crop"]
+    assert captured["slots"]["source_image_data_url"] == cropped.data_url
+    assert captured["slots"]["source_image_width"] == 480
+    assert captured["slots"]["source_image_height"] == 270
+    assert captured["slots"]["source_text_visible"] is True
+    translated = captured["slots"]["translation_regions"][0]
+    assert translated["text"] == "짜잔"
+    assert translated["source_x"] == translated["x"]
+    assert translated["source_y"] == translated["y"]
+    assert translated["y"] + translated["height"] <= 100
+    assert result.source_visual_path == str(tmp_path / "source_visual_cleaned.jpg")
+    assert (tmp_path / "source_visual_cleaned.jpg").read_bytes() == b"cropped"
+    assert result.spec["source_image_width"] == 480
+    assert result.spec["source_image_height"] == 270
+
+
+@pytest.mark.asyncio
 async def test_remix_cleaned_file_publish_failure_falls_back_atomically(monkeypatch, tmp_path):
     captured = {}
     source = PreparedSourceImage(
@@ -534,7 +638,17 @@ async def test_remix_caches_private_audit_evidence_but_never_publishes_it(
         "font_size": 6,
         "_source_index": 0,
         "_source_line_count": 1,
-        "_protected_regions": [{"kind": "character", "x": 0, "y": 0}],
+        "_protected_regions": [
+            {"kind": "character", "x": 0, "y": 0},
+            {
+                "kind": "other_visual",
+                "x": 0,
+                "y": 70,
+                "width": 100,
+                "height": 10,
+                "_aggregate_band_piece": True,
+            },
+        ],
     }
 
     async def fake_fetch_source_image(_url):
@@ -606,6 +720,9 @@ async def test_remix_caches_private_audit_evidence_but_never_publishes_it(
     private_keys = {"_source_index", "_source_line_count", "_protected_regions"}
     assert captured_cache["key"] == "cache-key"
     assert private_keys <= captured_cache["regions"][0].keys()
+    assert captured_cache["regions"][0]["_protected_regions"][1][
+        "_aggregate_band_piece"
+    ] is True
     assert private_keys.isdisjoint(
         captured_render["slots"]["translation_regions"][0]
     )

@@ -11,8 +11,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+import re
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, permutations
 
 import cv2
 import numpy as np
@@ -47,6 +48,17 @@ _RECOVERY_HORIZONTAL_REGION_FRACTION = 0.45
 _RECOVERY_HORIZONTAL_IMAGE_FRACTION = 0.08
 _RECOVERY_VERTICAL_REGION_FRACTION = 0.75
 _RECOVERY_VERTICAL_IMAGE_FRACTION = 0.10
+_LIGHT_CAPTION_THRESHOLD = 192
+_LIGHT_CAPTION_LOCAL_CONTRAST = 18
+_LIGHT_CAPTION_SCOUT_WIDTHS = (30.0, 40.0)
+_LIGHT_CAPTION_SCOUT_BOTTOM_OFFSETS = (20.0, 18.0)
+_LIGHT_CAPTION_SCOUT_CENTER_OFFSETS = (-1.0, -0.5, 0.0, 0.5, 1.0)
+_LIGHT_CAPTION_MIN_RAW_SUBSTRATE_RATIO = 0.10
+_LOWER_CROP_GUARD_FRACTION = 0.015
+_LOWER_CROP_MIN_KEEP_FRACTION = 0.78
+_LOWER_CROP_MAX_KEEP_FRACTION = 0.97
+_LOWER_CROP_MAX_SUBSTRATE_TAIL_FRACTION = 0.18
+_LOWER_CROP_TARGET_INSET_PERCENT = 2.0
 
 
 class SourceTextCleanupError(ValueError):
@@ -58,6 +70,7 @@ class SourceTextCleanupResult:
     image: PreparedSourceImage
     masked_pixels: int
     detected_regions: tuple[dict[str, float], ...]
+    strategy: str = "inpaint"
 
 
 @dataclass(frozen=True)
@@ -234,6 +247,496 @@ def _detect_text_mask(gray: np.ndarray) -> np.ndarray:
     if score > 1.9:
         raise SourceTextCleanupError("source-text mask confidence is too low")
     return mask
+
+
+def _light_caption_binary(gray: np.ndarray) -> np.ndarray:
+    """Return only pixels with independently measured bright local contrast."""
+    blur_kernel = _odd(max(3, round(min(gray.shape) * 0.45)))
+    local_background = cv2.medianBlur(gray, blur_kernel)
+    return np.where(
+        (gray >= _LIGHT_CAPTION_THRESHOLD)
+        & (
+            gray.astype(np.int16) - local_background.astype(np.int16)
+            >= _LIGHT_CAPTION_LOCAL_CONTRAST
+        ),
+        255,
+        0,
+    ).astype(np.uint8)
+
+
+def _detect_light_caption_core(gray: np.ndarray) -> np.ndarray:
+    """Detect bright lower-third glyphs without selecting their dark scene.
+
+    A yellow or white subtitle with a black outline can sit directly on a dark
+    chair, product, or character.  The normal polarity-agnostic detector may
+    then prefer that large dark object.  This detector is deliberately narrow:
+    it keeps only a locally bright, horizontally coherent glyph group and its
+    nearby detached punctuation (for example the dot on ``i`` or an accent).
+    It is used only behind the fixed-crop consensus gate below.
+    """
+    binary = _light_caption_binary(gray)
+    candidate = _component_candidate(binary, threshold_rank=6)
+    if candidate is None:
+        raise SourceTextCleanupError("no reliable bright source-text mask found")
+
+    _, selected = candidate
+    selected = selected.copy()
+    left, top, right, bottom = _mask_bounds(selected)
+    selected_height = bottom - top
+    raw_inside = (binary > 0) & (selected > 0)
+    selected_pixels = int(np.count_nonzero(selected))
+    raw_occupancy = int(np.count_nonzero(raw_inside)) / max(1, selected_pixels)
+    topology_count, _, topology_stats, _ = cv2.connectedComponentsWithStats(
+        np.where(raw_inside, 255, 0).astype(np.uint8),
+        8,
+    )
+    significant_aspects: list[float] = []
+    for index in range(1, topology_count):
+        _, _, component_width, component_height, component_area = (
+            int(value) for value in topology_stats[index]
+        )
+        if component_area >= 10:
+            significant_aspects.append(
+                component_width / max(1, component_height)
+            )
+    # Repeated dots, decorative tokens, and progress indicators can also form
+    # one crop-stable horizontal silhouette. Lettering must retain open space
+    # between strokes and at least two narrow stem-like components.
+    if (
+        not 0.08 <= raw_occupancy <= 0.68
+        or not 3 <= len(significant_aspects) <= 32
+        or sum(aspect <= 0.55 for aspect in significant_aspects) < 2
+        or sum(aspect >= 0.70 for aspect in significant_aspects) < 2
+    ):
+        raise SourceTextCleanupError(
+            "bright source-text topology is not glyph-like"
+        )
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary,
+        8,
+    )
+    # Morphological grouping can leave punctuation detached from the main word.
+    # Include only non-speckle components that horizontally overlap the word
+    # and remain within a small cap-height allowance above it.
+    for index in range(1, component_count):
+        x, y, width, height, area = (
+            int(value) for value in stats[index]
+        )
+        if (
+            area >= 10
+            and x < right
+            and x + width > left
+            and y < bottom
+            and y + height >= top - round(selected_height * 0.18)
+        ):
+            selected[labels == index] = 255
+    return selected
+
+
+def _light_lower_caption_fallback_is_eligible(
+    region: object,
+    image_width: int,
+    image_height: int,
+) -> bool:
+    """Allow the bright-caption detector only for one audited lower caption."""
+    if (
+        not isinstance(region, dict)
+        or image_width / max(1, image_height) < 1.2
+        or not isinstance(region.get("_protected_regions"), list)
+        or region.get("_source_line_count") != 1
+    ):
+        return False
+    source_text = region.get("source_text")
+    translated_text = region.get("text")
+    if (
+        not isinstance(source_text, str)
+        or len([line for line in source_text.splitlines() if line.strip()]) != 1
+        or not isinstance(translated_text, str)
+        or len([line for line in translated_text.splitlines() if line.strip()]) != 1
+    ):
+        return False
+    normalized_source_text = " ".join(source_text.casefold().split())
+    normalized_brand_text = " ".join(
+        re.sub(r"[^\w]+", " ", normalized_source_text).split()
+    )
+    if (
+        normalized_brand_text in {"squid", "squid router"}
+        or "@" in normalized_source_text
+        or "://" in normalized_source_text
+        or normalized_source_text.startswith("www.")
+        or re.search(
+            r"(?<!\w)[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/|\b)",
+            normalized_source_text,
+        ) is not None
+    ):
+        return False
+    try:
+        source_rows = _audited_source_row_regions(region)
+        if len(source_rows) != 1:
+            return False
+        row_left, row_top, row_right, row_bottom = _percent_box(
+            source_rows[0],
+            image_width,
+            image_height,
+        )
+        anchor_left, anchor_top, anchor_right, anchor_bottom = _percent_box(
+            region,
+            image_width,
+            image_height,
+        )
+    except SourceTextCleanupError:
+        return False
+    row_width = row_right - row_left
+    row_height = row_bottom - row_top
+    center_x = (row_left + row_right) / 2.0 / image_width * 100.0
+    return (
+        row_top / image_height >= 0.78
+        and anchor_top / image_height >= 0.76
+        and 0.04 <= row_width / image_width <= 0.25
+        and 0.02 <= row_height / image_height <= 0.12
+        and row_bottom <= image_height
+        and anchor_bottom <= image_height
+        and 35.0 <= center_x <= 65.0
+        and _intersection_area(
+            (row_left, row_top, row_right, row_bottom),
+            (anchor_left, anchor_top, anchor_right, anchor_bottom),
+        ) > 0
+    )
+
+
+def _recover_light_lower_caption_mask(
+    image: np.ndarray,
+    region: object,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    tuple[int, int],
+    tuple[int, int, int, int],
+]:
+    """Recover one bright lower caption from a dominant twenty-crop cluster."""
+    image_height, image_width = image.shape[:2]
+    if not _light_lower_caption_fallback_is_eligible(
+        region,
+        image_width,
+        image_height,
+    ):
+        raise SourceTextCleanupError("bright lower-caption recovery is not eligible")
+    assert isinstance(region, dict)
+    source_rows = _audited_source_row_regions(region)
+    row_box = _percent_box(source_rows[0], image_width, image_height)
+    discovery_box = _percent_box(region, image_width, image_height)
+    proposal_center_x = (row_box[0] + row_box[2]) / 2.0 / image_width * 100.0
+    minimum_margin = max(
+        2,
+        min(4, round(max(image_width, image_height) / 900) + 1),
+    )
+
+    candidates: list[
+        tuple[_MaskCandidate, np.ndarray, float, float, float]
+    ] = []
+    for center_offset in _LIGHT_CAPTION_SCOUT_CENTER_OFFSETS:
+        center_x = proposal_center_x + center_offset
+        for width_percent in _LIGHT_CAPTION_SCOUT_WIDTHS:
+            for bottom_offset in _LIGHT_CAPTION_SCOUT_BOTTOM_OFFSETS:
+                left = math.floor(
+                    image_width * (center_x - width_percent / 2.0) / 100.0
+                )
+                right = math.ceil(
+                    image_width * (center_x + width_percent / 2.0) / 100.0
+                )
+                top = math.floor(
+                    image_height * (100.0 - bottom_offset) / 100.0
+                )
+                bottom = math.ceil(
+                    image_height * (116.0 - bottom_offset) / 100.0
+                )
+                crop = (left, top, right, bottom)
+                if not _valid_search_box(crop, image_width, image_height):
+                    raise SourceTextCleanupError(
+                        "bright lower-caption scout left the image"
+                    )
+                gray = cv2.cvtColor(
+                    image[top:bottom, left:right],
+                    cv2.COLOR_BGR2GRAY,
+                )
+                try:
+                    mask = _detect_light_caption_core(gray)
+                except SourceTextCleanupError:
+                    continue
+                bounds = _mask_bounds(mask)
+                if (
+                    bounds[0] < minimum_margin
+                    or bounds[1] < minimum_margin
+                    or right - left - bounds[2] < minimum_margin
+                    or bottom - top - bounds[3] < minimum_margin
+                ):
+                    # One lattice crop can quantize onto a glyph edge while
+                    # the remaining independent crops still form a dominant
+                    # complete-link consensus. Treat it as a failed vote; the
+                    # existing 80% support and crop-diversity gates remain.
+                    continue
+                detected = (
+                    left + bounds[0],
+                    top + bounds[1],
+                    left + bounds[2],
+                    top + bounds[3],
+                )
+                tight = mask[
+                    bounds[1]:bounds[3],
+                    bounds[0]:bounds[2],
+                ].copy()
+                provenance = np.where(
+                    (_light_caption_binary(gray) > 0) & (mask > 0),
+                    255,
+                    0,
+                ).astype(np.uint8)[
+                    bounds[1]:bounds[3],
+                    bounds[0]:bounds[2],
+                ].copy()
+                if not np.count_nonzero(provenance):
+                    continue
+                candidates.append((
+                    _MaskCandidate(
+                        mask=tight,
+                        origin=(detected[0], detected[1]),
+                        detected=detected,
+                        crop=crop,
+                        seed_containment=1.0,
+                        candidate_seed_support=1.0,
+                    ),
+                    provenance,
+                    center_offset,
+                    width_percent,
+                    bottom_offset,
+                ))
+
+    expected_count = (
+        len(_LIGHT_CAPTION_SCOUT_CENTER_OFFSETS)
+        * len(_LIGHT_CAPTION_SCOUT_WIDTHS)
+        * len(_LIGHT_CAPTION_SCOUT_BOTTOM_OFFSETS)
+    )
+    minimum_consensus = math.ceil(expected_count * 0.80)
+    if len(candidates) < minimum_consensus:
+        raise SourceTextCleanupError(
+            "bright lower-caption recovery lacks dominant raster consensus"
+        )
+
+    adjacency: list[set[int]] = [set() for _ in candidates]
+    for first_index, (first, _, _, _, _) in enumerate(candidates):
+        for second_index in range(first_index + 1, len(candidates)):
+            compatible, _ = _candidate_masks_are_compatible(
+                first,
+                candidates[second_index][0],
+                minimum_margin,
+            )
+            if compatible:
+                adjacency[first_index].add(second_index)
+                adjacency[second_index].add(first_index)
+    dominant_cliques: list[frozenset[int]] = []
+    for size in range(len(candidates), minimum_consensus - 1, -1):
+        for values in combinations(range(len(candidates)), size):
+            if all(
+                second in adjacency[first]
+                for first, second in combinations(values, 2)
+            ):
+                dominant_cliques.append(frozenset(values))
+        if dominant_cliques:
+            break
+    if len(dominant_cliques) != 1:
+        raise SourceTextCleanupError(
+            "bright lower-caption recovery lacks unique complete raster consensus"
+        )
+    cluster = dominant_cliques[0]
+    cluster_metadata = [candidates[index][2:] for index in sorted(cluster)]
+    if (
+        len({metadata[0] for metadata in cluster_metadata}) < 4
+        or {metadata[1] for metadata in cluster_metadata}
+        != set(_LIGHT_CAPTION_SCOUT_WIDTHS)
+        or {metadata[2] for metadata in cluster_metadata}
+        != set(_LIGHT_CAPTION_SCOUT_BOTTOM_OFFSETS)
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption consensus lacks crop diversity"
+        )
+
+    votes = np.zeros((image_height, image_width), dtype=np.uint8)
+    provenance_votes = np.zeros((image_height, image_width), dtype=np.uint8)
+    for index in sorted(cluster):
+        candidate = candidates[index][0]
+        candidate_provenance = candidates[index][1]
+        candidate_left, candidate_top = candidate.origin
+        candidate_bottom = candidate_top + candidate.mask.shape[0]
+        candidate_right = candidate_left + candidate.mask.shape[1]
+        votes[
+            candidate_top:candidate_bottom,
+            candidate_left:candidate_right,
+        ] += (candidate.mask > 0).astype(np.uint8)
+        provenance_votes[
+            candidate_top:candidate_bottom,
+            candidate_left:candidate_right,
+        ] += (candidate_provenance > 0).astype(np.uint8)
+    consensus_full = np.where(
+        votes >= math.ceil(len(cluster) * 0.80),
+        255,
+        0,
+    ).astype(np.uint8)
+    detected = _mask_bounds(consensus_full)
+    selected = consensus_full[
+        detected[1]:detected[3],
+        detected[0]:detected[2],
+    ].copy()
+    provenance_full = np.where(
+        (provenance_votes >= math.ceil(len(cluster) * 0.80))
+        & (consensus_full > 0),
+        255,
+        0,
+    ).astype(np.uint8)
+    provenance = provenance_full[
+        detected[1]:detected[3],
+        detected[0]:detected[2],
+    ].copy()
+    if not np.count_nonzero(provenance):
+        raise SourceTextCleanupError(
+            "bright lower-caption consensus lacks raw pixel provenance"
+        )
+    origin = (detected[0], detected[1])
+    consensus_candidate = _MaskCandidate(
+        mask=selected,
+        origin=origin,
+        detected=detected,
+        crop=detected,
+        seed_containment=1.0,
+        candidate_seed_support=1.0,
+    )
+    compatible_members = sum(
+        _candidate_masks_are_compatible(
+            consensus_candidate,
+            candidates[index][0],
+            minimum_margin,
+        )[0]
+        for index in cluster
+    )
+    if compatible_members < minimum_consensus:
+        raise SourceTextCleanupError(
+            "bright lower-caption consensus is not canonical"
+        )
+
+    detected_width = detected[2] - detected[0]
+    detected_height = detected[3] - detected[1]
+    detected_center_x = (detected[0] + detected[2]) / 2.0
+    row_width = row_box[2] - row_box[0]
+    discovery_width = discovery_box[2] - discovery_box[0]
+    row_overlap_width = max(
+        0,
+        min(row_box[2], detected[2]) - max(row_box[0], detected[0]),
+    )
+    discovery_overlap_width = max(
+        0,
+        min(discovery_box[2], detected[2])
+        - max(discovery_box[0], detected[0]),
+    )
+    if (
+        detected_width / image_width < 0.06
+        or detected_width / image_width > 0.30
+        or detected_height / image_height < 0.03
+        or detected_height / image_height > 0.16
+        or detected_width / max(1, detected_height) < 1.25
+        or detected[1] / image_height < 0.78
+        or detected[3] / image_height > 0.985
+        or row_overlap_width / max(1, row_width) < 0.60
+        or discovery_overlap_width / max(1, discovery_width) < 0.60
+        or abs(
+            detected_center_x - (row_box[0] + row_box[2]) / 2.0
+        ) > image_width * 0.05
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption consensus left its audited anchors"
+        )
+    return selected, provenance, origin, detected
+
+
+def _expand_light_caption_outline(
+    image: np.ndarray,
+    core_mask: np.ndarray,
+    bright_provenance: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Add only a nearby dark outline to an accepted bright caption core."""
+    if (
+        bright_provenance.shape != core_mask.shape
+        or np.count_nonzero(bright_provenance) < 12
+        or np.count_nonzero(
+            (bright_provenance > 0) & (core_mask == 0)
+        )
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption provenance is invalid"
+        )
+    core_left, core_top, core_right, core_bottom = _mask_bounds(core_mask)
+    core_height = core_bottom - core_top
+    reach = max(2, min(12, round(core_height * 0.265)))
+    near = cv2.dilate(
+        core_mask,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (reach * 2 + 1, reach * 2 + 1),
+        ),
+    ) > 0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dark_candidates = near & (gray <= 85) & (core_mask == 0)
+    raw_reach = cv2.dilate(
+        bright_provenance,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (reach * 2 + 1, reach * 2 + 1),
+        ),
+    ) > 0
+    unsupported_dark = dark_candidates & ~raw_reach
+    if np.count_nonzero(unsupported_dark) > max(
+        2,
+        round(np.count_nonzero(dark_candidates) * 0.005),
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption outline leaves raw pixel support"
+        )
+    dark_candidates &= raw_reach
+    direct_raw_support = cv2.dilate(
+        bright_provenance,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    ) > 0
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        np.where(dark_candidates, 255, 0).astype(np.uint8),
+        8,
+    )
+    dark_outline = np.zeros_like(core_mask, dtype=bool)
+    for index in range(1, component_count):
+        component_area = int(stats[index, cv2.CC_STAT_AREA])
+        component = labels == index
+        if component_area <= 2:
+            continue
+        directly_supported = int(np.count_nonzero(
+            component & direct_raw_support
+        ))
+        if directly_supported < max(4, round(component_area * 0.02)):
+            raise SourceTextCleanupError(
+                "bright lower-caption outline lacks local pixel support"
+            )
+        dark_outline |= component
+    core_pixels = int(np.count_nonzero(core_mask))
+    dark_pixels = int(np.count_nonzero(dark_outline))
+    if not 0.20 <= dark_pixels / max(1, core_pixels) <= 2.50:
+        raise SourceTextCleanupError(
+            "bright lower-caption outline is ambiguous"
+        )
+    source_mask = np.where(
+        (core_mask > 0) | dark_outline,
+        255,
+        0,
+    ).astype(np.uint8)
+    cleanup_mask = cv2.dilate(
+        source_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    return source_mask, cleanup_mask
 
 
 def _mask_bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
@@ -1274,6 +1777,10 @@ def _validate_dilated_mask_protection(
     mask: np.ndarray,
     source_mask: np.ndarray,
     region: object,
+    *,
+    minimum_substrate_source_ratio: float = (
+        _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO
+    ),
 ) -> None:
     """Reject final cleanup pixels that leave the visual audit's safe area."""
     # Production Squid cleanup always carries the validator-produced protected
@@ -1350,7 +1857,7 @@ def _validate_dilated_mask_protection(
         )
         if (
             source_mask_overlap_ratio
-            < _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO
+            < minimum_substrate_source_ratio
         ):
             raise SourceTextCleanupError(
                 f"source-text mask leaves its audited {kind} substrate"
@@ -1457,7 +1964,12 @@ def _project_working_mask(
 def _prepare_cleanup_mask(
     source_image: PreparedSourceImage,
     translation_regions: object,
-) -> tuple[np.ndarray, np.ndarray, tuple[dict[str, float], ...]]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    tuple[dict[str, float], ...],
+    bool,
+]:
     """Decode the source and deterministically validate every cleanup mask."""
     if not isinstance(translation_regions, list) or not translation_regions:
         raise SourceTextCleanupError("cleanup requires at least one translation region")
@@ -1489,11 +2001,35 @@ def _prepare_cleanup_mask(
     )
     full_mask = np.zeros((image_height, image_width), dtype=np.uint8)
     detected_regions: list[dict[str, float]] = []
+    used_light_caption_recovery = False
     for region in translation_regions:
-        region_mask, origin, detected = _detect_audited_region_text_mask(
-            detection_image,
+        light_caption_fallback = _light_lower_caption_fallback_is_eligible(
             region,
+            detection_width,
+            detection_height,
         )
+        if light_caption_fallback:
+            try:
+                (
+                    region_mask,
+                    region_bright_provenance,
+                    origin,
+                    detected,
+                ) = (
+                    _recover_light_lower_caption_mask(
+                        detection_image,
+                        region,
+                    )
+                )
+            except SourceTextCleanupError:
+                light_caption_fallback = False
+        if not light_caption_fallback:
+            region_mask, origin, detected = _detect_audited_region_text_mask(
+                detection_image,
+                region,
+            )
+        else:
+            used_light_caption_recovery = True
         _validate_expected_line_structure(region_mask, region)
         discovery_anchor = _percent_box(
             region,
@@ -1565,9 +2101,13 @@ def _prepare_cleanup_mask(
             anchor_center_y = (discovery_anchor[1] + discovery_anchor[3]) / 2.0
             detected_center_x = (detected[0] + detected[2]) / 2.0
             detected_center_y = (detected[1] + detected[3]) / 2.0
+            minimum_anchor_height_overlap = (
+                0.40 if light_caption_fallback else 0.55
+            )
             if (
                 anchor_overlap_width / max(1, anchor_width) < 0.45
-                or anchor_overlap_height / max(1, anchor_height) < 0.55
+                or anchor_overlap_height / max(1, anchor_height)
+                < minimum_anchor_height_overlap
                 or anchor_overlap / max(1, anchor_width * anchor_height) < 0.27
                 or abs(detected_center_x - anchor_center_x)
                 > min(detection_width * 0.08, anchor_width * 0.30)
@@ -1646,14 +2186,43 @@ def _prepare_cleanup_mask(
             (detection_height, detection_width),
             (image_height, image_width),
         )
-        dilated_region_mask = cv2.dilate(
-            native_region_mask,
-            dilation_kernel,
-        )
+        if light_caption_fallback:
+            verified_bright_core = _project_working_mask(
+                region_bright_provenance,
+                origin,
+                (detection_height, detection_width),
+                (image_height, image_width),
+            )
+            native_region_mask, dilated_region_mask = (
+                _expand_light_caption_outline(
+                    image,
+                    native_region_mask,
+                    verified_bright_core,
+                )
+            )
+            protection_source_mask = verified_bright_core
+            # The independently detected bright core—not the inferred dark
+            # outline—must still explain at least one third of every edited
+            # character/product overlap.
+            minimum_substrate_source_ratio = (
+                _LIGHT_CAPTION_MIN_RAW_SUBSTRATE_RATIO
+            )
+        else:
+            dilated_region_mask = cv2.dilate(
+                native_region_mask,
+                dilation_kernel,
+            )
+            protection_source_mask = native_region_mask
+            minimum_substrate_source_ratio = (
+                _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO
+            )
         _validate_dilated_mask_protection(
             dilated_region_mask,
-            native_region_mask,
+            protection_source_mask,
             region,
+            minimum_substrate_source_ratio=(
+                minimum_substrate_source_ratio
+            ),
         )
         _validate_region_reconstruction_complexity(
             image,
@@ -1667,8 +2236,16 @@ def _prepare_cleanup_mask(
         detected_regions.append({
             "x": detected[0] / detection_width * 100.0,
             "y": detected[1] / detection_height * 100.0,
-            "width": (detected[2] - detected[0]) / detection_width * 100.0,
-            "height": (detected[3] - detected[1]) / detection_height * 100.0,
+            "width": (
+                (detected[2] - detected[0])
+                / detection_width
+                * 100.0
+            ),
+            "height": (
+                (detected[3] - detected[1])
+                / detection_height
+                * 100.0
+            ),
         })
 
     masked_pixels = int(np.count_nonzero(full_mask))
@@ -1678,7 +2255,12 @@ def _prepare_cleanup_mask(
     ):
         raise SourceTextCleanupError("source-text mask is outside conservative bounds")
 
-    return image, full_mask, tuple(detected_regions)
+    return (
+        image,
+        full_mask,
+        tuple(detected_regions),
+        used_light_caption_recovery,
+    )
 
 
 def probe_source_text(
@@ -1686,7 +2268,7 @@ def probe_source_text(
     translation_regions: object,
 ) -> SourceTextProbeResult:
     """Validate detection without running any inpainting candidates."""
-    _, full_mask, detected_regions = _prepare_cleanup_mask(
+    _, full_mask, detected_regions, _ = _prepare_cleanup_mask(
         source_image,
         translation_regions,
     )
@@ -1694,6 +2276,462 @@ def probe_source_text(
         masked_pixels=int(np.count_nonzero(full_mask)),
         detected_regions=detected_regions,
         mask_sha256=hashlib.sha256(full_mask.tobytes()).hexdigest(),
+    )
+
+
+def probe_light_lower_caption(
+    source_image: PreparedSourceImage,
+    translation_regions: object,
+) -> SourceTextProbeResult:
+    """Probe raw bright-caption consensus without outline expansion or edits."""
+    if (
+        not isinstance(translation_regions, list)
+        or len(translation_regions) != 1
+        or not isinstance(translation_regions[0], dict)
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption probe requires one audited region"
+        )
+    region = translation_regions[0]
+    try:
+        raw = base64.b64decode(source_image.base64_data, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise SourceTextCleanupError("source image data is invalid") from exc
+    encoded = np.frombuffer(raw, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        raise SourceTextCleanupError("source image could not be decoded")
+    image_height, image_width = image.shape[:2]
+    if (
+        image_width != source_image.width
+        or image_height != source_image.height
+    ):
+        raise SourceTextCleanupError("source image dimensions are inconsistent")
+    detection_image = _text_detection_working_image(image)
+    detection_height, detection_width = detection_image.shape[:2]
+    core_mask, _, origin, detected = _recover_light_lower_caption_mask(
+        detection_image,
+        region,
+    )
+    _validate_expected_line_structure(core_mask, region)
+    native_mask = _project_working_mask(
+        core_mask,
+        origin,
+        (detection_height, detection_width),
+        (image_height, image_width),
+    )
+    masked_pixels = int(np.count_nonzero(native_mask))
+    if (
+        masked_pixels < 12
+        or masked_pixels / (image_width * image_height)
+        > MAX_TOTAL_MASK_FRACTION
+    ):
+        raise SourceTextCleanupError(
+            "bright lower-caption mask is outside conservative bounds"
+        )
+    return SourceTextProbeResult(
+        masked_pixels=masked_pixels,
+        detected_regions=({
+            "x": detected[0] / detection_width * 100.0,
+            "y": detected[1] / detection_height * 100.0,
+            "width": (
+                (detected[2] - detected[0]) / detection_width * 100.0
+            ),
+            "height": (
+                (detected[3] - detected[1]) / detection_height * 100.0
+            ),
+        },),
+        mask_sha256=hashlib.sha256(native_mask.tobytes()).hexdigest(),
+    )
+
+
+def _carved_aggregate_band_piece_indexes(region: object) -> frozenset[int]:
+    """Authenticate the exact four-piece partition around ``source_*``.
+
+    The placement pipeline privately marks only rectangles generated by its
+    aggregate-band carve.  The marker alone is insufficient: all four pieces
+    must reconstruct one edge-to-edge lower band with a hole exactly equal to
+    this region's authoritative cleanup anchor.  Any malformed or additional
+    protection remains a normal hard protection.
+    """
+    if not isinstance(region, dict):
+        return frozenset()
+    protected_regions = region.get("_protected_regions")
+    if not isinstance(protected_regions, list):
+        return frozenset()
+
+    def percent_bounds(
+        value: object,
+        *,
+        source_keys: bool = False,
+    ) -> tuple[float, float, float, float] | None:
+        if not isinstance(value, dict):
+            return None
+        keys = (
+            ("source_x", "source_y", "source_width", "source_height")
+            if source_keys
+            else ("x", "y", "width", "height")
+        )
+        numbers: list[float] = []
+        for key in keys:
+            raw = value.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return None
+            number = float(raw)
+            if not math.isfinite(number):
+                return None
+            numbers.append(number)
+        x, y, width, height = numbers
+        if (
+            x < 0
+            or y < 0
+            or width < 0.25
+            or height < 0.25
+            or x + width > 100
+            or y + height > 100
+        ):
+            return None
+        return x, y, x + width, y + height
+
+    hole = percent_bounds(region, source_keys=True)
+    if hole is None:
+        return frozenset()
+    hole_left, hole_top, hole_right, hole_bottom = hole
+    marked: list[tuple[int, tuple[float, float, float, float]]] = []
+    for index, protected in enumerate(protected_regions):
+        if (
+            isinstance(protected, dict)
+            and protected.get("kind") == "other_visual"
+            and protected.get("_aggregate_band_piece") is True
+        ):
+            bounds = percent_bounds(protected)
+            if bounds is None:
+                return frozenset()
+            marked.append((index, bounds))
+    if len(marked) != 4:
+        return frozenset()
+
+    def meaningful(kind: str) -> bool:
+        minimum_width, minimum_height, minimum_area = {
+            "character": (20.0, 20.0, 600.0),
+            "product": (8.0, 8.0, 80.0),
+        }[kind]
+        for protected in protected_regions:
+            if not isinstance(protected, dict) or protected.get("kind") != kind:
+                continue
+            bounds = percent_bounds(protected)
+            if bounds is None:
+                continue
+            width = bounds[2] - bounds[0]
+            height = bounds[3] - bounds[1]
+            if (
+                width >= minimum_width
+                and height >= minimum_height
+                and width * height >= minimum_area
+            ):
+                return True
+        return False
+
+    if not (meaningful("character") and meaningful("product")):
+        return frozenset()
+
+    def close(first: float, second: float) -> bool:
+        return math.isclose(first, second, rel_tol=0.0, abs_tol=1e-6)
+
+    layouts = 0
+    for top, bottom, left, right in permutations(marked):
+        top_box = top[1]
+        bottom_box = bottom[1]
+        left_box = left[1]
+        right_box = right[1]
+        band_left = top_box[0]
+        band_top = top_box[1]
+        band_right = top_box[2]
+        band_bottom = bottom_box[3]
+        band_width = band_right - band_left
+        band_height = band_bottom - band_top
+        band_area = band_width * band_height
+        hole_area = (
+            (hole_right - hole_left) * (hole_bottom - hole_top)
+        )
+        if not (
+            band_left <= 0.5
+            and band_right >= 99.5
+            and band_width >= 99.0
+            and band_top >= 65.0
+            and band_bottom >= 99.5
+            and 20.0 <= band_height <= 40.0
+            and band_width / band_height >= 2.5
+            and band_area > 0
+            and hole_area / 10_000.0 <= 0.065
+            and hole_area / band_area <= 0.22
+            and close(top_box[0], band_left)
+            and close(top_box[1], band_top)
+            and close(top_box[2], band_right)
+            and close(top_box[3], hole_top)
+            and close(bottom_box[0], band_left)
+            and close(bottom_box[1], hole_bottom)
+            and close(bottom_box[2], band_right)
+            and close(bottom_box[3], band_bottom)
+            and close(left_box[0], band_left)
+            and close(left_box[1], hole_top)
+            and close(left_box[2], hole_left)
+            and close(left_box[3], hole_bottom)
+            and close(right_box[0], hole_right)
+            and close(right_box[1], hole_top)
+            and close(right_box[2], band_right)
+            and close(right_box[3], hole_bottom)
+        ):
+            continue
+        layouts += 1
+    if layouts != 1:
+        return frozenset()
+    return frozenset(index for index, _ in marked)
+
+
+def _validate_lower_caption_crop_protection(
+    region: dict,
+    image_width: int,
+    image_height: int,
+    crop_bottom: int,
+    target_box: tuple[int, int, int, int],
+) -> None:
+    """Reject a crop that removes or newly covers protected visual content."""
+    protected_regions = region.get("_protected_regions")
+    source_index = region.get("_source_index")
+    if (
+        isinstance(source_index, bool)
+        or not isinstance(source_index, int)
+        or not isinstance(protected_regions, list)
+        or not protected_regions
+        or len(protected_regions) > 32
+    ):
+        raise SourceTextCleanupError("protected visual metadata is invalid")
+
+    target_left, target_top, target_right, target_bottom = target_box
+    target_halo = max(2, round(max(image_width, image_height) * 0.01))
+    target_with_halo = (
+        max(0, target_left - target_halo),
+        max(0, target_top - target_halo),
+        min(image_width, target_right + target_halo),
+        min(crop_bottom, target_bottom + target_halo),
+    )
+    aggregate_piece_indexes = _carved_aggregate_band_piece_indexes(region)
+    for protected_index, protected in enumerate(protected_regions):
+        if not isinstance(protected, dict):
+            raise SourceTextCleanupError("protected visual metadata is invalid")
+        kind = protected.get("kind")
+        if kind not in _PROTECTED_VISUAL_KINDS:
+            raise SourceTextCleanupError("protected visual kind is invalid")
+        protected_box = _protected_percent_box(
+            protected,
+            image_width,
+            image_height,
+        )
+        protected_source_index = protected.get(
+            "_source_index",
+            protected.get("source_index"),
+        )
+        if kind == "source_text":
+            if (
+                isinstance(protected_source_index, bool)
+                or not isinstance(protected_source_index, int)
+            ):
+                raise SourceTextCleanupError(
+                    "protected source-text metadata is invalid"
+                )
+            if protected_source_index == source_index:
+                continue
+
+        if protected_index in aggregate_piece_indexes:
+            # These four boxes are the preserved remainder of one scene-wide
+            # aggregate, not four independent objects. Specific character,
+            # product, logo, UI, and text boxes below remain fully enforced.
+            continue
+
+        _, protected_top, _, protected_bottom = protected_box
+        if protected_bottom > crop_bottom:
+            if kind not in _CAPTION_SUBSTRATE_KINDS:
+                raise SourceTextCleanupError(
+                    f"lower-caption crop intersects protected {kind}"
+                )
+            protected_height = protected_bottom - protected_top
+            removed_tail_fraction = (
+                protected_bottom - max(crop_bottom, protected_top)
+            ) / max(1, protected_height)
+            if (
+                crop_bottom <= protected_top
+                or removed_tail_fraction
+                > _LOWER_CROP_MAX_SUBSTRATE_TAIL_FRACTION
+            ):
+                raise SourceTextCleanupError(
+                    f"lower-caption crop removes protected {kind}"
+                )
+
+        if (
+            kind not in _CAPTION_SUBSTRATE_KINDS
+            and _intersection_area(target_with_halo, protected_box) > 0
+        ):
+            raise SourceTextCleanupError(
+                f"lower-caption translation overlaps protected {kind}"
+            )
+
+
+def crop_confirmed_lower_caption(
+    source_image: PreparedSourceImage,
+    translation_regions: object,
+) -> SourceTextCleanupResult:
+    """Crop one independently confirmed bright edge caption as a last resort.
+
+    This is intentionally not a generic cleanup fallback. It re-runs the fixed
+    bright-caption raster consensus, keeps most of a landscape source, and
+    rejects any crop that would remove a logo, UI, face, token, unrelated text,
+    or more than the bottom tail of a character/product. The returned detected
+    box is remapped for the cropped aspect ratio so PNG and editable SVG use the
+    same raster asset and Korean text geometry.
+    """
+    if (
+        not isinstance(translation_regions, list)
+        or len(translation_regions) != 1
+        or not isinstance(translation_regions[0], dict)
+    ):
+        raise SourceTextCleanupError(
+            "lower-caption crop requires exactly one audited region"
+        )
+    region = translation_regions[0]
+
+    try:
+        raw = base64.b64decode(source_image.base64_data, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise SourceTextCleanupError("source image data is invalid") from exc
+    encoded = np.frombuffer(raw, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        raise SourceTextCleanupError("source image could not be decoded")
+    image_height, image_width = image.shape[:2]
+    if (
+        image_width != source_image.width
+        or image_height != source_image.height
+    ):
+        raise SourceTextCleanupError("source image dimensions are inconsistent")
+
+    detection_image = _text_detection_working_image(image)
+    detection_height, detection_width = detection_image.shape[:2]
+    if not _light_lower_caption_fallback_is_eligible(
+        region,
+        detection_width,
+        detection_height,
+    ):
+        raise SourceTextCleanupError("lower-caption crop is not eligible")
+    core_mask, _, _, detected = _recover_light_lower_caption_mask(
+        detection_image,
+        region,
+    )
+    _validate_expected_line_structure(core_mask, region)
+
+    detected_x = detected[0] / detection_width * 100.0
+    detected_y = detected[1] / detection_height * 100.0
+    detected_width_percent = (
+        (detected[2] - detected[0]) / detection_width * 100.0
+    )
+    detected_height_percent = (
+        (detected[3] - detected[1]) / detection_height * 100.0
+    )
+    guard_pixels = max(
+        2,
+        math.ceil(image_height * _LOWER_CROP_GUARD_FRACTION),
+    )
+    crop_bottom = (
+        math.floor(image_height * detected_y / 100.0)
+        - guard_pixels
+    )
+    keep_fraction = crop_bottom / image_height
+    if not (
+        _LOWER_CROP_MIN_KEEP_FRACTION
+        <= keep_fraction
+        <= _LOWER_CROP_MAX_KEEP_FRACTION
+    ):
+        raise SourceTextCleanupError(
+            "lower-caption crop leaves unsafe source dimensions"
+        )
+
+    remapped_height = detected_height_percent / keep_fraction
+    if remapped_height <= 0 or remapped_height >= 30:
+        raise SourceTextCleanupError(
+            "lower-caption translation geometry is invalid"
+        )
+    # Both source variants are landscape and width-fitted in the renderer.
+    # Compensate for the cropped frame's larger vertical letterbox so the
+    # Korean caption remains near the original global canvas position.
+    remapped_y = (
+        detected_y - (1.0 - keep_fraction) * 50.0
+    ) / keep_fraction
+    maximum_y = (
+        100.0
+        - _LOWER_CROP_TARGET_INSET_PERCENT
+        - remapped_height
+    )
+    if maximum_y <= _LOWER_CROP_TARGET_INSET_PERCENT:
+        raise SourceTextCleanupError(
+            "lower-caption translation geometry is invalid"
+        )
+    remapped_y = min(
+        maximum_y,
+        max(_LOWER_CROP_TARGET_INSET_PERCENT, remapped_y),
+    )
+    target_box = (
+        max(0, math.floor(image_width * detected_x / 100.0)),
+        max(0, math.floor(crop_bottom * remapped_y / 100.0)),
+        min(
+            image_width,
+            math.ceil(
+                image_width
+                * (detected_x + detected_width_percent)
+                / 100.0
+            ),
+        ),
+        min(
+            crop_bottom,
+            math.ceil(
+                crop_bottom
+                * (remapped_y + remapped_height)
+                / 100.0
+            ),
+        ),
+    )
+    _validate_lower_caption_crop_protection(
+        region,
+        image_width,
+        image_height,
+        crop_bottom,
+        target_box,
+    )
+
+    cropped = image[:crop_bottom, :].copy()
+    ok, cropped_jpeg = cv2.imencode(
+        ".jpg",
+        cropped,
+        [cv2.IMWRITE_JPEG_QUALITY, 90, cv2.IMWRITE_JPEG_OPTIMIZE, 1],
+    )
+    if not ok:
+        raise SourceTextCleanupError(
+            "cropped source image could not be encoded"
+        )
+    return SourceTextCleanupResult(
+        image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data=base64.b64encode(cropped_jpeg.tobytes()).decode("ascii"),
+            width=image_width,
+            height=crop_bottom,
+        ),
+        masked_pixels=image_width * (image_height - crop_bottom),
+        detected_regions=({
+            "x": detected_x,
+            "y": remapped_y,
+            "width": detected_width_percent,
+            "height": remapped_height,
+        },),
+        strategy="lower_crop",
     )
 
 
@@ -1858,6 +2896,61 @@ def _inpaint_score(image: np.ndarray, mask: np.ndarray) -> float:
     return float(np.mean(gradient[boundary])) + texture_mismatch * 50.0
 
 
+def _lower_caption_background_needs_crop(
+    image: np.ndarray,
+    mask: np.ndarray,
+    translation_regions: object,
+    *,
+    used_light_caption_recovery: bool,
+) -> bool:
+    """Detect a strong scene seam crossing a bright lower-caption mask.
+
+    A tiny outlined word across the edge of a chair and table can earn a low
+    inpaint score while visibly smearing that long horizontal boundary. This
+    test ignores the accepted glyph mask, requires a coherent scene edge in
+    the interior of its bbox, and applies only to the narrow bright-caption
+    class. A seam below the glyph bbox does not trigger the crop fallback.
+    """
+    if (
+        used_light_caption_recovery is not True
+        or not isinstance(translation_regions, list)
+        or len(translation_regions) != 1
+        or not _light_lower_caption_fallback_is_eligible(
+            translation_regions[0],
+            image.shape[1],
+            image.shape[0],
+        )
+    ):
+        return False
+    mask_left, mask_top, mask_right, mask_bottom = _mask_bounds(mask)
+    mask_width = mask_right - mask_left
+    mask_height = mask_bottom - mask_top
+    horizontal_padding = max(12, round(mask_width * 0.58))
+    left = max(0, mask_left - horizontal_padding)
+    right = min(image.shape[1], mask_right + horizontal_padding)
+    bottom_guard = max(3, math.ceil(mask_height * 0.06))
+    if right - left < 40 or mask_bottom - mask_top < bottom_guard + 5:
+        return False
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    vertical_gradient = np.abs(gray[1:] - gray[:-1])
+    blocked = cv2.dilate(mask, np.ones((3, 3), dtype=np.uint8)) > 0
+    minimum_known = max(20, math.ceil((right - left) * 0.40))
+    for row in range(mask_top + 2, mask_bottom - bottom_guard + 1):
+        known = ~(
+            blocked[row, left:right]
+            | blocked[row - 1, left:right]
+        )
+        row_gradient = vertical_gradient[row - 1, left:right][known]
+        if len(row_gradient) < minimum_known:
+            continue
+        if (
+            np.count_nonzero(row_gradient >= 20) / len(row_gradient) >= 0.55
+            and float(np.percentile(row_gradient, 75)) >= 28.0
+        ):
+            return True
+    return False
+
+
 def clean_source_text(
     source_image: PreparedSourceImage,
     translation_regions: object,
@@ -1867,12 +2960,27 @@ def clean_source_text(
     Cleanup is atomic: every region must yield a conservative text-shaped mask.
     The caller must hide all Korean layers if this function raises.
     """
-    image, full_mask, detected_regions = _prepare_cleanup_mask(
+    (
+        image,
+        full_mask,
+        detected_regions,
+        used_light_caption_recovery,
+    ) = _prepare_cleanup_mask(
         source_image,
         translation_regions,
     )
     image_height, image_width = image.shape[:2]
     masked_pixels = int(np.count_nonzero(full_mask))
+
+    if _lower_caption_background_needs_crop(
+        image,
+        full_mask,
+        translation_regions,
+        used_light_caption_recovery=used_light_caption_recovery,
+    ):
+        raise SourceTextCleanupError(
+            "source background is too complex for clean lower-caption reconstruction"
+        )
 
     radius = max(2, min(7, round(max(image_width, image_height) / 360)))
     candidate_builders = (

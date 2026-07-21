@@ -40,7 +40,11 @@ from core.llm.news_card_pipeline import (
 )
 from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
 from core.sources.source_image import SourceImageError, fetch_source_image
-from core.sources.source_text_cleanup import SourceTextCleanupError, clean_source_text
+from core.sources.source_text_cleanup import (
+    SourceTextCleanupError,
+    clean_source_text,
+    crop_confirmed_lower_caption,
+)
 from core.sources.visual_localization_cache import (
     discard_visual_localization,
     get_visual_localization,
@@ -625,17 +629,31 @@ async def generate_news_card(
         aligned_regions = None
         try:
             loop = asyncio.get_running_loop()
-            cleanup = await loop.run_in_executor(
-                _SOURCE_TEXT_CLEANUP_EXECUTOR,
-                clean_source_text,
-                source_image,
-                spec["translation_regions"],
-            )
+            try:
+                cleanup = await loop.run_in_executor(
+                    _SOURCE_TEXT_CLEANUP_EXECUTOR,
+                    clean_source_text,
+                    source_image,
+                    spec["translation_regions"],
+                )
+            except SourceTextCleanupError as cleanup_error:
+                try:
+                    cleanup = await loop.run_in_executor(
+                        _SOURCE_TEXT_CLEANUP_EXECUTOR,
+                        crop_confirmed_lower_caption,
+                        source_image,
+                        spec["translation_regions"],
+                    )
+                except SourceTextCleanupError:
+                    # Keep the primary cleanup reason in logs. The crop path is
+                    # merely a narrowly gated recovery strategy, not evidence
+                    # that a cached visual placement is valid on its own.
+                    raise cleanup_error
             aligned_regions = _align_regions_to_detected_text(
                 spec["translation_regions"],
                 getattr(cleanup, "detected_regions", ()),
-                source_image.width,
-                source_image.height,
+                cleanup.image.width,
+                cleanup.image.height,
             )
         except asyncio.CancelledError:
             raise
@@ -687,6 +705,8 @@ async def generate_news_card(
                 # Commit renderer/result state only after the cleaned asset exists.
                 render_source_image = cleanup.image
                 source_visual_path = candidate_path
+                spec["source_image_width"] = cleanup.image.width
+                spec["source_image_height"] = cleanup.image.height
                 spec["translation_regions"] = (
                     _strip_visual_localization_private_fields(aligned_regions)
                 )
@@ -701,10 +721,16 @@ async def generate_news_card(
                             f"[{client_id}] ⚠ Visual localization cache write skipped: "
                             f"{type(exc).__name__}"
                         )
-                print(
-                    f"[{client_id}] Source lettering removed: "
-                    f"{cleanup.masked_pixels} pixels"
-                )
+                if getattr(cleanup, "strategy", "inpaint") == "lower_crop":
+                    print(
+                        f"[{client_id}] Source lower-caption crop fallback: "
+                        f"{cleanup.image.width}x{cleanup.image.height}"
+                    )
+                else:
+                    print(
+                        f"[{client_id}] Source lettering removed: "
+                        f"{cleanup.masked_pixels} pixels"
+                    )
 
     # Audit evidence is internal even if a future path bypasses cleanup. Keep
     # every public consumer (PNG, editable SVG, manifest, API result) clean.
