@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
+import core.sources.source_text_cleanup as source_text_cleanup
 from core.sources.source_image import prepare_source_image_bytes
 from core.sources.source_text_cleanup import (
     _MaskCandidate,
@@ -16,6 +17,7 @@ from core.sources.source_text_cleanup import (
     _unique_pairwise_compatible_clique,
     _validate_expected_line_structure,
     clean_source_text,
+    crop_confirmed_lower_caption,
     probe_source_text,
 )
 
@@ -116,6 +118,87 @@ def _two_line_outlined_caption_source():
     output = BytesIO()
     image.save(output, format="JPEG", quality=95)
     return prepare_source_image_bytes(output.getvalue())
+
+
+def _bright_outline_on_dark_source():
+    """Reproduce a bright subtitle whose outline joins a dark scene object."""
+    image = Image.new("RGB", (720, 480), (220, 220, 210))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((100, 180, 620, 455), fill=(18, 18, 18))
+    draw.rectangle((0, 455, 720, 479), fill=(184, 132, 72))
+    draw.text(
+        (300, 405),
+        "voila",
+        font=ImageFont.load_default(size=43),
+        fill=(255, 235, 60),
+        stroke_width=5,
+        stroke_fill=(0, 0, 0),
+    )
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=90)
+    return prepare_source_image_bytes(output.getvalue())
+
+
+def _bright_decorative_dots_on_dark_source():
+    image = Image.new("RGB", (720, 480), (220, 220, 210))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((100, 180, 620, 455), fill=(18, 18, 18))
+    draw.rectangle((0, 455, 720, 479), fill=(184, 132, 72))
+    for x in (310, 335, 360, 385, 410):
+        draw.ellipse((x - 8, 416, x + 8, 432), fill=(255, 235, 60))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=90)
+    return prepare_source_image_bytes(output.getvalue())
+
+
+def _bright_outline_crossing_scene_seam_source():
+    image = Image.new("RGB", (720, 480), (220, 220, 210))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((100, 180, 620, 455), fill=(18, 18, 18))
+    draw.rectangle((0, 450, 720, 479), fill=(184, 132, 72))
+    draw.text(
+        (300, 405),
+        "voila",
+        font=ImageFont.load_default(size=43),
+        fill=(255, 235, 60),
+        stroke_width=5,
+        stroke_fill=(0, 0, 0),
+    )
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=90)
+    return prepare_source_image_bytes(output.getvalue())
+
+
+def _bright_outline_audited_region(*, source_text="voila", extra=None):
+    protections = [
+        {
+            "kind": "source_text",
+            "source_index": 0,
+            "x": 42,
+            "y": 84,
+            "width": 16,
+            "height": 8,
+        },
+        {
+            "kind": "product",
+            "x": 10,
+            "y": 37,
+            "width": 80,
+            "height": 58,
+        },
+    ]
+    protections.extend(extra or [])
+    return {
+        "source_text": source_text,
+        "text": "짜잔",
+        "source_x": 40,
+        "source_y": 82,
+        "source_width": 20,
+        "source_height": 10,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": protections,
+    }
 
 
 def _checker_source(width=200, height=100):
@@ -487,6 +570,580 @@ def test_squid_style_tight_audit_consensus_is_resolution_invariant():
         # pixel (0.12 percentage point), but never enough to alter placement.
         for key in ("x", "y", "width", "height"):
             assert detected[key] == pytest.approx(baseline[key], abs=0.15)
+
+
+def test_bright_lower_caption_fallback_uses_dominant_twenty_crop_consensus(
+    monkeypatch,
+):
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region()
+    recoveries = 0
+    original_recovery = source_text_cleanup._recover_light_lower_caption_mask
+
+    def count_recovery(image, audited_region):
+        nonlocal recoveries
+        recoveries += 1
+        return original_recovery(image, audited_region)
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_recover_light_lower_caption_mask",
+        count_recovery,
+    )
+    first = probe_source_text(source, [region])
+    second = probe_source_text(source, [region])
+
+    assert recoveries == 2
+    assert first == second
+    assert first.masked_pixels == 4_123
+    assert first.detected_regions[0] == pytest.approx({
+        "x": 41.7777777778,
+        "y": 86.5,
+        "width": 12.2222222222,
+        "height": 6.6666666667,
+    })
+
+    cleaned = clean_source_text(source, [region])
+    before = _decode(source)
+    after = _decode(cleaned.image)
+    caption = np.s_[390:460, 270:450]
+    before_hsv = cv2.cvtColor(before[caption], cv2.COLOR_BGR2HSV)
+    after_hsv = cv2.cvtColor(after[caption], cv2.COLOR_BGR2HSV)
+    before_yellow = np.count_nonzero(
+        (before_hsv[:, :, 0] >= 18)
+        & (before_hsv[:, :, 0] <= 40)
+        & (before_hsv[:, :, 1] >= 100)
+        & (before_hsv[:, :, 2] >= 150)
+    )
+    after_yellow = np.count_nonzero(
+        (after_hsv[:, :, 0] >= 18)
+        & (after_hsv[:, :, 0] <= 40)
+        & (after_hsv[:, :, 1] >= 100)
+        & (after_hsv[:, :, 2] >= 150)
+    )
+    assert after_yellow < before_yellow * 0.05
+    outside = np.ones(before.shape[:2], dtype=bool)
+    outside[390:460, 270:450] = False
+    outside_delta = np.abs(before.astype(np.int16) - after.astype(np.int16))[outside]
+    assert float(np.mean(outside_delta)) < 0.2
+
+
+def test_bright_lower_caption_consensus_survives_jpeg_and_resolution_changes():
+    prepared = _bright_outline_on_dark_source()
+    base = Image.open(
+        BytesIO(base64.b64decode(prepared.base64_data))
+    ).convert("RGB")
+    region = _bright_outline_audited_region()
+    results = []
+    for width in (480, 720, 1080):
+        resized = base.resize(
+            (width, round(width * 2 / 3)),
+            Image.Resampling.LANCZOS,
+        )
+        for quality in (40, 60, 80, 95):
+            output = BytesIO()
+            resized.save(
+                output,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+            )
+            source = prepare_source_image_bytes(output.getvalue())
+            probe = probe_source_text(source, [region])
+            results.append((
+                probe.detected_regions[0],
+                probe.masked_pixels / (source.width * source.height),
+            ))
+
+    baseline_box, baseline_fraction = results[0]
+    for detected, mask_fraction in results[1:]:
+        for key in ("x", "y", "width", "height"):
+            assert detected[key] == pytest.approx(baseline_box[key], abs=0.25)
+        assert mask_fraction == pytest.approx(baseline_fraction, rel=0.15)
+
+
+def test_bright_lower_caption_fallback_rejects_competing_crop_masks(
+    monkeypatch,
+):
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region()
+    calls = 0
+
+    def alternating_core(gray):
+        nonlocal calls
+        calls += 1
+        mask = np.zeros_like(gray, dtype=np.uint8)
+        width = round(gray.shape[1] * (0.40 if calls % 2 else 0.34))
+        left = (gray.shape[1] - width) // 2
+        mask[34:68, left:left + width] = 255
+        return mask
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_detect_light_caption_core",
+        alternating_core,
+    )
+    with pytest.raises(SourceTextCleanupError, match="raster consensus"):
+        source_text_cleanup._recover_light_lower_caption_mask(
+            source_text_cleanup._text_detection_working_image(_decode(source)),
+            region,
+        )
+
+
+def test_bright_lower_caption_consensus_skips_one_clipped_lattice_vote(
+    monkeypatch,
+):
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region()
+    original_core = source_text_cleanup._detect_light_caption_core
+    calls = 0
+
+    def clip_first_vote(gray):
+        nonlocal calls
+        calls += 1
+        mask = original_core(gray).copy()
+        if calls == 1:
+            mask[gray.shape[0] // 2, 0] = 255
+        return mask
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_detect_light_caption_core",
+        clip_first_vote,
+    )
+
+    mask, _, _, _ = source_text_cleanup._recover_light_lower_caption_mask(
+        source_text_cleanup._text_detection_working_image(_decode(source)),
+        region,
+    )
+
+    assert calls == 20
+    assert np.count_nonzero(mask) > 0
+
+
+def test_bright_lower_caption_consensus_rejects_too_many_clipped_votes(
+    monkeypatch,
+):
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region()
+    original_core = source_text_cleanup._detect_light_caption_core
+    calls = 0
+
+    def clip_five_votes(gray):
+        nonlocal calls
+        calls += 1
+        mask = original_core(gray).copy()
+        if calls <= 5:
+            mask[gray.shape[0] // 2, 0] = 255
+        return mask
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_detect_light_caption_core",
+        clip_five_votes,
+    )
+
+    with pytest.raises(SourceTextCleanupError, match="dominant raster consensus"):
+        source_text_cleanup._recover_light_lower_caption_mask(
+            source_text_cleanup._text_detection_working_image(_decode(source)),
+            region,
+        )
+
+    assert calls == 20
+
+
+def test_bright_lower_caption_fallback_rejects_decorative_dot_rows(
+    monkeypatch,
+):
+    source = _bright_decorative_dots_on_dark_source()
+    region = _bright_outline_audited_region()
+
+    def fail_standard_detection(_image, _region):
+        raise SourceTextCleanupError("standard mask failed")
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_detect_audited_region_text_mask",
+        fail_standard_detection,
+    )
+    with pytest.raises(SourceTextCleanupError, match="standard mask failed"):
+        probe_source_text(source, [region])
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "Squid",
+        "Squid!",
+        "Squid®",
+        "squid router™",
+        "@squidrouter",
+        "https://squidrouter.com",
+        "squidrouter.io",
+        "squidrouter.xyz/path",
+    ],
+)
+def test_bright_lower_caption_fallback_never_targets_brand_or_link_copy(
+    monkeypatch,
+    source_text,
+):
+    source = _bright_outline_on_dark_source()
+
+    def fail_standard_detection(_image, _region):
+        raise SourceTextCleanupError("standard mask failed")
+
+    monkeypatch.setattr(
+        source_text_cleanup,
+        "_detect_audited_region_text_mask",
+        fail_standard_detection,
+    )
+    with pytest.raises(SourceTextCleanupError, match="standard mask failed"):
+        probe_source_text(
+            source,
+            [_bright_outline_audited_region(source_text=source_text)],
+        )
+
+
+def test_bright_lower_caption_outline_cannot_cross_a_logo_protection():
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region(extra=[{
+        "kind": "logo",
+        "x": 43,
+        "y": 85,
+        "width": 8,
+        "height": 8,
+    }])
+    with pytest.raises(SourceTextCleanupError, match="protected logo"):
+        probe_source_text(source, [region])
+
+
+def test_bright_lower_caption_outline_rejects_separate_dark_detail():
+    image = np.full((100, 180, 3), 120, dtype=np.uint8)
+    core = np.zeros((100, 180), dtype=np.uint8)
+    for x in (55, 68, 81, 94, 107):
+        core[40:70, x:x + 7] = 255
+    provenance = core.copy()
+    image[provenance > 0] = 240
+    outline = (
+        cv2.dilate(
+            core,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        ) > 0
+    ) & (core == 0)
+    image[outline] = 0
+
+    source_text_cleanup._expand_light_caption_outline(
+        image,
+        core,
+        provenance,
+    )
+
+    image_with_detail = image.copy()
+    image_with_detail[32:36, 82:88] = 0
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="outline lacks local pixel support",
+    ):
+        source_text_cleanup._expand_light_caption_outline(
+            image_with_detail,
+            core,
+            provenance,
+        )
+
+
+def _crop_safe_bright_outline_region():
+    region = _bright_outline_audited_region()
+    region["_protected_regions"][1] = {
+        "kind": "character",
+        "x": 10,
+        "y": 8,
+        "width": 80,
+        "height": 84,
+    }
+    return region
+
+
+def _validated_carved_aggregate_region(source):
+    from core.llm.news_card_pipeline import _carve_aggregate_bottom_visual_band
+
+    probe = source_text_cleanup.probe_light_lower_caption(
+        source,
+        [_bright_outline_audited_region()],
+    )
+    anchor = dict(probe.detected_regions[0])
+    carved = _carve_aggregate_bottom_visual_band(
+        [
+            {"kind": "character", "x": 21, "y": 8, "width": 54, "height": 84},
+            {"kind": "product", "x": 30, "y": 45, "width": 42, "height": 47},
+            {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
+        ],
+        anchor,
+        source,
+    )
+    # The placement validator converts its unforgeable in-memory sentinel to
+    # this cache-safe private bool. Source cleanup sees only that validated
+    # representation.
+    for protected in carved:
+        if "_aggregate_band_piece" in protected:
+            protected["_aggregate_band_piece"] = True
+    padding_x = 3 / source.width * 100
+    padding_y = 3 / source.height * 100
+    return {
+        "source_text": "voila",
+        "text": "짜잔",
+        "x": anchor["x"],
+        "y": anchor["y"],
+        "width": anchor["width"],
+        "height": anchor["height"],
+        "source_x": anchor["x"] - padding_x,
+        "source_y": anchor["y"] - padding_y,
+        "source_width": anchor["width"] + padding_x * 2,
+        "source_height": anchor["height"] + padding_y * 2,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [
+            {"kind": "source_text", "source_index": 0, **anchor},
+            *carved,
+        ],
+    }
+
+
+def test_confirmed_bright_lower_caption_can_crop_after_unsafe_inpaint():
+    source = _bright_outline_on_dark_source()
+    result = crop_confirmed_lower_caption(
+        source,
+        [_crop_safe_bright_outline_region()],
+    )
+
+    assert result.strategy == "lower_crop"
+    assert result.image.width == 720
+    assert result.image.height == 407
+    assert result.masked_pixels == 720 * (480 - 407)
+    assert result.detected_regions[0] == pytest.approx({
+        "x": 41.7777777778,
+        "y": 90.1375921376,
+        "width": 12.2222222222,
+        "height": 7.8624078624,
+    })
+    assert (
+        result.detected_regions[0]["y"]
+        + result.detected_regions[0]["height"]
+        == pytest.approx(98.0)
+    )
+    # The original caption starts below the retained raster; this path never
+    # paints over it or exports its pixels into the Figma source layer.
+    assert result.image.height < round(source.height * 0.86)
+
+
+def test_confirmed_lower_crop_accepts_authenticated_four_piece_scene_band():
+    source = _bright_outline_on_dark_source()
+    region = _validated_carved_aggregate_region(source)
+
+    result = crop_confirmed_lower_caption(source, [region])
+
+    assert result.strategy == "lower_crop"
+    assert result.image.height == 407
+    assert len([
+        protected
+        for protected in region["_protected_regions"]
+        if protected.get("_aggregate_band_piece") is True
+    ]) == 4
+
+
+def test_normalization_preserves_authenticated_scene_band_partition():
+    from core.llm.news_card_pipeline import _normalize_visual_localization
+
+    source = _bright_outline_on_dark_source()
+    region = _validated_carved_aggregate_region(source)
+    normalized = _normalize_visual_localization(
+        {
+            "source_text_visible": True,
+            "translation_regions": [region],
+        },
+        "squid",
+        True,
+        source.width,
+        source.height,
+        require_audit_metadata=True,
+    )
+
+    normalized_region = normalized["translation_regions"][0]
+    assert normalized_region["source_x"] == region["source_x"]
+    assert normalized_region["source_y"] == region["source_y"]
+    assert normalized_region["source_width"] == region["source_width"]
+    assert normalized_region["source_height"] == region["source_height"]
+    result = crop_confirmed_lower_caption(source, [normalized_region])
+    assert result.strategy == "lower_crop"
+    assert result.image.height == 407
+
+
+@pytest.mark.parametrize("mutation", ["missing_marker", "geometry_drift"])
+def test_confirmed_lower_crop_rejects_unauthenticated_scene_band_partition(
+    mutation,
+):
+    source = _bright_outline_on_dark_source()
+    region = _validated_carved_aggregate_region(source)
+    pieces = [
+        protected
+        for protected in region["_protected_regions"]
+        if protected.get("_aggregate_band_piece") is True
+    ]
+    if mutation == "missing_marker":
+        pieces[0].pop("_aggregate_band_piece")
+    else:
+        pieces[0]["width"] -= 0.01
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="crop intersects protected other_visual",
+    ):
+        crop_confirmed_lower_caption(source, [region])
+
+
+def test_confirmed_lower_crop_still_enforces_independent_other_visual():
+    source = _bright_outline_on_dark_source()
+    region = _validated_carved_aggregate_region(source)
+    region["_protected_regions"].append({
+        "kind": "other_visual",
+        "x": 45,
+        "y": 90,
+        "width": 10,
+        "height": 8,
+    })
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="crop intersects protected other_visual",
+    ):
+        crop_confirmed_lower_caption(source, [region])
+
+
+def test_multi_substrate_bright_caption_defers_instead_of_smearing():
+    source = _bright_outline_crossing_scene_seam_source()
+    region = _crop_safe_bright_outline_region()
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="complex for clean lower-caption reconstruction",
+    ):
+        clean_source_text(source, [region])
+    cropped = crop_confirmed_lower_caption(source, [region])
+    assert cropped.strategy == "lower_crop"
+    assert cropped.image.height < source.height
+
+
+def test_scene_seam_requires_actual_bright_caption_recovery():
+    source = _bright_outline_crossing_scene_seam_source()
+    region = _crop_safe_bright_outline_region()
+    image, mask, _, used_bright_recovery = (
+        source_text_cleanup._prepare_cleanup_mask(source, [region])
+    )
+
+    assert used_bright_recovery is True
+    assert source_text_cleanup._lower_caption_background_needs_crop(
+        image,
+        mask,
+        [region],
+        used_light_caption_recovery=True,
+    ) is True
+    assert source_text_cleanup._lower_caption_background_needs_crop(
+        image,
+        mask,
+        [region],
+        used_light_caption_recovery=False,
+    ) is False
+
+
+def test_lower_caption_crop_rejects_non_substrate_content_in_removed_band():
+    source = _bright_outline_on_dark_source()
+    region = _crop_safe_bright_outline_region()
+    region["_protected_regions"].append({
+        "kind": "logo",
+        "x": 44,
+        "y": 90,
+        "width": 12,
+        "height": 7,
+    })
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="crop intersects protected logo",
+    ):
+        crop_confirmed_lower_caption(source, [region])
+
+
+def test_lower_caption_crop_rejects_new_logo_overlap_after_reframing():
+    source = _bright_outline_on_dark_source()
+    region = _crop_safe_bright_outline_region()
+    region["_protected_regions"].append({
+        "kind": "logo",
+        "x": 41,
+        "y": 74,
+        "width": 16,
+        "height": 9,
+    })
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="translation overlaps protected logo",
+    ):
+        crop_confirmed_lower_caption(source, [region])
+
+
+def test_lower_caption_crop_allows_a_small_product_tail_within_cap():
+    source = _bright_outline_on_dark_source()
+    region = _bright_outline_audited_region()
+
+    result = crop_confirmed_lower_caption(source, [region])
+
+    assert result.strategy == "lower_crop"
+
+
+def test_lower_caption_crop_product_tail_cap_is_exactly_eighteen_percent():
+    region = {
+        "_source_index": 0,
+        "_protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 40,
+                "y": 84,
+                "width": 20,
+                "height": 8,
+            },
+            {"kind": "product", "x": 0, "y": 0, "width": 100, "height": 100},
+        ],
+    }
+    source_text_cleanup._validate_lower_caption_crop_protection(
+        region,
+        100,
+        100,
+        82,
+        (40, 70, 60, 80),
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="crop removes protected product",
+    ):
+        source_text_cleanup._validate_lower_caption_crop_protection(
+            region,
+            100,
+            100,
+            81,
+            (40, 70, 60, 80),
+        )
+
+
+def test_lower_caption_crop_is_never_used_for_multiple_regions():
+    source = _bright_outline_on_dark_source()
+    region = _crop_safe_bright_outline_region()
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="exactly one audited region",
+    ):
+        crop_confirmed_lower_caption(source, [region, dict(region)])
 
 
 def test_squid_style_audit_jitter_is_stable_with_production_metadata():

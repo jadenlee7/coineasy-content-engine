@@ -34,7 +34,12 @@ from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message
 from core.sources.source_image import PreparedSourceImage
-from core.sources.source_text_cleanup import SourceTextCleanupError, probe_source_text
+from core.sources.source_text_cleanup import (
+    SourceTextCleanupError,
+    crop_confirmed_lower_caption,
+    probe_light_lower_caption,
+    probe_source_text,
+)
 
 
 # ────────────────────────────────────────────────────
@@ -581,6 +586,16 @@ _VISUAL_AUDIT_PRIVATE_KEYS = (
 )
 
 
+class _AggregateBandPieceMarker:
+    """Unforgeable in-memory provenance for internally carved band pieces."""
+
+    def __deepcopy__(self, memo: dict) -> _AggregateBandPieceMarker:
+        return self
+
+
+_AGGREGATE_BAND_PIECE_MARKER = _AggregateBandPieceMarker()
+
+
 def _clear_visual_localization(
     result: dict,
     *,
@@ -895,11 +910,14 @@ def _scout_lower_band_caption_anchor(
     audit_proposal: dict[str, float],
     protections: list[dict],
     source_image: PreparedSourceImage,
+    *,
+    bright_only: bool = False,
 ) -> Optional[
     tuple[
         dict[str, float],
         dict[str, float],
         tuple[int, tuple[float, float, float, float], str],
+        bool,
     ]
 ]:
     """Recover one lower caption only from a unique bounded-lattice consensus.
@@ -909,7 +927,9 @@ def _scout_lower_band_caption_anchor(
     by strong scene evidence and one aggregate lower band.  The production
     raster detector must resolve the exact same native mask across both widths,
     both vertical offsets, and at least four nearby horizontal centers, with no
-    competing successful signature.
+    competing successful signature. ``bright_only`` forbids the generic dark
+    lattice fallback when an aggregate scene carve must be earned exclusively
+    by the bright-caption detector.
     """
     if (
         source_image.width <= 0
@@ -986,79 +1006,145 @@ def _scout_lower_band_caption_anchor(
     ):
         return None
 
-    successes: list[
-        tuple[
-            tuple[int, tuple[float, float, float, float], str],
-            float,
-            float,
-            float,
-        ]
-    ] = []
+    bright_crop_recovery = False
     detected_box: Optional[dict[str, float]] = None
-    for center_offset in (-1.0, -0.5, 0.0, 0.5, 1.0):
-        scout_center_x = proposal_center_x + center_offset
-        for width in (30.0, 40.0):
-            for bottom_offset in (20.0, 18.0):
-                scout_box = {
-                    "x": scout_center_x - width / 2.0,
-                    "y": lattice_bottom - bottom_offset,
-                    "width": width,
-                    "height": 16.0,
-                }
-                if _strict_percent_box(
-                    scout_box,
-                    minimum_width=0.25,
-                    minimum_height=0.25,
-                ) is None:
-                    return None
-                scout_region = {
-                    **copy.deepcopy(raw_regions[0]),
-                    "source_x": scout_box["x"],
-                    "source_y": scout_box["y"],
-                    "source_width": scout_box["width"],
-                    "source_height": scout_box["height"],
-                    "_source_line_count": 1,
-                }
-                scout_region.pop("_protected_regions", None)
-                scout_region.pop("_source_index", None)
-                try:
-                    probe = probe_source_text(source_image, [scout_region])
-                except SourceTextCleanupError:
-                    continue
-                except Exception:
-                    return None
-                signature = _source_text_probe_signature(probe)
-                if signature is None:
-                    return None
-                successes.append((
-                    signature,
-                    scout_center_x,
-                    width,
-                    bottom_offset,
-                ))
-                signature_box = signature[1]
-                detected_box = {
-                    "x": signature_box[0],
-                    "y": signature_box[1],
-                    "width": signature_box[2],
-                    "height": signature_box[3],
-                }
-
-    successful_signatures = {success[0] for success in successes}
+    scout_signature: Optional[
+        tuple[int, tuple[float, float, float, float], str]
+    ] = None
+    # The model may transcribe the right phrase horizontally but put its row a
+    # little above the actual subtitle.  The bright detector searches a fixed
+    # lower lattice and uses this seed only for eligibility and independent
+    # horizontal corroboration, so canonicalize an upper proposal to the safe
+    # lower band instead of making an accurate x-position fail randomly.
+    bright_seed_box = dict(audit_proposal)
+    immutable_discovery_box = _strict_percent_box(
+        raw_regions[0],
+        minimum_width=0.25,
+        minimum_height=0.25,
+    )
     if (
-        len(successes) < 8
-        or len(successful_signatures) != 1
-        or len({success[1] for success in successes}) < 4
-        or {success[2] for success in successes} != {30.0, 40.0}
-        or {success[3] for success in successes} != {20.0, 18.0}
-        or detected_box is None
+        bright_seed_box["y"] < 78.0
+        and immutable_discovery_box is not None
+        and immutable_discovery_box["y"] >= 78.0
     ):
+        bright_seed_box["y"] = 80.0
+    bright_region = {
+        **copy.deepcopy(raw_regions[0]),
+        "source_x": bright_seed_box["x"],
+        "source_y": bright_seed_box["y"],
+        "source_width": bright_seed_box["width"],
+        "source_height": bright_seed_box["height"],
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                **bright_seed_box,
+            },
+            *copy.deepcopy(protections),
+        ],
+    }
+    try:
+        bright_probe = probe_light_lower_caption(
+            source_image,
+            [bright_region],
+        )
+    except SourceTextCleanupError:
+        pass
+    except Exception:
+        return None
+    else:
+        scout_signature = _source_text_probe_signature(bright_probe)
+        if scout_signature is None:
+            return None
+        signature_box = scout_signature[1]
+        detected_box = {
+            "x": signature_box[0],
+            "y": signature_box[1],
+            "width": signature_box[2],
+            "height": signature_box[3],
+        }
+        bright_crop_recovery = True
+
+    if not bright_crop_recovery:
+        if bright_only:
+            return None
+        successes: list[
+            tuple[
+                tuple[int, tuple[float, float, float, float], str],
+                float,
+                float,
+                float,
+            ]
+        ] = []
+        for center_offset in (-1.0, -0.5, 0.0, 0.5, 1.0):
+            scout_center_x = proposal_center_x + center_offset
+            for width in (30.0, 40.0):
+                for bottom_offset in (20.0, 18.0):
+                    scout_box = {
+                        "x": scout_center_x - width / 2.0,
+                        "y": lattice_bottom - bottom_offset,
+                        "width": width,
+                        "height": 16.0,
+                    }
+                    if _strict_percent_box(
+                        scout_box,
+                        minimum_width=0.25,
+                        minimum_height=0.25,
+                    ) is None:
+                        return None
+                    scout_region = {
+                        **copy.deepcopy(raw_regions[0]),
+                        "source_x": scout_box["x"],
+                        "source_y": scout_box["y"],
+                        "source_width": scout_box["width"],
+                        "source_height": scout_box["height"],
+                        "_source_line_count": 1,
+                    }
+                    scout_region.pop("_protected_regions", None)
+                    scout_region.pop("_source_index", None)
+                    try:
+                        probe = probe_source_text(source_image, [scout_region])
+                    except SourceTextCleanupError:
+                        continue
+                    except Exception:
+                        return None
+                    signature = _source_text_probe_signature(probe)
+                    if signature is None:
+                        return None
+                    successes.append((
+                        signature,
+                        scout_center_x,
+                        width,
+                        bottom_offset,
+                    ))
+                    signature_box = signature[1]
+                    detected_box = {
+                        "x": signature_box[0],
+                        "y": signature_box[1],
+                        "width": signature_box[2],
+                        "height": signature_box[3],
+                    }
+
+        successful_signatures = {success[0] for success in successes}
+        if (
+            len(successes) < 8
+            or len(successful_signatures) != 1
+            or len({success[1] for success in successes}) < 4
+            or {success[2] for success in successes} != {30.0, 40.0}
+            or {success[3] for success in successes} != {20.0, 18.0}
+            or detected_box is None
+        ):
+            return None
+        scout_signature = next(iter(successful_signatures))
+
+    if scout_signature is None or detected_box is None:
         return None
 
     detected_right = detected_box["x"] + detected_box["width"]
     detected_bottom = detected_box["y"] + detected_box["height"]
     detected_area = detected_box["width"] * detected_box["height"]
-    scout_signature = next(iter(successful_signatures))
     masked_fraction = scout_signature[0] / (
         source_image.width * source_image.height
     )
@@ -1111,6 +1197,14 @@ def _scout_lower_band_caption_anchor(
     ):
         return None
 
+    if bright_crop_recovery:
+        return (
+            detected_box,
+            cleanup_anchor,
+            scout_signature,
+            True,
+        )
+
     canonical_region = {
         **copy.deepcopy(raw_regions[0]),
         **detected_box,
@@ -1136,7 +1230,7 @@ def _scout_lower_band_caption_anchor(
         or canonical_signature[1] != scout_signature[1]
     ):
         return None
-    return detected_box, cleanup_anchor, canonical_signature
+    return detected_box, cleanup_anchor, canonical_signature, False
 
 
 def _carve_aggregate_bottom_visual_band(
@@ -1256,6 +1350,7 @@ def _carve_aggregate_bottom_visual_band(
             "y": y,
             "width": width,
             "height": height,
+            "_aggregate_band_piece": _AGGREGATE_BAND_PIECE_MARKER,
         })
     if not pieces:
         return unchanged
@@ -1462,6 +1557,15 @@ def _validate_visual_placement_audit(
         normalized_protected = {"kind": kind, **box}
         if source_index is not None:
             normalized_protected["source_index"] = source_index
+        if (
+            kind == "other_visual"
+            and raw.get("_aggregate_band_piece")
+            is _AGGREGATE_BAND_PIECE_MARKER
+        ):
+            # Convert unforgeable in-memory provenance to a cache-safe private
+            # bool only after deterministic audit validation. Model JSON can
+            # never manufacture the sentinel above.
+            normalized_protected["_aggregate_band_piece"] = True
         normalized_protected_regions.append(normalized_protected)
 
     if any(not boxes for boxes in audited_source_boxes.values()):
@@ -1727,6 +1831,7 @@ or:
         required_probe_signature: Optional[
             tuple[int, tuple[float, float, float, float], str]
         ] = None
+        crop_probe_allowed = False
         attempt_number = attempt_index + 1
         attempt_prompt = audit_prompt
         if retry_context:
@@ -1847,16 +1952,50 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 and retry_protections is not None
                 and source_box_unions is not None
             )
+            aggregate_band_overlap = (
+                raster_probe
+                and len(raw_regions) == 1
+                and rejection
+                == "cleanup mask for subtitle 0 overlaps protected other_visual"
+                and exact_identity
+                and retry_protections is not None
+                and source_box_unions is not None
+            )
             recovery_cleanup_anchor: Optional[dict[str, float]] = None
             recovery_audited_box: Optional[dict[str, float]] = None
-            if geometry_mismatch and first_pass_source_boxes[0] is not None:
-                if _source_box_in_broad_discovery_vicinity(
-                    source_box_unions[0],
-                    first_pass_source_boxes[0],
-                ):
-                    recovery_cleanup_anchor = first_pass_source_boxes[0]
-                    recovery_audited_box = first_pass_source_boxes[0]
+            if (
+                (geometry_mismatch or aggregate_band_overlap)
+                and first_pass_source_boxes[0] is not None
+            ):
+                # An exact source box can still be rejected before raster QA
+                # when a model incorrectly maps the whole lower scene as one
+                # other_visual band. Unlike the nearby-geometry recovery
+                # below, this overlap case must always earn the fixed bright
+                # 20-crop consensus before the aggregate may be carved.
+                if aggregate_band_overlap:
+                    scout = _scout_lower_band_caption_anchor(
+                        raw_regions,
+                        source_box_unions[0],
+                        retry_protections,
+                        source_image,
+                        bright_only=True,
+                    )
+                    if scout is not None:
+                        (
+                            recovery_audited_box,
+                            recovery_cleanup_anchor,
+                            required_probe_signature,
+                            crop_probe_allowed,
+                        ) = scout
+                        print(
+                            "[squid] raster-confirmed lower-band anchor found "
+                            "behind aggregate scene protection"
+                        )
                 else:
+                    nearby_discovery = _source_box_in_broad_discovery_vicinity(
+                        source_box_unions[0],
+                        first_pass_source_boxes[0],
+                    )
                     scout = _scout_lower_band_caption_anchor(
                         raw_regions,
                         source_box_unions[0],
@@ -1868,11 +2007,15 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                             recovery_audited_box,
                             recovery_cleanup_anchor,
                             required_probe_signature,
+                            crop_probe_allowed,
                         ) = scout
                         print(
                             "[squid] raster-confirmed lower-band anchor found "
                             "by fixed crop consensus"
                         )
+                    elif nearby_discovery:
+                        recovery_cleanup_anchor = first_pass_source_boxes[0]
+                        recovery_audited_box = first_pass_source_boxes[0]
             if (
                 recovery_cleanup_anchor is not None
                 and recovery_audited_box is not None
@@ -1950,6 +2093,7 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 probe = probe_source_text(source_image, audited_regions)
                 if (
                     required_probe_signature is not None
+                    and not crop_probe_allowed
                     and _source_text_probe_signature(probe)
                     != required_probe_signature
                 ):
@@ -1961,22 +2105,47 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                     f"{attempt_number}: {probe.masked_pixels} pixels"
                 )
             except SourceTextCleanupError as exc:
-                terminal_failure_status = "cleanup_failed"
-                retry_context = (
-                    "deterministic raster probing could not isolate the complete "
-                    "source lettering inside the proposed boxes"
-                )
-                print(
-                    "[squid] placement raster probe rejected safely on attempt "
-                    f"{attempt_number}: {exc}"
-                )
-                if (
-                    attempt_number < effective_max_calls
-                    and retry_protections is not None
-                ):
-                    retained_retry_protections = retry_protections
-                    continue
-                break
+                crop_probe_succeeded = False
+                if crop_probe_allowed:
+                    try:
+                        crop_confirmed_lower_caption(
+                            source_image,
+                            audited_regions,
+                        )
+                    except SourceTextCleanupError:
+                        pass
+                    except Exception:
+                        return _clear_visual_localization(
+                            result,
+                            failure_status="cleanup_failed",
+                        )
+                    else:
+                        crop_probe_succeeded = True
+                        print(
+                            "[squid] protected lower-caption crop validation "
+                            f"accepted on attempt {attempt_number}"
+                        )
+                if crop_probe_succeeded:
+                    # The orchestrator will reproduce the same deterministic
+                    # crop and remap Korean geometry before rendering.
+                    pass
+                else:
+                    terminal_failure_status = "cleanup_failed"
+                    retry_context = (
+                        "deterministic raster probing could not isolate the complete "
+                        "source lettering inside the proposed boxes"
+                    )
+                    print(
+                        "[squid] placement raster probe rejected safely on attempt "
+                        f"{attempt_number}: {exc}"
+                    )
+                    if (
+                        attempt_number < effective_max_calls
+                        and retry_protections is not None
+                    ):
+                        retained_retry_protections = retry_protections
+                        continue
+                    break
             except Exception as exc:
                 print(
                     "[squid] placement raster probe failed closed on attempt "
@@ -2052,6 +2221,11 @@ def _normalize_visual_audit_metadata(
                 return None
             protected_region["source_index"] = protected_source_index
             protected_source_indexes.add(protected_source_index)
+        elif (
+            kind == "other_visual"
+            and raw_region.get("_aggregate_band_piece") is True
+        ):
+            protected_region["_aggregate_band_piece"] = True
         protected_regions.append(protected_region)
 
     if protected_source_indexes != set(range(region_count)):
@@ -2222,10 +2396,34 @@ def _normalize_visual_localization(
                 "y": round(raw_y, 2),
                 "width": round(raw_width, 2),
                 "height": round(raw_height, 2),
-                "source_x": round(source_box["x"], 2),
-                "source_y": round(source_box["y"], 2),
-                "source_width": round(source_box["width"], 2),
-                "source_height": round(source_box["height"], 2),
+                # Validated aggregate-band carve pieces partition the exact
+                # private source_* cleanup hole. Preserve that authoritative
+                # geometry through normalization/cache; rounding only the
+                # hole while retaining full-precision carve pieces breaks the
+                # partition and makes identical requests alternate between a
+                # successful cold run and a rejected cached run. Public render
+                # coordinates are still replaced with detected glyph geometry
+                # after cleanup and private protections are stripped.
+                "source_x": (
+                    source_box["x"]
+                    if audit_metadata is not None
+                    else round(source_box["x"], 2)
+                ),
+                "source_y": (
+                    source_box["y"]
+                    if audit_metadata is not None
+                    else round(source_box["y"], 2)
+                ),
+                "source_width": (
+                    source_box["width"]
+                    if audit_metadata is not None
+                    else round(source_box["width"], 2)
+                ),
+                "source_height": (
+                    source_box["height"]
+                    if audit_metadata is not None
+                    else round(source_box["height"], 2)
+                ),
                 "align": align,
                 "font_role": font_role,
                 "font_size": round(font_size, 2),
