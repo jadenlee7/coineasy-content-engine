@@ -6,6 +6,7 @@ import pytest
 
 from core.llm.news_card_pipeline import (
     _audit_visual_subtitle_placement,
+    _carve_aggregate_bottom_visual_band,
     _normalize_visual_localization,
     generate_news_card_spec,
 )
@@ -144,6 +145,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "An ambiguous other_visual is never a caption substrate" in audit_content[1]["text"]
     assert "NEVER return pixel coordinates" in audit_content[1]["text"]
     assert "other_visual" in audit_content[1]["text"]
+    assert "Never use an edge-to-edge top/bottom band" in audit_content[1]["text"]
     assert "Every visible text row MUST use its own tight source_text box" in audit_content[1]["text"]
     assert '"protected_regions"' in audit_content[1]["text"]
     assert "patch_regions" not in audit_content[1]["text"]
@@ -1413,6 +1415,7 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
             },
             {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
             {"kind": "product", "x": 52, "y": 50, "width": 18, "height": 20},
+            {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
         ],
     }
 
@@ -1478,8 +1481,221 @@ def test_squid_live_first_audit_recovers_from_single_line_discovery_anchor(
         "source_text",
         "character",
         "product",
+        "other_visual",
+        "other_visual",
+        "other_visual",
+        "other_visual",
     ]
+    carved_band = [item for item in protected if item["kind"] == "other_visual"]
+    padding_x = 3 / image.width * 100
+    padding_y = 3 / image.height * 100
+    hole = {
+        "x": 30 - padding_x,
+        "y": 82 - padding_y,
+        "width": 40 + padding_x * 2,
+        "height": 13 + padding_y * 2,
+    }
+    hole_right = hole["x"] + hole["width"]
+    hole_bottom = hole["y"] + hole["height"]
+    assert sum(item["width"] * item["height"] for item in carved_band) + (
+        hole["width"] * hole["height"]
+    ) == pytest.approx(100 * 30)
+    assert all(
+        not (
+            item["x"] < hole_right
+            and item["x"] + item["width"] > hole["x"]
+            and item["y"] < hole_bottom
+            and item["y"] + item["height"] > hole["y"]
+        )
+        for item in carved_band
+    )
     assert probed_regions[0][0] == region
+
+
+def _live_band_carve_inputs():
+    protections = [
+        {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+        {"kind": "product", "x": 52, "y": 50, "width": 18, "height": 20},
+        {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
+    ]
+    anchor = {"x": 30.0, "y": 82.0, "width": 40.0, "height": 13.0}
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+    return protections, anchor, image
+
+
+def test_squid_band_carve_rejects_oversized_anchor():
+    protections, anchor, image = _live_band_carve_inputs()
+    anchor.update({"x": 25.0, "width": 50.0, "height": 14.0})
+
+    assert _carve_aggregate_bottom_visual_band(
+        protections,
+        anchor,
+        image,
+    ) == protections
+
+
+@pytest.mark.parametrize(
+    ("kind", "width", "height"),
+    [
+        ("character", 19.0, 40.0),
+        ("character", 20.0, 20.0),
+        ("product", 7.0, 20.0),
+        ("product", 8.0, 8.0),
+    ],
+)
+def test_squid_band_carve_rejects_tiny_typed_corroborator(
+    kind,
+    width,
+    height,
+):
+    protections, anchor, image = _live_band_carve_inputs()
+    for protected in protections:
+        if protected["kind"] == kind:
+            protected["width"] = width
+            protected["height"] = height
+
+    assert _carve_aggregate_bottom_visual_band(
+        protections,
+        anchor,
+        image,
+    ) == protections
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["logo", "face", "product_ui", "token_icon", "other_text", "other_visual"],
+)
+def test_squid_band_carve_keeps_hard_protection_over_cleanup_hole(kind):
+    protections, anchor, image = _live_band_carve_inputs()
+    protections.append({
+        "kind": kind,
+        "x": 45,
+        "y": 84,
+        "width": 10,
+        "height": 8,
+    })
+
+    assert _carve_aggregate_bottom_visual_band(
+        protections,
+        anchor,
+        image,
+    ) == protections
+
+
+@pytest.mark.parametrize(
+    ("filler_count", "expect_carved"),
+    [
+        (25, True),   # 28 input boxes -> 31 carved + 1 recovered source box.
+        (26, False),  # 29 input boxes -> 32 carved + 1 would exceed the cap.
+    ],
+)
+def test_squid_band_carve_reserves_one_box_for_recovered_source_text(
+    filler_count,
+    expect_carved,
+):
+    protections, anchor, image = _live_band_carve_inputs()
+    protections.extend(
+        {
+            "kind": "character",
+            "x": 1,
+            "y": 1,
+            "width": 20,
+            "height": 30,
+        }
+        for _ in range(filler_count)
+    )
+
+    result = _carve_aggregate_bottom_visual_band(
+        protections,
+        anchor,
+        image,
+    )
+
+    if expect_carved:
+        assert len(result) == 31
+        assert len(result) + 1 == 32
+    else:
+        assert result == protections
+
+
+@pytest.mark.parametrize(
+    "protections",
+    [
+        [
+            {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+            {"kind": "other_visual", "x": 0, "y": 70, "width": 100, "height": 30},
+        ],
+        [
+            {"kind": "character", "x": 20, "y": 8, "width": 60, "height": 65},
+            {"kind": "product", "x": 52, "y": 50, "width": 18, "height": 20},
+            {"kind": "other_visual", "x": 10, "y": 70, "width": 90, "height": 30},
+        ],
+    ],
+)
+def test_squid_recovery_keeps_nonaggregate_other_visual_protection(
+    monkeypatch,
+    protections,
+):
+    calls = []
+    audit = {
+        "safe": True,
+        "verified_source_texts": [{"source_index": 0, "text": "chillin'"}],
+        "protected_regions": [
+            {
+                "kind": "source_text",
+                "source_index": 0,
+                "x": 44.5,
+                "y": 68.5,
+                "width": 11,
+                "height": 4.5,
+            },
+            *protections,
+        ],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(audit))])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("protected visual must reject before raster probing"),
+    )
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "chillin'",
+            "text": "여유롭게",
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 13,
+        }],
+    }
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=480,
+        height=320,
+    )
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        image,
+        raster_probe=True,
+    )
+
+    assert len(calls) == 2
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_discovery_anchor_recovery_requires_raster_probe(monkeypatch):
