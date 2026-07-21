@@ -16,6 +16,7 @@ USAGE:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 from typing import Any, Optional
@@ -73,21 +74,41 @@ async def render_png(
 
     # Playwright screenshot (ASYNC)
     width, height = viewport
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        try:
-            page = await browser.new_page(
-                viewport={"width": width, "height": height},
-                device_scale_factor=device_scale_factor,
-            )
-            await page.set_content(html, wait_until="networkidle")
-            await page.wait_for_timeout(wait_ms)
-            await page.screenshot(
-                path=str(output_path),
-                clip={"x": 0, "y": 0, "width": width, "height": height},
-            )
-        finally:
-            await browser.close()
+
+    async def capture() -> None:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                page = await browser.new_page(
+                    viewport={"width": width, "height": height},
+                    device_scale_factor=device_scale_factor,
+                )
+                if client_id == "squid":
+                    # Squid's Korean body face is embedded below. Do not let a
+                    # remote stylesheet/network-idle wait turn an otherwise
+                    # completed Railway generation into a random Netlify 504.
+                    await page.set_content(html, wait_until="load", timeout=5_000)
+                    await page.wait_for_function(
+                        "document.fonts.status === 'loaded'",
+                        timeout=2_500,
+                    )
+                else:
+                    await page.set_content(html, wait_until="networkidle")
+                await page.wait_for_timeout(wait_ms)
+                await page.screenshot(
+                    path=str(output_path),
+                    clip={"x": 0, "y": 0, "width": width, "height": height},
+                )
+            finally:
+                await browser.close()
+
+    if client_id == "squid":
+        # Includes Chromium launch, local font readiness, fixed layout settle,
+        # capture, and close. The LLM stage has its own 30s budget; this bound
+        # preserves the upstream 55s end-to-end timeout margin.
+        await asyncio.wait_for(capture(), timeout=8.0)
+    else:
+        await capture()
 
     return output_path
 
@@ -144,7 +165,18 @@ def _build_font_head(config: ClientConfig) -> str:
             parts.append(_FONT_CSS_LINKS[fam])
             seen.add(fam)
 
-    add_cdn(config.brand.font_family)
+    body_family = config.brand.font_family
+    body_font_path = config.client_dir / "assets" / "PretendardVariable.woff2"
+    body_face = (
+        _font_face_style(body_family, body_font_path)
+        if body_family == "Pretendard Variable" and body_font_path.is_file()
+        else None
+    )
+    if body_face:
+        parts.append(body_face)
+        seen.add(body_family)
+    else:
+        add_cdn(body_family)
 
     display = config.brand.font_display
     if display and display not in seen:

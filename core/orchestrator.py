@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import json
 import math
 import traceback
@@ -31,10 +32,21 @@ from typing import Optional
 
 from core.client_config import get_client_config
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
-from core.llm.news_card_pipeline import generate_news_card_spec
+from core.llm.news_card_pipeline import (
+    VISUAL_PLACEMENT_AUDIT_MODEL,
+    _minimum_squid_font_percent,
+    _text_width_units,
+    generate_news_card_spec,
+)
 from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
 from core.sources.source_image import SourceImageError, fetch_source_image
 from core.sources.source_text_cleanup import SourceTextCleanupError, clean_source_text
+from core.sources.visual_localization_cache import (
+    discard_visual_localization,
+    get_visual_localization,
+    make_visual_localization_cache_key,
+    put_visual_localization,
+)
 
 
 # ────────────────────────────────────────────────────
@@ -66,6 +78,12 @@ _SOURCE_TEXT_CLEANUP_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="source-text-cleanup",
 )
+
+_VISUAL_LOCALIZATION_PRIVATE_KEYS = frozenset({
+    "_source_index",
+    "_source_line_count",
+    "_protected_regions",
+})
 
 
 def _decode_base64_strict(value: str) -> bytes:
@@ -114,8 +132,11 @@ def _align_regions_to_detected_text(
         if any(not math.isfinite(value) for value in values):
             raise SourceTextCleanupError("detected source-text geometry is invalid")
 
-        width = max(original_width, detected_width + 4.0 / image_width * 100.0)
-        height = max(original_height, detected_height + 2.0 / image_height * 100.0)
+        # The audited box varies slightly between otherwise identical vision
+        # responses. Once raster consensus finds the real glyphs, use only that
+        # canonical geometry so placement and Figma output stay repeatable.
+        width = max(6.0, detected_width + 4.0 / image_width * 100.0)
+        height = max(3.0, detected_height + 2.0 / image_height * 100.0)
         if width <= 0 or height <= 0 or width > 100 or height > 100:
             raise SourceTextCleanupError("detected source-text geometry is outside the image")
         center_x = detected_x + detected_width / 2.0
@@ -136,6 +157,55 @@ def _align_regions_to_detected_text(
         ):
             raise SourceTextCleanupError("detected source-text regions overlap")
         occupied.append(bounds)
+        text = region.get("text")
+        if not isinstance(text, str):
+            raise SourceTextCleanupError("translated source text is invalid")
+        translation_lines = [line for line in text.splitlines() if line.strip()]
+        if not translation_lines or len(translation_lines) > 2:
+            raise SourceTextCleanupError("translated source text line count is invalid")
+        try:
+            font_size = float(region.get("font_size", 5.2))
+        except (TypeError, ValueError) as exc:
+            raise SourceTextCleanupError("translated source text font size is invalid") from exc
+        if not math.isfinite(font_size):
+            raise SourceTextCleanupError("translated source text font size is invalid")
+
+        text_units = _text_width_units(text.strip())
+        estimated_width = max(0.1, text_units * font_size * 0.60)
+        scale_x = round(
+            max(0.9, min(1.35, width * 0.96 / estimated_width)),
+            2,
+        )
+
+        # Re-run the same minimum-font fit guard used by visual localization
+        # normalization. Raster consensus can shrink a sampled audit box to the
+        # canonical glyph bounds; publishing that narrower box without another
+        # fit check would make the renderer hide every Korean layer.
+        minimum_css_font_percent = _minimum_squid_font_percent(
+            image_width,
+            image_height,
+        )
+        widest_line_units = max(
+            (_text_width_units(line) for line in translation_lines),
+            default=0.0,
+        )
+        minimum_rendered_width = (
+            widest_line_units * minimum_css_font_percent * 1.05 * scale_x
+        )
+        source_ratio = image_width / max(1, image_height)
+        minimum_rendered_height = (
+            len(translation_lines)
+            * minimum_css_font_percent
+            * 1.02
+            * source_ratio
+        )
+        if (
+            minimum_rendered_width > width * 0.98
+            or minimum_rendered_height > height * 0.98
+        ):
+            raise SourceTextCleanupError(
+                "translated source text does not fit its detected glyph region"
+            )
         aligned.append({
             **region,
             "x": x,
@@ -146,8 +216,26 @@ def _align_regions_to_detected_text(
             "source_y": y,
             "source_width": width,
             "source_height": height,
+            "scale_x": scale_x,
         })
     return aligned
+
+
+def _strip_visual_localization_private_fields(regions: object) -> object:
+    """Return renderer-safe regions without internal audit evidence."""
+    if not isinstance(regions, list):
+        return regions
+    public_regions: list[object] = []
+    for region in regions:
+        if not isinstance(region, dict):
+            public_regions.append(region)
+            continue
+        public_regions.append({
+            key: copy.deepcopy(value)
+            for key, value in region.items()
+            if key not in _VISUAL_LOCALIZATION_PRIVATE_KEYS
+        })
+    return public_regions
 
 
 async def _unlink_best_effort(path: Path) -> None:
@@ -448,6 +536,38 @@ async def generate_news_card(
 
     template_path = NEWS_CARD_TEMPLATES[actual_template_style]
 
+    visual_cache_key: Optional[str] = None
+    cached_visual_localization: Optional[list[dict]] = None
+    if (
+        not mock_mode
+        and client_id == "squid"
+        and actual_template_style == "remix"
+        and source_image is not None
+    ):
+        visual_config_fingerprint = json.dumps(
+            {
+                "client_name": config.name,
+                "locale": config.locale,
+                "news_card": asdict(config.llm.news_card),
+                "brand_voice": asdict(config.brand_voice),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        visual_cache_key = make_visual_localization_cache_key(
+            client_id=client_id,
+            template_style=actual_template_style,
+            model=model_used,
+            audit_model=VISUAL_PLACEMENT_AUDIT_MODEL,
+            config_fingerprint=visual_config_fingerprint,
+            source_type=source_type,
+            source_url=source_url,
+            source_content=source_content,
+            source_image=source_image,
+        )
+        cached_visual_localization = get_visual_localization(visual_cache_key)
+
     if output_dir is None:
         ts = start.strftime("%Y%m%d_%H%M%S")
         output_dir = Path(f"output/{client_id}/news_{ts}")
@@ -456,7 +576,10 @@ async def generate_news_card(
     # ── Stage 1: LLM ──────────────────────────────
     print(f"[{client_id}] Stage 1/2: LLM news card spec")
     try:
-        spec = generate_news_card_spec(
+        # Anthropic's sync SDK must not block the FastAPI event loop; one slow
+        # visual request should not make unrelated clients time out behind it.
+        spec = await asyncio.to_thread(
+            generate_news_card_spec,
             client_id=client_id,
             source_content=source_content,
             source_type=source_type,
@@ -464,6 +587,7 @@ async def generate_news_card(
             mock_mode=mock_mode,
             mock_response=mock_response,
             source_image=source_image,
+            cached_visual_localization=cached_visual_localization,
         )
     except Exception as e:
         print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")
@@ -471,6 +595,7 @@ async def generate_news_card(
         raise
 
     print(f"  → label: {spec['label']} · theme: {spec['theme']}")
+    visual_cache_hit = spec.pop("_visual_localization_cache_hit", False) is True
 
     # Renderer/editable SVG need the prepared image aspect ratio so LLM-provided
     # translation regions stay image-relative instead of drifting into letterbox space.
@@ -491,10 +616,13 @@ async def generate_news_card(
         and isinstance(spec.get("translation_regions"), list)
         and spec["translation_regions"]
     ):
+        audited_regions = copy.deepcopy(spec["translation_regions"])
         candidate_path = output_dir / "source_visual_cleaned.jpg"
         temporary_path = output_dir / (
             f".source_visual_cleaned.{uuid.uuid4().hex}.tmp"
         )
+        cleanup = None
+        aligned_regions = None
         try:
             loop = asyncio.get_running_loop()
             cleanup = await loop.run_in_executor(
@@ -509,31 +637,20 @@ async def generate_news_card(
                 source_image.width,
                 source_image.height,
             )
-            cleaned_bytes = await asyncio.to_thread(
-                _decode_base64_strict,
-                cleanup.image.base64_data,
-            )
-            await asyncio.to_thread(temporary_path.write_bytes, cleaned_bytes)
-            await asyncio.to_thread(temporary_path.replace, candidate_path)
-            # Commit renderer/result state only after the cleaned asset exists.
-            render_source_image = cleanup.image
-            source_visual_path = candidate_path
-            spec["translation_regions"] = aligned_regions
-            print(
-                f"[{client_id}] Source lettering removed: "
-                f"{cleanup.masked_pixels} pixels"
-            )
+        except asyncio.CancelledError:
+            raise
         except SourceTextCleanupError as exc:
-            render_source_image = source_image
-            source_visual_path = None
             await _unlink_best_effort(temporary_path)
+            if visual_cache_hit and visual_cache_key is not None:
+                discard_visual_localization(visual_cache_key)
             print(f"[{client_id}] ⚠ Source lettering cleanup failed safely: {exc}")
             spec["source_text_visible"] = False
             spec["translation_regions"] = []
             spec["visual_localization_status"] = "cleanup_failed"
         except Exception as exc:
-            render_source_image = source_image
-            source_visual_path = None
+            # Executor/runtime failures are not evidence that a validated cache
+            # entry is bad. Preserve it for the next request and fail this card
+            # closed on the untouched source visual.
             await _unlink_best_effort(temporary_path)
             print(
                 f"[{client_id}] ⚠ Source lettering cleanup failed safely: "
@@ -542,6 +659,59 @@ async def generate_news_card(
             spec["source_text_visible"] = False
             spec["translation_regions"] = []
             spec["visual_localization_status"] = "cleanup_failed"
+        else:
+            try:
+                assert cleanup is not None
+                assert aligned_regions is not None
+                cleaned_bytes = await asyncio.to_thread(
+                    _decode_base64_strict,
+                    cleanup.image.base64_data,
+                )
+                await asyncio.to_thread(temporary_path.write_bytes, cleaned_bytes)
+                await asyncio.to_thread(temporary_path.replace, candidate_path)
+            except asyncio.CancelledError:
+                await _unlink_best_effort(temporary_path)
+                raise
+            except Exception as exc:
+                # Base64/file publication failures are transient and must not
+                # poison a localization that already passed cleanup and align.
+                await _unlink_best_effort(temporary_path)
+                print(
+                    f"[{client_id}] ⚠ Source lettering asset publish failed safely: "
+                    f"{type(exc).__name__}"
+                )
+                spec["source_text_visible"] = False
+                spec["translation_regions"] = []
+                spec["visual_localization_status"] = "cleanup_failed"
+            else:
+                # Commit renderer/result state only after the cleaned asset exists.
+                render_source_image = cleanup.image
+                source_visual_path = candidate_path
+                spec["translation_regions"] = (
+                    _strip_visual_localization_private_fields(aligned_regions)
+                )
+                if visual_cache_key is not None:
+                    try:
+                        # Cache the validated pre-strip audit evidence. It is
+                        # required by deterministic cleanup on the next request,
+                        # but must never leak into render/spec/manifest output.
+                        put_visual_localization(visual_cache_key, audited_regions)
+                    except Exception as exc:
+                        print(
+                            f"[{client_id}] ⚠ Visual localization cache write skipped: "
+                            f"{type(exc).__name__}"
+                        )
+                print(
+                    f"[{client_id}] Source lettering removed: "
+                    f"{cleanup.masked_pixels} pixels"
+                )
+
+    # Audit evidence is internal even if a future path bypasses cleanup. Keep
+    # every public consumer (PNG, editable SVG, manifest, API result) clean.
+    spec.pop("_protected_regions", None)
+    spec["translation_regions"] = _strip_visual_localization_private_fields(
+        spec.get("translation_regions")
+    )
 
     # ── Stage 2: Rendering ────────────────────────
     print(f"[{client_id}] Stage 2/2: Rendering 1 PNG")
@@ -577,6 +747,8 @@ async def generate_news_card(
         "source_image_used": source_image is not None,
         "source_visual_path": str(source_visual_path) if source_visual_path else None,
         "source_content_preview": source_content[:200],
+        "visual_placement_audit_model": VISUAL_PLACEMENT_AUDIT_MODEL,
+        "visual_localization_cache_hit": visual_cache_hit,
         "spec": spec,
         "requested_template_style": requested_template_style,
         "template_style": actual_template_style,

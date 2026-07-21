@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <title>Yellow EDU · P1 3-Card Grid</title>
-<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+{% if client_id != 'squid' %}<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">{% endif %}
 <!-- brand font (Pretendard already loaded above; extra links only for non-Pretendard brands) -->
 {{ brand_font_links | default('') | safe }}
 <style>

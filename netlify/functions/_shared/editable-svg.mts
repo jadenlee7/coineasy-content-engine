@@ -38,6 +38,7 @@ type NormalizedTranslationRegion = {
   fontSize: number;
   scaleX: number;
   textColor: string;
+  sourceLineCount: number;
 };
 
 type NormalizedSpec = {
@@ -199,6 +200,12 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
         fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
         scaleX: boundedNumber(region.scale_x, 1, 0.85, 1.35),
         textColor: normalizedColor(region.text_color, "#FFFFFF"),
+        sourceLineCount: Math.round(boundedNumber(
+          region.source_line_count,
+          sourceText.split(/\n+/).filter(Boolean).length || 1,
+          1,
+          2,
+        )),
       };
       const explicitLines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
       const overlapsExisting = translationRegions.some((existing) => (
@@ -445,11 +452,9 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
       const minFontSize = Math.max(14, frame.width * 0.02);
       let lineHeight = fontSize * 1.02;
       const paragraphs = region.text.split(/\n+/).map((value) => value.trim()).filter(Boolean);
-      const sourceLines = region.sourceText.split(/\n+/).map((value) => value.trim()).filter(Boolean);
       if (
         paragraphs.length < 1 || paragraphs.length > 2
-        || sourceLines.length < 1 || sourceLines.length > 4
-        || (sourceLines.length <= 2 && paragraphs.length !== sourceLines.length)
+        || paragraphs.length > region.sourceLineCount
       ) return null;
       const lines = paragraphs;
       const renderedWidth = () => Math.max(...lines.map((line) => (
