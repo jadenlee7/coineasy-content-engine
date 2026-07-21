@@ -797,6 +797,162 @@ def _source_box_in_broad_discovery_vicinity(
     )
 
 
+def _carve_aggregate_bottom_visual_band(
+    protections: list[dict],
+    anchor: dict[str, float],
+    source_image: PreparedSourceImage,
+    *,
+    cleanup_padding_px: float = _SOURCE_TEXT_CLEANUP_PADDING_PX,
+) -> list[dict]:
+    """Preserve an aggregate scene band except for the audited cleanup hole.
+
+    Sonnet occasionally labels the entire bottom 30% of a small landscape meme
+    as ``other_visual`` even after separately mapping its character and product.
+    Such an edge-to-edge scene aggregate is not the tight important-element box
+    requested by the audit contract.  In the pixel-confirmed, single-line
+    recovery path, retain that band as non-overlapping rectangles around the
+    discovery anchor plus the exact cleanup padding.  No other protection is
+    weakened.
+    """
+    unchanged = copy.deepcopy(protections)
+    anchor_center_x = anchor["x"] + anchor["width"] / 2.0
+    if (
+        source_image.width <= 0
+        or source_image.height <= 0
+        or anchor["y"] < 78.0
+        or anchor["height"] > 16.0
+        or anchor["width"] * anchor["height"] > 650.0
+        or not 35.0 <= anchor_center_x <= 65.0
+    ):
+        return unchanged
+
+    padding_x = cleanup_padding_px / source_image.width * 100.0
+    padding_y = cleanup_padding_px / source_image.height * 100.0
+    hole = {
+        "x": anchor["x"] - padding_x,
+        "y": anchor["y"] - padding_y,
+        "width": anchor["width"] + padding_x * 2.0,
+        "height": anchor["height"] + padding_y * 2.0,
+    }
+    hole_right = hole["x"] + hole["width"]
+    hole_bottom = hole["y"] + hole["height"]
+    hole_area = hole["width"] * hole["height"]
+    if hole_area / 10_000.0 > 0.065:
+        return unchanged
+
+    band_candidates: list[tuple[int, dict]] = []
+    for index, protected in enumerate(protections):
+        if protected.get("kind") != "other_visual":
+            continue
+        protected_right = protected["x"] + protected["width"]
+        protected_bottom = protected["y"] + protected["height"]
+        is_candidate = (
+            protected["x"] <= 0.5
+            and protected_right >= 99.5
+            and protected["width"] >= 99.0
+            and protected["y"] >= 65.0
+            and protected_bottom >= 99.5
+            and 25.0 <= protected["height"] <= 40.0
+            and protected["width"] / protected["height"] >= 2.5
+            and protected["x"] <= hole["x"]
+            and protected["y"] <= hole["y"]
+            and protected_right >= hole_right
+            and protected_bottom >= hole_bottom
+        )
+        if is_candidate:
+            band_candidates.append((index, protected))
+
+    if len(band_candidates) != 1:
+        return unchanged
+    band_index, band = band_candidates[0]
+    band_right = band["x"] + band["width"]
+    band_bottom = band["y"] + band["height"]
+    band_area = band["width"] * band["height"]
+    if hole_area / band_area > 0.22:
+        return unchanged
+
+    def has_typed_corroborator(kind: str) -> bool:
+        minimum_width, minimum_height, minimum_area = {
+            "character": (20.0, 20.0, 600.0),
+            "product": (8.0, 8.0, 80.0),
+        }[kind]
+        return any(
+            item.get("kind") == kind
+            and item["width"] >= minimum_width
+            and item["height"] >= minimum_height
+            and item["width"] * item["height"] >= minimum_area
+            for item in protections
+        )
+
+    if not (
+        has_typed_corroborator("character")
+        and has_typed_corroborator("product")
+    ):
+        return unchanged
+
+    hard_kinds = {
+        "logo",
+        "face",
+        "product_ui",
+        "token_icon",
+        "other_text",
+        "other_visual",
+    }
+
+    def overlaps_hole(item: dict) -> bool:
+        return (
+            item["x"] < hole_right
+            and item["x"] + item["width"] > hole["x"]
+            and item["y"] < hole_bottom
+            and item["y"] + item["height"] > hole["y"]
+        )
+
+    if any(
+        index != band_index
+        and item.get("kind") in hard_kinds
+        and overlaps_hole(item)
+        for index, item in enumerate(protections)
+    ):
+        return unchanged
+
+    raw_pieces = (
+        (band["x"], band["y"], band["width"], hole["y"] - band["y"]),
+        (band["x"], hole_bottom, band["width"], band_bottom - hole_bottom),
+        (band["x"], hole["y"], hole["x"] - band["x"], hole["height"]),
+        (hole_right, hole["y"], band_right - hole_right, hole["height"]),
+    )
+    pieces: list[dict] = []
+    for x, y, width, height in raw_pieces:
+        if width <= 0.0 or height <= 0.0:
+            continue
+        if width < 0.25 or height < 0.25:
+            return unchanged
+        pieces.append({
+            "kind": "other_visual",
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        })
+    if not pieces:
+        return unchanged
+    piece_area = sum(piece["width"] * piece["height"] for piece in pieces)
+    if not math.isclose(piece_area + hole_area, band_area, abs_tol=1e-6):
+        return unchanged
+
+    carved: list[dict] = []
+    for index, protected in enumerate(protections):
+        if index == band_index:
+            carved.extend(copy.deepcopy(pieces))
+        else:
+            carved.append(copy.deepcopy(protected))
+    # Recovery prepends one source_text box; keep the final audit at its
+    # protocol maximum of 32 protected regions.
+    if len(carved) > 31:
+        return unchanged
+    return carved
+
+
 def _discovery_anchor_recovery_audit(
     raw_regions: list[dict],
     first_pass_source_boxes: list[Optional[dict[str, float]]],
@@ -1205,6 +1361,7 @@ Rules:
 - Independently transcribe each complete source phrase into verified_source_texts. After case, whitespace, and punctuation normalization it must still exactly match the supplied source_text for that source_index. Return safe=false if the pixels do not corroborate that phrase.
 - Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
 - Map one tight protected_regions box per contiguous source-language phrase or important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
+- Every other_visual box must tightly isolate one important ambiguous object. Never use an edge-to-edge top/bottom band or a scene-wide background box as other_visual; map the distinct character, product, logo, or other object instead.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Every visible text row MUST use its own tight source_text box with the same source_index; never wrap two or more rows in one box. Same-row phrase fragments may use separate boxes. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow while staying bound to source_phrase_box. Never move it to unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
@@ -1364,11 +1521,22 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                     first_pass_source_boxes[0],
                 )
             ):
+                recovery_protections = _carve_aggregate_bottom_visual_band(
+                    retry_protections,
+                    first_pass_source_boxes[0],
+                    source_image,
+                )
+                if len(recovery_protections) > len(retry_protections):
+                    print(
+                        "[squid] carved the padded discovery anchor out of one "
+                        "aggregate other_visual band; the surrounding band and "
+                        "all specific protections remain"
+                    )
                 recovery_audit = _discovery_anchor_recovery_audit(
                     raw_regions,
                     first_pass_source_boxes,
                     audit,
-                    retry_protections,
+                    recovery_protections,
                 )
                 if recovery_audit is not None:
                     recovered_regions, recovery_rejection = (
