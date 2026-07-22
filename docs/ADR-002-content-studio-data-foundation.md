@@ -35,7 +35,7 @@ sessions. A Railway worker claims durable PostgreSQL jobs with
 records every output as a new immutable content version.
 
 The migration in
-`supabase/migrations/20260722090000_content_studio_foundation.sql` establishes:
+`supabase/migrations/20260722115931_content_studio_foundation.sql` establishes:
 
 - workspaces, members, and registered client configurations;
 - feed definitions and deduplicated source items;
@@ -173,13 +173,14 @@ section can be generated for team convenience without becoming the archive.
   visible `샘플 · 게시 금지` warning.
 - Version, approval, and event rows are append-only even for the service role;
   corrections create new records instead of rewriting history.
-- A live Supabase project, Auth providers, allowed redirect URLs, and a destination
-  Figma file still require an operator decision; this ADR does not create them.
+- The existing `coineasy-meme-engine` Supabase project now hosts the isolated
+  Content Studio schema and private bucket. Auth providers, allowed redirect URLs,
+  and a destination Figma file still require an operator decision.
 
 ## Delivery Phases
 
-1. Apply the reviewed migration to a non-production Supabase project; configure Auth,
-   the first workspace, four clients, and private Storage.
+1. Reuse the low-traffic meme project, preserve and harden its legacy data, then
+   apply the first workspace, four clients, and private Storage. **Completed.**
 2. Replace the current shared team-access code with Supabase Auth and add
    Today/Review/Library views plus version/approval APIs.
 3. Persist Daily News and Article results and change scheduled Railway generation
@@ -191,12 +192,12 @@ section can be generated for team convenience without becoming the archive.
 ## Security Review Checklist
 
 - [ ] Browser receives only the Supabase publishable key and user session.
-- [ ] `SUPABASE_SERVICE_ROLE_KEY` exists only in trusted server environments.
-- [ ] `CONTENT_STUDIO_WORKSPACE_ID` selects the reviewed Studio workspace for
+- [x] `SUPABASE_SERVICE_ROLE_KEY` exists only in trusted server environments.
+- [x] `CONTENT_STUDIO_WORKSPACE_ID` selects the reviewed Studio workspace for
       server-side tutorial asset paths.
 - [ ] Every API query includes explicit `workspace_id` and `client_id` filters in
       addition to RLS.
-- [ ] Storage URLs are authenticated or short-lived signed URLs.
+- [x] Storage URLs are authenticated or short-lived signed URLs.
 - [ ] Worker job claims use a transaction, lease expiry, bounded retries, and an
       idempotency key.
 - [ ] Figma plugin tokens cannot call service-role endpoints.

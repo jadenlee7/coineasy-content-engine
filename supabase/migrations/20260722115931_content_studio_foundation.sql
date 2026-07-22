@@ -1,4 +1,4 @@
--- CoinEasy Content Studio: team history, review, publishing and Figma foundation.
+-- CoinEasy Content Studio: team history, review, publishing, and Figma foundation.
 --
 -- This migration intentionally creates data structures only. It does not connect
 -- Railway, Netlify, or a Figma file to a live Supabase project.
@@ -566,8 +566,11 @@ set search_path = ''
 as $$
 begin
     if new.created_by is null then
-        raise exception 'created_by is required when creating a workspace'
-            using errcode = '23502';
+        -- Shared-token server deployments bootstrap a workspace before Supabase
+        -- Auth is enabled. The authenticated INSERT policy still requires
+        -- created_by = auth.uid(); only trusted service/database roles can create
+        -- a service-managed workspace with no human owner.
+        return new;
     end if;
 
     insert into public.workspace_members (workspace_id, user_id, role, status, invited_by)

@@ -10,11 +10,8 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = (
-    ROOT
-    / "supabase"
-    / "migrations"
-    / "20260722090000_content_studio_foundation.sql"
+MIGRATION = next(
+    (ROOT / "supabase" / "migrations").glob("*_content_studio_foundation.sql")
 )
 SQL = MIGRATION.read_text(encoding="utf-8")
 DB_SECURITY_TEST = (

@@ -1,19 +1,23 @@
 # Supabase foundation
 
-`migrations/20260722090000_content_studio_foundation.sql` is the proposed Content
-Studio schema. It has not been applied to an external project by this repository.
+This directory is the single migration history for the shared
+`coineasy-meme-engine` Supabase project (`isuqcqwxpojgzevxfdwr`). It includes the
+original meme schema, the server-only legacy hardening, the Content Studio
+foundation, the initial four-client workspace, and the composite FK indexes.
+Do not run independent migrations from the old meme-engine repository.
 
-Before applying it:
+Current operating model:
 
-1. Create a staging Supabase project and enable the required team Auth provider.
-2. Review the migration and run the repository's static migration tests.
-3. Link the local Supabase CLI to **staging**, then apply migrations there first.
-4. Create the initial workspace through an authenticated session. Its insert trigger
-   atomically creates the owner membership.
-5. Register `yellow`, `origintrail`, `squid`, and `babylon` in
-   `workspace_clients`; do not copy API/provider secrets into those rows.
-6. Verify viewer/editor/admin/owner access and private asset downloads with separate
-   test users before promoting the migration.
+1. `daily_memes` remains available only to the Railway services' `service_role`;
+   `anon` and `authenticated` have no table or helper-view privileges.
+2. The `coineasy-content-studio` workspace is service-managed until Supabase Auth
+   is enabled. It intentionally has no fake `auth.users` row or human owner.
+3. `yellow`, `origintrail`, `squid`, and `babylon` are registered in
+   `workspace_clients`; API/provider secrets never belong in those rows.
+4. Netlify uses the service role only inside server functions. The browser gets a
+   signed, short-lived Studio session and never receives the service key.
+5. Future schema changes must be added here, tested against a disposable database,
+   and then applied as forward-only migrations.
 
 Environment boundary:
 
@@ -23,6 +27,7 @@ Environment boundary:
 | `SUPABASE_PUBLISHABLE_KEY` | team web app | yes, with RLS |
 | `SUPABASE_SERVICE_ROLE_KEY` | trusted Netlify/Railway server only | **no** |
 | `CONTENT_STUDIO_WORKSPACE_ID` | trusted Netlify tutorial routing only | no |
+| `STUDIO_ACCESS_TOKEN` | Netlify team-session login only | **no** |
 | `API_SECRET` | Netlify-to-Railway server relay only | **no** |
 
 Do not prefix a browser bundle variable with the service-role value. Service-role

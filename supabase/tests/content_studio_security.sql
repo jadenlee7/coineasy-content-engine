@@ -10,6 +10,28 @@ values
     ('10000000-0000-0000-0000-000000000002'),
     ('10000000-0000-0000-0000-000000000003');
 
+-- A trusted server may bootstrap an ownerless workspace before team Auth is
+-- configured. Browser roles remain unable to do this because their INSERT
+-- policy requires created_by = auth.uid().
+insert into public.workspaces (id, name, slug, created_by)
+values (
+    '20000000-0000-0000-0000-000000000099',
+    'Service Bootstrap Security Test',
+    'service-bootstrap-security-test',
+    null
+);
+
+do $test$
+begin
+    if exists (
+        select 1 from public.workspace_members
+        where workspace_id = '20000000-0000-0000-0000-000000000099'
+    ) then
+        raise exception 'ownerless service workspace gained a fake member';
+    end if;
+end
+$test$;
+
 insert into public.workspaces (id, name, slug, created_by)
 values (
     '20000000-0000-0000-0000-000000000001',
