@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import articleHandler, {
+  articleRequestHash,
+  deadlineSignal as articleDeadlineSignal,
   isRailwayArticleResponse,
 } from "../netlify/functions/article.mts";
 import {
@@ -27,6 +30,10 @@ const GENERATED_ARTICLE = {
   duration_ms: 1200,
 };
 
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
+const VERSION_ID = "33333333-3333-4333-8333-333333333333";
+
 const PASTED_SOURCE = (
   "Squid published a cross-chain routing update for App, API, SDK, and Widget. "
   + "The source explains that integrators use the same routing stack and does not announce "
@@ -51,6 +58,9 @@ async function withArticleEnvironment(
           if (name === "API_SECRET") return "article-secret";
           if (name === "RAILWAY_API_URL") return "https://railway.example/";
           if (name === "STUDIO_ACCESS_TOKEN") return "article-studio-access-token";
+          if (name === "SUPABASE_URL") return "https://project.supabase.co";
+          if (name === "SUPABASE_SERVICE_ROLE_KEY") return "server-only-service-key";
+          if (name === "CONTENT_STUDIO_WORKSPACE_ID") return WORKSPACE_ID;
           return undefined;
         },
       },
@@ -75,7 +85,25 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
   let upstreamBody: Record<string, unknown> = {};
 
   await withArticleEnvironment(async (input, init) => {
-    upstreamUrl = String(input);
+    const requestUrl = String(input);
+    if (requestUrl.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{
+        workspace_id: WORKSPACE_ID,
+        client_id: "squid",
+        active: true,
+      }]);
+    }
+    if (requestUrl.endsWith("/rest/v1/rpc/get_generated_content")) {
+      return Response.json(null);
+    }
+    if (requestUrl.endsWith("/rest/v1/rpc/record_generated_content")) {
+      return Response.json({
+        content_item_id: REQUEST_ID,
+        content_version_id: VERSION_ID,
+        asset_ids: [],
+      });
+    }
+    upstreamUrl = requestUrl;
     upstreamApiKey = new Headers(init?.headers).get("X-API-Key") || "";
     upstreamBody = JSON.parse(String(init?.body));
     return Response.json(GENERATED_ARTICLE);
@@ -86,6 +114,7 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "Idempotency-Key": REQUEST_ID,
           cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("article-studio-access-token")}`,
         },
         body: JSON.stringify({
@@ -104,8 +133,37 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
       source_type: "article",
       source_url: "https://example.com/source",
     });
-    assert.deepEqual(await response.json(), GENERATED_ARTICLE);
+    assert.deepEqual(await response.json(), {
+      ...GENERATED_ARTICLE,
+      storage_backend: "supabase",
+      content_item_id: REQUEST_ID,
+      content_version_id: VERSION_ID,
+      asset_ids: [],
+      reused: false,
+    });
   });
+});
+
+test("article Railway deadline preserves the catalog write reserve", () => {
+  const now = Date.now();
+  assert.throws(
+    () => articleDeadlineSignal(now + 8_000, 44_000, 8_000),
+    (error: unknown) => error instanceof Error && error.message === "article_deadline_exceeded",
+  );
+  assert.equal(
+    articleDeadlineSignal(now + 8_500, 44_000, 8_000).aborted,
+    false,
+  );
+
+  const source = readFileSync(
+    new URL("../netlify/functions/article.mts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const ARTICLE_PERSISTENCE_RESERVE_MS = 8_000;/);
+  assert.match(
+    source,
+    /signal:\s*deadlineSignal\(\s*requestDeadline,\s*RAILWAY_ARTICLE_BUDGET_MS,\s*ARTICLE_PERSISTENCE_RESERVE_MS,\s*\)/,
+  );
 });
 
 
@@ -121,6 +179,7 @@ test("article proxy rejects URL-only or short input without fetching", async () 
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "Idempotency-Key": REQUEST_ID,
           cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("article-studio-access-token")}`,
         },
         body: JSON.stringify({
@@ -157,4 +216,81 @@ test("article response guard requires the complete three-section contract", () =
     ...GENERATED_ARTICLE,
     duration_ms: Number.NaN,
   }), false);
+});
+
+
+test("an exact article retry returns the immutable catalog without Railway", async () => {
+  const requestHash = articleRequestHash({
+    clientId: "squid",
+    sourceContent: PASTED_SOURCE,
+    sourceType: "article",
+    sourceUrl: "https://example.com/source",
+  });
+  let railwayCalls = 0;
+
+  await withArticleEnvironment(async (input) => {
+    const url = String(input);
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{
+        workspace_id: WORKSPACE_ID,
+        client_id: "squid",
+        active: true,
+      }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+      return Response.json({
+        content_item_id: REQUEST_ID,
+        content_version_id: VERSION_ID,
+        client_id: "squid",
+        content_kind: "article",
+        status: "needs_review",
+        title: GENERATED_ARTICLE.title,
+        content: {
+          request_hash: requestHash,
+          lead: GENERATED_ARTICLE.lead,
+          sections: GENERATED_ARTICLE.sections,
+          key_takeaways: GENERATED_ARTICLE.key_takeaways,
+          source_map: GENERATED_ARTICLE.source_map,
+          markdown: GENERATED_ARTICLE.markdown,
+        },
+        channel_copy: GENERATED_ARTICLE.channel_copy,
+        generation_meta: {
+          request_hash: requestHash,
+          duration_ms: GENERATED_ARTICLE.duration_ms,
+          mock_mode: false,
+        },
+        assets: [],
+      });
+    }
+    if (url.includes("railway.example")) railwayCalls += 1;
+    throw new Error(`unexpected fetch ${url}`);
+  }, async () => {
+    const response = await articleHandler(new Request(
+      "https://console.example/api/article/squid",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "Idempotency-Key": REQUEST_ID,
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("article-studio-access-token")}`,
+        },
+        body: JSON.stringify({
+          source_content: PASTED_SOURCE,
+          source_type: "article",
+          source_url: "https://example.com/source",
+        }),
+      },
+    ), { params: { clientId: "squid" } } as never);
+
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    assert.deepEqual(await response.json(), {
+      ...GENERATED_ARTICLE,
+      storage_backend: "supabase",
+      content_item_id: REQUEST_ID,
+      content_version_id: VERSION_ID,
+      asset_ids: [],
+      reused: true,
+    });
+    assert.equal(railwayCalls, 0);
+  });
 });
