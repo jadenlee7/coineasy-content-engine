@@ -31,8 +31,8 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /원문 본문을 300자 이상/);
   assert.match(consoleHtml, /현재 튜토리얼 생성은 Yellow와 Squid만 지원/);
   assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(state\.client\)\}/);
-  assert.match(consoleHtml, /"Idempotency-Key": tutorialRequestId/);
-  assert.match(consoleHtml, /state\.tutorialRequest = null/);
+  assert.equal((consoleHtml.match(/"Idempotency-Key": generationRequestId/g) || []).length, 3);
+  assert.match(consoleHtml, /state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
 });
 
@@ -67,7 +67,7 @@ test("uses a server-side team session without exposing or persisting the access 
 });
 
 test("scrubs generated work and invalidates in-flight responses when Studio locks", () => {
-  assert.match(consoleHtml, /function scrubStudioWork\(\) \{[\s\S]*sourceContent\.value = "";[\s\S]*sourceUrl\.value = "";[\s\S]*state\.tutorialRequest = null;[\s\S]*download\.removeAttribute\("href"\);[\s\S]*renderBrand\(\);/);
+  assert.match(consoleHtml, /function scrubStudioWork\(\) \{[\s\S]*sourceContent\.value = "";[\s\S]*sourceUrl\.value = "";[\s\S]*state\.generationRequest = null;[\s\S]*download\.removeAttribute\("href"\);[\s\S]*renderBrand\(\);/);
   assert.match(consoleHtml, /function renderBrand\(\) \{[\s\S]*resultImage\.removeAttribute\("src"\);[\s\S]*clearEditableDownload\(\);[\s\S]*clearTutorialResult\(\);[\s\S]*clearArticleResult\(\);[\s\S]*telegramCopy\.value = "";[\s\S]*xCopy\.value = "";/);
   assert.match(consoleHtml, /function lockAndScrubStudio[\s\S]*state\.sessionEpoch \+= 1;[\s\S]*scrubStudioWork\(\);[\s\S]*showStudioAccess/);
   assert.match(consoleHtml, /lockAndScrubStudio\("세션이 만료되었습니다/);
@@ -106,13 +106,14 @@ test("counts X copy with the same weighted Unicode ranges as the server", () => 
 
 test("explains durable tutorial storage setup and failures to team members", () => {
   assert.match(consoleHtml, /durable_storage_not_configured/);
-  assert.match(consoleHtml, /생성된 튜토리얼은 임시 파일로 제공하지 않습니다/);
+  assert.match(consoleHtml, /생성된 \$\{contentLabel\}는 임시 결과로 제공하지 않습니다/);
   assert.match(consoleHtml, /durable_storage_bucket_must_be_private/);
   assert.match(consoleHtml, /durable_storage_scope_not_ready/);
   assert.match(consoleHtml, /durable_storage_upload_failed/);
   assert.match(consoleHtml, /durable_catalog_result_unknown/);
   assert.match(consoleHtml, /tutorial_deadline_exceeded/);
-  assert.match(consoleHtml, /tutorial_idempotency_conflict/);
-  assert.match(consoleHtml, /tutorial_idempotency_conflict"\) state\.tutorialRequest = null/);
+  assert.match(consoleHtml, /news_card_deadline_exceeded/);
+  assert.match(consoleHtml, /article_deadline_exceeded/);
+  assert.match(consoleHtml, /payload\.error\.endsWith\("_idempotency_conflict"\)\) state\.generationRequest = null/);
   assert.match(consoleHtml, /confirmResultReset\(\)/);
 });

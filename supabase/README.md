@@ -26,7 +26,7 @@ Environment boundary:
 | `SUPABASE_URL` | Netlify/Railway and web config | yes |
 | `SUPABASE_PUBLISHABLE_KEY` | team web app | yes, with RLS |
 | `SUPABASE_SERVICE_ROLE_KEY` | trusted Netlify/Railway server only | **no** |
-| `CONTENT_STUDIO_WORKSPACE_ID` | trusted Netlify tutorial routing only | no |
+| `CONTENT_STUDIO_WORKSPACE_ID` | trusted Netlify catalog routing only | no |
 | `STUDIO_ACCESS_TOKEN` | Netlify team-session login only | **no** |
 | `API_SECRET` | Netlify-to-Railway server relay only | **no** |
 
@@ -42,26 +42,23 @@ The private Storage object convention is:
 Use authenticated downloads or short-lived signed URLs. Do not change the
 `content-studio` bucket to public.
 
-The Netlify tutorial relay is deliberately fail-closed until `SUPABASE_URL`,
+The Netlify generation relays are deliberately fail-closed until `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, and `CONTENT_STUDIO_WORKSPACE_ID` are configured and
-the private `content-studio` bucket exists. It copies every generated PNG into that
-bucket only after confirming that the selected workspace/client registration exists,
-then records the source, immutable version, PNG metadata, and review state through
-the service-only, idempotent `record_tutorial_generation` RPC before returning slide
-URLs. The RPC verifies that every cataloged object exists, that slide order is
-contiguous, and that each asset UUID matches its Storage folder. The browser-facing
-URL is HMAC-scoped to the
-durable object and redirects to a short-lived Supabase signed URL; it never points
-back to Railway's process-local output directory.
+the private `content-studio` bucket exists. News and Tutorial copy every generated
+PNG into that bucket only after confirming the workspace/client registration;
+Article records a durable text version without an asset. The service-only,
+idempotent `record_generated_content` and `record_tutorial_generation` RPCs create
+immutable `needs_review` versions before a response is returned. The RPCs verify
+every cataloged object and asset path. Browser-facing asset URLs are short-lived
+and never point back to Railway's process-local output directory.
 
-Retries call the service-only `get_tutorial_generation` RPC before starting Railway.
-That lookup is driven by the immutable version's ordered `deliverables.asset_ids`,
-not by whichever mutable asset rows happen to match. It requires the primary asset,
-every scoped asset row, and every corresponding `storage.objects` row to agree; a
-partial or deleted tutorial therefore fails closed instead of returning a broken
-gallery.
+Retries call the corresponding service-only catalog lookup before starting Railway.
+Tutorial lookup is driven by the immutable version's ordered
+`deliverables.asset_ids`, not by whichever mutable asset rows happen to match. A
+partial or deleted asset-backed result therefore fails closed instead of returning
+a broken preview.
 
-The tutorial request UUID is payload-bound: Netlify stores the same SHA-256 request
+Every generation request UUID is payload-bound: Netlify stores the same SHA-256 request
 hash in the content envelope and generation metadata, and the catalog RPC requires
 them to agree. Reusing an idempotency UUID for different normalized input is a
 conflict, not a request to return unrelated prior work. Mock generations are also

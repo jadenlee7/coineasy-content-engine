@@ -401,11 +401,75 @@
     .topbar-actions { display: flex; align-items: center; gap: 8px; }
     .logout-button { min-height: 36px; padding: 0 11px; border: 1.5px solid var(--outline); border-radius: 8px; color: var(--ink); background: #fff; cursor: pointer; font-size: 10px; font-weight: 750; }
 
+    .studio-view-switcher {
+      display: inline-grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 6px;
+      margin-bottom: 20px;
+      padding: 6px;
+      border: 2px solid var(--outline);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 4px 4px 0 var(--outline);
+    }
+    .studio-view-option { min-height: 40px; padding: 0 16px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 12px; font-weight: 800; }
+    .studio-view-option.active { color: var(--ink); background: var(--accent); box-shadow: inset 0 0 0 1.5px var(--outline); }
+    .library-shell { display: grid; grid-template-columns: minmax(380px, .88fr) minmax(480px, 1.12fr); gap: 22px; align-items: start; }
+    .library-panel { min-width: 0; overflow: hidden; }
+    .library-panel-head { padding: 24px; border-bottom: 2px solid var(--outline); background: var(--surface-soft); }
+    .library-panel-head h2 { margin: 0; font-size: 19px; letter-spacing: -.5px; }
+    .library-panel-head p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .library-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 18px; }
+    .library-filters label { min-width: 0; }
+    .library-filters span { display: block; margin-bottom: 6px; color: #4e4742; font-size: 10px; font-weight: 750; }
+    .library-filters select { height: 39px; padding: 0 9px; background: #fff; font-size: 11px; }
+    .library-state { padding: 28px 24px; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
+    .library-state.error { color: #a93131; }
+    .library-state strong { display: block; margin-bottom: 5px; color: var(--ink); font-size: 13px; }
+    .library-retry { margin-top: 12px; min-height: 36px; padding: 0 13px; border: 1.5px solid var(--outline); border-radius: 7px; color: var(--ink); background: var(--accent); cursor: pointer; font-size: 10px; font-weight: 800; }
+    .library-list { display: grid; gap: 10px; padding: 16px; }
+    .library-card { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 14px; width: 100%; padding: 10px; border: 1.5px solid var(--line); border-radius: 12px; color: var(--ink); background: #fff; cursor: pointer; text-align: left; transition: border-color .16s, box-shadow .16s, transform .16s; }
+    .library-card:hover, .library-card.active { border-color: var(--outline); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 rgba(35,35,35,.14); }
+    .library-card.active { box-shadow: inset 4px 0 0 var(--accent), 4px 4px 0 rgba(35,35,35,.14); }
+    .library-thumb { display: grid; place-items: center; width: 96px; aspect-ratio: 1; overflow: hidden; border-radius: 9px; color: #776f68; background: linear-gradient(135deg, #ffe2d1, #fff4ec 58%, #eafcff); font-size: 23px; font-weight: 850; }
+    .library-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .library-card-copy { min-width: 0; padding: 3px 3px 2px 0; }
+    .library-card-meta, .library-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .library-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; color: #5d5650; background: var(--surface-soft); font-size: 9px; font-weight: 750; }
+    .library-chip.status { color: #754a14; border-color: #e3a14e; background: #fff3dc; }
+    .library-chip.mock { color: #842f12; border-color: #c15b31; background: #ffeadf; }
+    .library-card h3 { display: -webkit-box; margin: 10px 0 8px; overflow: hidden; font-size: 13px; line-height: 1.38; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .library-card time { color: var(--muted); font-size: 9px; }
+    .library-more-wrap { padding: 0 16px 18px; }
+    .library-more { width: 100%; min-height: 42px; border: 1.5px solid var(--outline); border-radius: 9px; color: var(--ink); background: #fff; cursor: pointer; font-size: 11px; font-weight: 800; }
+    .library-more:disabled { cursor: wait; opacity: .55; }
+    .library-detail { min-height: 520px; }
+    .library-detail-inner { padding: 24px; }
+    .library-detail-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .library-detail h2 { margin: 10px 0 0; font-size: clamp(22px, 3vw, 34px); line-height: 1.25; letter-spacing: -1px; word-break: keep-all; }
+    .library-detail-date { flex: 0 0 auto; padding-top: 4px; color: var(--muted); font-size: 10px; }
+    .library-assets { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 22px; }
+    .library-asset { display: block; overflow: hidden; border: 1.5px solid var(--line); border-radius: 11px; color: var(--ink); background: #fff; text-decoration: none; }
+    .library-asset img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #f4f4f4; }
+    .library-asset span { display: block; padding: 9px 10px; overflow: hidden; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .library-content { margin-top: 22px; padding-top: 20px; border-top: 1.5px solid var(--line); }
+    .library-content h3 { margin: 0 0 10px; font-size: 15px; }
+    .library-content h4 { margin: 18px 0 7px; font-size: 12px; }
+    .library-content p { margin: 0; color: #4f5661; font-size: 11px; line-height: 1.75; white-space: pre-line; }
+    .library-content ul, .library-content ol { margin: 8px 0 0; padding-left: 19px; color: #4f5661; font-size: 11px; line-height: 1.7; }
+    .library-copy-grid { display: grid; gap: 10px; margin-top: 22px; }
+    .library-copy-grid .channel-copy-text { min-height: 130px; }
+    .library-copy-grid .channel-copy-text.x-copy { min-height: 110px; }
+    .library-figma { margin-top: 20px; padding: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+    .library-figma h3 { margin: 0 0 8px; font-size: 12px; }
+    .library-figma a { display: inline-block; margin: 4px 10px 0 0; color: #145ea8; font-size: 10px; overflow-wrap: anywhere; }
+
     @media (max-width: 980px) {
       .workspace { grid-template-columns: 1fr; }
       .controls { position: static; }
       .hero { align-items: start; flex-direction: column; }
       .hero-meta { flex-wrap: wrap; }
+      .library-shell { grid-template-columns: 1fr; }
     }
     @media (max-width: 600px) {
       .app { width: min(100% - 22px, 1480px); padding-top: 16px; }
@@ -421,6 +485,10 @@
       .hero h1 { letter-spacing: -1.4px; }
       .mode-switcher { grid-template-columns: 1fr; }
       .mode-option { min-height: 68px; }
+      .studio-view-switcher { display: grid; width: 100%; }
+      .library-filters { grid-template-columns: 1fr; }
+      .library-card { grid-template-columns: 76px minmax(0, 1fr); }
+      .library-thumb { width: 76px; }
       .controls { padding: 20px; }
       .client-grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr; }
@@ -459,6 +527,12 @@
       </div>
     </header>
 
+    <nav class="studio-view-switcher" id="studio-view-switcher" aria-label="스튜디오 화면 선택">
+      <button class="studio-view-option active" type="button" data-studio-view="create" aria-selected="true">만들기</button>
+      <button class="studio-view-option" type="button" data-studio-view="library" aria-selected="false">팀 보관함</button>
+    </nav>
+
+    <div id="create-view">
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow">CoinEasy · Korea GTM</p>
@@ -484,7 +558,7 @@
       </button>
     </nav>
 
-    <section class="workspace">
+    <section class="workspace" id="generator-workspace">
       <form class="panel controls" id="generator-form" novalidate>
         <h2 class="panel-title" id="panel-title">데일리 뉴스 만들기</h2>
         <p class="panel-subtitle" id="panel-subtitle">클라이언트를 고르고 원문을 넣으면 한국어 뉴스 카드와 게시 문구가 생성됩니다.</p>
@@ -649,6 +723,35 @@
         </div>
       </section>
     </section>
+    </div>
+
+    <section class="library-shell" id="library-view" hidden aria-labelledby="library-title">
+      <section class="panel library-panel">
+        <div class="library-panel-head">
+          <h2 id="library-title">팀 보관함</h2>
+          <p>최근에 만든 뉴스·아티클·튜토리얼을 최신순으로 확인합니다. 모든 결과는 게시 전 검토가 필요합니다.</p>
+          <div class="library-filters" id="library-filters">
+            <label><span>클라이언트</span><select id="library-client-filter">
+              <option value="">전체</option><option value="yellow">Yellow</option><option value="origintrail">OriginTrail</option><option value="squid">Squid</option><option value="babylon">Babylon</option>
+            </select></label>
+            <label><span>콘텐츠</span><select id="library-kind-filter">
+              <option value="">전체</option><option value="daily_news">데일리 뉴스</option><option value="article">아티클</option><option value="tutorial">튜토리얼</option>
+            </select></label>
+            <label><span>상태</span><select id="library-status-filter">
+              <option value="">전체</option><option value="needs_review">검토 필요</option><option value="changes_requested">수정 요청</option><option value="approved">승인됨</option><option value="published">게시됨</option><option value="failed">실패</option><option value="archived">보관됨</option>
+            </select></label>
+          </div>
+        </div>
+        <div class="library-state" id="library-list-state" role="status" aria-live="polite">보관함을 불러오는 중입니다…</div>
+        <div class="library-list" id="library-list" hidden></div>
+        <div class="library-more-wrap" id="library-more-wrap" hidden><button class="library-more" id="library-more" type="button">더 불러오기</button></div>
+      </section>
+
+      <section class="panel library-panel library-detail" id="library-detail-panel">
+        <div class="library-state" id="library-detail-state" role="status" aria-live="polite"><strong>작업을 선택해주세요</strong>왼쪽 목록에서 확인할 콘텐츠를 눌러주세요.</div>
+        <div class="library-detail-inner" id="library-detail" hidden></div>
+      </section>
+    </section>
   </main>
 
   <script>
@@ -726,13 +829,41 @@
       };
       const TUTORIAL_CLIENTS = new Set(["yellow", "squid"]);
 
-      const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", slides: [], activeSlide: 0, hasResult: false, tutorialRequest: null, sessionEpoch: 0 };
+      const CONTENT_KIND_LABEL = { daily_news: "데일리 뉴스", article: "아티클", tutorial: "튜토리얼" };
+      const CONTENT_KIND_MARK = { daily_news: "N", article: "A", tutorial: "T" };
+      const CONTENT_STATUS_LABEL = {
+        draft: "초안",
+        generating: "생성 중",
+        needs_review: "검토 필요",
+        changes_requested: "수정 요청",
+        approved: "승인됨",
+        queued: "게시 대기",
+        published: "게시됨",
+        failed: "실패",
+        archived: "보관됨"
+      };
+
+      const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
+      const libraryState = { items: [], nextCursor: null, activeId: "", loaded: false, stale: true, listRequest: 0, detailRequest: 0 };
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
       const accessCode = document.getElementById("access-code");
       const accessSubmit = document.getElementById("access-submit");
       const accessMessage = document.getElementById("access-message");
       const studioLogout = document.getElementById("studio-logout");
+      const studioViewSwitcher = document.getElementById("studio-view-switcher");
+      const createView = document.getElementById("create-view");
+      const libraryView = document.getElementById("library-view");
+      const libraryFilters = document.getElementById("library-filters");
+      const libraryClientFilter = document.getElementById("library-client-filter");
+      const libraryKindFilter = document.getElementById("library-kind-filter");
+      const libraryStatusFilter = document.getElementById("library-status-filter");
+      const libraryListState = document.getElementById("library-list-state");
+      const libraryList = document.getElementById("library-list");
+      const libraryMoreWrap = document.getElementById("library-more-wrap");
+      const libraryMore = document.getElementById("library-more");
+      const libraryDetailState = document.getElementById("library-detail-state");
+      const libraryDetail = document.getElementById("library-detail");
       const form = document.getElementById("generator-form");
       const modeSwitcher = document.getElementById("mode-switcher");
       const clients = document.getElementById("clients");
@@ -793,6 +924,296 @@
         return String(value ?? "").replace(/[&<>\"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#039;" }[char]));
       }
 
+      function plainObject(value) {
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      }
+
+      function safeWebUrl(value) {
+        if (typeof value !== "string" || !value.trim()) return "";
+        try {
+          const url = new URL(value, window.location.origin);
+          return ["https:", "http:"].includes(url.protocol) ? url.href : "";
+        } catch {
+          return "";
+        }
+      }
+
+      function figmaBrowserUrl(fileKey, nodeId) {
+        if (typeof fileKey !== "string" || !/^[A-Za-z0-9_-]{8,200}$/.test(fileKey)) return "";
+        if (typeof nodeId !== "string" || !nodeId.trim() || nodeId.length > 200) return "";
+        const url = new URL(`https://www.figma.com/design/${encodeURIComponent(fileKey)}/CoinEasy-Content-Studio`);
+        url.searchParams.set("node-id", nodeId.trim().replace(/:/g, "-"));
+        return url.href;
+      }
+
+      function formatLibraryDate(value) {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return "날짜 없음";
+        return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+      }
+
+      function formatFileSize(value) {
+        const bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes <= 0) return "";
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+      }
+
+      function normalizeLibraryItem(value) {
+        const item = plainObject(value);
+        const contentId = typeof item.content_item_id === "string" ? item.content_item_id : "";
+        if (!contentId || contentId.length > 128) return null;
+        const clientId = Object.hasOwn(BRAND, item.client_id) ? item.client_id : "";
+        const contentKind = Object.hasOwn(CONTENT_KIND_LABEL, item.content_kind) ? item.content_kind : "daily_news";
+        return {
+          content_item_id: contentId,
+          content_version_id: typeof item.content_version_id === "string" ? item.content_version_id : "",
+          client_id: clientId,
+          content_kind: contentKind,
+          title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : "제목 없는 작업",
+          status: typeof item.status === "string" ? item.status : "needs_review",
+          mock_mode: item.mock_mode === true,
+          thumbnail_url: safeWebUrl(item.thumbnail_url),
+          created_at: item.created_at
+        };
+      }
+
+      function libraryCardMarkup(item) {
+        const brandName = BRAND[item.client_id]?.name || "클라이언트 미지정";
+        const thumbnail = item.thumbnail_url
+          ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">`
+          : escapeHtml(CONTENT_KIND_MARK[item.content_kind] || "C");
+        return `<button class="library-card${item.content_item_id === libraryState.activeId ? " active" : ""}" type="button" data-content-id="${escapeHtml(item.content_item_id)}" aria-pressed="${item.content_item_id === libraryState.activeId}">` +
+          `<span class="library-thumb">${thumbnail}</span><span class="library-card-copy"><span class="library-card-meta">` +
+          `<span class="library-chip">${escapeHtml(brandName)}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[item.content_kind])}</span>` +
+          `<span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[item.status] || item.status)}</span>${item.mock_mode ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}` +
+          `</span><h3>${escapeHtml(item.title)}</h3><time datetime="${escapeHtml(item.created_at || "")}">${escapeHtml(formatLibraryDate(item.created_at))}</time></span></button>`;
+      }
+
+      function renderLibraryList() {
+        if (!libraryState.items.length) {
+          libraryList.innerHTML = "";
+          libraryList.hidden = true;
+          libraryMoreWrap.hidden = true;
+          libraryListState.innerHTML = "<strong>아직 저장된 작업이 없습니다</strong>필터를 바꾸거나 만들기 화면에서 첫 콘텐츠를 생성해보세요.";
+          libraryListState.className = "library-state";
+          libraryListState.hidden = false;
+          return;
+        }
+        libraryList.innerHTML = libraryState.items.map(libraryCardMarkup).join("");
+        libraryList.hidden = false;
+        libraryListState.hidden = true;
+        libraryMoreWrap.hidden = !libraryState.nextCursor;
+        libraryMore.disabled = false;
+        libraryMore.textContent = "더 불러오기";
+      }
+
+      function resetLibraryDetail(message = "왼쪽 목록에서 확인할 콘텐츠를 눌러주세요.") {
+        libraryState.detailRequest += 1;
+        libraryState.activeId = "";
+        libraryDetail.innerHTML = "";
+        libraryDetail.hidden = true;
+        libraryDetailState.innerHTML = `<strong>작업을 선택해주세요</strong>${escapeHtml(message)}`;
+        libraryDetailState.className = "library-state";
+        libraryDetailState.hidden = false;
+      }
+
+      function clearLibrary() {
+        libraryState.listRequest += 1;
+        libraryState.items = [];
+        libraryState.nextCursor = null;
+        libraryState.loaded = false;
+        libraryState.stale = true;
+        libraryClientFilter.value = "";
+        libraryKindFilter.value = "";
+        libraryStatusFilter.value = "";
+        libraryList.innerHTML = "";
+        libraryList.hidden = true;
+        libraryMoreWrap.hidden = true;
+        libraryListState.textContent = "보관함을 불러오는 중입니다…";
+        libraryListState.className = "library-state";
+        libraryListState.hidden = false;
+        resetLibraryDetail();
+      }
+
+      function markLibraryStale() {
+        libraryState.stale = true;
+      }
+
+      async function loadLibrary({ reset = true } = {}) {
+        const requestId = ++libraryState.listRequest;
+        const requestSessionEpoch = state.sessionEpoch;
+        if (reset) {
+          libraryState.items = [];
+          libraryState.nextCursor = null;
+          libraryList.innerHTML = "";
+          libraryList.hidden = true;
+          libraryMoreWrap.hidden = true;
+          resetLibraryDetail();
+          libraryListState.textContent = "보관함을 불러오는 중입니다…";
+          libraryListState.className = "library-state";
+          libraryListState.hidden = false;
+        } else {
+          libraryMore.disabled = true;
+          libraryMore.textContent = "불러오는 중…";
+        }
+
+        const params = new URLSearchParams({ limit: "12" });
+        if (libraryClientFilter.value) params.set("client", libraryClientFilter.value);
+        if (libraryKindFilter.value) params.set("kind", libraryKindFilter.value);
+        if (libraryStatusFilter.value) params.set("status", libraryStatusFilter.value);
+        if (!reset && libraryState.nextCursor) {
+          params.set("before_created_at", libraryState.nextCursor.created_at);
+          params.set("before_id", libraryState.nextCursor.id);
+        }
+
+        try {
+          const response = await fetch(`/api/library?${params.toString()}`, {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { Accept: "application/json" }
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.listRequest) return;
+          if (handleStudioAccessResponse(response, payload)) return;
+          if (!response.ok) throw new Error("library_load_failed");
+          const nextItems = (Array.isArray(payload.items) ? payload.items : []).map(normalizeLibraryItem).filter(Boolean);
+          const seen = new Set(libraryState.items.map(item => item.content_item_id));
+          libraryState.items = reset ? nextItems : libraryState.items.concat(nextItems.filter(item => !seen.has(item.content_item_id)));
+          const nextCursor = plainObject(payload.next_cursor);
+          libraryState.nextCursor = typeof nextCursor.created_at === "string" && typeof nextCursor.id === "string"
+            ? { created_at: nextCursor.created_at, id: nextCursor.id }
+            : null;
+          libraryState.loaded = true;
+          libraryState.stale = false;
+          renderLibraryList();
+        } catch {
+          if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.listRequest) return;
+          libraryListState.innerHTML = `<strong>보관함을 불러오지 못했습니다</strong>네트워크를 확인한 뒤 다시 시도해주세요.<br><button class="library-retry" type="button" data-library-retry="list">다시 시도</button>`;
+          libraryListState.className = "library-state error";
+          libraryListState.hidden = false;
+          if (!libraryState.items.length) libraryList.hidden = true;
+          libraryMore.disabled = false;
+          libraryMore.textContent = "더 불러오기";
+        }
+      }
+
+      function renderSourceLinks(sourceMap) {
+        if (!Array.isArray(sourceMap)) return "";
+        const links = sourceMap.map((source, index) => {
+          const sourceObject = plainObject(source);
+          const url = safeWebUrl(sourceObject.source_url);
+          return url ? `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">원문 ${index + 1}</a></li>` : "";
+        }).filter(Boolean);
+        return links.length ? `<h4>연결된 원문</h4><ul>${links.join("")}</ul>` : "";
+      }
+
+      function renderStoredContent(contentKind, rawContent) {
+        const content = plainObject(rawContent);
+        if (contentKind === "article") {
+          const sections = Array.isArray(content.sections) ? content.sections : [];
+          const takeaways = Array.isArray(content.key_takeaways) ? content.key_takeaways : [];
+          return `${content.lead ? `<p>${escapeHtml(content.lead)}</p>` : ""}` +
+            sections.map(section => {
+              const item = plainObject(section);
+              return `<h4>${escapeHtml(item.heading || "본문")}</h4><p>${escapeHtml(item.body || "")}</p>`;
+            }).join("") +
+            (takeaways.length ? `<h4>핵심 요약</h4><ul>${takeaways.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "") +
+            renderSourceLinks(content.source_map) +
+            (content.markdown ? `<h4>Markdown 원고</h4><p>${escapeHtml(content.markdown)}</p>` : "");
+        }
+        if (contentKind === "tutorial") {
+          const series = plainObject(content.series);
+          const lessons = Array.isArray(content.lessons) ? content.lessons : Array.isArray(series.lessons) ? series.lessons : [];
+          const heading = series.series_title_en || series.series_subtitle_kr || content.title || "튜토리얼";
+          return `<h3>${escapeHtml(heading)}</h3>` +
+            (series.series_subtitle_kr && series.series_subtitle_kr !== heading ? `<p>${escapeHtml(series.series_subtitle_kr)}</p>` : "") +
+            (lessons.length ? `<h4>학습 순서</h4><ol>${lessons.map(lesson => {
+              const item = plainObject(lesson);
+              return `<li>${escapeHtml(item.title_kr || item.title || item.headline || item.heading || "튜토리얼 단계")}</li>`;
+            }).join("")}</ol>` : `<p>저장된 슬라이드는 위 이미지에서 확인할 수 있습니다.</p>`);
+        }
+        const spec = plainObject(content.spec);
+        const lines = Array.isArray(spec.body_lines) ? spec.body_lines : [];
+        return `<h3>${escapeHtml(spec.headline || content.headline || "뉴스 카드")}</h3>` +
+          (spec.label ? `<p>분류 · ${escapeHtml(spec.label)}</p>` : "") +
+          (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "") +
+          renderSourceLinks(content.source_map);
+      }
+
+      function renderLibraryDetail(payload) {
+        const detail = plainObject(payload);
+        const contentKind = Object.hasOwn(CONTENT_KIND_LABEL, detail.content_kind) ? detail.content_kind : "daily_news";
+        const clientId = Object.hasOwn(BRAND, detail.client_id) ? detail.client_id : "";
+        const currentVersion = plainObject(detail.current_version);
+        const content = plainObject(currentVersion.content || detail.content);
+        const channelCopyValue = plainObject(currentVersion.channel_copy || detail.channel_copy);
+        const generationMeta = plainObject(currentVersion.generation_meta || detail.generation_meta);
+        const isMock = generationMeta.mock_mode === true;
+        const assets = (Array.isArray(detail.assets) ? detail.assets : []).map(asset => {
+          const item = plainObject(asset);
+          return { ...item, signed_url: safeWebUrl(item.signed_url || item.url) };
+        }).filter(asset => asset.signed_url);
+        const figmaLinks = (Array.isArray(detail.figma_links) ? detail.figma_links : []).map(link => {
+          const item = plainObject(link);
+          return { ...item, url: safeWebUrl(item.figma_url || item.url) || figmaBrowserUrl(item.file_key, item.node_id) };
+        }).filter(link => link.url);
+        const assetMarkup = assets.length ? `<div class="library-assets">${assets.map((asset, index) => {
+          const dimensions = asset.width && asset.height ? `${asset.width}×${asset.height}` : "";
+          const metadata = [asset.filename || `${index + 1}번 이미지`, dimensions, formatFileSize(asset.byte_size)].filter(Boolean).join(" · ");
+          return `<a class="library-asset" href="${escapeHtml(asset.signed_url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(asset.signed_url)}" alt="${escapeHtml(asset.filename || `저장 이미지 ${index + 1}`)}" loading="lazy"><span>${escapeHtml(metadata)}</span></a>`;
+        }).join("")}</div>` : "";
+        const figmaMarkup = figmaLinks.length ? `<section class="library-figma"><h3>Figma 연결</h3>${figmaLinks.map((link, index) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Figma 작업 ${index + 1} 열기</a>`).join("")}</section>` : "";
+        const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
+        const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${copyMarkup}${figmaMarkup}`;
+        libraryDetailState.hidden = true;
+        libraryDetail.hidden = false;
+      }
+
+      async function loadLibraryDetail(contentId) {
+        const requestId = ++libraryState.detailRequest;
+        const requestSessionEpoch = state.sessionEpoch;
+        libraryState.activeId = contentId;
+        renderLibraryList();
+        libraryDetail.innerHTML = "";
+        libraryDetail.hidden = true;
+        libraryDetailState.textContent = "작업 상세를 불러오는 중입니다…";
+        libraryDetailState.className = "library-state";
+        libraryDetailState.hidden = false;
+        try {
+          const response = await fetch(`/api/library/${encodeURIComponent(contentId)}`, {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { Accept: "application/json" }
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.detailRequest) return;
+          if (handleStudioAccessResponse(response, payload)) return;
+          if (!response.ok) throw new Error("library_detail_failed");
+          renderLibraryDetail(payload.item || payload);
+        } catch {
+          if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.detailRequest) return;
+          libraryDetailState.innerHTML = `<strong>작업을 열지 못했습니다</strong>잠시 후 다시 시도해주세요.<br><button class="library-retry" type="button" data-library-retry="detail" data-content-id="${escapeHtml(contentId)}">다시 시도</button>`;
+          libraryDetailState.className = "library-state error";
+          libraryDetailState.hidden = false;
+        }
+      }
+
+      function selectStudioView(nextView, load = true) {
+        state.studioView = nextView === "library" ? "library" : "create";
+        const showingLibrary = state.studioView === "library";
+        createView.hidden = showingLibrary;
+        libraryView.hidden = !showingLibrary;
+        studioViewSwitcher.querySelectorAll("[data-studio-view]").forEach(button => {
+          const active = button.dataset.studioView === state.studioView;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-selected", String(active));
+        });
+        if (showingLibrary && load && (!libraryState.loaded || libraryState.stale)) loadLibrary({ reset: true });
+      }
+
       function showStudioAccess(message = "팀 접근 코드를 입력해주세요.", configured = true) {
         accessGate.hidden = false;
         document.body.classList.add("access-locked");
@@ -817,12 +1238,14 @@
         sourceUrl.value = "";
         sourceType.value = state.mode === "article" || state.mode === "tutorial" ? "article" : "tweet";
         mockMode.checked = false;
-        state.tutorialRequest = null;
+        state.generationRequest = null;
         state.hasResult = false;
         loading.hidden = true;
         spec.textContent = "";
         download.removeAttribute("href");
         renderBrand();
+        clearLibrary();
+        selectStudioView("create", false);
         setStatus("");
       }
 
@@ -1107,6 +1530,7 @@
         specDetails.hidden = false;
         showTutorialSlide(0);
         state.hasResult = true;
+        markLibraryStale();
         setStatus(
           isMockTutorial
             ? `샘플 튜토리얼 ${state.slides.length}장이 생성되었습니다. 게시하지 말고 브랜딩과 레이아웃 확인에만 사용하세요.`
@@ -1149,6 +1573,7 @@
         updateCopyCounts();
         channelCopy.hidden = !(telegramCopy.value || xCopy.value);
         state.hasResult = true;
+        markLibraryStale();
         setStatus("아티클 초안과 Markdown, 텔레그램·X 문구가 완성되었습니다. 게시 전에 원문과 대조해주세요.", "success");
       }
 
@@ -1174,13 +1599,14 @@
       }
 
       function errorMessage(payload, status) {
+        const contentLabel = state.mode === "tutorial" ? "튜토리얼" : state.mode === "article" ? "아티클" : "카드";
         if (payload?.error === "studio_access_not_configured") return "관리자가 Netlify에 STUDIO_ACCESS_TOKEN을 먼저 설정해야 합니다.";
         if (payload?.error === "studio_auth_required" || status === 401) return "팀 접근 코드를 다시 입력해주세요.";
         if (payload?.error === "server_not_configured") return "서버의 API 비밀키 설정을 확인해주세요.";
         if (payload?.error === "generation_timeout") return "생성 시간이 길어졌습니다. 잠시 후 다시 시도해주세요.";
-        if (payload?.error === "tutorial_deadline_exceeded") return "안전한 처리 시간을 초과해 중단했습니다. 같은 내용으로 다시 누르면 이미 저장된 결과를 먼저 확인합니다.";
-        if (payload?.error === "invalid_tutorial_idempotency_key") return "튜토리얼 재시도 키를 만들지 못했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.";
-        if (payload?.error === "tutorial_idempotency_conflict") return "이 생성 요청의 내용이 바뀌었습니다. 새 요청으로 다시 생성해주세요.";
+        if (["tutorial_deadline_exceeded", "news_card_deadline_exceeded", "article_deadline_exceeded"].includes(payload?.error)) return "안전한 처리 시간을 초과해 중단했습니다. 같은 내용으로 다시 누르면 이미 저장된 결과를 먼저 확인합니다.";
+        if (["invalid_tutorial_idempotency_key", "invalid_news_card_idempotency_key", "invalid_article_idempotency_key"].includes(payload?.error)) return `${contentLabel} 재시도 키를 만들지 못했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.`;
+        if (typeof payload?.error === "string" && payload.error.endsWith("_idempotency_conflict")) return "이 생성 요청의 내용이 바뀌었습니다. 새 요청으로 다시 생성해주세요.";
         if (payload?.error === "durable_catalog_result_unknown") return "저장 응답을 확인하지 못했습니다. 같은 내용으로 다시 누르면 중복 생성 없이 저장된 결과를 확인합니다.";
         if (payload?.error === "durable_catalog_lookup_failed") return "팀 보관함에서 기존 생성 결과를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.";
         if (payload?.error === "invalid_source_url") return "원문 링크 형식을 확인해주세요. https://로 시작하는 주소를 입력해주세요.";
@@ -1188,14 +1614,13 @@
         if (payload?.error === "source_content_must_be_10_to_20000_chars") return "원문 본문을 10자 이상 입력하거나 공개 X 게시물 링크를 넣어주세요.";
         if (payload?.error === "source_content_must_be_300_to_60000_chars") return "아티클 초안을 만들려면 사실 근거가 충분한 원문 본문을 300자 이상 붙여넣어주세요.";
         if (payload?.error === "tutorial_not_enabled") return "튜토리얼 생성은 현재 Yellow와 Squid만 지원합니다.";
-        if (payload?.error === "durable_storage_not_configured") return "관리자가 팀 저장소 연결을 먼저 완료해야 합니다. 생성된 튜토리얼은 임시 파일로 제공하지 않습니다.";
+        if (payload?.error === "durable_storage_not_configured") return `관리자가 팀 저장소 연결을 먼저 완료해야 합니다. 생성된 ${contentLabel}는 임시 결과로 제공하지 않습니다.`;
         if (payload?.error === "durable_storage_bucket_must_be_private") return "팀 저장소가 비공개로 설정되어 있는지 관리자가 확인해야 합니다.";
         if (payload?.error === "durable_storage_scope_not_ready") return "선택한 클라이언트가 팀 저장소에 아직 등록되지 않았습니다.";
-        if (payload?.error === "durable_storage_upload_failed" || payload?.error === "durable_storage_unavailable") return "튜토리얼을 영구 저장하지 못했습니다. 잠시 후 다시 시도해주세요.";
+        if (payload?.error === "durable_storage_upload_failed" || payload?.error === "durable_storage_unavailable") return `${contentLabel}를 팀 보관함에 저장하지 못했습니다. 잠시 후 다시 시도해주세요.`;
         if (payload?.error === "invalid_article_response") return "아티클 결과 형식이 완전하지 않습니다. 잠시 후 다시 생성해주세요.";
         if (payload?.error === "generation_failed") {
-          const label = state.mode === "tutorial" ? "튜토리얼" : state.mode === "article" ? "아티클" : "카드";
-          return `${label} 생성에 실패했습니다. (${payload.upstream_status || status})`;
+          return `${contentLabel} 생성에 실패했습니다. (${payload.upstream_status || status})`;
         }
         if (payload?.error === "cleaned_source_unavailable" || payload?.error === "cleaned_source_required") return "원문 자막 제거 이미지를 준비하지 못했습니다. 다시 생성해주세요.";
         return state.mode === "tutorial"
@@ -1256,11 +1681,36 @@
         }
       });
 
+      studioViewSwitcher.addEventListener("click", event => {
+        const button = event.target.closest("[data-studio-view]");
+        if (!button || button.dataset.studioView === state.studioView) return;
+        selectStudioView(button.dataset.studioView);
+      });
+
+      libraryFilters.addEventListener("change", () => loadLibrary({ reset: true }));
+
+      libraryMore.addEventListener("click", () => {
+        if (!libraryState.nextCursor || libraryMore.disabled) return;
+        loadLibrary({ reset: false });
+      });
+
+      libraryView.addEventListener("click", event => {
+        const retry = event.target.closest("[data-library-retry]");
+        if (retry) {
+          if (retry.dataset.libraryRetry === "detail" && retry.dataset.contentId) loadLibraryDetail(retry.dataset.contentId);
+          else loadLibrary({ reset: true });
+          return;
+        }
+        const card = event.target.closest("[data-content-id]");
+        if (!card) return;
+        loadLibraryDetail(card.dataset.contentId);
+      });
+
       function confirmResultReset() {
         return !state.hasResult || window.confirm("현재 생성 결과와 수정한 문구가 화면에서 사라집니다. 선택을 바꿀까요?");
       }
 
-      function newTutorialRequestId() {
+      function newGenerationRequestId() {
         if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
         const bytes = crypto.getRandomValues(new Uint8Array(16));
         bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -1360,6 +1810,7 @@
 
       channelCopy.addEventListener("click", handleCopyRequest);
       articleResult.addEventListener("click", handleCopyRequest);
+      libraryDetail.addEventListener("click", handleCopyRequest);
 
       form.addEventListener("submit", async event => {
         event.preventDefault();
@@ -1389,20 +1840,19 @@
         }
         const requestSessionEpoch = state.sessionEpoch;
 
-        let tutorialRequestId = "";
-        if (state.mode === "tutorial") {
-          const fingerprint = JSON.stringify([
-            state.client,
-            content,
-            sourceType.value,
-            normalizedUrl,
-            mockMode.checked
-          ]);
-          if (!state.tutorialRequest || state.tutorialRequest.fingerprint !== fingerprint) {
-            state.tutorialRequest = { fingerprint, id: newTutorialRequestId() };
-          }
-          tutorialRequestId = state.tutorialRequest.id;
+        const generationFingerprint = JSON.stringify([
+          state.mode,
+          state.client,
+          content,
+          sourceType.value,
+          normalizedUrl,
+          state.mode === "news" ? state.template : null,
+          state.mode === "article" ? false : mockMode.checked
+        ]);
+        if (!state.generationRequest || state.generationRequest.fingerprint !== generationFingerprint) {
+          state.generationRequest = { fingerprint: generationFingerprint, id: newGenerationRequestId() };
         }
+        const generationRequestId = state.generationRequest.id;
 
         generate.disabled = true;
         loading.hidden = false;
@@ -1428,7 +1878,10 @@
             const articleResponse = await fetch(`/api/article/${encodeURIComponent(state.client)}`, {
               method: "POST",
               credentials: "same-origin",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                "Idempotency-Key": generationRequestId
+              },
               body: JSON.stringify({
                 source_content: content,
                 source_type: sourceType.value,
@@ -1440,6 +1893,7 @@
             handleStudioAccessResponse(articleResponse, articlePayload);
             if (!articleResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: articlePayload, status: articleResponse.status });
             renderArticleResult(articlePayload);
+            state.generationRequest = null;
             document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
             return;
           }
@@ -1450,7 +1904,7 @@
               credentials: "same-origin",
               headers: {
                 "Content-Type": "application/json",
-                "Idempotency-Key": tutorialRequestId
+                "Idempotency-Key": generationRequestId
               },
               body: JSON.stringify({
                 source_content: content,
@@ -1464,7 +1918,7 @@
             handleStudioAccessResponse(tutorialResponse, tutorialPayload);
             if (!tutorialResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: tutorialPayload, status: tutorialResponse.status });
             renderTutorialResult(tutorialPayload);
-            state.tutorialRequest = null;
+            state.generationRequest = null;
             document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
             return;
           }
@@ -1472,7 +1926,10 @@
           const response = await fetch(`/api/news-card/${encodeURIComponent(state.client)}`, {
             method: "POST",
             credentials: "same-origin",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": generationRequestId
+            },
             body: JSON.stringify({
               source_content: content,
               source_type: sourceType.value,
@@ -1485,10 +1942,12 @@
           if (requestSessionEpoch !== state.sessionEpoch) return;
           handleStudioAccessResponse(response, payload);
           if (!response.ok) throw Object.assign(new Error("generation_failed"), { payload, status: response.status });
+          state.generationRequest = null;
 
           const isMockNews = payload.mock_mode === true;
           state.imageUrl = payload.image_data_url;
           state.hasResult = true;
+          markLibraryStale();
           resultImage.src = state.imageUrl;
           resultImage.hidden = false;
           mockCard.hidden = true;
@@ -1553,7 +2012,7 @@
           document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
         } catch (error) {
           const payload = error?.payload || {};
-          if (payload?.error === "tutorial_idempotency_conflict") state.tutorialRequest = null;
+          if (typeof payload?.error === "string" && payload.error.endsWith("_idempotency_conflict")) state.generationRequest = null;
           state.hasResult = false;
           setStatus(errorMessage(payload, error?.status), "error");
           mockCard.hidden = false;

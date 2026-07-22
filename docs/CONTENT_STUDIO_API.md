@@ -126,24 +126,35 @@ and Figma links. Private assets use short-lived signed URLs.
 Asset metadata and Storage object writes are server-managed to preserve approved
 version history.
 
-Current incremental bridge: `POST /api/tutorial/{client_id}` (Yellow and Squid)
-renders through Railway, uploads 1–12 validated PNG pages to private Supabase
-Storage, and invokes the service-only `record_tutorial_generation` RPC. A successful
-response includes `content_item_id`, `content_version_id`, `asset_ids`, and expiring
-slide relay URLs. The new item starts in `needs_review`; generation never implies
-approval. Callers must send a UUID in `Idempotency-Key`; retries use that UUID to
-load the committed version before Railway is called. The UUID is bound to a
-SHA-256 digest of the normalized client, submitted source text/type/URL, series
-number, and mock flag. A URL-only import hashes the submitted URL rather than
-mutable fetched X content, so an exact retry returns the first immutable result;
-reusing the UUID with any different request returns
-`tutorial_idempotency_conflict` with HTTP 409. The lookup follows the exact
-immutable `deliverables.asset_ids` order and fails closed if an asset row or private
-Storage object is missing. Each asset UUID is the same UUID used in its Storage
-path. Source content is stored in full and test-mode generations are explicitly
-marked in generation metadata and the API response. `review_content_version`
-refuses to approve a version with `mock_mode: true`, and
-`request_content_publication` repeats that check as a server-side backstop.
+Current incremental Netlify bridge:
+
+- `POST /api/news-card/{client_id}` stores one validated private PNG plus the
+  localized specification and Telegram/X copy as `daily_news`.
+- `POST /api/article/{client_id}` stores the source-locked Korean draft, Markdown,
+  takeaways, and channel copy as `article`; it intentionally has no asset.
+- `POST /api/tutorial/{client_id}` (Yellow and Squid) stores 1–12 validated private
+  PNG pages in their immutable deliverable order as `tutorial`.
+- `GET /api/library` returns a cursor-paginated, filterable team library, and
+  `GET /api/library/{content_item_id}` returns the current immutable version,
+  sanitized copy, Figma link metadata, and short-lived private asset URLs.
+
+All three generation calls require a UUID `Idempotency-Key`. The UUID is bound to a
+SHA-256 digest of the normalized submitted request, not mutable content later
+fetched from X. An exact retry loads the committed version before Railway is called;
+reusing the UUID for changed input returns a mode-specific
+`*_idempotency_conflict` with HTTP 409. Successful responses include
+`content_item_id` and `content_version_id`; asset-backed modes also include their
+asset IDs. Every generated item starts in `needs_review`, and generation never
+implies approval. Missing catalog rows, metadata mismatches, or missing private
+objects fail closed rather than returning an untracked temporary result.
+
+Source content is stored in full and test-mode generations are explicitly marked
+in generation metadata, the generation response, and the team library.
+`review_content_version` refuses to approve a version with `mock_mode: true`, and
+`request_content_publication` repeats that check as a server-side backstop. These
+incremental `/api/*` routes use the signed team cookie described in
+`docs/STUDIO_ACCESS.md`; the future `/v1/workspaces/*` contract above will use
+Supabase user JWTs.
 
 `POST /v1/workspaces/{workspace_id}/content/{content_id}/regenerate`
 
