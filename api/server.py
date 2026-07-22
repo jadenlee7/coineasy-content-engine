@@ -7,6 +7,7 @@ Single service serving multiple clients (Yellow, Squid, etc.) via:
 Authentication: X-API-Key header
 Deployment: Railway
 """
+import asyncio
 import os
 import time
 import traceback
@@ -14,9 +15,9 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.client_config import (
     CLIENTS_DIR,
@@ -25,12 +26,22 @@ from core.client_config import (
     list_available_clients,
 )
 from core.orchestrator import generate_edu_carousel, generate_news_card
+from core.llm.article_pipeline import (
+    ArticleInputError,
+    ArticleOutputError,
+    generate_article_spec,
+)
 from core.sources.x_client import XClient
 from core.generators.daily_news import DailyNewsGenerator
 from core.publishers.base import Publisher
 from core.publishers.telegram import TelegramPublisher
 from core.publishers.typefully import TypefullyPublisher
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
+from api.output_retention import (
+    cleanup_generated_runs_best_effort,
+    clear_run_active,
+    mark_run_active,
+)
 
 
 # ────────────────────────────────────────────────────
@@ -44,11 +55,32 @@ app = FastAPI(
 )
 
 API_SECRET = os.environ.get("API_SECRET", "")
-OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/tmp/content_engine_output"))
+OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/tmp/content_engine_output")).resolve()
+
+
+def _finish_output_run(
+    output_dir: Path,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Release one run and enforce retention after its response is sent."""
+    clear_run_active(OUTPUT_ROOT, output_dir)
+    background_tasks.add_task(
+        cleanup_generated_runs_best_effort,
+        OUTPUT_ROOT,
+        preserve=(output_dir,),
+    )
 
 
 def _check_auth(x_api_key: str):
-    check_any_valid_key(x_api_key)
+    return check_any_valid_key(x_api_key)
+
+
+def _check_client_auth(x_api_key: str, client_id: str) -> str:
+    """Allow the admin key or the key assigned to this exact client only."""
+    authenticated_client = check_any_valid_key(x_api_key)
+    if authenticated_client not in {"admin", client_id}:
+        raise HTTPException(status_code=403, detail="client_scope_violation")
+    return authenticated_client
 
 
 # ────────────────────────────────────────────────────
@@ -110,6 +142,51 @@ class DailyNewsResponse(BaseModel):
     duration_ms: int
 
 
+class ArticleRequest(BaseModel):
+    source_content: str = Field(min_length=1, max_length=60_000)
+    source_type: Literal["tweet", "blog", "article"] = "article"
+    source_url: str = Field(default="", max_length=2_048)
+
+    @field_validator("source_content")
+    @classmethod
+    def require_meaningful_source(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 300:
+            raise ValueError(
+                "아티클 초안을 만들려면 사실 근거가 충분한 원문을 300자 이상 입력해주세요."
+            )
+        return normalized
+
+
+class ArticleSectionResponse(BaseModel):
+    id: str
+    heading: str
+    body: str
+
+
+class ArticleSourceMapResponse(BaseModel):
+    source_url: str
+    applies_to: list[str]
+
+
+class ArticleChannelCopyResponse(BaseModel):
+    telegram: str
+    x: str
+
+
+class ArticleResponse(BaseModel):
+    client_id: str
+    content_type: Literal["article"]
+    title: str
+    lead: str
+    sections: list[ArticleSectionResponse]
+    key_takeaways: list[str]
+    source_map: list[ArticleSourceMapResponse]
+    channel_copy: ArticleChannelCopyResponse
+    markdown: str
+    duration_ms: int
+
+
 CHANNEL_NAMES = ("typefully", "telegram")
 
 
@@ -152,9 +229,11 @@ async def health():
 
 @app.get("/clients", response_model=list[ClientInfo])
 async def list_clients(x_api_key: str = Header(default="")):
-    _check_auth(x_api_key)
+    authenticated_client = _check_auth(x_api_key)
     results = []
     for client_id in list_available_clients():
+        if authenticated_client != "admin" and client_id != authenticated_client:
+            continue
         try:
             cfg = load_client_config(client_id)
             results.append(ClientInfo(
@@ -165,6 +244,7 @@ async def list_clients(x_api_key: str = Header(default="")):
                 features={
                     "education_carousel": cfg.feature_flags.education_carousel,
                     "news_card": cfg.feature_flags.news_card,
+                    "article": True,
                 },
             ))
         except Exception as e:
@@ -176,10 +256,11 @@ async def list_clients(x_api_key: str = Header(default="")):
 async def generate_carousel(
     client_id: str,
     req: GenerateRequest,
+    background_tasks: BackgroundTasks,
     x_api_key: str = Header(default=""),
 ):
     """Generate an education carousel for a client."""
-    _check_auth(x_api_key)
+    _check_client_auth(x_api_key, client_id)
 
     # Verify client exists
     try:
@@ -187,9 +268,11 @@ async def generate_carousel(
     except FileNotFoundError:
         raise HTTPException(404, f"Client '{client_id}' not found")
 
-    # Unique output dir per request
-    ts = int(time.time())
+    # Nanosecond-resolution directory names prevent same-client tutorial requests
+    # from overwriting each other's lesson files before Netlify downloads them.
+    ts = time.time_ns()
     output_dir = OUTPUT_ROOT / client_id / f"edu_{ts}"
+    mark_run_active(OUTPUT_ROOT, output_dir)
 
     try:
         result = await generate_edu_carousel(
@@ -207,6 +290,8 @@ async def generate_carousel(
         # Surface full traceback to Railway logs for debugging
         traceback.print_exc()
         raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
+    finally:
+        _finish_output_run(output_dir, background_tasks)
 
     return GenerateResponse(
         client_id=result.client_id,
@@ -223,10 +308,11 @@ async def generate_carousel(
 async def generate_news(
     client_id: str,
     req: NewsCardRequest,
+    background_tasks: BackgroundTasks,
     x_api_key: str = Header(default=""),
 ):
     """Generate a single 1080×1080 news card for a client."""
-    _check_auth(x_api_key)
+    _check_client_auth(x_api_key, client_id)
 
     try:
         load_client_config(client_id)
@@ -237,6 +323,7 @@ async def generate_news(
     # from overwriting each other's cleaned source visual before Netlify fetches it.
     ts = time.time_ns()
     output_dir = OUTPUT_ROOT / client_id / f"news_{ts}"
+    mark_run_active(OUTPUT_ROOT, output_dir)
 
     try:
         result = await generate_news_card(
@@ -254,6 +341,8 @@ async def generate_news(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
+    finally:
+        _finish_output_run(output_dir, background_tasks)
 
     return NewsCardResponse(
         client_id=result.client_id,
@@ -266,6 +355,49 @@ async def generate_news(
         source_visual_path=result.source_visual_path,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
+    )
+
+
+@app.post("/clients/{client_id}/generate/article", response_model=ArticleResponse)
+async def generate_article(
+    client_id: str,
+    req: ArticleRequest,
+    x_api_key: str = Header(default=""),
+):
+    """Generate a source-locked Korean article from pasted source text."""
+    _check_client_auth(x_api_key, client_id)
+
+    try:
+        load_client_config(client_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Client '{client_id}' not found")
+
+    started = time.monotonic()
+    try:
+        article = await asyncio.to_thread(
+            generate_article_spec,
+            client_id=client_id,
+            source_content=req.source_content,
+            source_type=req.source_type,
+            source_url=req.source_url,
+        )
+    except ArticleInputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ArticleOutputError as exc:
+        traceback.print_exc()
+        raise HTTPException(502, f"Article generation returned invalid output: {exc}") from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            500,
+            f"Article generation failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return ArticleResponse(
+        client_id=client_id,
+        content_type="article",
+        **article,
+        duration_ms=int((time.monotonic() - started) * 1000),
     )
 
 
@@ -330,7 +462,7 @@ async def generate_daily_news(
     x_api_key: str = Header(default=""),
 ):
     """Fetch last N hours of tweets from the client's X handle, LLM-filter, translate to Korean."""
-    _check_auth(x_api_key)
+    _check_client_auth(x_api_key, client_id)
     result = await _run_daily_news_generation(
         client_id=client_id,
         hours=req.hours,
@@ -381,7 +513,7 @@ async def publish_daily_news(
     publishing is skipped. Each channel publishes independently — one failure
     does not block other channels.
     """
-    _check_auth(x_api_key)
+    _check_client_auth(x_api_key, client_id)
 
     generation_result = await _run_daily_news_generation(
         client_id=client_id,
@@ -462,6 +594,7 @@ async def serve_file(path: str, x_api_key: str = Header(default="")):
 @app.on_event("startup")
 async def startup():
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(cleanup_generated_runs_best_effort, OUTPUT_ROOT)
     clients = list_active_clients()
     print(f"✓ Content Engine started with {len(clients)} active clients:")
     for cfg in clients:

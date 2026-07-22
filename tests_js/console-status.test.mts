@@ -17,3 +17,102 @@ test("distinguishes missing copy from a rejected Squid subtitle placement", () =
 test("passes the Railway-cleaned source file to the Figma editable endpoint", () => {
   assert.match(consoleHtml, /source_visual_file: payload\.source_visual_file \|\| ""/);
 });
+
+test("offers real news, article, and tutorial team modes", () => {
+  assert.match(consoleHtml, /data-mode="news"/);
+  assert.match(consoleHtml, /data-mode="article"/);
+  assert.match(consoleHtml, /data-mode="tutorial"/);
+  assert.match(consoleHtml, /제목·리드·3~5개 섹션·핵심 요약/);
+  assert.match(consoleHtml, /\/api\/article\/\$\{encodeURIComponent\(state\.client\)\}/);
+  assert.match(consoleHtml, /renderArticleResult\(articlePayload\)/);
+  assert.match(consoleHtml, /id="article-markdown"/);
+  assert.match(consoleHtml, /data-copy-target="article-markdown"/);
+  assert.match(consoleHtml, /sourceContent\.maxLength = articleMode \? 60_000 : 20_000/);
+  assert.match(consoleHtml, /원문 본문을 300자 이상/);
+  assert.match(consoleHtml, /현재 튜토리얼 생성은 Yellow와 Squid만 지원/);
+  assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(state\.client\)\}/);
+  assert.match(consoleHtml, /"Idempotency-Key": tutorialRequestId/);
+  assert.match(consoleHtml, /state\.tutorialRequest = null/);
+  assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
+});
+
+test("marks failed visual localization as requiring a manual review", () => {
+  assert.match(consoleHtml, /id="review-warning"/);
+  assert.match(consoleHtml, /검토 필요/);
+  assert.match(consoleHtml, /자막 영역 지정 기능 · 후속 지원/);
+  assert.match(consoleHtml, /드래그 선택이나 좌표 재생성을 지원하지 않으며 선택 좌표도 저장하지 않습니다/);
+  assert.match(consoleHtml, /visualLocalizationNeedsReview\(payload\)/);
+});
+
+test("preserves the existing news-card, editable SVG, and channel-copy flow", () => {
+  assert.match(consoleHtml, /const state = \{ mode: "news"/);
+  assert.match(consoleHtml, /fetch\(`\/api\/news-card\/\$\{encodeURIComponent\(state\.client\)\}`/);
+  assert.match(consoleHtml, /template_style: state\.template/);
+  assert.match(consoleHtml, /prepareEditableDownload\(payload(?:, requestSessionEpoch)?\)/);
+  assert.match(consoleHtml, /payload\.channel_copy\?\.telegram/);
+  assert.match(consoleHtml, /payload\.channel_copy\?\.x/);
+});
+
+test("uses a server-side team session without exposing or persisting the access code", () => {
+  assert.match(consoleHtml, /id="access-gate"/);
+  assert.match(consoleHtml, /id="access-code"[^>]+type="password"/);
+  assert.match(consoleHtml, /fetch\("\/api\/studio-session"/);
+  assert.match(consoleHtml, /JSON\.stringify\(\{ access_code: accessCode\.value \}\)/);
+  assert.match(consoleHtml, /credentials: "same-origin"/);
+  assert.match(consoleHtml, /STUDIO_ACCESS_TOKEN/);
+  assert.match(consoleHtml, /handleStudioAccessResponse\(response, payload\)/);
+  assert.match(consoleHtml, /if \(!response\.ok\) throw new Error\("logout_failed"\)/);
+  assert.doesNotMatch(consoleHtml, /localStorage|sessionStorage/);
+  assert.doesNotMatch(consoleHtml, /API_SECRET\s*=/);
+});
+
+test("scrubs generated work and invalidates in-flight responses when Studio locks", () => {
+  assert.match(consoleHtml, /function scrubStudioWork\(\) \{[\s\S]*sourceContent\.value = "";[\s\S]*sourceUrl\.value = "";[\s\S]*state\.tutorialRequest = null;[\s\S]*download\.removeAttribute\("href"\);[\s\S]*renderBrand\(\);/);
+  assert.match(consoleHtml, /function renderBrand\(\) \{[\s\S]*resultImage\.removeAttribute\("src"\);[\s\S]*clearEditableDownload\(\);[\s\S]*clearTutorialResult\(\);[\s\S]*clearArticleResult\(\);[\s\S]*telegramCopy\.value = "";[\s\S]*xCopy\.value = "";/);
+  assert.match(consoleHtml, /function lockAndScrubStudio[\s\S]*state\.sessionEpoch \+= 1;[\s\S]*scrubStudioWork\(\);[\s\S]*showStudioAccess/);
+  assert.match(consoleHtml, /lockAndScrubStudio\("세션이 만료되었습니다/);
+  assert.match(consoleHtml, /lockAndScrubStudio\("로그아웃했습니다/);
+  assert.match(consoleHtml, /if \(requestSessionEpoch !== state\.sessionEpoch\) return;/);
+  assert.match(consoleHtml, /prepareEditableDownload\(payload, requestSessionEpoch\)/);
+});
+
+test("keeps mock tutorials visibly marked as samples that must not be published", () => {
+  assert.match(consoleHtml, /id="tutorial-mock-warning"[^>]+role="alert"/);
+  assert.match(consoleHtml, /샘플 · 게시 금지/);
+  assert.match(consoleHtml, /const isMockTutorial = payload\.mock_mode === true/);
+  assert.match(consoleHtml, /const isMockNews = payload\.mock_mode === true/);
+  assert.match(consoleHtml, /channelCopy\.hidden = isMockNews \|\|/);
+  assert.match(consoleHtml, /tutorialMockWarning\.hidden = !isMockTutorial/);
+  assert.match(consoleHtml, /샘플 렌더 · 게시 금지/);
+  assert.match(consoleHtml, /승인·게시할 수 있는 완성본이 아닙니다/);
+});
+
+test("counts X copy with the same weighted Unicode ranges as the server", () => {
+  const functionSource = consoleHtml.match(
+    /function xWeightedLength\(value\) \{[\s\S]*?\n      \}(?=\n\n      function updateCopyCounts)/,
+  )?.[0];
+  assert.ok(functionSource, "xWeightedLength must be present in the console");
+  const xWeightedLength = Function(
+    `"use strict"; ${functionSource}; return xWeightedLength;`,
+  )() as (value: string) => number;
+
+  assert.equal(xWeightedLength("ABC"), 3);
+  assert.equal(xWeightedLength("한글"), 4);
+  assert.equal(xWeightedLength("ABC 한글"), 8);
+  assert.equal(xWeightedLength("한".repeat(141)), 282);
+  assert.match(consoleHtml, /const weightedLength = xWeightedLength\(xCopy\.value\)/);
+  assert.match(consoleHtml, /xCopy\.setAttribute\("aria-invalid", String\(overLimit\)\)/);
+});
+
+test("explains durable tutorial storage setup and failures to team members", () => {
+  assert.match(consoleHtml, /durable_storage_not_configured/);
+  assert.match(consoleHtml, /생성된 튜토리얼은 임시 파일로 제공하지 않습니다/);
+  assert.match(consoleHtml, /durable_storage_bucket_must_be_private/);
+  assert.match(consoleHtml, /durable_storage_scope_not_ready/);
+  assert.match(consoleHtml, /durable_storage_upload_failed/);
+  assert.match(consoleHtml, /durable_catalog_result_unknown/);
+  assert.match(consoleHtml, /tutorial_deadline_exceeded/);
+  assert.match(consoleHtml, /tutorial_idempotency_conflict/);
+  assert.match(consoleHtml, /tutorial_idempotency_conflict"\) state\.tutorialRequest = null/);
+  assert.match(consoleHtml, /confirmResultReset\(\)/);
+});

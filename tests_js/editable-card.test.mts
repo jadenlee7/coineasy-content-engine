@@ -4,6 +4,10 @@ import test from "node:test";
 import editableCardHandler, {
   CLEANED_SOURCE_IMAGE_MAX_BYTES,
 } from "../netlify/functions/editable-card.mts";
+import {
+  createStudioSessionValue,
+  STUDIO_SESSION_COOKIE,
+} from "../netlify/functions/_shared/studio-session.mts";
 
 const TRANSLATED_SQUID_REQUEST = {
   template_style: "remix",
@@ -39,6 +43,7 @@ async function requestEditableCard(generatedImageResponse: GeneratedImageRespons
         get(name: string): string | undefined {
           if (name === "API_SECRET") return "test-secret";
           if (name === "RAILWAY_API_URL") return "https://railway.example";
+          if (name === "STUDIO_ACCESS_TOKEN") return "editable-studio-access-token";
           return undefined;
         },
       },
@@ -50,7 +55,10 @@ async function requestEditableCard(generatedImageResponse: GeneratedImageRespons
       "https://console.example/api/editable-card/squid",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("editable-studio-access-token")}`,
+        },
         body: JSON.stringify(TRANSLATED_SQUID_REQUEST),
       },
     ), {

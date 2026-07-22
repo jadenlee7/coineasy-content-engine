@@ -5,6 +5,7 @@ import {
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
+import { requireStudioSession } from "./_shared/studio-session.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -81,6 +82,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") {
     return json({ error: "method_not_allowed" }, 405);
   }
+
+  const studioAccessError = requireStudioSession(req);
+  if (studioAccessError) return studioAccessError;
 
   const clientId = context.params.clientId;
   const allowedClients = new Set(["yellow", "origintrail", "squid", "babylon"]);
@@ -216,6 +220,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       requested_template_style: result.requested_template_style || templateStyle,
       template_style: actualTemplateStyle,
       duration_ms: result.duration_ms,
+      mock_mode: body.mock_mode === true,
       channel_copy: channelCopy,
       image_data_url: imageDataUrl,
       filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
