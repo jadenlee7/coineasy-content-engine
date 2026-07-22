@@ -5,6 +5,7 @@ import {
   type EditableClientId,
   type EditableTemplateStyle,
 } from "./_shared/editable-svg.mts";
+import { requireStudioSession } from "./_shared/studio-session.mts";
 
 type EditableCardRequest = {
   spec?: unknown;
@@ -89,6 +90,9 @@ async function fetchImageDataUrl(
 
 export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") return jsonError("method_not_allowed", 405);
+
+  const studioAccessError = requireStudioSession(req);
+  if (studioAccessError) return studioAccessError;
 
   const clientId = context.params.clientId as EditableClientId | undefined;
   if (!clientId || !(clientId in CLIENT_ASSETS)) return jsonError("unknown_client", 404);

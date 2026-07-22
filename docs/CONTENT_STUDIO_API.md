@@ -1,0 +1,246 @@
+# Content Studio API Contract
+
+This is the target server contract for the Supabase-authenticated team application.
+It is a scaffold, not a claim that the `/v1/workspaces/*` routes are already
+deployed. The current Netlify console uses a separate signed team-access cookie and
+the existing `/clients/{client_id}/generate/*` Railway routes while the Studio
+worker is introduced.
+
+## Authentication and scope
+
+- Team calls use `Authorization: Bearer <Supabase user JWT>`.
+- Every route is scoped by `workspace_id`; content routes also use `client_id`.
+- The server verifies active workspace membership before doing work. RLS repeats the
+  same boundary in PostgreSQL.
+- Browser and Figma clients never receive `SUPABASE_SERVICE_ROLE_KEY` or the Railway
+  `API_SECRET`.
+- Mutating requests accept `Idempotency-Key`; retries return the same resource/job.
+- Netlify routes map workflow changes to the database RPCs
+  `queue_content_generation`, `review_content_version`,
+  `request_content_publication`, and `record_approved_figma_link`; the browser
+  cannot insert queue/publication/Figma-link rows or update workflow status
+  directly.
+- Browser reads use `content_studio_source_*`, `content_studio_job_statuses`,
+  `content_studio_publication_statuses`, and `content_studio_activity`. Raw provider
+  payloads, credential references, worker locks, and provider responses are
+  server-only.
+
+Roles:
+
+| Role | Read | Draft/edit | Approve/publish request | Team/client admin |
+|---|---:|---:|---:|---:|
+| viewer | yes | no | no | no |
+| editor | yes | yes | yes | no |
+| admin | yes | yes | yes | yes |
+| owner | yes | yes | yes | yes |
+
+## Normalized content package
+
+Every version stores the same envelope; `content` varies by mode.
+
+```json
+{
+  "id": "content-version-uuid",
+  "content_item_id": "content-uuid",
+  "version_number": 3,
+  "content_kind": "daily_news",
+  "locale": "ko-KR",
+  "prompt_version": "daily-news@1.0.0",
+  "title": "오늘의 Squid 업데이트",
+  "content": {},
+  "channel_copy": {
+    "telegram": "...",
+    "x": "..."
+  },
+  "deliverables": {
+    "primary_asset_id": "asset-uuid",
+    "editable_asset_id": "asset-uuid"
+  },
+  "qa": {
+    "source_fidelity": "passed",
+    "brand_alignment": "passed",
+    "manual_review_required": true
+  }
+}
+```
+
+Mode-specific `content`:
+
+```json
+{
+  "daily_news": {
+    "summary": "...",
+    "items": [{"headline": "...", "why_it_matters": "...", "source_ids": ["..."]}]
+  },
+  "article": {
+    "dek": "...",
+    "sections": [{"heading": "...", "markdown": "...", "source_ids": ["..."]}],
+    "references": [{"source_id": "...", "label": "..."}]
+  },
+  "tutorial": {
+    "goal": "...",
+    "prerequisites": ["..."],
+    "steps": [{"title": "...", "instruction": "...", "check": "..."}],
+    "troubleshooting": [{"symptom": "...", "resolution": "..."}]
+  }
+}
+```
+
+## Endpoints
+
+### Intake
+
+`POST /v1/workspaces/{workspace_id}/intake`
+
+Accepts a public source URL, pasted text, or configured `source_feed_id`. The server
+canonicalizes it and computes `source_hash`; duplicate intake returns the existing
+source. It does not generate content implicitly unless `create_draft` is true.
+
+`GET /v1/workspaces/{workspace_id}/sources?client_id=squid&after=...`
+
+Returns a cursor-paginated source inbox. Always filter by workspace and client even
+though RLS is enabled.
+
+### Content and versions
+
+`POST /v1/workspaces/{workspace_id}/content`
+
+```json
+{
+  "client_id": "squid",
+  "content_kind": "tutorial",
+  "source_item_ids": ["source-uuid"],
+  "generation_options": {"template_style": "remix"}
+}
+```
+
+Creates a `content_items` row and a queued `generate` job. Returns `202 Accepted`
+with `{content_id, job_id, status}`.
+
+`GET /v1/workspaces/{workspace_id}/content?client_id=squid&status=needs_review`
+
+`GET /v1/workspaces/{workspace_id}/content/{content_id}`
+
+Returns the item, current version, source links, assets, approvals, publications,
+and Figma links. Private assets use short-lived signed URLs.
+Asset metadata and Storage object writes are server-managed to preserve approved
+version history.
+
+Current incremental bridge: `POST /api/tutorial/{client_id}` (Yellow and Squid)
+renders through Railway, uploads 1–12 validated PNG pages to private Supabase
+Storage, and invokes the service-only `record_tutorial_generation` RPC. A successful
+response includes `content_item_id`, `content_version_id`, `asset_ids`, and expiring
+slide relay URLs. The new item starts in `needs_review`; generation never implies
+approval. Callers must send a UUID in `Idempotency-Key`; retries use that UUID to
+load the committed version before Railway is called. The UUID is bound to a
+SHA-256 digest of the normalized client, submitted source text/type/URL, series
+number, and mock flag. A URL-only import hashes the submitted URL rather than
+mutable fetched X content, so an exact retry returns the first immutable result;
+reusing the UUID with any different request returns
+`tutorial_idempotency_conflict` with HTTP 409. The lookup follows the exact
+immutable `deliverables.asset_ids` order and fails closed if an asset row or private
+Storage object is missing. Each asset UUID is the same UUID used in its Storage
+path. Source content is stored in full and test-mode generations are explicitly
+marked in generation metadata and the API response. `review_content_version`
+refuses to approve a version with `mock_mode: true`, and
+`request_content_publication` repeats that check as a server-side backstop.
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/regenerate`
+
+Queues a new version; it never overwrites a prior version. Optional input contains
+review instructions and an explicit base version.
+
+### Review
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/approve`
+
+```json
+{"content_version_id": "version-uuid", "comment": "브랜드 톤 확인 완료"}
+```
+
+The transaction verifies that the version belongs to the item, appends an approval,
+and moves the item to `approved`. Reject uses the same invariant:
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/reject`
+
+Review records are append-only. A corrected draft is a new content version.
+
+### Jobs
+
+`GET /v1/workspaces/{workspace_id}/jobs/{job_id}`
+
+Returns public progress fields only. Worker lock owner, raw provider payloads, and
+secret references are not returned.
+
+Worker-only operations are internal, service-authenticated routes. A worker claims
+one row in a transaction:
+
+```sql
+select id
+from public.jobs
+where status in ('queued', 'retrying')
+  and available_at <= now()
+order by priority desc, available_at, created_at
+for update skip locked
+limit 1;
+```
+
+It sets `running`, `locked_by`, `locked_at`, and `lease_expires_at`, then records
+success or a bounded retry. The job `idempotency_key` prevents duplicate scheduled
+work.
+
+### Schedule and publishing
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/schedule`
+
+Requires an approved version and explicit channel/time. It creates one publication
+per channel; scheduling X does not consume the approval or prevent a later Telegram
+schedule. The item keeps the earliest pending schedule and the same approved
+`current_version_id`. A retry with the same `Idempotency-Key` returns the original
+publication even after its scheduled time passes.
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/publish`
+
+Queues immediate publication. Provider IDs/URLs and sanitized responses are stored
+on completion. Provider credentials remain in server secret storage and are never
+persisted in request payloads.
+
+### Figma
+
+`GET /v1/workspaces/{workspace_id}/figma/queue?client_id=squid`
+
+Returns approved, not-yet-synced versions and signed editable-SVG URLs.
+
+`POST /v1/workspaces/{workspace_id}/content/{content_id}/figma-links`
+
+```json
+{
+  "content_version_id": "version-uuid",
+  "file_key": "figma-file-key",
+  "node_id": "123:456",
+  "page_name": "2026 W30",
+  "section_name": "Squid"
+}
+```
+
+The server calls `record_approved_figma_link`, which verifies active editor access,
+the exact current version, and its approval record before upserting the link. Direct
+authenticated writes to `figma_links` are denied. Figma frame plugin data can mirror
+`content_id` and `content_version_id` for navigation, but the database row is
+canonical.
+
+## Error format
+
+```json
+{
+  "error": {
+    "code": "version_not_approved",
+    "message": "승인된 버전만 예약할 수 있습니다.",
+    "request_id": "request-uuid",
+    "retryable": false
+  }
+}
+```
+
+Use `409` for idempotency/state conflicts, `422` for invalid source/package data,
+`429` for rate/cost limits, and `503` only for retryable provider failures.

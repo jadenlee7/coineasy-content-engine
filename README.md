@@ -9,15 +9,15 @@ Powered by Claude Opus + Playwright. Deployed on Railway.
 
 ## What it does
 
-Takes an English source (tweet, blog post, article) and produces **Korean education carousels** (3-5 slides) or **news cards** (1 image) ready for X, Telegram, and other social channels.
+Takes an English source (tweet, blog post, article) and produces **Korean education carousels** (3-5 slides), **news cards** (1 image), or a source-locked **long-form article draft** with Telegram/X copy.
 
 Each slide is 1080×1080 PNG with client branding automatically applied.
 
 **Current clients:**
 - Yellow Network (`yellow`)
 - Squid (`squid`)
-- OriginTrail Korea (`origintrail`) — news_card only
-- Babylon Korea (`babylon`) — news_card only
+- OriginTrail Korea (`origintrail`) — news card and article
+- Babylon Korea (`babylon`) — news card and article
 
 **Cost:** Approximate and model-dependent — budget on the order of a few dollars/month per client.
 
@@ -87,6 +87,7 @@ GET  /health                                       # Railway health check
 GET  /clients                                      # List all clients
 POST /clients/{client_id}/generate/edu-carousel    # Generate carousel
 POST /clients/{client_id}/generate/news-card       # Generate 1080×1080 news card
+POST /clients/{client_id}/generate/article         # Generate source-locked Korean article
 GET  /files/{path}                                 # Serve generated PNGs
 ```
 
@@ -126,6 +127,18 @@ Each client config also contains a `brand_voice` profile derived from recent off
 
 The console provides two design outputs for every generated card: the production-ready 2160×2160 PNG and a 1080×1080 Figma-editable SVG. The SVG uses named native text, shape, logo, and source-image layers rather than `foreignObject`; drag the downloaded SVG onto a Figma Design canvas to adjust copy, colors, spacing, logo placement, and image cropping. Designers need the configured brand fonts installed for exact typography.
 
+## Team Content Studio
+
+The Netlify console now has three team-facing modes:
+
+- **Daily News** — one source into a branded PNG, editable SVG, and copy-ready Telegram/X text.
+- **Article** — at least 300 pasted source characters into a source-locked Korean draft, Markdown, takeaways, and channel copy.
+- **Tutorial** — Yellow or Squid source material into a multi-page PNG carousel.
+
+The page uses a short-lived signed, HttpOnly team session. Tutorial requests also use a browser-stable idempotency UUID bound to the normalized request payload, copy every validated Railway PNG to a private Supabase Storage bucket, and atomically record the full source, immutable version, asset digests, and review state before returning. Retrying the exact request checks the catalog first instead of generating a duplicate; reusing its UUID for changed input returns a conflict.
+
+The reviewed schema is applied to the existing `coineasy-meme-engine` Supabase project. Its legacy `daily_memes` data remains intact and server-only, while Content Studio uses a separate RLS-protected workspace and private bucket in the same project. Netlify is configured with secret `STUDIO_ACCESS_TOKEN` / `SUPABASE_SERVICE_ROLE_KEY` values plus `SUPABASE_URL` and `CONTENT_STUDIO_WORKSPACE_ID`; durable tutorial creation, private PNG retrieval, and idempotent retry have passed a Draft deploy smoke. Daily News and Article persistence, scheduled source collection, approval/publishing screens, Supabase Auth, and the internal Figma plugin remain later delivery phases; the current UI does not claim those are already live.
+
 **Response** (`NewsCardResponse`): `client_id`, `content_type` (`"news_card"`), `spec` (`{label, date, headline, body_lines, source_url, theme, source_logo_visible, source_text_visible, translation_regions}`), `png_path` (**str, single card — not a list**), `requested_template_style`, `template_style` (actual style after fallback), `source_image_used`, `manifest_path`, `duration_ms`.
 
 ---
@@ -148,6 +161,15 @@ railway up
 
 The Dockerfile bakes Playwright + Chromium + Korean fonts. First build ~3 min, subsequent pushes ~30 sec.
 
+Railway-local `edu_<time_ns>` and `news_<time_ns>` run folders are cleaned at
+startup and after generation. The default policy retains completed downloads for
+24 hours, never removes a run younger than 30 minutes, protects active runs with a
+lease marker, and caps eligible output at 2 GiB. Operators can tune
+`OUTPUT_RETENTION_TTL_HOURS`, `OUTPUT_RETENTION_MAX_MIB`,
+`OUTPUT_RETENTION_MIN_AGE_MINUTES`, and
+`OUTPUT_RETENTION_ACTIVE_LEASE_MINUTES`; hard safety floors still prevent a
+misconfigured value from deleting a just-returned Netlify download.
+
 ---
 
 ## Architecture
@@ -158,6 +180,7 @@ core/                   # Client-agnostic engine
 ├── orchestrator.py     # LLM → render → manifest
 ├── llm/
 │   ├── edu_carousel_pipeline.py
+│   ├── article_pipeline.py       # source-locked Korean long-form draft
 │   └── news_card_pipeline.py    # single-card LLM spec (shared schema)
 ├── renderers/
 │   ├── playwright_renderer.py   # HTML + Jinja → PNG
@@ -211,12 +234,13 @@ LLM picks appropriate layout per lesson automatically.
 
 ## What's NOT in this repo (yet)
 
-These live separately in the existing `YellowKR` bot:
+These are not yet part of the shared Content Studio workflow:
 - Telegram bot for approval workflow
-- `@Yellow__Korea` tweet scraping & community posting
-- Twitter API v2 polling / Nitter RSS monitoring
+- scheduled multi-client source collection and deduplicated daily inbox
+- durable Daily News/Article version history and review screens
+- approved-version Figma import/link plugin
 
-**Plan**: This engine exposes HTTP API; existing `YellowKR` (or other clients' bots) calls it with new sources and handles approval/posting on their end.
+Existing client bots can continue to call the HTTP API. The Supabase foundation in this repository is the planned shared boundary for collection, review, approval, Figma handoff, and publishing history.
 
 ---
 

@@ -47,5 +47,8 @@ Thumbs.db
 # Netlify local state
 .netlify/
 
+# Supabase CLI local state
+supabase/.temp/
+
 # Netlify Functions dependencies
 node_modules/
