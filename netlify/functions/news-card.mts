@@ -6,7 +6,7 @@ import {
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
-import { requireStudioSession } from "./_shared/studio-session.mts";
+import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
   contentCatalogConfig,
   contentStoragePath,
@@ -244,7 +244,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   const requestDeadline = Date.now() + NETLIFY_REQUEST_BUDGET_MS;
 
-  const studioAccessError = requireStudioSession(req);
+  const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
 
   const clientParam = context.params.clientId;

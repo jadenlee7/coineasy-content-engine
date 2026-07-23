@@ -1,0 +1,427 @@
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Mapping, Protocol, Sequence
+from zoneinfo import ZoneInfo
+
+from core.automation.generation_client import (
+    GenerationRequestError,
+    StudioGenerationClient,
+)
+from core.automation.mode_router import choose_content_mode, select_official_candidate
+from core.automation.models import AutomationState, ClaimedJob, QueueResult
+from core.automation.repository import (
+    AutomationRepositoryError,
+    SupabaseAutomationRepository,
+)
+from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
+from core.client_config import load_client_config
+from core.sources.x_client import (
+    XClient,
+    XRateLimitError,
+    XRequestError,
+    XTransientError,
+)
+
+
+_KST = ZoneInfo("Asia/Seoul")
+_MAX_CLAIMS_PER_RUN = 8
+
+
+class AutomationRepository(Protocol):
+    async def get_state(self, **kwargs) -> AutomationState: ...
+    async def record_sources(self, **kwargs) -> AutomationState: ...
+    async def queue_job(self, **kwargs) -> QueueResult: ...
+    async def claim_job(self, **kwargs) -> ClaimedJob | None: ...
+    async def complete_job(self, **kwargs) -> None: ...
+    async def fail_job(self, **kwargs) -> None: ...
+
+
+@dataclass
+class DailyRunSummary:
+    kst_date: str
+    dry_run: bool
+    queued: int = 0
+    generated: int = 0
+    reused: int = 0
+    skipped: int = 0
+    errors: int = 0
+    outcomes: list[dict[str, str]] = field(default_factory=list)
+
+    def add(self, client_id: str, status: str, detail: str = "") -> None:
+        item = {"client_id": client_id, "status": status}
+        if detail:
+            item["detail"] = detail
+        self.outcomes.append(item)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.errors == 0,
+            "kst_date": self.kst_date,
+            "dry_run": self.dry_run,
+            "queued": self.queued,
+            "generated": self.generated,
+            "reused": self.reused,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "outcomes": list(self.outcomes),
+        }
+
+
+class OfficialXDailyRunner:
+    def __init__(
+        self,
+        *,
+        settings: AutomationSettings,
+        repository: AutomationRepository,
+        x_client: XClient,
+        generation_client: StudioGenerationClient,
+        clients_dir: Path = Path("clients"),
+        now_factory=lambda: datetime.now(timezone.utc),
+    ):
+        if settings.enable_tutorials:
+            raise ValueError("scheduled tutorial automation is not enabled")
+        self.settings = settings
+        self.repository = repository
+        self.x_client = x_client
+        self.generation_client = generation_client
+        self.clients_dir = clients_dir
+        self.now_factory = now_factory
+
+    async def run(self, *, dry_run: bool = False) -> DailyRunSummary:
+        now = self._now()
+        kst_date = now.astimezone(_KST).date()
+        summary = DailyRunSummary(kst_date=kst_date.isoformat(), dry_run=dry_run)
+        worker_id = f"official-x:{uuid.uuid4()}"
+
+        if not dry_run:
+            await self._drain_jobs(worker_id, summary)
+
+        for client_id in AUTOMATION_CLIENTS:
+            if not dry_run and summary.queued >= self.settings.daily_draft_limit:
+                summary.skipped += 1
+                summary.add(client_id, "local_daily_limit")
+                continue
+            try:
+                await self._intake_client(
+                    client_id=client_id,
+                    kst_date=kst_date,
+                    now=now,
+                    dry_run=dry_run,
+                    summary=summary,
+                )
+            except XRateLimitError:
+                self._error(summary, client_id, "x_rate_limited")
+            except XRequestError:
+                self._error(summary, client_id, "x_request_rejected")
+            except XTransientError:
+                self._error(summary, client_id, "x_temporarily_unavailable")
+            except AutomationRepositoryError as exc:
+                self._error(summary, client_id, exc.code)
+            except (FileNotFoundError, ValueError):
+                self._error(summary, client_id, "automation_client_configuration_invalid")
+            except Exception:
+                self._error(summary, client_id, "automation_client_failed")
+
+        if not dry_run:
+            await self._drain_jobs(worker_id, summary)
+        return summary
+
+    async def _intake_client(
+        self,
+        *,
+        client_id: str,
+        kst_date,
+        now: datetime,
+        dry_run: bool,
+        summary: DailyRunSummary,
+    ) -> None:
+        config = load_client_config(client_id, clients_dir=self.clients_dir)
+        twitter = config.content_sources.twitter
+        if not config.active or twitter is None or not twitter.handle:
+            raise ValueError("official X source is not configured")
+
+        state = await self.repository.get_state(
+            workspace_id=self.settings.workspace_id,
+            client_id=client_id,
+            kst_date=kst_date,
+        )
+        if state.draft_reserved_today:
+            summary.skipped += 1
+            summary.add(client_id, "already_reserved")
+            return
+
+        selected = select_official_candidate(
+            (item.routing_post() for item in state.pending_sources),
+            skip_patterns=config.routing.skip_patterns,
+        )
+        if selected is None:
+            posts = await self._fetch_posts(
+                twitter.handle,
+                state.last_cursor,
+            )
+            if dry_run:
+                selected = select_official_candidate(
+                    posts,
+                    skip_patterns=config.routing.skip_patterns,
+                )
+            else:
+                state = await self.repository.record_sources(
+                    workspace_id=self.settings.workspace_id,
+                    client_id=client_id,
+                    handle=twitter.handle,
+                    poll_request_id=str(uuid.uuid4()),
+                    expected_cursor=state.last_cursor,
+                    next_cursor=self._newest_cursor(posts, state.last_cursor),
+                    source_items=[self._source_payload(post) for post in posts],
+                    polled_at=now,
+                )
+                if state.draft_reserved_today:
+                    summary.skipped += 1
+                    summary.add(client_id, "already_reserved")
+                    return
+                selected = select_official_candidate(
+                    (item.routing_post() for item in state.pending_sources),
+                    skip_patterns=config.routing.skip_patterns,
+                )
+
+        if selected is None:
+            summary.skipped += 1
+            summary.add(client_id, "no_candidate")
+            return
+
+        decision = choose_content_mode(
+            client_id,
+            selected,
+            enable_tutorials=self.settings.enable_tutorials,
+        )
+        if dry_run:
+            summary.add(client_id, "planned", decision.content_kind)
+            return
+
+        source_item_id = selected.get("source_item_id")
+        source_content = selected.get("text")
+        source_url = selected.get("url")
+        source_image_url = selected.get("source_image_url", "")
+        if (
+            not isinstance(source_item_id, str)
+            or not isinstance(source_content, str)
+            or not isinstance(source_url, str)
+            or not isinstance(source_image_url, str)
+        ):
+            raise ValueError("recorded source is incomplete")
+        request_id = self._request_id(
+            client_id=client_id,
+            source_item_id=source_item_id,
+            content_kind=decision.content_kind,
+        )
+        queued = await self.repository.queue_job(
+            workspace_id=self.settings.workspace_id,
+            client_id=client_id,
+            kst_date=kst_date,
+            source_item_ids=[source_item_id],
+            content_kind=decision.content_kind,
+            request_id=request_id,
+            source_content=source_content,
+            source_url=source_url,
+            source_image_url=source_image_url,
+            manual_only=decision.content_kind == "tutorial",
+        )
+        if queued.job_id is None:
+            summary.skipped += 1
+            summary.add(client_id, queued.status)
+            return
+        summary.queued += 1
+        summary.add(client_id, "queued", decision.content_kind)
+
+    async def _fetch_posts(
+        self,
+        handle: str,
+        last_cursor: str | None,
+    ) -> Sequence[Mapping[str, object]]:
+        try:
+            return await self.x_client.get_recent_tweets(
+                handle,
+                hours=self.settings.lookback_hours,
+                max_results=30,
+                since_id=last_cursor,
+            )
+        except XRequestError as exc:
+            if exc.status_code != 400 or last_cursor is None:
+                raise
+            return await self.x_client.get_recent_tweets(
+                handle,
+                hours=self.settings.lookback_hours,
+                max_results=30,
+                since_id=None,
+            )
+
+    async def _drain_jobs(self, worker_id: str, summary: DailyRunSummary) -> None:
+        for _ in range(_MAX_CLAIMS_PER_RUN):
+            try:
+                job = await self.repository.claim_job(
+                    workspace_id=self.settings.workspace_id,
+                    worker_id=worker_id,
+                    lease_seconds=900,
+                )
+            except AutomationRepositoryError as exc:
+                self._error(summary, "worker", exc.code)
+                return
+            if job is None:
+                return
+            await self._run_claimed_job(job, worker_id, summary)
+
+    async def _run_claimed_job(
+        self,
+        job: ClaimedJob,
+        worker_id: str,
+        summary: DailyRunSummary,
+    ) -> None:
+        try:
+            result = await self.generation_client.generate(
+                client_id=job.client_id,
+                content_kind=job.content_kind,
+                request_id=job.request_id,
+                source_content=job.source_content,
+                source_url=job.source_url,
+                source_image_url=job.source_image_url,
+                template_style="classic",
+            )
+        except GenerationRequestError as exc:
+            retry_at = self._retry_at(job.attempts) if exc.retryable else None
+            await self._mark_failed(job, worker_id, exc.code, retry_at, summary)
+            return
+        except ValueError:
+            await self._mark_failed(
+                job,
+                worker_id,
+                "automation_job_invalid",
+                None,
+                summary,
+            )
+            return
+        except Exception:
+            await self._mark_failed(
+                job,
+                worker_id,
+                "studio_generation_unavailable",
+                self._retry_at(job.attempts),
+                summary,
+            )
+            return
+
+        try:
+            await self.repository.complete_job(
+                job_id=job.job_id,
+                worker_id=worker_id,
+                content_item_id=result.content_item_id,
+                content_version_id=result.content_version_id,
+            )
+        except AutomationRepositoryError as exc:
+            # The generated catalog is already durable. Leave the lease alone;
+            # its next claimant uses the same request UUID and receives the
+            # idempotently stored result before completing the DB link.
+            self._error(summary, job.client_id, exc.code)
+            return
+        summary.generated += 1
+        if result.reused:
+            summary.reused += 1
+        summary.add(job.client_id, "needs_review", job.content_kind)
+
+    async def _mark_failed(
+        self,
+        job: ClaimedJob,
+        worker_id: str,
+        code: str,
+        retry_at: datetime | None,
+        summary: DailyRunSummary,
+    ) -> None:
+        try:
+            await self.repository.fail_job(
+                job_id=job.job_id,
+                worker_id=worker_id,
+                error_code=code,
+                retryable=retry_at is not None,
+                retry_at=retry_at,
+            )
+        except AutomationRepositoryError as exc:
+            self._error(summary, job.client_id, exc.code)
+            return
+        self._error(
+            summary,
+            job.client_id,
+            "generation_retry_scheduled" if retry_at else "generation_failed",
+        )
+
+    def _request_id(
+        self,
+        *,
+        client_id: str,
+        source_item_id: str,
+        content_kind: str,
+    ) -> str:
+        namespace = uuid.UUID(self.settings.workspace_id)
+        return str(uuid.uuid5(
+            namespace,
+            f"official-x-review:v1:{client_id}:{source_item_id}:{content_kind}",
+        ))
+
+    def _retry_at(self, attempts: int) -> datetime:
+        minutes = min(30, 5 * (2 ** max(0, min(attempts - 1, 3))))
+        return self._now() + timedelta(minutes=minutes)
+
+    def _now(self) -> datetime:
+        value = self.now_factory()
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise ValueError("automation clock must return a timezone-aware datetime")
+        return value
+
+    @staticmethod
+    def _newest_cursor(
+        posts: Sequence[Mapping[str, object]],
+        previous: str | None,
+    ) -> str | None:
+        ids = [
+            value
+            for post in posts
+            if isinstance((value := post.get("id")), str) and value.isdigit()
+        ]
+        if previous:
+            ids.append(previous)
+        return max(ids, key=int) if ids else None
+
+    @staticmethod
+    def _source_payload(post: Mapping[str, object]) -> dict[str, object]:
+        return {
+            "external_id": post.get("id"),
+            "source_content": post.get("text"),
+            "source_url": post.get("url"),
+            "source_image_url": post.get("source_image_url", ""),
+            "published_at": post.get("created_at"),
+            "media": post.get("media", []),
+            "metrics": post.get("metrics", {}),
+            "is_note_tweet": post.get("is_note_tweet") is True,
+        }
+
+    @staticmethod
+    def _error(summary: DailyRunSummary, client_id: str, code: str) -> None:
+        summary.errors += 1
+        summary.add(client_id, "error", code)
+
+
+def build_daily_runner(settings: AutomationSettings) -> OfficialXDailyRunner:
+    return OfficialXDailyRunner(
+        settings=settings,
+        repository=SupabaseAutomationRepository(
+            supabase_url=settings.supabase_url,
+            service_role_key=settings.supabase_service_role_key,
+        ),
+        x_client=XClient(settings.x_bearer_token),
+        generation_client=StudioGenerationClient(
+            base_url=settings.studio_base_url,
+            automation_token=settings.studio_automation_token,
+        ),
+    )

@@ -3,7 +3,8 @@
 This directory is the single migration history for the shared
 `coineasy-meme-engine` Supabase project (`isuqcqwxpojgzevxfdwr`). It includes the
 original meme schema, the server-only legacy hardening, the Content Studio
-foundation, the initial four-client workspace, and the composite FK indexes.
+foundation, the initial four-client workspace, the composite FK indexes, and
+the review-only official-X worker contract.
 Do not run independent migrations from the old meme-engine repository.
 
 Current operating model:
@@ -19,6 +20,13 @@ Current operating model:
 5. Future schema changes must be added here, tested against a disposable database,
    and then applied as forward-only migrations.
 
+The official-X RPCs are also service-role-only. They atomically deduplicate
+official posts, recover sources committed before a worker crash, enforce one
+draft per client and four total drafts per KST day, lease generation jobs, and
+verify the final immutable catalog version is `needs_review`. They never create
+approvals, publications, or Figma exports. See
+`docs/OFFICIAL_X_AUTOMATION.md` for the operating flow.
+
 Environment boundary:
 
 | Variable | Location | Browser-safe |
@@ -28,6 +36,7 @@ Environment boundary:
 | `SUPABASE_SERVICE_ROLE_KEY` | trusted Netlify/Railway server only | **no** |
 | `CONTENT_STUDIO_WORKSPACE_ID` | trusted Netlify catalog routing only | no |
 | `STUDIO_ACCESS_TOKEN` | Netlify team-session login only | **no** |
+| `STUDIO_AUTOMATION_TOKEN` | trusted Netlify/Railway generation bridge only | **no** |
 | `API_SECRET` | Netlify-to-Railway server relay only | **no** |
 
 Do not prefix a browser bundle variable with the service-role value. Service-role

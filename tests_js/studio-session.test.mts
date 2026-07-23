@@ -12,12 +12,14 @@ import {
   createStudioSessionCookie,
   createStudioSessionValue,
   hasValidStudioSession,
+  requireStudioGenerationAccess,
   STUDIO_SESSION_COOKIE,
   STUDIO_SESSION_TTL_SECONDS,
   verifyStudioSessionValue,
 } from "../netlify/functions/_shared/studio-session.mts";
 
 const ACCESS_TOKEN = "test-studio-access-token-32-bytes";
+const AUTOMATION_TOKEN = "test-studio-automation-token-40-bytes-long";
 
 async function withNetlifyEnvironment(
   values: Record<string, string | undefined>,
@@ -74,6 +76,65 @@ test("studio cookie is signed, short-lived, and rejects tampering or expiry", ()
   const final = value.at(-1) === "A" ? "B" : "A";
   assert.equal(verifyStudioSessionValue(`${value.slice(0, -1)}${final}`, ACCESS_TOKEN, issuedAt), false);
   assert.equal(hasValidStudioSession(cookieRequest(value), ACCESS_TOKEN, issuedAt), true);
+});
+
+test("generation accepts a separate server automation key without broadening team sessions", async () => {
+  await withNetlifyEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_AUTOMATION_TOKEN: AUTOMATION_TOKEN,
+  }, async () => {
+    const accepted = requireStudioGenerationAccess(new Request(
+      "https://console.example/api/news-card/yellow",
+      { headers: { "x-studio-automation-key": AUTOMATION_TOKEN } },
+    ));
+    assert.equal(accepted, null);
+
+    const rejected = requireStudioGenerationAccess(new Request(
+      "https://console.example/api/news-card/yellow",
+      { headers: { "x-studio-automation-key": "wrong-automation-key-that-is-long-enough" } },
+    ));
+    assert.equal(rejected?.status, 401);
+    assert.deepEqual(await rejected?.json(), { error: "studio_auth_required" });
+
+    const editingRejected = await editableCardHandler(new Request(
+      "https://console.example/api/editable-card/yellow",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-studio-automation-key": AUTOMATION_TOKEN,
+        },
+        body: "{}",
+      },
+    ), {
+      params: { clientId: "yellow" },
+      site: { url: "https://console.example" },
+    } as never);
+    assert.equal(editingRejected.status, 401);
+    assert.deepEqual(await editingRejected.json(), { error: "studio_auth_required" });
+  });
+
+  await withNetlifyEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_AUTOMATION_TOKEN: "too-short",
+  }, async () => {
+    const rejected = requireStudioGenerationAccess(new Request(
+      "https://console.example/api/news-card/yellow",
+      { headers: { "x-studio-automation-key": "too-short" } },
+    ));
+    assert.equal(rejected?.status, 401);
+  });
+
+  await withNetlifyEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_AUTOMATION_TOKEN: "a".repeat(513),
+  }, async () => {
+    const rejected = requireStudioGenerationAccess(new Request(
+      "https://console.example/api/news-card/yellow",
+      { headers: { "x-studio-automation-key": "a".repeat(512) } },
+    ));
+    assert.equal(rejected?.status, 401);
+  });
 });
 
 test("session endpoint fails closed when STUDIO_ACCESS_TOKEN is missing", async () => {

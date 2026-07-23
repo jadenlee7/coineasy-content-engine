@@ -6,7 +6,7 @@ import {
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { signTutorialSlide } from "./_shared/tutorial-slide-token.mts";
-import { requireStudioSession } from "./_shared/studio-session.mts";
+import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
   findTutorialGeneration,
   pngDimensions,
@@ -245,7 +245,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   const requestDeadline = Date.now() + NETLIFY_REQUEST_BUDGET_MS;
 
-  const studioAccessError = requireStudioSession(req);
+  const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
 
   const clientId = context.params.clientId;
