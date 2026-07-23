@@ -6,6 +6,8 @@ export const STUDIO_SESSION_TTL_SECONDS = 4 * 60 * 60;
 const SESSION_VERSION = "v1";
 const CLOCK_SKEW_SECONDS = 60;
 const MINIMUM_ACCESS_TOKEN_LENGTH = 16;
+const MINIMUM_AUTOMATION_TOKEN_LENGTH = 32;
+const MAXIMUM_AUTOMATION_TOKEN_LENGTH = 512;
 
 function json(body: unknown, status: number, extraHeaders: HeadersInit = {}): Response {
   return Response.json(body, {
@@ -22,6 +24,14 @@ function json(body: unknown, status: number, extraHeaders: HeadersInit = {}): Re
 function studioAccessToken(): string | null {
   const value = Netlify.env.get("STUDIO_ACCESS_TOKEN")?.trim() || "";
   return value.length >= MINIMUM_ACCESS_TOKEN_LENGTH ? value : null;
+}
+
+function studioAutomationToken(): string | null {
+  const value = Netlify.env.get("STUDIO_AUTOMATION_TOKEN")?.trim() || "";
+  return value.length >= MINIMUM_AUTOMATION_TOKEN_LENGTH
+    && value.length <= MAXIMUM_AUTOMATION_TOKEN_LENGTH
+    ? value
+    : null;
 }
 
 function digest(value: string): Buffer {
@@ -111,6 +121,24 @@ export function requireStudioSession(req: Request): Response | null {
     return json({ error: "studio_auth_required" }, 401);
   }
   return null;
+}
+
+export function requireStudioGenerationAccess(req: Request): Response | null {
+  const accessToken = studioAccessToken();
+  if (accessToken && hasValidStudioSession(req, accessToken)) return null;
+
+  const automationToken = studioAutomationToken();
+  const candidate = (req.headers.get("x-studio-automation-key") || "").trim();
+  if (
+    automationToken
+    && candidate.length <= 512
+    && constantTimeAccessCodeMatch(candidate, automationToken)
+  ) return null;
+
+  if (!accessToken) {
+    return json({ error: "studio_access_not_configured" }, 503);
+  }
+  return json({ error: "studio_auth_required" }, 401);
 }
 
 export function configuredStudioAccessToken(): string | null {

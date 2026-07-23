@@ -1,6 +1,6 @@
 import type { Config, Context } from "@netlify/functions";
 import { createHash } from "node:crypto";
-import { requireStudioSession } from "./_shared/studio-session.mts";
+import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
   contentCatalogConfig,
   ContentCatalogError,
@@ -173,7 +173,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   const requestDeadline = Date.now() + NETLIFY_REQUEST_BUDGET_MS;
 
-  const studioAccessError = requireStudioSession(req);
+  const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
 
   const clientParam = context.params.clientId;
