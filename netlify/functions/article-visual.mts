@@ -121,8 +121,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
   let svg: string;
   if (visualId === "hero") {
     svg = buildArticleBannerSvg(clientId, {
-      title: detail.title,
-      lead: typeof content.lead === "string" ? content.lead : "",
+      title: visuals[0].headline,
+      lead: visuals[0].caption,
       sourceUrl,
       date,
       motif: visuals[0].motif,

@@ -109,7 +109,10 @@ test("renders stored article hero and inline visuals without a new model call", 
     } as never);
     assert.equal(hero.status, 200);
     assert.equal(hero.headers.get("content-type"), "image/svg+xml; charset=utf-8");
-    assert.match(await hero.text(), /ARTICLE \/ INSIGHT/);
+    const heroSvg = await hero.text();
+    assert.match(heroSvg, /ARTICLE \/ INSIGHT/);
+    assert.match(heroSvg, /결제 레일의 역할/);
+    assert.doesNotMatch(heroSvg, /AI 에이전트에 필요한 검증 가능한 메모리/);
 
     const inline = await articleVisualHandler(request("visual-2"), {
       params: { contentId: CONTENT_ID, visualId: "visual-2" },

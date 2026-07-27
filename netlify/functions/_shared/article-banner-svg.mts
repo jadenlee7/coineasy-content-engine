@@ -294,14 +294,21 @@ export function buildArticleInlineVisualSvg(
   const headlineLines = wrapSvgText(cleanText(visual.headline, 70), 17, 3);
   const captionLines = wrapSvgText(cleanText(visual.caption, 200), 43, 3);
   const points = visual.points.map(point => cleanText(point, 100)).filter(Boolean).slice(0, 3);
+  const eyebrow = cleanText(visual.eyebrow, 32).toUpperCase();
+  const eyebrowFontSize = eyebrow.length > 18 ? 11 : eyebrow.length > 14 ? 12 : 14;
+  const eyebrowLetterSpacing = eyebrow.length > 18 ? 1.2 : eyebrow.length > 14 ? 1.6 : 2.2;
   const date = cleanText(input.date, 40);
   const pointMarkup = points.map((point, index) => {
-    const y = 416 + index * 62;
-    const pointLine = wrapSvgText(point, 39, 1)[0] || "";
+    const y = 410 + index * 64;
+    const pointLines = wrapSvgText(point, 31, 2);
+    const textY = pointLines.length === 1 ? y + 34 : y + 22;
+    const lines = pointLines.map((line, lineIndex) => (
+      `<text id="Visual-Point-${index + 1}-Line-${lineIndex + 1}" x="697" y="${textY + lineIndex * 18}" fill="#FFFFFF" fill-opacity=".82" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="13.5" font-weight="650">${escapeXml(line)}</text>`
+    )).join("\n  ");
     return `<g id="Visual-Point-${index + 1}">
-  <rect x="650" y="${y}" width="478" height="48" rx="14" fill="#FFFFFF" fill-opacity="${index === 0 ? ".1" : ".055"}" stroke="#FFFFFF" stroke-opacity=".1"/>
-  <circle cx="676" cy="${y + 24}" r="8" fill="${index === 1 ? brand.accent : brand.primary}"/>
-  <text x="697" y="${y + 30}" fill="#FFFFFF" fill-opacity=".82" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="16" font-weight="650">${escapeXml(pointLine)}</text>
+  <rect x="650" y="${y}" width="478" height="56" rx="14" fill="#FFFFFF" fill-opacity="${index === 0 ? ".1" : ".055"}" stroke="#FFFFFF" stroke-opacity=".1"/>
+  <circle cx="676" cy="${y + 28}" r="8" fill="${index === 1 ? brand.accent : brand.primary}"/>
+  ${lines}
 </g>`;
   }).join("\n");
 
@@ -319,7 +326,7 @@ export function buildArticleInlineVisualSvg(
     ${logoMarkup(brand, logoDataUrl)}
     <g id="Visual-Label">
       <rect x="914" y="47" width="214" height="42" rx="21" fill="${brand.primary}"/>
-      <text x="1021" y="75" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="14" font-weight="900" letter-spacing="2.2">${escapeXml(cleanText(visual.eyebrow, 32).toUpperCase())}</text>
+      <text x="1021" y="75" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="${eyebrowFontSize}" font-weight="900" letter-spacing="${eyebrowLetterSpacing}">${escapeXml(eyebrow)}</text>
     </g>
     <line x1="72" y1="124" x2="1128" y2="124" stroke="#FFFFFF" stroke-opacity=".16"/>
   </g>
