@@ -64,6 +64,16 @@ function detailRpcResult() {
     locale: "ko-KR",
     content: {
       headline: "한국어 뉴스",
+      spec: { headline: "한국어 뉴스", body_lines: ["원문에 근거한 요약"] },
+      source: {
+        url: "https://x.com/SquidRouter/status/123",
+        image_url: "https://pbs.twimg.com/media/source.jpg",
+        resolved_content: "Official source content",
+      },
+      render: {
+        template_style: "remix",
+        source_visual_file: "squid/news_123/source_visual_cleaned.jpg",
+      },
       storage_path: "must-not-leak",
       nested: { api_secret: "must-not-leak", safe: true },
     },
@@ -172,6 +182,19 @@ test("library detail replaces raw paths with <=5 minute signed URLs and scrubs s
   assert.doesNotMatch(serialized, /service-role/);
   assert.equal(item?.current_version.content.nested &&
     (item.current_version.content.nested as Record<string, unknown>).safe, true);
+  assert.deepEqual(item?.current_version.content.spec, {
+    headline: "한국어 뉴스",
+    body_lines: ["원문에 근거한 요약"],
+  });
+  assert.deepEqual(item?.current_version.content.source, {
+    url: "https://x.com/SquidRouter/status/123",
+    image_url: "https://pbs.twimg.com/media/source.jpg",
+    resolved_content: "Official source content",
+  });
+  assert.deepEqual(item?.current_version.content.render, {
+    template_style: "remix",
+    source_visual_file: "squid/news_123/source_visual_cleaned.jpg",
+  });
   assert.equal(item?.figma_links[0].figma_link_id, FIGMA_ID);
   assert.equal(calls.length, 2);
 });

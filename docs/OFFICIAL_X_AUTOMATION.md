@@ -11,13 +11,15 @@ library.
 |---|---|
 | Short, concrete announcement | Daily News card + Telegram/X copy |
 | Complete X Note of at least 300 characters | Article + Telegram/X copy + Markdown |
-| Tutorial signal for Yellow or Squid | Article plus a Tutorial recommendation |
+| Tutorial signal for Yellow or Squid | Article or Daily News draft; reviewer can manually continue it as a Tutorial |
 | Low-signal social post, reply, retweet, or configured skip phrase | No draft |
 
 Tutorial carousel generation remains available in the human Studio UI for
-Yellow and Squid. The scheduled worker deliberately cannot claim a
-`manual_only` Tutorial job. `AUTOMATION_ENABLE_TUTORIALS` must therefore remain
-`false` until a visible manual-review trigger is shipped.
+Yellow and Squid. Reviewers can open a stored News or Article draft and use
+**이 원문으로 튜토리얼 만들기** to prefill the manual Tutorial form. The
+scheduled worker deliberately cannot claim a `manual_only` Tutorial job, so
+`AUTOMATION_ENABLE_TUTORIALS` remains `false`; a human must review the source
+and explicitly start every carousel generation.
 
 Daily News automation uses the deterministic `classic` card. The source image
 is preserved in the source record but is not automatically remixed. This keeps
@@ -97,6 +99,15 @@ editable export, review a version, or publish it.
 5. Trigger one real run and confirm each result is `needs_review` in the team
    library before enabling the schedule.
 
-Figma remains downstream of approval. Approved immutable SVG versions can be
-linked through `record_approved_figma_link`; the scheduled X worker has no Figma
-write path or service-role secret in a plugin.
+Durable Figma links and the internal import plugin remain downstream of
+approval and are not exposed by the current shared-session UI.
+`record_approved_figma_link` requires a real Supabase Auth user and workspace
+membership. The scheduled X worker has no Figma write path or plugin secret.
+
+At `needs_review`, a reviewer can request a local, non-persistent
+Figma-editable SVG using the fields shown in the current Daily News detail.
+This does not create a durable asset or Figma link and does not change workflow
+status. Scheduled drafts use `classic`, so this transient export does not
+depend on source-image retention. A historical `remix` whose external source
+image or Railway-cleaned Squid visual cannot be loaded fails closed instead of
+returning an image-less SVG.

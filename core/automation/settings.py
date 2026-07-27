@@ -102,7 +102,7 @@ class AutomationSettings:
         enable_tutorials = _boolean(env, "AUTOMATION_ENABLE_TUTORIALS")
         if enable_tutorials:
             raise ValueError(
-                "AUTOMATION_ENABLE_TUTORIALS must remain false until the manual review trigger ships"
+                "AUTOMATION_ENABLE_TUTORIALS must remain false; tutorials require a human Studio action"
             )
 
         return cls(

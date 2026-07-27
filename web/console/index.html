@@ -457,9 +457,28 @@
     .library-content h4 { margin: 18px 0 7px; font-size: 12px; }
     .library-content p { margin: 0; color: #4f5661; font-size: 11px; line-height: 1.75; white-space: pre-line; }
     .library-content ul, .library-content ol { margin: 8px 0 0; padding-left: 19px; color: #4f5661; font-size: 11px; line-height: 1.7; }
+    .library-source-evidence { margin-top: 22px; padding: 16px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+    .library-source-evidence h3 { margin: 0; font-size: 13px; }
+    .library-source-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+    .library-source-links a { display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px; border: 1.5px solid var(--outline); border-radius: 7px; color: #145ea8; background: #fff; font-size: 10px; font-weight: 750; text-decoration: none; overflow-wrap: anywhere; }
+    .library-source-body { margin-top: 13px; }
+    .library-source-body h4 { margin: 0 0 7px; font-size: 11px; }
+    .library-source-body details { border-top: 1px solid var(--line); padding-top: 11px; }
+    .library-source-body summary { color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 800; }
+    .library-source-body p { max-height: 360px; margin: 9px 0 0; overflow: auto; color: #4f5661; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
     .library-copy-grid { display: grid; gap: 10px; margin-top: 22px; }
     .library-copy-grid .channel-copy-text { min-height: 130px; }
     .library-copy-grid .channel-copy-text.x-copy { min-height: 110px; }
+    .library-actions { margin-top: 20px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #fff7ef; box-shadow: 3px 3px 0 rgba(35,35,35,.12); }
+    .library-actions h3 { margin: 0; font-size: 13px; }
+    .library-actions p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .library-action-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .library-action-button { min-height: 38px; padding: 0 12px; border: 1.5px solid var(--outline); border-radius: 8px; color: var(--ink); background: #fff; cursor: pointer; font-size: 10px; font-weight: 800; }
+    .library-action-button.primary { background: var(--accent); }
+    .library-action-button:disabled { cursor: wait; opacity: .55; }
+    .library-action-status { min-height: 16px; margin-top: 10px; color: #4f5661; font-size: 10px; line-height: 1.5; }
+    .library-action-status.error { color: #a93131; }
+    .library-action-status.success { color: #16744a; }
     .library-figma { margin-top: 20px; padding: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
     .library-figma h3 { margin: 0 0 8px; font-size: 12px; }
     .library-figma a { display: inline-block; margin: 4px 10px 0 0; color: #145ea8; font-size: 10px; overflow-wrap: anywhere; }
@@ -738,7 +757,7 @@
               <option value="">전체</option><option value="daily_news">데일리 뉴스</option><option value="article">아티클</option><option value="tutorial">튜토리얼</option>
             </select></label>
             <label><span>상태</span><select id="library-status-filter">
-              <option value="">전체</option><option value="needs_review">검토 필요</option><option value="changes_requested">수정 요청</option><option value="approved">승인됨</option><option value="published">게시됨</option><option value="failed">실패</option><option value="archived">보관됨</option>
+              <option value="">전체</option><option value="draft">초안</option><option value="generating">생성 중</option><option value="needs_review">검토 필요</option><option value="rejected">수정 요청</option><option value="approved">승인됨</option><option value="queued">게시 대기</option><option value="scheduled">예약됨</option><option value="published">게시됨</option><option value="failed">실패</option><option value="archived">보관됨</option>
             </select></label>
           </div>
         </div>
@@ -835,16 +854,17 @@
         draft: "초안",
         generating: "생성 중",
         needs_review: "검토 필요",
-        changes_requested: "수정 요청",
+        rejected: "수정 요청",
         approved: "승인됨",
         queued: "게시 대기",
+        scheduled: "예약됨",
         published: "게시됨",
         failed: "실패",
         archived: "보관됨"
       };
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
-      const libraryState = { items: [], nextCursor: null, activeId: "", loaded: false, stale: true, listRequest: 0, detailRequest: 0 };
+      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0 };
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
       const accessCode = document.getElementById("access-code");
@@ -1011,7 +1031,9 @@
 
       function resetLibraryDetail(message = "왼쪽 목록에서 확인할 콘텐츠를 눌러주세요.") {
         libraryState.detailRequest += 1;
+        libraryState.exportRequest += 1;
         libraryState.activeId = "";
+        libraryState.activeDetail = null;
         libraryDetail.innerHTML = "";
         libraryDetail.hidden = true;
         libraryDetailState.innerHTML = `<strong>작업을 선택해주세요</strong>${escapeHtml(message)}`;
@@ -1099,14 +1121,52 @@
         }
       }
 
-      function renderSourceLinks(sourceMap) {
-        if (!Array.isArray(sourceMap)) return "";
-        const links = sourceMap.map((source, index) => {
-          const sourceObject = plainObject(source);
-          const url = safeWebUrl(sourceObject.source_url);
-          return url ? `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">원문 ${index + 1}</a></li>` : "";
-        }).filter(Boolean);
-        return links.length ? `<h4>연결된 원문</h4><ul>${links.join("")}</ul>` : "";
+      function renderSourceEvidence(rawContent) {
+        const content = plainObject(rawContent);
+        const rawSource = content.source;
+        const source = plainObject(rawSource);
+        const spec = plainObject(content.spec);
+        const urls = [];
+        const seenUrls = new Set();
+        const addUrl = value => {
+          const url = safeWebUrl(value);
+          if (!url || seenUrls.has(url)) return;
+          seenUrls.add(url);
+          urls.push(url);
+        };
+        addUrl(source.url);
+        addUrl(source.source_url);
+        addUrl(content.source_url);
+        addUrl(spec.source_url);
+        const rawSourceUrl = typeof rawSource === "string" && /^(?:https?:\/\/|\/)/i.test(rawSource.trim())
+          ? safeWebUrl(rawSource)
+          : "";
+        addUrl(rawSourceUrl);
+        (Array.isArray(content.source_map) ? content.source_map : []).forEach(item => {
+          addUrl(plainObject(item).source_url);
+        });
+
+        const sourceText = [
+          source.resolved_content,
+          source.submitted_content,
+          source.content,
+          source.source_content,
+          content.source_content,
+          typeof rawSource === "string" && !rawSourceUrl ? rawSource : ""
+        ].find(value => typeof value === "string" && value.trim());
+        const normalizedText = typeof sourceText === "string" ? sourceText.trim() : "";
+        if (!urls.length && !normalizedText) return "";
+
+        const linksMarkup = urls.length
+          ? `<div class="library-source-links">${urls.map((url, index) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">원문 링크${urls.length > 1 ? ` ${index + 1}` : ""}</a>`).join("")}</div>`
+          : "";
+        const escapedText = escapeHtml(normalizedText);
+        const bodyMarkup = normalizedText
+          ? `<div class="library-source-body">${normalizedText.length > 500
+            ? `<details><summary>원문 본문 펼쳐보기</summary><p>${escapedText}</p></details>`
+            : `<h4>원문 본문</h4><p>${escapedText}</p>`}</div>`
+          : "";
+        return `<section class="library-source-evidence"><h3>원문 근거</h3>${linksMarkup}${bodyMarkup}</section>`;
       }
 
       function renderStoredContent(contentKind, rawContent) {
@@ -1120,7 +1180,6 @@
               return `<h4>${escapeHtml(item.heading || "본문")}</h4><p>${escapeHtml(item.body || "")}</p>`;
             }).join("") +
             (takeaways.length ? `<h4>핵심 요약</h4><ul>${takeaways.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "") +
-            renderSourceLinks(content.source_map) +
             (content.markdown ? `<h4>Markdown 원고</h4><p>${escapeHtml(content.markdown)}</p>` : "");
         }
         if (contentKind === "tutorial") {
@@ -1138,8 +1197,56 @@
         const lines = Array.isArray(spec.body_lines) ? spec.body_lines : [];
         return `<h3>${escapeHtml(spec.headline || content.headline || "뉴스 카드")}</h3>` +
           (spec.label ? `<p>분류 · ${escapeHtml(spec.label)}</p>` : "") +
-          (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "") +
-          renderSourceLinks(content.source_map);
+          (lines.length ? `<ul>${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "");
+      }
+
+      function storedEditableRequest(rawDetail) {
+        const detail = plainObject(rawDetail);
+        if (detail.content_kind !== "daily_news" || !Object.hasOwn(BRAND, detail.client_id)) return null;
+        const currentVersion = plainObject(detail.current_version);
+        const content = plainObject(currentVersion.content || detail.content);
+        const spec = plainObject(content.spec);
+        const source = plainObject(content.source);
+        const render = plainObject(content.render);
+        const allowedStyles = new Set(["remix", "classic", "editorial", "signal"]);
+        const templateStyle = typeof render.template_style === "string" && allowedStyles.has(render.template_style)
+          ? render.template_style
+          : "";
+        if (!templateStyle || !Object.keys(spec).length) return null;
+        return {
+          clientId: detail.client_id,
+          templateStyle,
+          payload: {
+            spec,
+            template_style: templateStyle,
+            source_image_url: safeWebUrl(source.image_url),
+            source_visual_file: typeof render.source_visual_file === "string" ? render.source_visual_file : ""
+          }
+        };
+      }
+
+      function storedTutorialRequest(rawDetail) {
+        const detail = plainObject(rawDetail);
+        if (detail.content_kind === "tutorial" || !TUTORIAL_CLIENTS.has(detail.client_id)) return null;
+        const currentVersion = plainObject(detail.current_version);
+        const content = plainObject(currentVersion.content || detail.content);
+        const rawSource = content.source;
+        const source = plainObject(rawSource);
+        const sourceText = [
+          source.resolved_content,
+          source.submitted_content,
+          source.content,
+          source.source_content,
+          content.source_content,
+          typeof rawSource === "string" ? rawSource : ""
+        ].find(value => typeof value === "string" && value.trim());
+        const normalizedText = typeof sourceText === "string" ? sourceText.trim() : "";
+        if (normalizedText.length < 10 || normalizedText.length > 20_000) return null;
+        return {
+          clientId: detail.client_id,
+          sourceContent: normalizedText,
+          sourceUrl: safeWebUrl(source.url || source.source_url || content.source_url)
+        };
       }
 
       function renderLibraryDetail(payload) {
@@ -1165,9 +1272,20 @@
           return `<a class="library-asset" href="${escapeHtml(asset.signed_url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(asset.signed_url)}" alt="${escapeHtml(asset.filename || `저장 이미지 ${index + 1}`)}" loading="lazy"><span>${escapeHtml(metadata)}</span></a>`;
         }).join("")}</div>` : "";
         const figmaMarkup = figmaLinks.length ? `<section class="library-figma"><h3>Figma 연결</h3>${figmaLinks.map((link, index) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Figma 작업 ${index + 1} 열기</a>`).join("")}</section>` : "";
+        const sourceMarkup = renderSourceEvidence(content);
+        const editableRequest = storedEditableRequest(detail);
+        const tutorialRequest = isMock ? null : storedTutorialRequest(detail);
+        const actionButtons = [
+          editableRequest ? `<button class="library-action-button primary" type="button" data-library-editable>Figma 편집용 SVG 받기</button>` : "",
+          tutorialRequest ? `<button class="library-action-button" type="button" data-library-tutorial>이 원문으로 튜토리얼 만들기</button>` : ""
+        ].filter(Boolean).join("");
+        const actionMarkup = actionButtons
+          ? `<section class="library-actions"><h3>다음 작업</h3><p>저장된 원문과 현재 버전을 기준으로 이어서 작업합니다. 승인이나 게시 상태는 바뀌지 않습니다.</p><div class="library-action-buttons">${actionButtons}</div><div class="library-action-status" data-library-action-status role="status" aria-live="polite"></div></section>`
+          : "";
         const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${copyMarkup}${figmaMarkup}`;
+        libraryState.activeDetail = detail;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${sourceMarkup}${copyMarkup}${actionMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }
@@ -1176,6 +1294,8 @@
         const requestId = ++libraryState.detailRequest;
         const requestSessionEpoch = state.sessionEpoch;
         libraryState.activeId = contentId;
+        libraryState.activeDetail = null;
+        libraryState.exportRequest += 1;
         renderLibraryList();
         libraryDetail.innerHTML = "";
         libraryDetail.hidden = true;
@@ -1199,6 +1319,122 @@
           libraryDetailState.className = "library-state error";
           libraryDetailState.hidden = false;
         }
+      }
+
+      function setLibraryActionStatus(message, kind = "") {
+        const target = libraryDetail.querySelector("[data-library-action-status]");
+        if (!target) return;
+        target.textContent = message;
+        target.className = `library-action-status${kind ? ` ${kind}` : ""}`;
+      }
+
+      async function downloadStoredEditable(button) {
+        const detail = libraryState.activeDetail;
+        const request = storedEditableRequest(detail);
+        if (!request) {
+          setLibraryActionStatus("이 작업에는 Figma 편집본을 다시 만들 정보가 없습니다.", "error");
+          return;
+        }
+        const exportRequest = ++libraryState.exportRequest;
+        const requestSessionEpoch = state.sessionEpoch;
+        const activeContentId = libraryState.activeId;
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "SVG 준비 중…";
+        setLibraryActionStatus("저장된 버전으로 Figma 편집본을 만들고 있습니다.");
+        try {
+          const response = await fetch(`/api/editable-card/${encodeURIComponent(request.clientId)}`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request.payload)
+          });
+          if (
+            exportRequest !== libraryState.exportRequest
+            || requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+          ) return;
+          if (!response.ok) {
+            const errorPayload = await response.json().catch(() => ({}));
+            if (handleStudioAccessResponse(response, errorPayload)) return;
+            const error = new Error("library_editable_failed");
+            error.code = errorPayload.error || "";
+            throw error;
+          }
+          const svgBlob = await response.blob();
+          if (
+            exportRequest !== libraryState.exportRequest
+            || requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+          ) return;
+          if (!svgBlob.type.includes("image/svg+xml")) throw new Error("library_editable_invalid");
+          const blobUrl = URL.createObjectURL(svgBlob);
+          const anchor = document.createElement("a");
+          anchor.href = blobUrl;
+          anchor.download = `${request.clientId}-${request.templateStyle}-figma-editable.svg`;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          window.setTimeout(() => URL.revokeObjectURL(blobUrl), 2_000);
+          setLibraryActionStatus("Figma 편집용 SVG를 받았습니다. Figma 캔버스에 드래그해 레이어별로 편집하세요.", "success");
+        } catch (error) {
+          if (
+            exportRequest !== libraryState.exportRequest
+            || requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+          ) return;
+          const expiredSource = [
+            "source_image_required",
+            "source_image_unavailable",
+            "cleaned_source_required",
+            "cleaned_source_unavailable"
+          ].includes(error?.code);
+          setLibraryActionStatus(
+            expiredSource
+              ? "원본 이미지를 불러올 수 없어 이 편집본을 다시 만들 수 없습니다. 저장된 PNG를 Figma에 넣어 작업해주세요."
+              : "Figma 편집본을 준비하지 못했습니다. 잠시 후 다시 시도해주세요.",
+            "error"
+          );
+        } finally {
+          if (
+            exportRequest === libraryState.exportRequest
+            && requestSessionEpoch === state.sessionEpoch
+            && activeContentId === libraryState.activeId
+            && button.isConnected
+          ) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+          }
+        }
+      }
+
+      function continueStoredTutorial() {
+        if (generate.disabled) {
+          setLibraryActionStatus("현재 생성 작업이 끝난 뒤 튜토리얼로 이어갈 수 있습니다.", "error");
+          return;
+        }
+        const request = storedTutorialRequest(libraryState.activeDetail);
+        if (!request) {
+          setLibraryActionStatus("이 작업의 원문은 튜토리얼 입력으로 이어갈 수 없습니다.", "error");
+          return;
+        }
+        if (!confirmResultReset()) return;
+        libraryState.exportRequest += 1;
+        state.mode = "tutorial";
+        state.generationRequest = null;
+        modeSwitcher.querySelectorAll(".mode-option").forEach(item => {
+          const active = item.dataset.mode === "tutorial";
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-selected", String(active));
+        });
+        selectClient(request.clientId);
+        sourceContent.value = request.sourceContent;
+        sourceUrl.value = request.sourceUrl;
+        selectStudioView("create", false);
+        renderMode();
+        setStatus(`${BRAND[request.clientId].name} 원문을 튜토리얼 입력란에 불러왔습니다. 내용을 확인한 뒤 생성해주세요.`, "success");
+        sourceContent.focus();
+        window.scrollTo({ top: 0, behavior: "smooth" });
       }
 
       function selectStudioView(nextView, load = true) {
@@ -1694,11 +1930,20 @@
         loadLibrary({ reset: false });
       });
 
-      libraryView.addEventListener("click", event => {
+      libraryView.addEventListener("click", async event => {
         const retry = event.target.closest("[data-library-retry]");
         if (retry) {
           if (retry.dataset.libraryRetry === "detail" && retry.dataset.contentId) loadLibraryDetail(retry.dataset.contentId);
           else loadLibrary({ reset: true });
+          return;
+        }
+        const editableButton = event.target.closest("[data-library-editable]");
+        if (editableButton) {
+          await downloadStoredEditable(editableButton);
+          return;
+        }
+        if (event.target.closest("[data-library-tutorial]")) {
+          continueStoredTutorial();
           return;
         }
         const card = event.target.closest("[data-content-id]");

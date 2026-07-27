@@ -120,6 +120,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (typeof body.source_visual_file === "string" && body.source_visual_file && !sourceVisualFile) {
     return jsonError("invalid_source_visual_file", 400);
   }
+  if (templateStyle === "remix" && !cleanedSourceRequired && !sourceImageUrl) {
+    return jsonError("source_image_required", 422);
+  }
   if (cleanedSourceRequired && !sourceVisualFile) {
     return jsonError("cleaned_source_required", 422);
   }
@@ -159,6 +162,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   if (cleanedSourceRequired && !assets.sourceImage) {
     return jsonError("cleaned_source_unavailable", 502);
+  }
+  if (templateStyle === "remix" && !assets.sourceImage) {
+    return jsonError("source_image_unavailable", 502);
   }
 
   const svg = buildEditableSvg(clientId, templateStyle, spec, assets);
