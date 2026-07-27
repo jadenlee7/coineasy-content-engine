@@ -19,6 +19,8 @@ from core.automation.models import (
     ClaimedJob,
     PendingSource,
     QueueResult,
+    StyleReference,
+    StyleReferencePack,
 )
 from core.automation.repository import AutomationRepositoryError
 from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
@@ -77,6 +79,7 @@ class FakeRepository:
         self.ranking_evidence = []
         self.promotion_candidates = []
         self.queues = []
+        self.style_packs = []
         self.claims = []
         self.completed = []
         self.failed = []
@@ -142,6 +145,7 @@ class FakeRepository:
             client_id=kwargs["client_id"],
             content_kind=kwargs["content_kind"],
             request_id=kwargs["request_id"],
+            primary_source_item_id=kwargs["source_item_ids"][0],
             source_content=kwargs["source_content"],
             source_url=kwargs["source_url"],
             source_image_url=kwargs["source_image_url"],
@@ -151,6 +155,34 @@ class FakeRepository:
             locked_by="placeholder",
         ))
         return QueueResult(job_id=job_id, status="queued")
+
+    async def get_or_create_style_reference_pack(self, **kwargs):
+        self.style_packs.append(kwargs)
+        client_id = kwargs["client_id"]
+        reference_id = str(uuid.uuid5(
+            uuid.UUID(WORKSPACE_ID),
+            f"style-reference:{client_id}",
+        ))
+        handle = {
+            "yellow": "Yellow",
+            "origintrail": "origin_trail",
+            "squid": "SquidRouter",
+            "babylon": "babylonlabs_io",
+        }[client_id]
+        return StyleReferencePack(
+            request_id=kwargs["request_id"],
+            primary_source_item_id=kwargs["primary_source_item_id"],
+            reference_pack_hash="a" * 32,
+            references=(
+                StyleReference(
+                    source_item_id=reference_id,
+                    source_url=f"https://x.com/{handle}/status/600",
+                    text="A prior official post used only for cadence.",
+                    published_at="2026-07-21T00:00:00Z",
+                ),
+            ),
+            reused=len(self.style_packs) > 1,
+        )
 
     async def claim_job(self, **kwargs):
         if not self.claims:
@@ -292,6 +324,13 @@ async def test_recorded_note_recovers_without_x_and_finishes_as_review_article()
     assert repo.queues[0]["manual_only"] is False
     assert generation.calls[0]["content_kind"] == "article"
     assert generation.calls[0]["template_style"] == "classic"
+    assert len(repo.style_packs) == 2
+    assert repo.style_packs[0]["request_id"] == repo.style_packs[1]["request_id"]
+    assert (
+        generation.calls[0]["style_reference_pack_hash"]
+        == "a" * 32
+    )
+    assert len(generation.calls[0]["style_references"]) == 1
     assert len(repo.completed) == 1
     assert summary.generated == 1
     assert any(item["status"] == "needs_review" for item in summary.outcomes)

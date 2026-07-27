@@ -11,13 +11,20 @@ import asyncio
 import os
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from core.client_config import (
     CLIENTS_DIR,
@@ -105,6 +112,40 @@ class GenerateResponse(BaseModel):
     duration_ms: int
 
 
+class StyleReferenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_item_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    source_url: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^https://x\.com/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$",
+    )
+    text: str = Field(min_length=1, max_length=600)
+    published_at: str = Field(min_length=20, max_length=40)
+
+    @field_validator("text")
+    @classmethod
+    def normalize_reference_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("style reference text is empty")
+        return normalized
+
+    @field_validator("published_at")
+    @classmethod
+    def require_aware_published_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("style reference published_at is invalid") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("style reference published_at must include a timezone")
+        return value
+
+
 class NewsCardRequest(BaseModel):
     source_content: str
     source_type: str = "tweet"  # "tweet" | "blog" | "article"
@@ -112,6 +153,20 @@ class NewsCardRequest(BaseModel):
     source_image_url: str = ""  # X media URL; validated against pbs.twimg.com before download
     mock_mode: bool = False  # for smoke testing
     template_style: Literal["remix", "classic", "editorial", "signal"] = "classic"
+    style_references: list[StyleReferenceRequest] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    style_reference_pack_hash: str = Field(
+        default="",
+        pattern=r"^(?:|[a-f0-9]{32})$",
+    )
+
+    @model_validator(mode="after")
+    def require_complete_style_reference_pack(self):
+        if self.style_references and not self.style_reference_pack_hash:
+            raise ValueError("style reference pack hash is required")
+        return self
 
 
 class NewsCardResponse(BaseModel):
@@ -146,6 +201,20 @@ class ArticleRequest(BaseModel):
     source_content: str = Field(min_length=1, max_length=60_000)
     source_type: Literal["tweet", "blog", "article"] = "article"
     source_url: str = Field(default="", max_length=2_048)
+    style_references: list[StyleReferenceRequest] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    style_reference_pack_hash: str = Field(
+        default="",
+        pattern=r"^(?:|[a-f0-9]{32})$",
+    )
+
+    @model_validator(mode="after")
+    def require_complete_style_reference_pack(self):
+        if self.style_references and not self.style_reference_pack_hash:
+            raise ValueError("style reference pack hash is required")
+        return self
 
     @field_validator("source_content")
     @classmethod
@@ -312,7 +381,12 @@ async def generate_news(
     x_api_key: str = Header(default=""),
 ):
     """Generate a single 1080×1080 news card for a client."""
-    _check_client_auth(x_api_key, client_id)
+    authenticated_client = _check_client_auth(x_api_key, client_id)
+    if (
+        (req.style_references or req.style_reference_pack_hash)
+        and authenticated_client != "admin"
+    ):
+        raise HTTPException(403, "style_references_require_admin_key")
 
     try:
         load_client_config(client_id)
@@ -335,6 +409,10 @@ async def generate_news(
             output_dir=output_dir,
             mock_mode=req.mock_mode,
             template_style=req.template_style,
+            style_references=[
+                reference.model_dump()
+                for reference in req.style_references
+            ],
         )
     except HTTPException:
         raise
@@ -365,7 +443,12 @@ async def generate_article(
     x_api_key: str = Header(default=""),
 ):
     """Generate a source-locked Korean article from pasted source text."""
-    _check_client_auth(x_api_key, client_id)
+    authenticated_client = _check_client_auth(x_api_key, client_id)
+    if (
+        (req.style_references or req.style_reference_pack_hash)
+        and authenticated_client != "admin"
+    ):
+        raise HTTPException(403, "style_references_require_admin_key")
 
     try:
         load_client_config(client_id)
@@ -380,6 +463,10 @@ async def generate_article(
             source_content=req.source_content,
             source_type=req.source_type,
             source_url=req.source_url,
+            style_references=[
+                reference.model_dump()
+                for reference in req.style_references
+            ],
         )
     except ArticleInputError as exc:
         raise HTTPException(422, str(exc)) from exc

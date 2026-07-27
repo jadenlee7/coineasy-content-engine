@@ -26,6 +26,7 @@ import os
 import re
 import time
 import unicodedata
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
 
@@ -261,6 +262,7 @@ def _build_user_prompt(
     source_type: str,
     source_url: str,
     has_source_image: bool = False,
+    style_references: Sequence[Mapping[str, str]] = (),
 ) -> str:
     """Build the client-specific user prompt."""
     llm = config.llm.news_card
@@ -306,7 +308,11 @@ def _build_user_prompt(
         preserve_terms_block=preserve_block,
         glossary_block=glossary_block,
         tone_guidance=tone,
-        brand_voice_block=build_brand_voice_prompt(config, "news_card"),
+        brand_voice_block=build_brand_voice_prompt(
+            config,
+            "news_card",
+            style_references,
+        ),
         client_name=config.name,
         client_id=config.client_id,
         source_type=source_type,
@@ -2492,6 +2498,7 @@ def generate_news_card_spec(
     mock_response: Optional[dict] = None,
     source_image: Optional[PreparedSourceImage] = None,
     cached_visual_localization: Optional[list[dict]] = None,
+    style_references: Sequence[Mapping[str, str]] = (),
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -2547,6 +2554,7 @@ def generate_news_card_spec(
         source_type,
         source_url,
         has_source_image=source_image is not None,
+        style_references=style_references,
     )
 
     try:

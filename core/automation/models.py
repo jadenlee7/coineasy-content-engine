@@ -47,11 +47,37 @@ class QueueResult:
 
 
 @dataclass(frozen=True)
+class StyleReference:
+    source_item_id: str
+    source_url: str
+    text: str
+    published_at: str
+
+    def generation_payload(self) -> dict[str, str]:
+        return {
+            "source_item_id": self.source_item_id,
+            "source_url": self.source_url,
+            "text": self.text,
+            "published_at": self.published_at,
+        }
+
+
+@dataclass(frozen=True)
+class StyleReferencePack:
+    request_id: str
+    primary_source_item_id: str
+    reference_pack_hash: str
+    references: tuple[StyleReference, ...]
+    reused: bool = False
+
+
+@dataclass(frozen=True)
 class ClaimedJob:
     job_id: str
     client_id: str
     content_kind: str
     request_id: str
+    primary_source_item_id: str
     source_content: str
     source_url: str
     source_image_url: str

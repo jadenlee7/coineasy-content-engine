@@ -197,6 +197,44 @@ test("article proxy rejects URL-only or short input without fetching", async () 
   });
 });
 
+test("browser sessions cannot inject runtime style references", async () => {
+  let fetched = false;
+  await withArticleEnvironment(async () => {
+    fetched = true;
+    throw new Error("upstream should not be called");
+  }, async () => {
+    const response = await articleHandler(new Request(
+      "https://console.example/api/article/squid",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "Idempotency-Key": REQUEST_ID,
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("article-studio-access-token")}`,
+        },
+        body: JSON.stringify({
+          source_content: PASTED_SOURCE,
+          source_type: "article",
+          source_url: "https://example.com/source",
+          style_references: [{
+            source_item_id: "11111111-1111-4111-8111-111111111111",
+            source_url: "https://x.com/SquidRouter/status/123",
+            text: "Prior official post.",
+            published_at: "2026-07-21T00:00:00Z",
+          }],
+          style_reference_pack_hash: "a".repeat(32),
+        }),
+      },
+    ), { params: { clientId: "squid" } } as never);
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), {
+      error: "style_references_automation_only",
+    });
+    assert.equal(fetched, false);
+  });
+});
+
 
 test("article response guard requires the complete three-section contract", () => {
   assert.equal(isRailwayArticleResponse(GENERATED_ARTICLE), true);

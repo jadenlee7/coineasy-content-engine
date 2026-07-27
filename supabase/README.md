@@ -27,6 +27,12 @@ verify the final immutable catalog version is `needs_review`. They never create
 approvals, publications, or Figma exports. See
 `docs/OFFICIAL_X_AUTOMATION.md` for the operating flow.
 
+Each scheduled request also freezes at most three earlier posts from that exact
+official feed in a private immutable style-reference pack. The pack guides only
+writing cadence and structure; its rows are never factual `content_source_links`.
+The service role can execute the pack RPC but cannot read or mutate the private
+table directly.
+
 Environment boundary:
 
 | Variable | Location | Browser-safe |

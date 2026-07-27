@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections.abc import Mapping, Sequence
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -177,6 +178,7 @@ def _build_user_prompt(
     source_content: str,
     source_type: str,
     source_url: str,
+    style_references: Sequence[Mapping[str, str]] = (),
 ) -> str:
     """Build an article prompt from the existing per-client language config."""
     # All four current clients configure news_card, so Article v1 deliberately
@@ -199,7 +201,11 @@ def _build_user_prompt(
         tone_guidance=llm.tone_guidance or "Professional and approachable, 합니다/습니다 style.",
         preserve_terms_block=preserve_terms,
         glossary_block=glossary,
-        brand_voice_block=build_brand_voice_prompt(config, "article"),
+        brand_voice_block=build_brand_voice_prompt(
+            config,
+            "article",
+            style_references,
+        ),
         source_type=source_type,
         source_url=source_url or "(not provided)",
         source_content=source_content,
@@ -410,6 +416,7 @@ def generate_article_spec(
     source_content: str,
     source_type: Literal["tweet", "blog", "article"] = "article",
     source_url: str = "",
+    style_references: Sequence[Mapping[str, str]] = (),
 ) -> dict:
     """Generate a source-grounded Korean article and ready-to-copy channel text."""
     normalized_content, normalized_url = _validate_source(source_content, source_url)
@@ -420,6 +427,7 @@ def generate_article_spec(
         normalized_content,
         source_type,
         normalized_url,
+        style_references,
     )
 
     try:

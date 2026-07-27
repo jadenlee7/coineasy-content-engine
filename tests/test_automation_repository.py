@@ -311,6 +311,19 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
                 "status": "queued",
                 "reused": False,
             })
+        if name == "get_or_create_official_x_style_reference_pack":
+            return httpx.Response(200, json={
+                "request_id": REQUEST_ID,
+                "primary_source_item_id": SOURCE_ID,
+                "reference_pack_hash": "a" * 32,
+                "references": [{
+                    "source_item_id": "55555555-5555-4555-8555-555555555555",
+                    "source_url": "https://x.com/Yellow/status/123",
+                    "text": "A prior official writing reference.",
+                    "published_at": "2026-07-21T08:00:00Z",
+                }],
+                "reused": False,
+            })
         if name == "claim_review_draft_job":
             return httpx.Response(200, content=b"null", headers={"content-type": "application/json"})
         return httpx.Response(200, json={"job_id": JOB_ID, "status": "succeeded"})
@@ -335,6 +348,12 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
         request_id=REQUEST_ID,
         source_content="A sufficiently long official update.",
         source_url="https://x.com/Yellow/status/456",
+    )
+    pack = await repo.get_or_create_style_reference_pack(
+        workspace_id=WORKSPACE_ID,
+        client_id="yellow",
+        request_id=REQUEST_ID,
+        primary_source_item_id=SOURCE_ID,
     )
     await repo.claim_job(
         workspace_id=WORKSPACE_ID,
@@ -365,6 +384,12 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
         "target_source_content", "target_source_url", "target_source_image_url",
         "target_manual_only",
     }
+    assert set(requests["get_or_create_official_x_style_reference_pack"]) == {
+        "target_workspace_id", "target_client_id", "target_request_id",
+        "target_primary_source_item_id", "target_reference_limit",
+    }
+    assert pack.reference_pack_hash == "a" * 32
+    assert pack.references[0].source_url == "https://x.com/Yellow/status/123"
     assert set(requests["claim_review_draft_job"]) == {
         "target_workspace_id", "target_worker_id", "target_lease_seconds",
     }
