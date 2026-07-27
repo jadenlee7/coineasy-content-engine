@@ -79,13 +79,24 @@ test("derives two source-locked inline visuals and renders an editable 16:9 figu
   assert.equal(visuals[1].after_section_id, "section-3");
 
   const svg = buildArticleInlineVisualSvg("origintrail", {
-    visual: { ...visuals[1], motif: "layers" },
+    visual: {
+      ...visuals[1],
+      motif: "layers",
+      eyebrow: "SMART MANUFACTURING",
+      points: [
+        "Kamstrup, 탈중앙 지식 그래프(DKG) 온보딩 진행",
+        "제조 밸류체인의 신뢰할 수 있는 AI 기반",
+        "산업 데이터 기반의 새로운 서비스",
+      ],
+    },
     sourceUrl: "https://x.com/origin_trail/status/123",
     date: "2026.07.27",
   }, "data:image/png;base64,AQ==");
   assert.match(svg, /width="1200" height="675"/);
   assert.match(svg, /id="Visual-Headline-Line-1"/);
   assert.match(svg, /id="Visual-Point-1"/);
+  assert.match(svg, /id="Visual-Point-1-Line-2"/);
+  assert.match(svg, /font-size="11" font-weight="900" letter-spacing="1.2">SMART MANUFACTURING/);
   assert.match(svg, /id="Inline-visual-2-Motif-layers"/);
   assert.match(svg, /SOURCE-LOCKED EDITORIAL VISUAL/);
   assert.doesNotMatch(svg, /foreignObject/);
