@@ -36,11 +36,19 @@ brand_voice:
     telegram: 85
     banner: 90
     education: 80
+    article: 92
   channel_guidance:
     x: "Preserve the original thesis, paragraph flow, certainty, and restrained energy; add no generic Korean marketing hook."
     telegram: "Add one short Korean relevance sentence, then facts, CTA, original link, and focused hashtags."
     banner: "Use one infrastructure-led headline and only source-supported details; keep the original visual dominant."
     education: "Explain the original mechanism accessibly while preserving technical causality and terminology."
+    article: >-
+      Build a measured infrastructure thesis: open with the source-supported market
+      friction or transition, explain the clearing or settlement mechanism, and end
+      with a factual implication. Keep sections analytical, precise, and
+      institutional rather than promotional. Article visuals must be system-led and
+      evidence-aware, favoring flow, layers, or signal only when the source supports
+      them; never use launch hype, decorative crypto imagery, or an invented metric.
   reference_examples:
     - type: "infrastructure thesis"
       url: "https://x.com/Yellow/status/2078087351893414295"

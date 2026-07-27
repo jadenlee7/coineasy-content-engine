@@ -41,6 +41,7 @@ brand_voice:
     telegram: 85
     banner: 92
     education: 80
+    article: 92
   channel_guidance:
     x: "Mirror the original post's brevity, line breaks, humor, and energy; do not turn a one-liner into a formal explainer."
     telegram: "Keep the Squid hook, add only the context Korean readers need, then CTA, original link, and focused hashtags."
@@ -62,6 +63,14 @@ brand_voice:
       one-word reaction into a short 2-5 syllable Korean expression; a repeated Latin keyword
       may remain only when it carries the visual.
     education: "Stay approachable and builder-focused, using short explanations and concrete cross-chain UX examples."
+    article: >-
+      Keep long-form Squid recognizably compact and human: lead with the source's
+      sharpest one-liner or product moment, use short sections and deliberate rhythm,
+      and never drift into a corporate press-release voice. Keep explanations
+      product-sharp and let source milestones, integrations, or numbers carry the
+      proof. Article visual copy must be punchy and sparse, favoring flow, signal, or
+      event motifs that clarify the cross-chain journey without generic bridge art,
+      duplicate logos, or invented performance claims.
   reference_examples:
     - type: "community one-liner"
       url: "https://x.com/squidrouter/status/2078510114705997829"

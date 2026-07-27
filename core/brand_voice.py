@@ -32,10 +32,12 @@ def build_brand_voice_prompt(
         channel,
         voice.source_fidelity.get("default", 90),
     )
-    guidance = voice.channel_guidance.get(
-        channel,
-        "Keep the official source's factual scope and add only necessary Korean context.",
-    )
+    guidance = str(voice.channel_guidance.get(channel, "")).strip()
+    if not guidance:
+        raise ValueError(
+            f"client '{config.client_id}' must configure brand_voice.channel_guidance."
+            f"{channel} before generating {pipeline} content"
+        )
 
     examples = []
     for example in voice.reference_examples[:5]:
