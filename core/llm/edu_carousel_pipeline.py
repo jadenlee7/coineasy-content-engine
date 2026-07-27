@@ -26,7 +26,7 @@ from typing import Literal, Optional
 from core.brand_voice import build_brand_voice_prompt
 from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
-from core.llm.anthropic_compat import create_message
+from core.llm.anthropic_compat import create_message, first_text
 
 
 # ────────────────────────────────────────────────────
@@ -271,7 +271,7 @@ def generate_carousel_spec(
         messages=[{"role": "user", "content": prompt}],
     )
     
-    raw_text = response.content[0].text.strip()
+    raw_text = first_text(response).strip()
     raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
     raw_text = re.sub(r"\s*```$", "", raw_text)
     

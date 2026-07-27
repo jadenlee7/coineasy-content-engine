@@ -122,7 +122,7 @@ content_sources:
 
 llm:
   edu_carousel:
-    model: "claude-opus-4-8"
+    model: "claude-opus-5"
     temperature: 0.3
     # 클라이언트별 커스텀 프롬프트 fragments
     tone_guidance: "professional but approachable, 경어체"
@@ -138,7 +138,7 @@ llm:
       "non-custodial": "논커스터디얼(non-custodial)"
 
   news_card:
-    # model 라인 생략 시 중앙 디폴트(claude-opus-4-8) 상속 — 대부분 클라이언트는 이대로.
+    # model 라인 생략 시 중앙 디폴트(claude-opus-5) 상속 — 대부분 클라이언트는 이대로.
     temperature: 0.2
 
 publishing:
@@ -452,7 +452,23 @@ LLM 출력이 그대로 Jinja 슬롯이 됨 — 렌더러가 자동 주입하는
 
 ### LLM 모델 상속
 
-클라이언트 config에서 `llm.news_card.model`을 명시하지 않으면 `client_config._resolve_default_model()`이 env `LLM_MODEL` → 폴백 `"claude-opus-4-8"` 순으로 해석. 대부분 클라이언트(예: `origintrail`)는 명시하지 않고 중앙 디폴트를 그대로 상속.
+클라이언트 config에서 `llm.news_card.model`을 명시하지 않으면 `client_config._resolve_default_model()`이 env `LLM_MODEL` → 폴백 `"claude-opus-5"` 순으로 해석. 대부분 클라이언트(예: `origintrail`)는 명시하지 않고 중앙 디폴트를 그대로 상속.
+
+#### Opus 5 이후 모델 호환 (`core/llm/anthropic_compat.py`)
+
+Opus 4.7 이후 모델(Opus 4.8 / Opus 5 / Sonnet 5 / Fable 5)은 API 표면이 달라져서
+모든 LLM 호출은 `create_message()`를 거친다.
+
+| 차이 | 처리 |
+|---|---|
+| `temperature` 거부 (400) | 해당 모델이면 파라미터를 빼고 전송 |
+| `thinking` 생략 시 adaptive thinking 동작 | 기본 `{"type": "disabled"}` 로 기존 지연·비용 프로파일 유지. `LLM_THINKING=adaptive` 로 전역 활성화, 호출부 인자로 개별 지정 가능 |
+| thinking 블록이 `content[0]` 을 차지할 수 있음 | `first_text(response)` 로 첫 text 블록을 찾아 파싱 |
+
+`VISUAL_PLACEMENT_AUDIT_MODEL`(픽셀 좌표 감사)만 예외로 `claude-sonnet-4-5-20250929`
+에 남겨둔다. 이 단계는 `temperature=0` 결정성이 필요한데 Opus 5는 `temperature`를
+받지 않아 동일 이미지가 매번 다른 박스를 샘플링하게 된다. `VISUAL_PLACEMENT_AUDIT_MODEL`
+환경변수로 덮어쓸 수 있다.
 
 ### CLI 지원 상태
 
