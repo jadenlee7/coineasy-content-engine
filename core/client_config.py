@@ -9,7 +9,7 @@ USAGE:
     
     config = get_client_config("yellow")
     print(config.brand.primary_color)  # "#FFDE00"
-    print(config.llm.edu_carousel.model)  # "claude-opus-4-8"
+    print(config.llm.edu_carousel.model)  # "claude-opus-5"
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ CLIENTS_DIR = Path(os.environ.get("CLIENTS_DIR", "clients"))
 
 def _resolve_default_model() -> str:
     """Central default model. Precedence: YAML explicit > env LLM_MODEL > fallback."""
-    return os.environ.get("LLM_MODEL") or "claude-opus-4-8"
+    return os.environ.get("LLM_MODEL") or "claude-opus-5"
 
 
 # ────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ from typing import Literal, Optional
 from core.brand_voice import build_brand_voice_prompt
 from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
-from core.llm.anthropic_compat import create_message
+from core.llm.anthropic_compat import create_message, first_text
 from core.sources.source_image import PreparedSourceImage
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
@@ -67,10 +67,11 @@ Inspect the attached image composition and precisely map the visible source-lang
 Confirm only geometry that you can locate confidently and enough clearance for a 1-3 source-pixel cleanup dilation. Never move the Korean to a different part of the creative.
 Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 
-# Opus 4.8 no longer accepts the legacy temperature control, so using it for
-# pixel geometry makes identical images sample slightly different boxes. Keep
-# the creative-writing model for copy, but use the existing temperature-capable
-# visual QA model for stable placement coordinates.
+# Opus 4.7 and later — including Opus 5 — reject the legacy temperature control,
+# so using them for pixel geometry makes identical images sample slightly
+# different boxes. Keep the creative-writing model for copy, but hold this stage
+# on the last temperature-capable model for stable placement coordinates.
+# Deliberately NOT bumped to Opus 5: temperature=0 determinism is the point here.
 VISUAL_PLACEMENT_AUDIT_MODEL = os.environ.get(
     "VISUAL_PLACEMENT_AUDIT_MODEL",
     "claude-sonnet-4-5-20250929",
@@ -392,8 +393,8 @@ def _canonicalize_translation_rows(text: str, row_count: int) -> str:
 def _parse_json_response(response: object, purpose: str) -> dict:
     """Parse a JSON object from an Anthropic response, tolerating code fences."""
     try:
-        raw_text = response.content[0].text.strip()
-    except (AttributeError, IndexError, TypeError) as exc:
+        raw_text = first_text(response).strip()
+    except (AttributeError, IndexError, TypeError, ValueError) as exc:
         raise ValueError(f"LLM returned no text for {purpose}") from exc
     raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
     raw_text = re.sub(r"\s*```$", "", raw_text)

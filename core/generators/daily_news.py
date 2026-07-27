@@ -3,6 +3,8 @@ from anthropic import Anthropic
 import os
 import json
 
+from core.llm.anthropic_compat import create_message, first_text
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
@@ -45,7 +47,7 @@ Return ONLY the JSON object."""
 class DailyNewsGenerator:
     def __init__(self):
         self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        self.model = "claude-sonnet-4-5-20250929"
+        self.model = os.getenv("DAILY_NEWS_MODEL", "claude-opus-5")
 
     async def filter_tweets(self, tweets: List[Dict]) -> List[Dict]:
         """LLM-filter tweets to keep only meaningful announcements."""
@@ -56,7 +58,8 @@ class DailyNewsGenerator:
         if not candidates:
             return []
         compact = [{"id": t["id"], "text": t["text"][:280]} for t in candidates]
-        msg = self.client.messages.create(
+        msg = create_message(
+            self.client,
             model=self.model,
             max_tokens=500,
             messages=[{
@@ -64,7 +67,7 @@ class DailyNewsGenerator:
                 "content": FILTER_PROMPT.format(tweets_json=json.dumps(compact, ensure_ascii=False)),
             }],
         )
-        raw = msg.content[0].text.strip()
+        raw = first_text(msg).strip()
         # Strip code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -89,7 +92,8 @@ class DailyNewsGenerator:
             }
         tweets_text = "\n\n".join([f"[{i+1}] {t['text']}" for i, t in enumerate(tweets)])
         urls = "\n".join([t["url"] for t in tweets])
-        msg = self.client.messages.create(
+        msg = create_message(
+            self.client,
             model=self.model,
             max_tokens=1500,
             messages=[{
@@ -101,7 +105,7 @@ class DailyNewsGenerator:
                 ),
             }],
         )
-        raw = msg.content[0].text.strip()
+        raw = first_text(msg).strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

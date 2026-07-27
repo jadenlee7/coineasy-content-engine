@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from core.brand_voice import build_brand_voice_prompt
 from core.client_config import ClientConfig, get_client_config
 from core.client_naming import enforce_client_display_name
-from core.llm.anthropic_compat import create_message
+from core.llm.anthropic_compat import create_message, first_text
 
 
 SYSTEM_PROMPT = """You are the Korean editorial writer for a multi-client Web3 content system.
@@ -208,8 +208,8 @@ def _build_user_prompt(
 
 def _parse_json_response(response: object) -> dict:
     try:
-        raw_text = response.content[0].text.strip()
-    except (AttributeError, IndexError, TypeError) as exc:
+        raw_text = first_text(response).strip()
+    except (AttributeError, IndexError, TypeError, ValueError) as exc:
         raise ArticleOutputError("LLM returned no text for article generation") from exc
     raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
     raw_text = re.sub(r"\s*```$", "", raw_text)

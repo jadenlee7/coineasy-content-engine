@@ -67,7 +67,7 @@ content_sources:
 
 llm:
   news_card:
-    # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-4-8 상속.
+    # NOTE: model 라인 없음 — 중앙 디폴트 claude-opus-5 상속.
     temperature: 0.2
     tone_guidance: >
       Professional, knowledge-graph 도메인. 경어체(합니다/습니다).

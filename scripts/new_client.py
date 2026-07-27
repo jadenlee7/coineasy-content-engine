@@ -53,7 +53,7 @@ content_sources:
 
 llm:
   edu_carousel:
-    # model: 생략 시 중앙 디폴트(claude-opus-4-8) 상속. override 필요시만 명시
+    # model: 생략 시 중앙 디폴트(claude-opus-5) 상속. override 필요시만 명시
     temperature: 0.3
     tone_guidance: >
       Professional but approachable. 경어체.
@@ -64,7 +64,7 @@ llm:
       # "technical term": "한국어 번역"
 
   news_card:
-    # model: 생략 시 중앙 디폴트(claude-opus-4-8) 상속. override 필요시만 명시
+    # model: 생략 시 중앙 디폴트(claude-opus-5) 상속. override 필요시만 명시
     temperature: 0.2
 
 publishing:
