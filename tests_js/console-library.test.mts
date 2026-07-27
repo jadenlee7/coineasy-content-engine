@@ -122,7 +122,7 @@ test("renders deduplicated and escaped source evidence from every stored content
   assert.equal(renderSourceEvidence({ source: {} }), "");
 });
 
-test("rebuilds Figma SVGs from only the stored daily-news render envelope", () => {
+test("rebuilds durable Figma SVGs from only the stored daily-news render envelope", () => {
   const functionSource = consoleHtml.match(
     /function storedEditableRequest\(rawDetail\) \{[\s\S]*?\n      \}(?=\n\n      function storedPromotionRequest)/,
   )?.[0];
@@ -130,17 +130,13 @@ test("rebuilds Figma SVGs from only the stored daily-news render envelope", () =
   const storedEditableRequest = Function(
     "plainObject",
     "BRAND",
-    "safeWebUrl",
     `"use strict"; ${functionSource}; return storedEditableRequest;`,
   )(
     (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
     { yellow: {}, origintrail: {}, squid: {}, babylon: {} },
-    (value: unknown) => typeof value === "string" && value.startsWith("https://")
-      ? value
-      : "",
   ) as (detail: unknown) => Record<string, any> | null;
 
-  const request = storedEditableRequest({
+  const expiredRemixRequest = storedEditableRequest({
     client_id: "squid",
     content_kind: "daily_news",
     current_version: {
@@ -160,14 +156,35 @@ test("rebuilds Figma SVGs from only the stored daily-news render envelope", () =
     },
   });
 
+  assert.equal(expiredRemixRequest, null);
+
+  const request = storedEditableRequest({
+    client_id: "squid",
+    content_kind: "daily_news",
+    current_version: {
+      content: {
+        spec: { headline: "한국어 뉴스" },
+        source: {
+          resolved_content: "편집 API에 보내면 안 되는 원문",
+        },
+        render: {
+          requested_template_style: "remix",
+          template_style: "classic",
+          source_visual_file: "squid/news_123/source_visual_cleaned.jpg",
+        },
+        api_secret: "never-send",
+      },
+    },
+  });
+
   assert.deepEqual(request, {
     clientId: "squid",
-    templateStyle: "remix",
+    templateStyle: "classic",
     payload: {
       spec: { headline: "한국어 뉴스" },
-      template_style: "remix",
-      source_image_url: "https://pbs.twimg.com/media/source.jpg",
-      source_visual_file: "squid/news_123/source_visual_cleaned.jpg",
+      template_style: "classic",
+      source_image_url: "",
+      source_visual_file: "",
     },
   });
   assert.doesNotMatch(JSON.stringify(request), /resolved_content|api_secret|never-send/);
@@ -188,6 +205,7 @@ test("rebuilds Figma SVGs from only the stored daily-news render envelope", () =
   assert.match(consoleHtml, /handleStudioAccessResponse\(response, errorPayload\)/);
   assert.match(consoleHtml, /URL\.revokeObjectURL\(blobUrl\)/);
   assert.match(consoleHtml, /activeContentId !== libraryState\.activeId/);
+  assert.match(consoleHtml, /리믹스 편집본은 원본 이미지의 영구 보관이 준비된 뒤 보관함에서 다시 받을 수 있습니다/);
 });
 
 test("prefills deeper work only from an exact performance recommendation and source-ready official evidence", () => {

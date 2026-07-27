@@ -23,14 +23,14 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /data-mode="article"/);
   assert.match(consoleHtml, /data-mode="tutorial"/);
   assert.match(consoleHtml, /제목·리드·3~5개 섹션·핵심 요약/);
-  assert.match(consoleHtml, /\/api\/article\/\$\{encodeURIComponent\(state\.client\)\}/);
+  assert.match(consoleHtml, /\/api\/article\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
   assert.match(consoleHtml, /renderArticleResult\(articlePayload\)/);
   assert.match(consoleHtml, /id="article-markdown"/);
   assert.match(consoleHtml, /data-copy-target="article-markdown"/);
   assert.match(consoleHtml, /sourceContent\.maxLength = articleMode \? 60_000 : 20_000/);
   assert.match(consoleHtml, /원문 본문을 300자 이상/);
   assert.match(consoleHtml, /현재 튜토리얼 생성은 Yellow와 Squid만 지원/);
-  assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(state\.client\)\}/);
+  assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
   assert.equal((consoleHtml.match(/"Idempotency-Key": generationRequestId/g) || []).length, 3);
   assert.match(consoleHtml, /state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
@@ -46,11 +46,20 @@ test("marks failed visual localization as requiring a manual review", () => {
 
 test("preserves the existing news-card, editable SVG, and channel-copy flow", () => {
   assert.match(consoleHtml, /const state = \{ mode: "news"/);
-  assert.match(consoleHtml, /fetch\(`\/api\/news-card\/\$\{encodeURIComponent\(state\.client\)\}`/);
-  assert.match(consoleHtml, /template_style: state\.template/);
-  assert.match(consoleHtml, /prepareEditableDownload\(payload(?:, requestSessionEpoch)?\)/);
+  assert.match(consoleHtml, /fetch\(`\/api\/news-card\/\$\{encodeURIComponent\(requestContext\.client\)\}`/);
+  assert.match(consoleHtml, /template_style: requestContext\.template/);
+  assert.match(consoleHtml, /prepareEditableDownload\(payload, requestSessionEpoch, requestContext\)/);
   assert.match(consoleHtml, /payload\.channel_copy\?\.telegram/);
   assert.match(consoleHtml, /payload\.channel_copy\?\.x/);
+});
+
+test("binds generation responses and editable SVG follow-ups to the submitted client and mode", () => {
+  assert.match(consoleHtml, /const requestContext = Object\.freeze\(\{[\s\S]*mode: state\.mode,[\s\S]*client: state\.client,[\s\S]*template: state\.template/);
+  assert.match(consoleHtml, /function generationContextIsCurrent\(requestContext\)/);
+  assert.match(consoleHtml, /if \(requestSessionEpoch !== state\.sessionEpoch \|\| !generationContextIsCurrent\(requestContext\)\) return;/);
+  assert.match(consoleHtml, /function prepareEditableDownload\(payload, sessionEpoch, requestContext\)/);
+  assert.match(consoleHtml, /encodeURIComponent\(requestContext\.client\)/);
+  assert.match(consoleHtml, /downloadSvg\.download = `\$\{requestContext\.client\}-\$\{templateStyle\}-figma-editable\.svg`/);
 });
 
 test("uses a server-side team session without exposing or persisting the access code", () => {
@@ -73,7 +82,7 @@ test("scrubs generated work and invalidates in-flight responses when Studio lock
   assert.match(consoleHtml, /lockAndScrubStudio\("세션이 만료되었습니다/);
   assert.match(consoleHtml, /lockAndScrubStudio\("로그아웃했습니다/);
   assert.match(consoleHtml, /if \(requestSessionEpoch !== state\.sessionEpoch\) return;/);
-  assert.match(consoleHtml, /prepareEditableDownload\(payload, requestSessionEpoch\)/);
+  assert.match(consoleHtml, /prepareEditableDownload\(payload, requestSessionEpoch, requestContext\)/);
 });
 
 test("keeps mock tutorials visibly marked as samples that must not be published", () => {

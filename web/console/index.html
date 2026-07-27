@@ -1229,10 +1229,12 @@
         const currentVersion = plainObject(detail.current_version);
         const content = plainObject(currentVersion.content || detail.content);
         const spec = plainObject(content.spec);
-        const source = plainObject(content.source);
         const render = plainObject(content.render);
-        const allowedStyles = new Set(["remix", "classic", "editorial", "signal"]);
-        const templateStyle = typeof render.template_style === "string" && allowedStyles.has(render.template_style)
+        // Remix SVGs depend on the original/cleaned source image. Those inputs are
+        // not durable yet, so only source-independent templates are rebuildable
+        // from the library. Remix remains available immediately after generation.
+        const durableStyles = new Set(["classic", "editorial", "signal"]);
+        const templateStyle = typeof render.template_style === "string" && durableStyles.has(render.template_style)
           ? render.template_style
           : "";
         if (!templateStyle || !Object.keys(spec).length) return null;
@@ -1242,8 +1244,8 @@
           payload: {
             spec,
             template_style: templateStyle,
-            source_image_url: safeWebUrl(source.image_url),
-            source_visual_file: typeof render.source_visual_file === "string" ? render.source_visual_file : ""
+            source_image_url: "",
+            source_visual_file: ""
           }
         };
       }
@@ -1366,8 +1368,11 @@
         const figmaMarkup = figmaLinks.length ? `<section class="library-figma"><h3>Figma 연결</h3>${figmaLinks.map((link, index) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Figma 작업 ${index + 1} 열기</a>`).join("")}</section>` : "";
         const sourceMarkup = renderSourceEvidence(content);
         const editableRequest = storedEditableRequest(detail);
+        const storedRender = plainObject(content.render);
+        const remixEditableDeferred = contentKind === "daily_news" && storedRender.template_style === "remix";
         const actionButtons = [
-          editableRequest ? `<button class="library-action-button primary" type="button" data-library-editable>Figma 편집용 SVG 받기</button>` : ""
+          editableRequest ? `<button class="library-action-button primary" type="button" data-library-editable>Figma 편집용 SVG 받기</button>` : "",
+          remixEditableDeferred ? `<span class="library-performance-note">리믹스 편집본은 원본 이미지의 영구 보관이 준비된 뒤 보관함에서 다시 받을 수 있습니다. 생성 직후 받은 SVG를 사용해주세요.</span>` : ""
         ].filter(Boolean).join("");
         const actionMarkup = actionButtons
           ? `<section class="library-actions"><h3>디자인 작업</h3><p>저장된 현재 버전으로 편집 파일을 준비합니다. 승인이나 게시 상태는 바뀌지 않습니다.</p><div class="library-action-buttons">${actionButtons}</div></section>`
@@ -1782,32 +1787,40 @@
         return copied;
       }
 
-      async function prepareEditableDownload(payload, sessionEpoch) {
+      function generationContextIsCurrent(requestContext) {
+        return Boolean(requestContext)
+          && state.mode === requestContext.mode
+          && state.client === requestContext.client
+          && (requestContext.mode !== "news" || state.template === requestContext.template);
+      }
+
+      async function prepareEditableDownload(payload, sessionEpoch, requestContext) {
+        const templateStyle = payload.template_style || requestContext.template;
         try {
-          const response = await fetch(`/api/editable-card/${encodeURIComponent(state.client)}`, {
+          const response = await fetch(`/api/editable-card/${encodeURIComponent(requestContext.client)}`, {
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               spec: payload.spec || {},
-              template_style: payload.template_style || state.template,
+              template_style: templateStyle,
               source_image_url: payload.source_image_url || "",
               source_visual_file: payload.source_visual_file || ""
             })
           });
-          if (sessionEpoch !== state.sessionEpoch) return null;
+          if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
           if (!response.ok) {
             const errorPayload = await response.json().catch(() => ({}));
             if (handleStudioAccessResponse(response, errorPayload)) return null;
             return false;
           }
           const svgBlob = await response.blob();
-          if (sessionEpoch !== state.sessionEpoch) return null;
+          if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
           if (!svgBlob.type.includes("image/svg+xml")) return false;
           clearEditableDownload();
           state.svgUrl = URL.createObjectURL(svgBlob);
           downloadSvg.href = state.svgUrl;
-          downloadSvg.download = `${state.client}-${payload.template_style || state.template}-figma-editable.svg`;
+          downloadSvg.download = `${requestContext.client}-${templateStyle}-figma-editable.svg`;
           downloadSvg.hidden = false;
           return true;
         } catch {
@@ -2017,8 +2030,8 @@
         }
       }
 
-      function errorMessage(payload, status) {
-        const contentLabel = state.mode === "tutorial" ? "튜토리얼" : state.mode === "article" ? "아티클" : "카드";
+      function errorMessage(payload, status, requestMode = state.mode) {
+        const contentLabel = requestMode === "tutorial" ? "튜토리얼" : requestMode === "article" ? "아티클" : "카드";
         if (payload?.error === "studio_access_not_configured") return "관리자가 Netlify에 STUDIO_ACCESS_TOKEN을 먼저 설정해야 합니다.";
         if (payload?.error === "studio_auth_required" || status === 401) return "팀 접근 코드를 다시 입력해주세요.";
         if (payload?.error === "server_not_configured") return "서버의 API 비밀키 설정을 확인해주세요.";
@@ -2042,9 +2055,9 @@
           return `${contentLabel} 생성에 실패했습니다. (${payload.upstream_status || status})`;
         }
         if (payload?.error === "cleaned_source_unavailable" || payload?.error === "cleaned_source_required") return "원문 자막 제거 이미지를 준비하지 못했습니다. 다시 생성해주세요.";
-        return state.mode === "tutorial"
+        return requestMode === "tutorial"
           ? "튜토리얼을 생성하지 못했습니다. 잠시 후 다시 시도해주세요."
-          : state.mode === "article"
+          : requestMode === "article"
             ? "아티클 초안을 생성하지 못했습니다. 잠시 후 다시 시도해주세요."
             : "카드를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.";
       }
@@ -2273,15 +2286,22 @@
           return;
         }
         const requestSessionEpoch = state.sessionEpoch;
+        const requestContext = Object.freeze({
+          mode: state.mode,
+          client: state.client,
+          template: state.template,
+          sourceType: sourceType.value,
+          mockMode: state.mode === "article" ? false : mockMode.checked
+        });
 
         const generationFingerprint = JSON.stringify([
-          state.mode,
-          state.client,
+          requestContext.mode,
+          requestContext.client,
           content,
-          sourceType.value,
+          requestContext.sourceType,
           normalizedUrl,
-          state.mode === "news" ? state.template : null,
-          state.mode === "article" ? false : mockMode.checked
+          requestContext.mode === "news" ? requestContext.template : null,
+          requestContext.mockMode
         ]);
         if (!state.generationRequest || state.generationRequest.fingerprint !== generationFingerprint) {
           state.generationRequest = { fingerprint: generationFingerprint, id: newGenerationRequestId() };
@@ -2299,17 +2319,17 @@
         specDetails.hidden = true;
         channelCopy.hidden = true;
         state.hasResult = false;
-        setStatus(state.mode === "tutorial"
-          ? mockMode.checked ? "샘플 문구로 튜토리얼 캐러셀을 렌더링하고 있습니다…" : "원문을 학습 순서로 구성하고 튜토리얼 캐러셀을 만들고 있습니다…"
-          : state.mode === "article"
+        setStatus(requestContext.mode === "tutorial"
+          ? requestContext.mockMode ? "샘플 문구로 튜토리얼 캐러셀을 렌더링하고 있습니다…" : "원문을 학습 순서로 구성하고 튜토리얼 캐러셀을 만들고 있습니다…"
+          : requestContext.mode === "article"
             ? "원문 근거를 확인하고 한국어 아티클 초안과 채널 문구를 만들고 있습니다…"
           : contentIsXLink || (content.length < 10 && isXStatusUrl(normalizedUrl))
             ? "X 게시물을 불러와 카드로 만들고 있습니다…"
-            : mockMode.checked ? "브랜딩 테스트 카드를 렌더링하고 있습니다…" : "원문을 요약하고 고해상도 카드를 생성하고 있습니다…");
+            : requestContext.mockMode ? "브랜딩 테스트 카드를 렌더링하고 있습니다…" : "원문을 요약하고 고해상도 카드를 생성하고 있습니다…");
 
         try {
-          if (state.mode === "article") {
-            const articleResponse = await fetch(`/api/article/${encodeURIComponent(state.client)}`, {
+          if (requestContext.mode === "article") {
+            const articleResponse = await fetch(`/api/article/${encodeURIComponent(requestContext.client)}`, {
               method: "POST",
               credentials: "same-origin",
               headers: {
@@ -2318,13 +2338,14 @@
               },
               body: JSON.stringify({
                 source_content: content,
-                source_type: sourceType.value,
+                source_type: requestContext.sourceType,
                 source_url: normalizedUrl
               })
             });
             const articlePayload = await articleResponse.json().catch(() => ({}));
             if (requestSessionEpoch !== state.sessionEpoch) return;
             handleStudioAccessResponse(articleResponse, articlePayload);
+            if (!generationContextIsCurrent(requestContext)) return;
             if (!articleResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: articlePayload, status: articleResponse.status });
             renderArticleResult(articlePayload);
             state.generationRequest = null;
@@ -2332,8 +2353,8 @@
             return;
           }
 
-          if (state.mode === "tutorial") {
-            const tutorialResponse = await fetch(`/api/tutorial/${encodeURIComponent(state.client)}`, {
+          if (requestContext.mode === "tutorial") {
+            const tutorialResponse = await fetch(`/api/tutorial/${encodeURIComponent(requestContext.client)}`, {
               method: "POST",
               credentials: "same-origin",
               headers: {
@@ -2342,14 +2363,15 @@
               },
               body: JSON.stringify({
                 source_content: content,
-                source_type: sourceType.value,
+                source_type: requestContext.sourceType,
                 source_url: normalizedUrl,
-                mock_mode: mockMode.checked
+                mock_mode: requestContext.mockMode
               })
             });
             const tutorialPayload = await tutorialResponse.json().catch(() => ({}));
             if (requestSessionEpoch !== state.sessionEpoch) return;
             handleStudioAccessResponse(tutorialResponse, tutorialPayload);
+            if (!generationContextIsCurrent(requestContext)) return;
             if (!tutorialResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: tutorialPayload, status: tutorialResponse.status });
             renderTutorialResult(tutorialPayload);
             state.generationRequest = null;
@@ -2357,7 +2379,7 @@
             return;
           }
 
-          const response = await fetch(`/api/news-card/${encodeURIComponent(state.client)}`, {
+          const response = await fetch(`/api/news-card/${encodeURIComponent(requestContext.client)}`, {
             method: "POST",
             credentials: "same-origin",
             headers: {
@@ -2366,15 +2388,16 @@
             },
             body: JSON.stringify({
               source_content: content,
-              source_type: sourceType.value,
+              source_type: requestContext.sourceType,
               source_url: normalizedUrl,
-              mock_mode: mockMode.checked,
-              template_style: state.template
+              mock_mode: requestContext.mockMode,
+              template_style: requestContext.template
             })
           });
           const payload = await response.json().catch(() => ({}));
           if (requestSessionEpoch !== state.sessionEpoch) return;
           handleStudioAccessResponse(response, payload);
+          if (!generationContextIsCurrent(requestContext)) return;
           if (!response.ok) throw Object.assign(new Error("generation_failed"), { payload, status: response.status });
           state.generationRequest = null;
 
@@ -2396,7 +2419,7 @@
               ? " · 원본 배너가 없어 클래식으로 자동 전환"
               : "";
           const logoNote = payload.template_style === "remix"
-            ? state.client === "squid"
+            ? requestContext.client === "squid"
               ? payload.spec?.source_text_visible === true
                 ? " · 원문 자막을 같은 위치의 한국어로 교체"
                 : payload.spec?.visual_localization_status === "unsafe_placement"
@@ -2409,14 +2432,18 @@
                 : " · 공식 로고 안전영역에 1회 배치"
             : "";
           resultNote.textContent = isMockNews
-            ? `${BRAND[state.client].name} 빠른 테스트용 샘플 카드입니다. 브랜딩과 레이아웃 확인에만 사용하고 게시하지 마세요. ${(payload.duration_ms / 1000).toFixed(1)}초`
-            : `${BRAND[state.client].name} · ${TEMPLATE[payload.template_style || state.template]} 스타일로 생성했습니다${sourceNote}${remixNote}${logoNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+            ? `${BRAND[requestContext.client].name} 빠른 테스트용 샘플 카드입니다. 브랜딩과 레이아웃 확인에만 사용하고 게시하지 마세요. ${(payload.duration_ms / 1000).toFixed(1)}초`
+            : `${BRAND[requestContext.client].name} · ${TEMPLATE[payload.template_style || requestContext.template]} 스타일로 생성했습니다${sourceNote}${remixNote}${logoNote}. ${(payload.duration_ms / 1000).toFixed(1)}초`;
           download.href = state.imageUrl;
-          download.download = payload.filename || `${state.client}-news-card.png`;
+          download.download = payload.filename || `${requestContext.client}-news-card.png`;
           download.hidden = false;
           setStatus("PNG가 완성되었습니다. Figma 편집본을 준비하고 있습니다…");
-          const editableReady = await prepareEditableDownload(payload, requestSessionEpoch);
-          if (editableReady === null || requestSessionEpoch !== state.sessionEpoch) return;
+          const editableReady = await prepareEditableDownload(payload, requestSessionEpoch, requestContext);
+          if (
+            editableReady === null
+            || requestSessionEpoch !== state.sessionEpoch
+            || !generationContextIsCurrent(requestContext)
+          ) return;
 
           const generatedSpec = payload.spec || {};
           const lines = Array.isArray(generatedSpec.body_lines) ? generatedSpec.body_lines : [];
@@ -2445,10 +2472,11 @@
           isMockNews ? "review" : needsReview ? editableReady ? "review" : "error" : editableReady ? "success" : "error");
           document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
         } catch (error) {
+          if (requestSessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return;
           const payload = error?.payload || {};
           if (typeof payload?.error === "string" && payload.error.endsWith("_idempotency_conflict")) state.generationRequest = null;
           state.hasResult = false;
-          setStatus(errorMessage(payload, error?.status), "error");
+          setStatus(errorMessage(payload, error?.status, requestContext.mode), "error");
           mockCard.hidden = false;
           resultImage.hidden = true;
           channelCopy.hidden = true;

@@ -177,6 +177,19 @@ test("fails closed when a regular remix source image can no longer be fetched", 
   assert.deepEqual(await response.json(), { error: "source_image_unavailable" });
 });
 
+test("fails closed when a regular remix source image request throws", async () => {
+  const response = await requestRemixCard({
+    template_style: "remix",
+    source_image_url: "https://pbs.twimg.com/media/source.jpg",
+    spec: { headline: "원본 이미지가 필요한 카드" },
+  }, () => {
+    throw new TypeError("network unavailable");
+  });
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: "source_image_unavailable" });
+});
+
 test("embeds an available regular remix source image", async () => {
   const response = await requestRemixCard({
     template_style: "remix",
@@ -200,6 +213,16 @@ test("rejects a cleaned Squid JPEG whose streamed bytes exceed the SVG-safe cap"
       headers: { "content-type": "image/jpeg" },
     },
   ));
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: "cleaned_source_unavailable" });
+});
+
+test("fails closed when the cleaned Squid source has expired", async () => {
+  const response = await requestEditableCard(() => new Response("expired", {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  }));
 
   assert.equal(response.status, 502);
   assert.deepEqual(await response.json(), { error: "cleaned_source_unavailable" });
