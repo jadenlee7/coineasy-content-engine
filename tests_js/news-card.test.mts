@@ -193,6 +193,26 @@ test("news card generation persists one immutable PNG before returning", async (
     assert.equal(uploadUpsert, "false");
     assert.equal(recordBody.target_content_kind, "daily_news");
     assert.equal((recordBody.target_generation_meta as Record<string, unknown>).mock_mode, false);
+    assert.deepEqual(
+      (recordBody.target_content as Record<string, any>).source,
+      {
+        submitted_content: SOURCE,
+        resolved_content: SOURCE,
+        type: "tweet",
+        url: SOURCE_URL,
+        mode: "provided",
+        image_url: "",
+      },
+    );
+    assert.deepEqual(
+      (recordBody.target_content as Record<string, any>).render,
+      {
+        requested_template_style: "classic",
+        template_style: "classic",
+        source_image_used: false,
+        source_visual_file: null,
+      },
+    );
   });
 });
 
