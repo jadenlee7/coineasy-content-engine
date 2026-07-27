@@ -357,6 +357,13 @@
     .article-section { padding-top: 18px; border-top: 1.5px solid var(--line); }
     .article-section h3 { margin: 0 0 9px; font-size: 16px; }
     .article-section p { margin: 0; color: #4f5661; font-size: 12px; line-height: 1.8; white-space: pre-line; }
+    .article-inline-visual { margin: 18px 0 4px; overflow: hidden; border: 1.5px solid var(--outline); border-radius: 12px; background: #111; box-shadow: 4px 4px 0 rgba(35,35,35,.11); }
+    .article-inline-visual img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #111; }
+    .article-visual-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid rgba(255,255,255,.12); background: #202124; color: #fff; }
+    .article-visual-meta span { min-width: 0; overflow: hidden; color: rgba(255,255,255,.68); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .article-visual-actions { display: flex; flex: 0 0 auto; gap: 7px; }
+    .article-visual-actions a, .article-visual-actions button { padding: 7px 9px; border: 1px solid rgba(255,255,255,.3); border-radius: 7px; background: transparent; color: #fff; font: inherit; font-size: 9px; font-weight: 800; text-decoration: none; cursor: pointer; }
+    .article-visual-actions a:hover, .article-visual-actions button:hover { border-color: #fff; }
     .article-takeaways { margin-top: 28px; padding: 18px; border: 1.5px solid var(--outline); border-radius: 10px; background: var(--surface-soft); }
     .article-takeaways h3 { margin: 0 0 10px; font-size: 14px; }
     .article-takeaways ul { margin: 0; padding-left: 19px; color: #41464f; font-size: 11px; line-height: 1.7; }
@@ -455,6 +462,9 @@
     .library-detail h2 { margin: 10px 0 0; font-size: clamp(22px, 3vw, 34px); line-height: 1.25; letter-spacing: -1px; word-break: keep-all; }
     .library-detail-date { flex: 0 0 auto; padding-top: 4px; color: var(--muted); font-size: 10px; }
     .library-assets { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 22px; }
+    .library-article-visuals { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 22px; }
+    .library-article-visual { overflow: hidden; border: 1.5px solid var(--outline); border-radius: 12px; background: #111; box-shadow: 4px 4px 0 rgba(35,35,35,.1); }
+    .library-article-visual img { display: block; width: 100%; height: auto; background: #111; }
     .library-asset { display: block; overflow: hidden; border: 1.5px solid var(--line); border-radius: 11px; color: var(--ink); background: #fff; text-decoration: none; }
     .library-asset img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #f4f4f4; }
     .library-asset span { display: block; padding: 9px 10px; overflow: hidden; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
@@ -858,11 +868,11 @@
         },
         article: {
           title: "아티클 초안 만들기",
-          subtitle: "의미 있는 원문을 붙여넣으면 한국어 장문 초안과 채널 문구, Markdown을 함께 만듭니다.",
+          subtitle: "의미 있는 원문을 붙여넣으면 한국어 장문 초안과 대표 배너, 본문 비주얼 2장을 함께 만듭니다.",
           sourceLabel: "아티클 원문",
           placeholder: "기사·블로그·공식 발표의 본문을 충분히 붙여넣으세요. URL만으로는 생성하지 않습니다.",
           button: "아티클 초안 생성",
-          notice: "300자 이상의 원문에 근거해 제목·리드·3~5개 섹션·핵심 요약과 텔레그램·X 문구를 생성합니다. 현재는 원문 자동 수집 없이 붙여넣은 내용만 사용합니다."
+          notice: "300자 이상의 원문에 근거해 제목·리드·3~5개 섹션·핵심 요약·게시 문구와 편집 가능한 비주얼 3장을 생성합니다. 현재는 원문 자동 수집 없이 붙여넣은 내용만 사용합니다."
         },
         tutorial: {
           title: "튜토리얼 캐러셀 만들기",
@@ -1200,15 +1210,30 @@
         return `<section class="library-source-evidence"><h3>원문 근거</h3>${linksMarkup}${bodyMarkup}</section>`;
       }
 
-      function renderStoredContent(contentKind, rawContent) {
+      function renderStoredContent(contentKind, rawContent, rawDetail = {}) {
         const content = plainObject(rawContent);
         if (contentKind === "article") {
+          const detail = plainObject(rawDetail);
           const sections = Array.isArray(content.sections) ? content.sections : [];
           const takeaways = Array.isArray(content.key_takeaways) ? content.key_takeaways : [];
+          const visuals = articleVisualBriefs({
+            title: detail.title || content.title || "",
+            sections,
+            key_takeaways: takeaways,
+            visuals: content.visuals
+          });
+          const visualsBySection = new Map(visuals.map(visual => [visual.after_section_id, visual]));
+          const contentId = typeof detail.content_item_id === "string" ? detail.content_item_id : "";
+          const clientId = Object.hasOwn(BRAND, detail.client_id) ? detail.client_id : "";
           return `${content.lead ? `<p>${escapeHtml(content.lead)}</p>` : ""}` +
-            sections.map(section => {
+            sections.map((section, index) => {
               const item = plainObject(section);
-              return `<h4>${escapeHtml(item.heading || "본문")}</h4><p>${escapeHtml(item.body || "")}</p>`;
+              const sectionId = typeof item.id === "string" && item.id ? item.id : `section-${index + 1}`;
+              const visual = visualsBySection.get(sectionId);
+              return `<h4>${escapeHtml(item.heading || "본문")}</h4><p>${escapeHtml(item.body || "")}</p>` +
+                (visual && contentId && clientId
+                  ? articleVisualFigure(contentId, clientId, visual.id, visual.headline, visual.caption, true)
+                  : "");
             }).join("") +
             (takeaways.length ? `<h4>핵심 요약</h4><ul>${takeaways.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "") +
             (content.markdown ? `<h4>Markdown 원고</h4><p>${escapeHtml(content.markdown)}</p>` : "");
@@ -1373,6 +1398,24 @@
           const metadata = [asset.filename || `${index + 1}번 이미지`, dimensions, formatFileSize(asset.byte_size)].filter(Boolean).join(" · ");
           return `<a class="library-asset" href="${escapeHtml(asset.signed_url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(asset.signed_url)}" alt="${escapeHtml(asset.filename || `저장 이미지 ${index + 1}`)}" loading="lazy"><span>${escapeHtml(metadata)}</span></a>`;
         }).join("")}</div>` : "";
+        const articleVisuals = contentKind === "article"
+          ? articleVisualBriefs({
+            title: detail.title || content.title || "",
+            sections: content.sections,
+            key_takeaways: content.key_takeaways,
+            visuals: content.visuals
+          })
+          : [];
+        const articleHeroMarkup = contentKind === "article" && clientId && detail.content_item_id
+          ? `<div class="library-article-visuals">${articleVisualFigure(
+            detail.content_item_id,
+            clientId,
+            "hero",
+            detail.title || "대표 배너",
+            articleVisuals[0]?.caption || "아티클 대표 배너",
+            true
+          )}</div>`
+          : "";
         const figmaMarkup = figmaLinks.length ? `<section class="library-figma"><h3>Figma 연결</h3>${figmaLinks.map((link, index) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Figma 작업 ${index + 1} 열기</a>`).join("")}</section>` : "";
         const sourceMarkup = renderSourceEvidence(content);
         const editableRequest = storedEditableRequest(detail);
@@ -1393,7 +1436,7 @@
         const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
         libraryState.activeDetail = detail;
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${sourceMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }
@@ -1848,20 +1891,65 @@
         }
       }
 
-      function rasterizeArticleBanner(svgUrl) {
+      function articleVisualUrl(contentId, visualId) {
+        return `/api/article-visual/${encodeURIComponent(contentId)}/${encodeURIComponent(visualId)}`;
+      }
+
+      function articleVisualFilename(clientId, visualId, extension) {
+        const dimensions = visualId === "hero" ? "1200x630" : "1200x675";
+        return `${clientId}-article-${visualId}-${dimensions}.${extension}`;
+      }
+
+      function articleVisualBriefs(payload) {
+        const sections = Array.isArray(payload?.sections) ? payload.sections.map(plainObject) : [];
+        const takeaways = Array.isArray(payload?.key_takeaways)
+          ? payload.key_takeaways.filter(item => typeof item === "string" && item.trim())
+          : [];
+        if (sections.length < 3) return [];
+        const fallbackIndexes = [0, Math.min(2, sections.length - 1)];
+        const rawVisuals = Array.isArray(payload?.visuals) && payload.visuals.length === 2
+          ? payload.visuals.map(plainObject)
+          : [{}, {}];
+        return fallbackIndexes.map((sectionIndex, index) => {
+          const section = sections[sectionIndex];
+          const raw = rawVisuals[index];
+          const pointStart = index === 0 ? 0 : Math.max(0, takeaways.length - 3);
+          const fallbackPoint = takeaways.slice(pointStart, pointStart + 3)[0] || section.body || section.heading || "";
+          return {
+            id: `visual-${index + 1}`,
+            after_section_id: typeof section.id === "string" && section.id ? section.id : `section-${sectionIndex + 1}`,
+            headline: typeof raw.headline === "string" && raw.headline.trim() ? raw.headline.trim() : section.heading || payload.title || "아티클 비주얼",
+            caption: typeof raw.caption === "string" && raw.caption.trim() ? raw.caption.trim() : fallbackPoint
+          };
+        });
+      }
+
+      function articleVisualFigure(contentId, clientId, visualId, headline, caption, library = false) {
+        const svgUrl = articleVisualUrl(contentId, visualId);
+        const figureClass = library ? "library-article-visual" : "article-inline-visual";
+        const label = visualId === "hero" ? "대표 배너" : headline;
+        return `<figure class="${figureClass}" data-article-visual="${escapeHtml(visualId)}">` +
+          `<img src="${escapeHtml(svgUrl)}" alt="${escapeHtml(label)}" loading="lazy">` +
+          `<figcaption class="article-visual-meta"><span>${escapeHtml(caption || label)}</span><span class="article-visual-actions">` +
+          `<button type="button" data-article-visual-png data-content-id="${escapeHtml(contentId)}" data-client-id="${escapeHtml(clientId)}" data-visual-id="${escapeHtml(visualId)}">PNG 저장</button>` +
+          `<a href="${escapeHtml(svgUrl)}" download="${escapeHtml(articleVisualFilename(clientId, visualId, "svg"))}">Figma SVG</a>` +
+          `</span></figcaption></figure>`;
+      }
+
+      function rasterizeArticleVisual(svgUrl, width, height) {
         return new Promise((resolve, reject) => {
           const image = new Image();
           image.decoding = "async";
           image.onload = () => {
             const canvas = document.createElement("canvas");
-            canvas.width = 1200;
-            canvas.height = 630;
+            canvas.width = width;
+            canvas.height = height;
             const context = canvas.getContext("2d");
             if (!context) {
               reject(new Error("article_banner_canvas_unavailable"));
               return;
             }
-            context.drawImage(image, 0, 0, 1200, 630);
+            context.drawImage(image, 0, 0, width, height);
             canvas.toBlob(blob => {
               if (blob) resolve(blob);
               else reject(new Error("article_banner_png_failed"));
@@ -1875,18 +1963,12 @@
       async function prepareArticleBanner(payload, sessionEpoch, requestContext) {
         let localSvgUrl = "";
         try {
-          const sources = Array.isArray(payload.source_map) ? payload.source_map : [];
-          const sourceUrl = sources.find(source => typeof source?.source_url === "string")?.source_url || "";
-          const response = await fetch(`/api/article-banner/${encodeURIComponent(requestContext.client)}`, {
-            method: "POST",
+          const contentId = typeof payload.content_item_id === "string" ? payload.content_item_id : "";
+          if (!contentId) return false;
+          const response = await fetch(articleVisualUrl(contentId, "hero"), {
+            method: "GET",
             credentials: "same-origin",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              title: payload.title,
-              lead: payload.lead,
-              source_url: sourceUrl,
-              date: today()
-            })
+            headers: { Accept: "image/svg+xml" }
           });
           if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
           if (!response.ok) {
@@ -1898,7 +1980,7 @@
           if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
           if (!svgBlob.type.includes("image/svg+xml")) return false;
           localSvgUrl = URL.createObjectURL(svgBlob);
-          const pngBlob = await rasterizeArticleBanner(localSvgUrl);
+          const pngBlob = await rasterizeArticleVisual(localSvgUrl, 1200, 630);
           if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) {
             URL.revokeObjectURL(localSvgUrl);
             return null;
@@ -1917,17 +1999,62 @@
           resultImage.alt = `${BRAND[requestContext.client].name} 아티클 배너: ${payload.title}`;
           resultImage.hidden = false;
           download.href = state.articleBannerPngUrl;
-          download.download = `${requestContext.client}-article-banner-1200x630.png`;
+          download.download = articleVisualFilename(requestContext.client, "hero", "png");
           download.textContent = "배너 PNG 저장";
           download.hidden = false;
           downloadSvg.href = state.svgUrl;
-          downloadSvg.download = `${requestContext.client}-article-banner-1200x630-figma.svg`;
+          downloadSvg.download = articleVisualFilename(requestContext.client, "hero", "svg");
           downloadSvg.textContent = "Figma 배너 SVG";
           downloadSvg.hidden = false;
           return true;
         } catch {
           if (localSvgUrl) URL.revokeObjectURL(localSvgUrl);
           return false;
+        }
+      }
+
+      async function downloadArticleVisualPng(button) {
+        const contentId = button.dataset.contentId || "";
+        const clientId = button.dataset.clientId || "";
+        const visualId = button.dataset.visualId || "";
+        if (!contentId || !Object.hasOwn(BRAND, clientId) || !["hero", "visual-1", "visual-2"].includes(visualId)) return;
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "준비 중…";
+        let svgObjectUrl = "";
+        let pngObjectUrl = "";
+        try {
+          const response = await fetch(articleVisualUrl(contentId, visualId), {
+            method: "GET",
+            credentials: "same-origin",
+            headers: { Accept: "image/svg+xml" }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            handleStudioAccessResponse(response, payload);
+            throw new Error("article_visual_download_failed");
+          }
+          const svgBlob = await response.blob();
+          if (!svgBlob.type.includes("image/svg+xml")) throw new Error("article_visual_download_failed");
+          svgObjectUrl = URL.createObjectURL(svgBlob);
+          const dimensions = visualId === "hero" ? [1200, 630] : [1200, 675];
+          const pngBlob = await rasterizeArticleVisual(svgObjectUrl, dimensions[0], dimensions[1]);
+          pngObjectUrl = URL.createObjectURL(pngBlob);
+          const anchor = document.createElement("a");
+          anchor.href = pngObjectUrl;
+          anchor.download = articleVisualFilename(clientId, visualId, "png");
+          anchor.click();
+          button.textContent = "저장됨";
+        } catch {
+          button.textContent = "다시 시도";
+          setStatus("본문 이미지 PNG를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.", "error");
+        } finally {
+          if (svgObjectUrl) URL.revokeObjectURL(svgObjectUrl);
+          if (pngObjectUrl) window.setTimeout(() => URL.revokeObjectURL(pngObjectUrl), 1_000);
+          window.setTimeout(() => {
+            button.disabled = false;
+            button.textContent = originalLabel;
+          }, 1_400);
         }
       }
 
@@ -2077,9 +2204,12 @@
       function renderArticleResult(payload, requestContext) {
         const sections = Array.isArray(payload.sections) ? payload.sections : [];
         const takeaways = Array.isArray(payload.key_takeaways) ? payload.key_takeaways : [];
-        if (!payload.title || !payload.lead || sections.length < 3 || takeaways.length < 3) {
+        const contentId = typeof payload.content_item_id === "string" ? payload.content_item_id : "";
+        if (!payload.title || !payload.lead || !contentId || sections.length < 3 || takeaways.length < 3) {
           throw new Error("article_result_missing");
         }
+        const visuals = articleVisualBriefs(payload);
+        const visualsBySection = new Map(visuals.map(visual => [visual.after_section_id, visual]));
         shell.dataset.client = requestContext.client;
         shell.dataset.output = "article-banner";
         visualStage.hidden = false;
@@ -2092,9 +2222,15 @@
         resultTitleText.textContent = "아티클 발행 패키지";
         articleTitle.textContent = payload.title;
         articleLead.textContent = payload.lead;
-        articleSections.innerHTML = sections.map(section =>
-          `<section class="article-section"><h3>${escapeHtml(section.heading)}</h3><p>${escapeHtml(section.body)}</p></section>`
-        ).join("");
+        articleSections.innerHTML = sections.map((section, index) => {
+          const sectionId = typeof section.id === "string" && section.id ? section.id : `section-${index + 1}`;
+          const visual = visualsBySection.get(sectionId);
+          return `<section class="article-section"><h3>${escapeHtml(section.heading)}</h3><p>${escapeHtml(section.body)}</p>` +
+            (visual
+              ? articleVisualFigure(contentId, requestContext.client, visual.id, visual.headline, visual.caption)
+              : "") +
+            `</section>`;
+        }).join("");
         articleTakeaways.innerHTML = takeaways.map(item => `<li>${escapeHtml(item)}</li>`).join("");
         const sources = Array.isArray(payload.source_map) ? payload.source_map : [];
         articleSources.innerHTML = sources.length
@@ -2105,8 +2241,8 @@
           : "원문 링크가 입력되지 않아 붙여넣은 본문만 출처로 사용했습니다.";
         articleMarkdown.value = payload.markdown || "";
         articleResult.hidden = false;
-        resultKind.textContent = `· 실제 Railway 생성 결과 · ${sections.length}개 섹션`;
-        resultNote.textContent = `${BRAND[state.client].name} 원문에 근거한 아티클 초안입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(payload.duration_ms / 1000).toFixed(1)}초`;
+        resultKind.textContent = `· 실제 Railway 생성 결과 · ${sections.length}개 섹션 · 비주얼 3장`;
+        resultNote.textContent = `${BRAND[state.client].name} 원문에 근거한 아티클 초안과 본문 비주얼 2장입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(payload.duration_ms / 1000).toFixed(1)}초`;
         specDetails.hidden = true;
         telegramCopy.value = payload.channel_copy?.telegram || "";
         xCopy.value = payload.channel_copy?.x || "";
@@ -2366,6 +2502,14 @@
       channelCopy.addEventListener("click", handleCopyRequest);
       articleResult.addEventListener("click", handleCopyRequest);
       libraryDetail.addEventListener("click", handleCopyRequest);
+      articleResult.addEventListener("click", event => {
+        const button = event.target.closest("[data-article-visual-png]");
+        if (button) downloadArticleVisualPng(button);
+      });
+      libraryDetail.addEventListener("click", event => {
+        const button = event.target.closest("[data-article-visual-png]");
+        if (button) downloadArticleVisualPng(button);
+      });
 
       form.addEventListener("submit", async event => {
         event.preventDefault();
@@ -2419,12 +2563,12 @@
         generate.disabled = true;
         loading.hidden = false;
         loadingTitle.textContent = requestContext.mode === "article"
-          ? "아티클과 발행 배너를 준비하고 있습니다"
+          ? "아티클과 발행 비주얼 3장을 준비하고 있습니다"
           : requestContext.mode === "tutorial"
             ? "튜토리얼 캐러셀을 렌더링하고 있습니다"
             : "실제 카드를 렌더링하고 있습니다";
         loadingNote.textContent = requestContext.mode === "article"
-          ? "원고가 완성되면 1200×630 PNG와 Figma SVG를 이어서 만듭니다."
+          ? "원고가 완성되면 1200×630 대표 배너와 1200×675 본문 이미지 2장을 이어서 만듭니다."
           : "AI 구성과 고해상도 PNG 생성에 잠시 시간이 걸릴 수 있어요.";
         download.hidden = true;
         download.textContent = "PNG 저장";
@@ -2472,9 +2616,9 @@
               || !generationContextIsCurrent(requestContext)
             ) return;
             if (bannerReady) {
-              resultKind.textContent = `· 실제 Railway 원고 · ${articlePayload.sections.length}개 섹션 · 배너 1200×630`;
-              resultNote.textContent = `${BRAND[requestContext.client].name} 원문에 근거한 아티클 초안과 발행 배너입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(articlePayload.duration_ms / 1000).toFixed(1)}초`;
-              setStatus("아티클 초안·Markdown·게시 문구와 1200×630 배너가 완성되었습니다. PNG 또는 Figma SVG를 저장해 바로 발행할 수 있습니다.", "success");
+              resultKind.textContent = `· 실제 Railway 원고 · ${articlePayload.sections.length}개 섹션 · 비주얼 3장`;
+              resultNote.textContent = `${BRAND[requestContext.client].name} 원문에 근거한 아티클 초안, 대표 배너, 본문 이미지 2장입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(articlePayload.duration_ms / 1000).toFixed(1)}초`;
+              setStatus("아티클 초안·Markdown·게시 문구와 대표 배너·본문 이미지 2장이 완성되었습니다. 각 이미지는 PNG 또는 Figma SVG로 저장할 수 있습니다.", "success");
             } else {
               clearArticleBanner();
               visualStage.hidden = true;

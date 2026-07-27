@@ -225,3 +225,8 @@ status. Scheduled drafts use `classic`, so this transient export does not
 depend on source-image retention. A historical `remix` whose external source
 image or Railway-cleaned Squid visual cannot be loaded fails closed instead of
 returning an image-less SVG.
+
+Article jobs also store a source-locked visual story: one `1200x630` hero and
+two `1200x675` inline editorial visuals. The Studio library regenerates them
+from the immutable article version. See
+[`ARTICLE_VISUAL_STORY.md`](./ARTICLE_VISUAL_STORY.md).

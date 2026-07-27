@@ -50,6 +50,28 @@ VALID_MODEL_RESULT = {
         "통합에 동일한 라우팅 스택을 활용할 수 있습니다.",
         "신규 토큰이나 한국 제공 여부는 발표되지 않았습니다.",
     ],
+    "visuals": [
+        {
+            "motif": "flow",
+            "eyebrow": "WHY IT MATTERS",
+            "headline": "하나의 라우팅 스택, 네 가지 제품 접점",
+            "caption": "App부터 Widget까지 동일한 크로스체인 라우팅 기반을 활용합니다.",
+            "points": [
+                "App, API, SDK, Widget이 업데이트 대상입니다.",
+                "통합에 동일한 라우팅 스택을 활용할 수 있습니다.",
+            ],
+        },
+        {
+            "motif": "layers",
+            "eyebrow": "PRODUCT LAYERS",
+            "headline": "통합 방식에 맞춰 제품 접점을 선택합니다",
+            "caption": "공개된 범위는 제품군과 공통 라우팅 스택 업데이트입니다.",
+            "points": [
+                "각 제품 접점은 동일한 라우팅 기반을 공유합니다.",
+                "신규 토큰이나 한국 제공 여부는 발표되지 않았습니다.",
+            ],
+        },
+    ],
     "telegram": {
         "body": (
             "Squid가 크로스체인 라우팅 제품군 업데이트를 공개했습니다. "
@@ -96,7 +118,7 @@ def test_article_pipeline_returns_structured_copy_source_map_and_markdown(monkey
 
     assert len(calls) == 1
     request = calls[0]
-    assert request["max_tokens"] == 5_000
+    assert request["max_tokens"] == 6_000
     assert request["system"].startswith("You are the Korean editorial writer")
     prompt = request["messages"][0]["content"]
     assert SOURCE_CONTENT in prompt
@@ -119,6 +141,7 @@ def test_article_pipeline_returns_structured_copy_source_map_and_markdown(monkey
             "sections.section-2",
             "sections.section-3",
             "key_takeaways",
+            "visuals",
             "channel_copy.telegram",
             "channel_copy.x",
         ],
@@ -136,9 +159,15 @@ def test_article_pipeline_returns_structured_copy_source_map_and_markdown(monkey
     markdown = result["markdown"]
     assert markdown.startswith(f"# {result['title']}\n\n")
     assert "## 이번 발표의 핵심" in markdown
+    assert "squid-article-visual-1-1200x675.png" in markdown
     assert "## 핵심 포인트" in markdown
     assert f"[원문 보기]({SOURCE_URL})" in markdown
     assert "CoinEasy" not in markdown
+    assert [visual["after_section_id"] for visual in result["visuals"]] == [
+        "section-1",
+        "section-3",
+    ]
+    assert result["visuals"][0]["motif"] == "flow"
 
 
 def test_article_pipeline_requires_non_empty_pasted_source():
@@ -160,6 +189,21 @@ def test_article_pipeline_rejects_model_output_with_fewer_than_three_sections(mo
 
     with pytest.raises(ArticleOutputError, match="sections must contain 3-5"):
         generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
+
+
+def test_article_pipeline_falls_back_to_source_locked_visuals_when_brief_is_invalid(monkeypatch):
+    recoverable = deepcopy(VALID_MODEL_RESULT)
+    recoverable["visuals"] = [{"motif": ["hallucinated-scene"]}]
+    _install_fake_anthropic(monkeypatch, recoverable)
+
+    result = generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
+
+    assert len(result["visuals"]) == 2
+    assert result["visuals"][0]["id"] == "visual-1"
+    assert result["visuals"][1]["id"] == "visual-2"
+    assert result["visuals"][0]["motif"] in {
+        "network", "layers", "flow", "signal", "event", "asset",
+    }
 
 
 def test_x_weighted_length_matches_x_v3_ranges_for_ascii_and_korean():

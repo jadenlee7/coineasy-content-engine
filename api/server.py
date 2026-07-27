@@ -243,6 +243,17 @@ class ArticleChannelCopyResponse(BaseModel):
     x: str
 
 
+class ArticleVisualResponse(BaseModel):
+    id: str
+    after_section_id: str
+    role: Literal["overview", "explainer"]
+    motif: Literal["network", "layers", "flow", "signal", "event", "asset"]
+    eyebrow: str
+    headline: str
+    caption: str
+    points: list[str]
+
+
 class ArticleResponse(BaseModel):
     client_id: str
     content_type: Literal["article"]
@@ -250,6 +261,7 @@ class ArticleResponse(BaseModel):
     lead: str
     sections: list[ArticleSectionResponse]
     key_takeaways: list[str]
+    visuals: list[ArticleVisualResponse]
     source_map: list[ArticleSourceMapResponse]
     channel_copy: ArticleChannelCopyResponse
     markdown: str

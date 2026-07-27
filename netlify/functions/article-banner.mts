@@ -3,6 +3,10 @@ import {
   buildArticleBannerSvg,
   type ArticleBannerInput,
 } from "./_shared/article-banner-svg.mts";
+import {
+  ARTICLE_VISUAL_MOTIFS,
+  type ArticleVisualMotif,
+} from "./_shared/article-visual-plan.mts";
 import type { EditableClientId } from "./_shared/editable-svg.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
@@ -11,6 +15,7 @@ type ArticleBannerRequest = {
   lead?: unknown;
   source_url?: unknown;
   date?: unknown;
+  motif?: unknown;
 };
 
 const CLIENT_LOGOS: Record<EditableClientId, string> = {
@@ -90,11 +95,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (body.source_url && !sourceUrl) return jsonError("invalid_source_url", 400);
   const date = optionalText(body.date, 40);
   if (body.date && !date) return jsonError("invalid_date", 400);
+  const motif = optionalText(body.motif, 20);
+  if (motif && !ARTICLE_VISUAL_MOTIFS.includes(motif as ArticleVisualMotif)) {
+    return jsonError("invalid_motif", 400);
+  }
 
   const siteOrigin = new URL(context.site.url).origin;
   const logoUrl = new URL(CLIENT_LOGOS[clientId], siteOrigin).toString();
   const logoDataUrl = await fetchLogoDataUrl(logoUrl).catch(() => "");
-  const input: ArticleBannerInput = { title, lead, sourceUrl, date };
+  const input: ArticleBannerInput = {
+    title,
+    lead,
+    sourceUrl,
+    date,
+    motif: motif as ArticleVisualMotif || undefined,
+  };
   const svg = buildArticleBannerSvg(clientId, input, logoDataUrl);
 
   return new Response(svg, {

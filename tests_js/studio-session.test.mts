@@ -3,6 +3,7 @@ import test from "node:test";
 
 import articleHandler from "../netlify/functions/article.mts";
 import articleBannerHandler from "../netlify/functions/article-banner.mts";
+import articleVisualHandler from "../netlify/functions/article-visual.mts";
 import editableCardHandler from "../netlify/functions/editable-card.mts";
 import newsCardHandler from "../netlify/functions/news-card.mts";
 import studioSessionHandler, {
@@ -243,13 +244,22 @@ test("all privileged relays reject unauthenticated requests before fetching upst
         articleBannerHandler(request("/api/article-banner/yellow"), {
           params: { clientId: "yellow" }, site: { url: "https://console.example" },
         } as never),
+        articleVisualHandler(new Request(
+          "https://console.example/api/article-visual/22222222-2222-4222-8222-222222222222/hero",
+        ), {
+          params: {
+            contentId: "22222222-2222-4222-8222-222222222222",
+            visualId: "hero",
+          },
+          site: { url: "https://console.example" },
+        } as never),
         tutorialHandler(request("/api/tutorial/yellow"), { params: { clientId: "yellow" } } as never),
         editableCardHandler(request("/api/editable-card/yellow"), {
           params: { clientId: "yellow" }, site: { url: "https://console.example" },
         } as never),
       ]);
 
-      assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401, 401]);
+      assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401, 401, 401]);
       for (const response of responses) {
         assert.deepEqual(await response.json(), { error: "studio_auth_required" });
       }

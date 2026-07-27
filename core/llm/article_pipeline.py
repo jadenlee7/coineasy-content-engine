@@ -46,6 +46,15 @@ Create one useful Korean article from the pasted source. Return exactly this JSO
     {{"heading": "섹션 제목", "body": "2-4개의 짧은 문단"}}
   ],
   "key_takeaways": ["핵심 포인트"],
+  "visuals": [
+    {{
+      "motif": "network | layers | flow | signal | event | asset",
+      "eyebrow": "짧은 영문 또는 한국어 라벨",
+      "headline": "시각 자료의 한국어 핵심 문장",
+      "caption": "이미지가 설명하는 한국어 문장",
+      "points": ["원문에 근거한 짧은 한국어 포인트"]
+    }}
+  ],
   "telegram": {{
     "body": "한국 GTM 공지방용 본문, URL과 해시태그는 제외",
     "hashtags": ["#브랜드", "#주제"]
@@ -58,6 +67,12 @@ Create one useful Korean article from the pasted source. Return exactly this JSO
 - title, lead, every section, takeaways, Telegram body, and X copy must be natural Korean.
 - Produce 3-5 sections and 3-5 key takeaways. Do not pad thin source material with invented facts.
 - Each section must add a distinct source-supported point. Avoid repeating the lead.
+- Produce exactly 2 editorial visuals. Each visual must use only facts already stated in the
+  article, contain 2-4 short points, and choose one allowlisted motif. Visual 1 should explain
+  context or significance; visual 2 should explain structure, flow, comparison, or implications.
+- Visual copy is rendered directly into an image. Keep the headline under 55 Korean characters,
+  each point under 70 characters, and the caption under 140 characters. Do not put URLs,
+  hashtags, speculative imagery, price charts, or unsourced numbers in visuals.
 - Use 합니다/습니다 style. Keep technical causality and product status exact.
 - Telegram: concise hook + factual context. Do not include a URL or CTA; the server appends one restrained
   read-more CTA and the exact caller-provided source URL. Return 1-5 focused hashtags separately.
@@ -97,6 +112,14 @@ _MAX_SOURCE_CONTENT_CHARS = 60_000
 _MIN_SOURCE_CONTENT_CHARS = 300
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 _HANGUL_PATTERN = re.compile(r"[가-힣]")
+_ARTICLE_VISUAL_MOTIFS = frozenset({
+    "network",
+    "layers",
+    "flow",
+    "signal",
+    "event",
+    "asset",
+})
 _X_SINGLE_WEIGHT_RANGES = (
     (0x0000, 0x10FF),
     (0x2000, 0x200D),
@@ -289,7 +312,114 @@ def _normalize_hashtags(value: object) -> list[str]:
     return hashtags
 
 
-def _normalize_generated_result(result: dict, source_url: str) -> dict:
+def _infer_visual_motif(value: str) -> str:
+    normalized = value.lower()
+    keyword_groups = (
+        ("event", ("demo", "event", "award", "launch", "행사", "데모", "상금", "일정", "출시")),
+        ("network", ("graph", "agent", "network", "node", "지식", "그래프", "네트워크", "에이전트")),
+        ("asset", ("bitcoin", "btc", "collateral", "staking", "담보", "비트코인", "스테이킹", "자산")),
+        ("flow", ("cross-chain", "routing", "bridge", "payment", "라우팅", "크로스체인", "브리지", "결제")),
+        ("layers", ("layer", "stack", "memory", "계층", "스택", "메모리", "구조")),
+        ("signal", ("signal", "data", "update", "성과", "데이터", "업데이트", "지표")),
+    )
+    for motif, keywords in keyword_groups:
+        if any(keyword in normalized for keyword in keywords):
+            return motif
+    return "signal"
+
+
+def _fallback_visuals(
+    title: str,
+    sections: list[dict[str, str]],
+    key_takeaways: list[str],
+) -> list[dict[str, object]]:
+    target_indexes = (0, min(2, len(sections) - 1))
+    labels = ("WHY IT MATTERS", "HOW IT CONNECTS")
+    roles = ("overview", "explainer")
+    visuals: list[dict[str, object]] = []
+    for visual_index, section_index in enumerate(target_indexes, start=1):
+        section = sections[section_index]
+        point_start = 0 if visual_index == 1 else max(0, len(key_takeaways) - 3)
+        points = key_takeaways[point_start:point_start + 3]
+        if len(points) < 2:
+            points = key_takeaways[:3]
+        visuals.append({
+            "id": f"visual-{visual_index}",
+            "after_section_id": section["id"],
+            "role": roles[visual_index - 1],
+            "motif": _infer_visual_motif(
+                f"{title} {section['heading']} {' '.join(points)}"
+            ),
+            "eyebrow": labels[visual_index - 1],
+            "headline": section["heading"],
+            "caption": points[0],
+            "points": points,
+        })
+    return visuals
+
+
+def _normalize_visuals(
+    value: object,
+    title: str,
+    sections: list[dict[str, str]],
+    key_takeaways: list[str],
+) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) != 2:
+        return _fallback_visuals(title, sections, key_takeaways)
+
+    visuals: list[dict[str, object]] = []
+    target_indexes = (0, min(2, len(sections) - 1))
+    roles = ("overview", "explainer")
+    try:
+        for index, raw_visual in enumerate(value):
+            if not isinstance(raw_visual, dict):
+                raise ArticleOutputError("article visual must be an object")
+            motif = raw_visual.get("motif")
+            if not isinstance(motif, str) or motif not in _ARTICLE_VISUAL_MOTIFS:
+                raise ArticleOutputError("article visual motif is invalid")
+            eyebrow = raw_visual.get("eyebrow")
+            if not isinstance(eyebrow, str) or not 2 <= len(eyebrow.strip()) <= 32:
+                raise ArticleOutputError("article visual eyebrow is invalid")
+            headline = _required_korean(
+                raw_visual.get("headline"),
+                f"visuals[{index}].headline",
+                maximum=70,
+            )
+            caption = _required_korean(
+                raw_visual.get("caption"),
+                f"visuals[{index}].caption",
+                maximum=200,
+            )
+            raw_points = raw_visual.get("points")
+            if not isinstance(raw_points, list) or not 2 <= len(raw_points) <= 4:
+                raise ArticleOutputError("article visual points must contain 2-4 items")
+            points = [
+                _required_korean(
+                    point,
+                    f"visuals[{index}].points[{point_index}]",
+                    maximum=100,
+                )
+                for point_index, point in enumerate(raw_points)
+            ]
+            visuals.append({
+                "id": f"visual-{index + 1}",
+                "after_section_id": sections[target_indexes[index]]["id"],
+                "role": roles[index],
+                "motif": motif,
+                "eyebrow": eyebrow.strip(),
+                "headline": headline,
+                "caption": caption,
+                "points": points,
+            })
+    except ArticleOutputError:
+        # The article itself remains usable when the model misses only the
+        # optional visual brief. Deterministic source-locked briefs keep the
+        # publishing package complete without turning a visual miss into a 502.
+        return _fallback_visuals(title, sections, key_takeaways)
+    return visuals
+
+
+def _normalize_generated_result(result: dict, source_url: str, client_id: str) -> dict:
     expected_keys = {"title", "lead", "sections", "key_takeaways", "telegram", "x"}
     result_keys = set(result)
     missing = expected_keys - result_keys
@@ -337,6 +467,12 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
         _required_korean(item, f"key_takeaways[{index}]", maximum=180)
         for index, item in enumerate(raw_takeaways)
     ]
+    visuals = _normalize_visuals(
+        result.get("visuals"),
+        title,
+        sections,
+        key_takeaways,
+    )
 
     raw_telegram = result["telegram"]
     if (
@@ -379,6 +515,7 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
                 "lead",
                 *(f"sections.{section['id']}" for section in sections),
                 "key_takeaways",
+                "visuals",
                 "channel_copy.telegram",
                 "channel_copy.x",
             ],
@@ -389,20 +526,37 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
         "lead": lead,
         "sections": sections,
         "key_takeaways": key_takeaways,
+        "visuals": visuals,
         "source_map": source_map,
         "channel_copy": {
             "telegram": telegram_copy,
             "x": x_copy,
         },
     }
-    normalized["markdown"] = _render_markdown(normalized, source_url)
+    normalized["markdown"] = _render_markdown(normalized, source_url, client_id)
     return normalized
 
 
-def _render_markdown(article: dict, source_url: str) -> str:
+def _render_markdown(article: dict, source_url: str, client_id: str) -> str:
     parts = [f"# {article['title']}", article["lead"]]
     for section in article["sections"]:
         parts.extend([f"## {section['heading']}", section["body"]])
+        visual = next(
+            (
+                item
+                for item in article["visuals"]
+                if item["after_section_id"] == section["id"]
+            ),
+            None,
+        )
+        if visual:
+            parts.extend([
+                (
+                    f"![{visual['headline']}](./{client_id}-article-"
+                    f"{visual['id']}-1200x675.png)"
+                ),
+                f"*{visual['caption']}*",
+            ])
     parts.append("## 핵심 포인트")
     parts.append("\n".join(f"- {item}" for item in article["key_takeaways"]))
     if source_url:
@@ -438,11 +592,11 @@ def generate_article_spec(
     response = create_message(
         Anthropic(),
         model=llm.model,
-        max_tokens=5_000,
+        max_tokens=6_000,
         temperature=llm.temperature,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
     parsed = _parse_json_response(response)
-    normalized = _normalize_generated_result(parsed, normalized_url)
+    normalized = _normalize_generated_result(parsed, normalized_url, client_id)
     return enforce_client_display_name(client_id, normalized)
