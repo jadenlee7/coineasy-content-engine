@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from core.automation.daily_runner import OfficialXDailyRunner
+from core.automation.content_signals import (
+    ContentSignalsError,
+    ContentSignalsSnapshot,
+    DemandTerm,
+)
 from core.automation.generation_client import GeneratedCatalogResult
 from core.automation.models import (
     AutomationState,
@@ -68,18 +73,26 @@ class FakeRepository:
     def __init__(self, states):
         self.states = states
         self.records = []
+        self.ranking_evidence = []
         self.queues = []
         self.claims = []
         self.completed = []
         self.failed = []
         self.complete_error = False
+        self.ranking_evidence_error = None
 
     async def get_state(self, **kwargs):
         return self.states[kwargs["client_id"]]
 
+    async def record_ranking_evidence(self, **kwargs):
+        if self.ranking_evidence_error:
+            raise self.ranking_evidence_error
+        self.ranking_evidence.append(kwargs)
+
     async def record_sources(self, **kwargs):
         self.records.append(kwargs)
         client_id = kwargs["client_id"]
+        previous = self.states[client_id]
         raw = kwargs["source_items"]
         converted = tuple(
             PendingSource(
@@ -95,10 +108,18 @@ class FakeRepository:
             )
             for item in raw
         )
+        by_post_id = {
+            item.post_id: item
+            for item in previous.pending_sources
+        }
+        by_post_id.update({
+            item.post_id: item
+            for item in converted
+        })
         state = AutomationState(
             last_cursor=kwargs["next_cursor"],
-            draft_reserved_today=False,
-            pending_sources=converted,
+            draft_reserved_today=previous.draft_reserved_today,
+            pending_sources=tuple(by_post_id.values()),
         )
         self.states[client_id] = state
         return state
@@ -137,13 +158,17 @@ class FakeRepository:
 
 
 class FakeXClient:
-    def __init__(self, posts=None, error=None):
+    def __init__(self, posts=None, error=None, errors_by_handle=None):
         self.posts = posts or []
         self.error = error
+        self.errors_by_handle = errors_by_handle or {}
         self.calls = []
 
     async def get_recent_tweets(self, *args, **kwargs):
         self.calls.append((args, kwargs))
+        handle = args[0].lstrip("@")
+        if handle in self.errors_by_handle:
+            raise self.errors_by_handle[handle]
         if self.error:
             raise self.error
         return self.posts
@@ -165,12 +190,43 @@ class FakeGenerationClient:
         )
 
 
-def runner(repo, x_client, generation, **setting_overrides):
+class FakeSignalsClient:
+    def __init__(self, terms=(), error=None):
+        self.terms = terms
+        self.error = error
+        self.calls = []
+
+    async def fetch(self, *, client_id, now):
+        self.calls.append({"client_id": client_id, "now": now})
+        if self.error:
+            raise self.error
+        return ContentSignalsSnapshot(
+            schema_version="1.0",
+            client_id=client_id,
+            generated_at=now,
+            window_start=now - timedelta(days=7),
+            window_end=now,
+            demand_terms=tuple(
+                DemandTerm(term=term, weight=weight, sources=("community",))
+                for term, weight in self.terms
+            ),
+        )
+
+
+def runner(
+    repo,
+    x_client,
+    generation,
+    *,
+    content_signals_client=None,
+    **setting_overrides,
+):
     return OfficialXDailyRunner(
         settings=settings(**setting_overrides),
         repository=repo,
         x_client=x_client,
         generation_client=generation,
+        content_signals_client=content_signals_client,
         clients_dir=ROOT / "clients",
         now_factory=lambda: NOW,
     )
@@ -193,7 +249,12 @@ async def test_recorded_note_recovers_without_x_and_finishes_as_review_article()
 
     summary = await runner(repo, x_client, generation).run()
 
-    assert x_client.calls == []
+    assert [call[0][0].lstrip("@") for call in x_client.calls] == [
+        "Yellow",
+        "origin_trail",
+        "SquidRouter",
+        "babylonlabs_io",
+    ]
     assert repo.queues[0]["content_kind"] == "article"
     assert repo.queues[0]["manual_only"] is False
     assert generation.calls[0]["content_kind"] == "article"
@@ -308,7 +369,9 @@ async def test_one_client_intake_failure_does_not_stop_other_clients():
 
     summary = await runner(
         repo,
-        FakeXClient(error=XTransientError("safe provider failure")),
+        FakeXClient(errors_by_handle={
+            "Yellow": XTransientError("safe provider failure"),
+        }),
         generation,
     ).run()
 
@@ -318,6 +381,40 @@ async def test_one_client_intake_failure_does_not_stop_other_clients():
     assert any(
         item.get("client_id") == "yellow"
         and item.get("detail") == "x_temporarily_unavailable"
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_source_recovers_when_fresh_x_poll_is_unavailable():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(errors_by_handle={
+            "SquidRouter": XTransientError("safe provider failure"),
+        }),
+        FakeGenerationClient(),
+    ).run()
+
+    assert len(repo.queues) == 1
+    assert summary.generated == 1
+    assert summary.errors == 0
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "source_refresh_unavailable",
+            "detail": "x_temporarily_unavailable",
+        }
         for item in summary.outcomes
     )
 
@@ -339,5 +436,218 @@ async def test_local_daily_limit_bounds_new_queue_reservations():
     ).run()
 
     assert len(repo.queues) == 1
+    assert len(repo.records) == 4
     assert summary.queued == 1
     assert sum(item["status"] == "local_daily_limit" for item in summary.outcomes) == 3
+
+
+@pytest.mark.asyncio
+async def test_dry_run_merges_fresh_post_over_pending_copy_without_writes():
+    stale = pending("yellow", text="gm")
+    states = {
+        client_id: AutomationState(None, client_id != "yellow", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["yellow"] = AutomationState(None, False, (stale,))
+    fresh = [{
+        "id": stale.post_id,
+        "text": "Our official mainnet upgrade is now live.",
+        "created_at": "2026-07-22T00:05:00Z",
+        "url": stale.source_url,
+        "is_retweet": False,
+        "is_reply": False,
+        "is_note_tweet": False,
+        "metrics": {"like_count": 5},
+        "media": [],
+        "source_image_url": "",
+    }]
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=fresh),
+        FakeGenerationClient(),
+    ).run(dry_run=True)
+
+    assert repo.records == []
+    assert repo.queues == []
+    assert summary.errors == 0
+    assert any(
+        item == {
+            "client_id": "yellow",
+            "status": "planned",
+            "detail": "daily_news",
+        }
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_reserved_clients_still_poll_and_record_without_queueing():
+    states = {
+        client_id: AutomationState(str(800 + index), True, (pending(client_id),))
+        for index, client_id in enumerate(AUTOMATION_CLIENTS)
+    }
+    posts = [{
+        "id": "999",
+        "text": "A new official ecosystem update is live.",
+        "created_at": "2026-07-22T00:05:00Z",
+        "url": "https://x.com/Yellow/status/999",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_note_tweet": False,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+    }]
+    repo = FakeRepository(states)
+    x_client = FakeXClient(posts=posts)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, x_client, generation).run()
+
+    assert len(x_client.calls) == 4
+    assert all(call[1]["max_results"] == 200 for call in x_client.calls)
+    assert all(call[1]["require_complete"] is True for call in x_client.calls)
+    assert len(repo.records) == 4
+    assert all(record["source_items"] for record in repo.records)
+    assert repo.queues == []
+    assert generation.calls == []
+    assert sum(
+        item["status"] == "already_reserved"
+        for item in summary.outcomes
+    ) == 4
+
+
+@pytest.mark.asyncio
+async def test_signals_reorder_pending_sources_but_never_enter_generation_input():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    ecosystem = pending(
+        "squid",
+        text="A detailed ecosystem update for builders.",
+    )
+    liquidity = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text="A detailed liquidity update for builders.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "799",
+            "source_url": "https://x.com/SquidRouter/status/799",
+            "published_at": "2026-07-22T00:01:00Z",
+        }
+    )
+    states["squid"] = AutomationState(
+        "799",
+        False,
+        (ecosystem, liquidity),
+    )
+    repo = FakeRepository(states)
+    signals = FakeSignalsClient(terms=(("ecosystem", 1.0),))
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        content_signals_client=signals,
+    ).run()
+
+    assert repo.queues[0]["source_content"] == ecosystem.source_content
+    assert len(repo.ranking_evidence) == 1
+    assert repo.ranking_evidence[0]["ranking_version"] == "official-x-demand-v1"
+    assert generation.calls[0]["source_content"] == ecosystem.source_content
+    assert "demand_terms" not in generation.calls[0]
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "signals_used",
+            "detail": "term_count=1",
+        }
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_signal_failure_falls_back_to_official_ranking_without_run_error():
+    states = {
+        client_id: AutomationState(None, client_id != "yellow", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["yellow"] = AutomationState(
+        None,
+        False,
+        (pending("yellow"),),
+    )
+    signals = FakeSignalsClient(error=ContentSignalsError(
+        "content_signals_unavailable",
+        retryable=True,
+    ))
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        content_signals_client=signals,
+    ).run()
+
+    assert len(repo.queues) == 1
+    assert summary.generated == 1
+    assert summary.errors == 0
+    assert any(
+        item == {"client_id": "yellow", "status": "signals_unavailable"}
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_signal_evidence_falls_back_to_official_ranking():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    ecosystem = pending(
+        "squid",
+        text="A detailed ecosystem update for builders.",
+    )
+    liquidity = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text="A detailed liquidity update for builders.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "799",
+            "source_url": "https://x.com/SquidRouter/status/799",
+            "published_at": "2026-07-22T00:01:00Z",
+        }
+    )
+    states["squid"] = AutomationState(None, False, (ecosystem, liquidity))
+    repo = FakeRepository(states)
+    repo.ranking_evidence_error = AutomationRepositoryError(
+        "automation_database_unavailable",
+        retryable=True,
+    )
+    signals = FakeSignalsClient(terms=(("ecosystem", 1.0),))
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        content_signals_client=signals,
+    ).run()
+
+    assert repo.queues[0]["source_content"] == liquidity.source_content
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "signals_unavailable",
+            "detail": "ranking_evidence_not_recorded",
+        }
+        for item in summary.outcomes
+    )

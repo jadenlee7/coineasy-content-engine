@@ -140,7 +140,11 @@ async def test_since_cursor_takes_precedence_and_pagination_is_bounded(monkeypat
                     "type": "video",
                     "preview_image_url": f"https://pbs.twimg.com/media/video-{index}.jpg",
                 }]},
-                "meta": {"next_token": f"page-{index}"},
+                "meta": (
+                    {"next_token": f"page-{index}"}
+                    if index == 1
+                    else {}
+                ),
             })
 
     monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
@@ -157,6 +161,84 @@ async def test_since_cursor_takes_precedence_and_pagination_is_bounded(monkeypat
     assert timeline_calls[1]["pagination_token"] == "page-1"
     assert tweets[0]["media"][0]["type"] == "video"
     assert tweets[0]["source_image_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_timeline_truncation_fails_before_a_cursor_can_advance(monkeypatch):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers["Authorization"] == "Bearer x-token"
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            page = str(params.get("pagination_token") or "first")
+            return _Response({
+                "data": [{
+                    "id": "201" if page == "first" else "200",
+                    "text": f"post {page}",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                }],
+                "meta": {"next_token": f"after-{page}"},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(
+        XTransientError,
+        match="bounded collection window",
+    ):
+        await XClient("x-token").get_recent_tweets(
+            "Yellow",
+            max_results=200,
+            since_id="123456789",
+            require_complete=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_manual_sample_returns_bounded_results_when_more_pages_exist(monkeypatch):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers["Authorization"] == "Bearer x-token"
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            page = str(params.get("pagination_token") or "first")
+            return _Response({
+                "data": [{
+                    "id": "201" if page == "first" else "200",
+                    "text": f"post {page}",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                }],
+                "meta": {"next_token": f"after-{page}"},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets(
+        "Yellow",
+        max_results=30,
+    )
+
+    assert [tweet["id"] for tweet in tweets] == ["201", "200"]
 
 
 @pytest.mark.asyncio

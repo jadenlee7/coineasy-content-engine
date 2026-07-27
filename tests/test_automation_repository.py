@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 
 import httpx
 import pytest
 
+from core.automation.content_signals import ContentSignalsSnapshot, DemandTerm
 from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
@@ -24,6 +25,24 @@ def _repo(handler):
         supabase_url="https://project-ref.supabase.co",
         service_role_key=SERVICE_KEY,
         transport=httpx.MockTransport(handler),
+    )
+
+
+def _signals_snapshot():
+    now = datetime(2026, 7, 27, 6, 0, tzinfo=timezone.utc)
+    return ContentSignalsSnapshot(
+        schema_version="1.0",
+        client_id="squid",
+        generated_at=now,
+        window_start=now - timedelta(days=7),
+        window_end=now,
+        demand_terms=(
+            DemandTerm(
+                term="bridge",
+                weight=0.9,
+                sources=("community", "telegram_content"),
+            ),
+        ),
     )
 
 
@@ -128,6 +147,66 @@ async def test_database_error_body_is_not_exposed():
         )
     assert error.value.code == "automation_database_rpc_failed"
     assert "internal SQL" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (
+            request.url.path
+            == "/rest/v1/rpc/record_content_signal_ranking_evidence"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": captured["target_snapshot_hash"],
+            "reused": False,
+        })
+
+    await _repo(handler).record_ranking_evidence(
+        workspace_id=WORKSPACE_ID,
+        snapshot=_signals_snapshot(),
+        ranking_version="official-x-demand-v1",
+    )
+
+    assert set(captured) == {
+        "target_workspace_id",
+        "target_client_id",
+        "target_snapshot_hash",
+        "target_schema_version",
+        "target_generated_at",
+        "target_window_start",
+        "target_window_end",
+        "target_ranking_version",
+        "target_demand_terms",
+    }
+    assert len(captured["target_snapshot_hash"]) == 64
+    assert captured["target_demand_terms"] == [{
+        "term": "bridge",
+        "weight": 0.9,
+        "sources": ["community", "telegram_content"],
+    }]
+
+
+@pytest.mark.asyncio
+async def test_ranking_evidence_rejects_a_mismatched_database_receipt():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": "0" * 64,
+        })
+
+    with pytest.raises(
+        AutomationRepositoryError,
+        match="invalid_ranking_evidence_receipt",
+    ):
+        await _repo(handler).record_ranking_evidence(
+            workspace_id=WORKSPACE_ID,
+            snapshot=_signals_snapshot(),
+            ranking_version="official-x-demand-v1",
+        )
 
 
 @pytest.mark.asyncio

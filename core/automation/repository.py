@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
 from datetime import date, datetime
@@ -13,6 +15,7 @@ from core.automation.models import (
     PendingSource,
     QueueResult,
 )
+from core.automation.content_signals import ContentSignalsSnapshot
 from core.automation.settings import AUTOMATION_CLIENTS, _supabase_url
 from core.sources.x_client import XClient
 
@@ -188,6 +191,59 @@ class SupabaseAutomationRepository:
             "target_pending_limit": max(1, min(pending_limit, 16)),
         })
         return _state(raw)
+
+    async def record_ranking_evidence(
+        self,
+        *,
+        workspace_id: str,
+        snapshot: ContentSignalsSnapshot,
+        ranking_version: str,
+    ) -> None:
+        if ranking_version != "official-x-demand-v1":
+            raise ValueError("unsupported content signal ranking version")
+        demand_terms = [
+            {
+                "term": term.term,
+                "weight": term.weight,
+                "sources": list(term.sources),
+            }
+            for term in snapshot.demand_terms
+        ]
+        fingerprint = {
+            "schema_version": snapshot.schema_version,
+            "client_id": snapshot.client_id,
+            "generated_at": snapshot.generated_at.isoformat(),
+            "window_start": snapshot.window_start.isoformat(),
+            "window_end": snapshot.window_end.isoformat(),
+            "ranking_version": ranking_version,
+            "demand_terms": demand_terms,
+        }
+        snapshot_hash = hashlib.sha256(json.dumps(
+            fingerprint,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        raw = await self._rpc("record_content_signal_ranking_evidence", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_client_id": self._client(snapshot.client_id),
+            "target_snapshot_hash": snapshot_hash,
+            "target_schema_version": snapshot.schema_version,
+            "target_generated_at": snapshot.generated_at.isoformat(),
+            "target_window_start": snapshot.window_start.isoformat(),
+            "target_window_end": snapshot.window_end.isoformat(),
+            "target_ranking_version": ranking_version,
+            "target_demand_terms": demand_terms,
+        })
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("recorded") is not True
+            or raw.get("snapshot_hash") != snapshot_hash
+        ):
+            raise AutomationRepositoryError(
+                "invalid_ranking_evidence_receipt",
+                retryable=False,
+            )
 
     async def record_sources(
         self,

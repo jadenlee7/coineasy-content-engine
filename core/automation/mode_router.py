@@ -4,7 +4,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 
 TUTORIAL_CLIENTS = frozenset({"yellow", "squid"})
@@ -39,6 +39,8 @@ _LOW_SIGNAL_PATTERN = re.compile(
     r"^(gm|gn|hello|happy\s+\w+day|long week\??|weekend\??|chillin['’]?)[.!?\s]*$",
     re.IGNORECASE,
 )
+_DEMAND_SIGNAL_BONUS_CAP = 3.0
+_ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
 
 
 @dataclass(frozen=True)
@@ -85,16 +87,49 @@ def announcement_score(post: Mapping[str, object]) -> float:
     return score
 
 
+def _demand_signal_score(
+    post: Mapping[str, object],
+    demand_terms: Sequence[tuple[str, float]],
+) -> float:
+    text = str(post.get("text") or "").casefold()
+    total = 0.0
+    for raw_term, raw_weight in demand_terms:
+        term = " ".join(raw_term.casefold().split())
+        if not term or raw_weight <= 0:
+            continue
+        if _ASCII_TERM_PATTERN.fullmatch(term):
+            matched = re.search(
+                rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])",
+                text,
+            ) is not None
+        else:
+            matched = term in text
+        if matched:
+            total += min(float(raw_weight), 1.0) * _DEMAND_SIGNAL_BONUS_CAP
+    return min(total, _DEMAND_SIGNAL_BONUS_CAP)
+
+
 def select_official_candidate(
     posts: Iterable[Mapping[str, object]],
     *,
     skip_patterns: Iterable[str] = (),
+    demand_terms: Iterable[tuple[str, float]] = (),
 ) -> Mapping[str, object] | None:
     normalized_skips = tuple(
         pattern.strip().lower()
         for pattern in skip_patterns
         if isinstance(pattern, str) and pattern.strip()
     )
+    normalized_demand_terms = tuple(
+        (term, float(weight))
+        for term, weight in demand_terms
+        if isinstance(term, str)
+        and term.strip()
+        and isinstance(weight, (int, float))
+        and not isinstance(weight, bool)
+        and math.isfinite(float(weight))
+        and float(weight) > 0
+    )[:20]
     candidates = [
         post
         for post in posts
@@ -112,7 +147,12 @@ def select_official_candidate(
         return None
     return max(
         candidates,
-        key=lambda post: (announcement_score(post), _published_timestamp(post), str(post["id"])),
+        key=lambda post: (
+            announcement_score(post)
+            + _demand_signal_score(post, normalized_demand_terms),
+            _published_timestamp(post),
+            int(str(post["id"])),
+        ),
     )
 
 

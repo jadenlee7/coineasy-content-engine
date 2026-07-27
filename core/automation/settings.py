@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import urlsplit
 
+from core.automation.content_signals import validate_content_signals_url
+
 
 AUTOMATION_CLIENTS = ("yellow", "origintrail", "squid", "babylon")
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -80,6 +82,9 @@ class AutomationSettings:
     daily_draft_limit: int = 4
     enable_tutorials: bool = False
     timezone: str = "Asia/Seoul"
+    easyfarm_content_signals_url: str | None = None
+    easyfarm_content_signals_token: str | None = None
+    easyfarm_content_signals_window_days: int = 7
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AutomationSettings":
@@ -104,6 +109,20 @@ class AutomationSettings:
             raise ValueError(
                 "AUTOMATION_ENABLE_TUTORIALS must remain false; tutorials require a human Studio action"
             )
+
+        signals_url = env.get("EASYFARM_CONTENT_SIGNALS_URL", "").strip()
+        signals_token = env.get("EASYFARM_CONTENT_SIGNALS_TOKEN", "").strip()
+        if bool(signals_url) != bool(signals_token):
+            raise ValueError(
+                "EASYFARM_CONTENT_SIGNALS_URL and "
+                "EASYFARM_CONTENT_SIGNALS_TOKEN must be configured together"
+            )
+        if signals_url:
+            signals_url = validate_content_signals_url(signals_url)
+            if not 32 <= len(signals_token) <= 512:
+                raise ValueError(
+                    "EASYFARM_CONTENT_SIGNALS_TOKEN must contain 32 to 512 characters"
+                )
 
         return cls(
             supabase_url=_supabase_url(_required(env, "SUPABASE_URL")),
@@ -130,4 +149,13 @@ class AutomationSettings:
             ),
             enable_tutorials=enable_tutorials,
             timezone=timezone,
+            easyfarm_content_signals_url=signals_url or None,
+            easyfarm_content_signals_token=signals_token or None,
+            easyfarm_content_signals_window_days=_bounded_int(
+                env,
+                "EASYFARM_CONTENT_SIGNALS_WINDOW_DAYS",
+                7,
+                minimum=1,
+                maximum=31,
+            ),
         )
