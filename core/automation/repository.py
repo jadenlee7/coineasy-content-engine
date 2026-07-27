@@ -14,6 +14,8 @@ from core.automation.models import (
     ClaimedJob,
     PendingSource,
     QueueResult,
+    StyleReference,
+    StyleReferencePack,
 )
 from core.automation.content_signals import ContentSignalsSnapshot
 from core.automation.settings import AUTOMATION_CLIENTS, _supabase_url
@@ -34,6 +36,12 @@ _JOB_STATUSES = frozenset({
     "already_reserved",
     "daily_limit_reached",
 })
+_OFFICIAL_HANDLES = {
+    "yellow": "Yellow",
+    "origintrail": "origin_trail",
+    "squid": "SquidRouter",
+    "babylon": "babylonlabs_io",
+}
 
 
 class AutomationRepositoryError(RuntimeError):
@@ -123,6 +131,70 @@ def _state(value: object) -> AutomationState:
         last_cursor=_cursor(value.get("last_cursor")),
         draft_reserved_today=reserved,
         pending_sources=tuple(_pending_source(item) for item in pending),
+    )
+
+
+def _style_reference(value: object, client_id: str) -> StyleReference:
+    if not isinstance(value, Mapping):
+        raise AutomationRepositoryError("invalid_style_reference_pack", retryable=False)
+    source_item_id = _uuid(value.get("source_item_id"), "style_reference_source_item_id")
+    source_url = value.get("source_url")
+    text = value.get("text")
+    published_at = value.get("published_at")
+    expected_handle = _OFFICIAL_HANDLES[client_id]
+    match = _X_STATUS_RE.fullmatch(source_url) if isinstance(source_url, str) else None
+    if (
+        not match
+        or source_url.split("/")[3] != expected_handle
+        or not isinstance(text, str)
+        or not 1 <= len(text.strip()) <= 600
+        or not isinstance(published_at, str)
+        or not XClient._valid_provider_datetime(published_at)
+    ):
+        raise AutomationRepositoryError("invalid_style_reference_pack", retryable=False)
+    return StyleReference(
+        source_item_id=source_item_id,
+        source_url=source_url,
+        text=text.strip(),
+        published_at=published_at,
+    )
+
+
+def _style_reference_pack(
+    value: object,
+    *,
+    client_id: str,
+    request_id: str,
+    primary_source_item_id: str,
+) -> StyleReferencePack:
+    if not isinstance(value, Mapping):
+        raise AutomationRepositoryError("invalid_style_reference_pack", retryable=False)
+    references = value.get("references")
+    pack_hash = value.get("reference_pack_hash")
+    if (
+        _uuid(value.get("request_id"), "style_reference_request_id") != request_id
+        or _uuid(
+            value.get("primary_source_item_id"),
+            "style_reference_primary_source_item_id",
+        ) != primary_source_item_id
+        or not isinstance(pack_hash, str)
+        or re.fullmatch(r"[a-f0-9]{32}", pack_hash) is None
+        or not isinstance(references, list)
+        or len(references) > 3
+    ):
+        raise AutomationRepositoryError("invalid_style_reference_pack", retryable=False)
+    parsed = tuple(_style_reference(item, client_id) for item in references)
+    if (
+        len({item.source_item_id for item in parsed}) != len(parsed)
+        or primary_source_item_id in {item.source_item_id for item in parsed}
+    ):
+        raise AutomationRepositoryError("invalid_style_reference_pack", retryable=False)
+    return StyleReferencePack(
+        request_id=request_id,
+        primary_source_item_id=primary_source_item_id,
+        reference_pack_hash=pack_hash,
+        references=parsed,
+        reused=value.get("reused") is True,
     )
 
 
@@ -391,6 +463,35 @@ class SupabaseAutomationRepository:
             reused=raw.get("reused") is True,
         )
 
+    async def get_or_create_style_reference_pack(
+        self,
+        *,
+        workspace_id: str,
+        client_id: str,
+        request_id: str,
+        primary_source_item_id: str,
+        reference_limit: int = 3,
+    ) -> StyleReferencePack:
+        normalized_client = self._client(client_id)
+        normalized_request_id = _uuid(request_id, "request_id")
+        normalized_primary_source_item_id = _uuid(
+            primary_source_item_id,
+            "primary_source_item_id",
+        )
+        raw = await self._rpc("get_or_create_official_x_style_reference_pack", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_client_id": normalized_client,
+            "target_request_id": normalized_request_id,
+            "target_primary_source_item_id": normalized_primary_source_item_id,
+            "target_reference_limit": max(0, min(reference_limit, 3)),
+        })
+        return _style_reference_pack(
+            raw,
+            client_id=normalized_client,
+            request_id=normalized_request_id,
+            primary_source_item_id=normalized_primary_source_item_id,
+        )
+
     async def claim_job(
         self,
         *,
@@ -413,6 +514,7 @@ class SupabaseAutomationRepository:
         max_attempts = raw.get("max_attempts")
         client_id = raw.get("client_id")
         content_kind = job_input.get("content_kind")
+        raw_source_item_ids = job_input.get("source_item_ids")
         if (
             raw.get("locked_by") != worker_id
             or not isinstance(attempts, int)
@@ -420,6 +522,8 @@ class SupabaseAutomationRepository:
             or attempts < 1
             or max_attempts < attempts
             or content_kind not in {"daily_news", "article", "tutorial"}
+            or not isinstance(raw_source_item_ids, list)
+            or len(raw_source_item_ids) != 1
         ):
             raise AutomationRepositoryError("invalid_claim_response", retryable=False)
         return ClaimedJob(
@@ -427,6 +531,10 @@ class SupabaseAutomationRepository:
             client_id=self._client(client_id),
             content_kind=content_kind,
             request_id=_uuid(job_input.get("request_id"), "request_id"),
+            primary_source_item_id=_uuid(
+                raw_source_item_ids[0],
+                "primary_source_item_id",
+            ),
             source_content=self._text(job_input.get("source_content"), "source_content", 60_000),
             source_url=self._text(job_input.get("source_url"), "source_url", 2_048),
             source_image_url=self._text(

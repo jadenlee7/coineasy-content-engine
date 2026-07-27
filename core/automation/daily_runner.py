@@ -41,6 +41,7 @@ class AutomationRepository(Protocol):
     async def record_ranking_evidence(self, **kwargs) -> str: ...
     async def record_promotion_candidates(self, **kwargs) -> int: ...
     async def record_sources(self, **kwargs) -> AutomationState: ...
+    async def get_or_create_style_reference_pack(self, **kwargs): ...
     async def queue_job(self, **kwargs) -> QueueResult: ...
     async def claim_job(self, **kwargs) -> ClaimedJob | None: ...
     async def complete_job(self, **kwargs) -> None: ...
@@ -268,6 +269,12 @@ class OfficialXDailyRunner:
             source_item_id=source_item_id,
             content_kind=decision.content_kind,
         )
+        await self.repository.get_or_create_style_reference_pack(
+            workspace_id=self.settings.workspace_id,
+            client_id=client_id,
+            request_id=request_id,
+            primary_source_item_id=source_item_id,
+        )
         queued = await self.repository.queue_job(
             workspace_id=self.settings.workspace_id,
             client_id=client_id,
@@ -401,6 +408,14 @@ class OfficialXDailyRunner:
         summary: DailyRunSummary,
     ) -> None:
         try:
+            reference_pack = (
+                await self.repository.get_or_create_style_reference_pack(
+                    workspace_id=self.settings.workspace_id,
+                    client_id=job.client_id,
+                    request_id=job.request_id,
+                    primary_source_item_id=job.primary_source_item_id,
+                )
+            )
             result = await self.generation_client.generate(
                 client_id=job.client_id,
                 content_kind=job.content_kind,
@@ -409,7 +424,13 @@ class OfficialXDailyRunner:
                 source_url=job.source_url,
                 source_image_url=job.source_image_url,
                 template_style="classic",
+                style_references=reference_pack.references,
+                style_reference_pack_hash=reference_pack.reference_pack_hash,
             )
+        except AutomationRepositoryError as exc:
+            retry_at = self._retry_at(job.attempts) if exc.retryable else None
+            await self._mark_failed(job, worker_id, exc.code, retry_at, summary)
+            return
         except GenerationRequestError as exc:
             retry_at = self._retry_at(job.attempts) if exc.retryable else None
             await self._mark_failed(job, worker_id, exc.code, retry_at, summary)

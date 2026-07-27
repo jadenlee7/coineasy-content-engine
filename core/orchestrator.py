@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional, Sequence
 
 from core.client_config import get_client_config
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
@@ -500,6 +500,7 @@ async def generate_news_card(
     mock_response: Optional[dict] = None,
     template_style: str = "classic",
     source_image_url: str = "",
+    style_references: Sequence[Mapping[str, str]] = (),
 ) -> NewsCardResult:
     """
     End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
@@ -592,6 +593,7 @@ async def generate_news_card(
             mock_response=mock_response,
             source_image=source_image,
             cached_visual_localization=cached_visual_localization,
+            style_references=style_references,
         )
     except Exception as e:
         print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")

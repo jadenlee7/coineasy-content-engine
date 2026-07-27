@@ -9,6 +9,7 @@ from core.automation.generation_client import (
     GenerationRequestError,
     StudioGenerationClient,
 )
+from core.automation.models import StyleReference
 
 
 REQUEST_ID = "11111111-1111-4111-8111-111111111111"
@@ -83,6 +84,46 @@ async def test_complete_note_can_use_article_route_without_assets():
     )
     assert result.reused is True
     assert result.asset_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_automation_forwards_bounded_style_pack_separately_from_source():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    reference = StyleReference(
+        source_item_id="44444444-4444-4444-8444-444444444444",
+        source_url="https://x.com/SquidRouter/status/122",
+        text="A prior official post used only for rhythm.",
+        published_at="2026-07-21T00:00:00Z",
+    )
+    await client.generate(
+        client_id="squid",
+        content_kind="daily_news",
+        request_id=REQUEST_ID,
+        source_content="Squid official product update",
+        source_url="https://x.com/SquidRouter/status/123",
+        style_references=(reference,),
+        style_reference_pack_hash="a" * 32,
+    )
+
+    assert captured["source_url"].endswith("/status/123")
+    assert captured["style_references"] == [reference.generation_payload()]
+    assert captured["style_reference_pack_hash"] == "a" * 32
 
 
 def test_generation_target_and_token_are_fail_closed():

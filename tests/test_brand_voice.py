@@ -49,3 +49,18 @@ def test_news_card_prompt_includes_official_voice_lock_and_factual_boundary():
     assert "Mirror the original post's brevity" in build_brand_voice_prompt(config, "x")
     assert "Need XRP anywhere?" in prompt
     assert "Squid Router" not in prompt
+
+
+def test_runtime_references_are_explicitly_style_only_and_delimited():
+    config = load_client_config("squid")
+    prompt = build_brand_voice_prompt(config, "article", [{
+        "source_url": "https://x.com/SquidRouter/status/123",
+        "text": "A prior post claims a launch on a specific date.",
+    }])
+
+    assert "Runtime Official X Style References" in prompt
+    assert "never factual source material" in prompt
+    assert "Never reuse or infer their claims" in prompt
+    assert "REFERENCE_1_START" in prompt
+    assert "REFERENCE_1_END" in prompt
+    assert "A prior post claims a launch" in prompt

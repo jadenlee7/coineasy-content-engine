@@ -127,18 +127,22 @@ export function requireStudioGenerationAccess(req: Request): Response | null {
   const accessToken = studioAccessToken();
   if (accessToken && hasValidStudioSession(req, accessToken)) return null;
 
-  const automationToken = studioAutomationToken();
-  const candidate = (req.headers.get("x-studio-automation-key") || "").trim();
-  if (
-    automationToken
-    && candidate.length <= 512
-    && constantTimeAccessCodeMatch(candidate, automationToken)
-  ) return null;
+  if (hasValidStudioAutomationAccess(req)) return null;
 
   if (!accessToken) {
     return json({ error: "studio_access_not_configured" }, 503);
   }
   return json({ error: "studio_auth_required" }, 401);
+}
+
+export function hasValidStudioAutomationAccess(req: Request): boolean {
+  const automationToken = studioAutomationToken();
+  const candidate = (req.headers.get("x-studio-automation-key") || "").trim();
+  return Boolean(
+    automationToken
+    && candidate.length <= MAXIMUM_AUTOMATION_TOKEN_LENGTH
+    && constantTimeAccessCodeMatch(candidate, automationToken),
+  );
 }
 
 export function configuredStudioAccessToken(): string | null {

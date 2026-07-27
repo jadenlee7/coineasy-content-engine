@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from core.automation.models import StyleReference
+
 
 _UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -99,6 +101,8 @@ class StudioGenerationClient:
         source_url: str,
         source_image_url: str = "",
         template_style: str = "classic",
+        style_references: tuple[StyleReference, ...] = (),
+        style_reference_pack_hash: str = "",
     ) -> GeneratedCatalogResult:
         if not _UUID_PATTERN.fullmatch(request_id):
             raise ValueError("automation request_id must be a UUID")
@@ -106,6 +110,31 @@ class StudioGenerationClient:
             raise ValueError("unsupported automation client")
         source_content = source_content.strip()
         source_url = _validated_source_url(source_url)
+        if len(style_references) > 3:
+            raise ValueError("style_references must contain at most 3 items")
+        if (style_references or style_reference_pack_hash) and not re.fullmatch(
+            r"[a-f0-9]{32}",
+            style_reference_pack_hash,
+        ):
+            raise ValueError("style_reference_pack_hash is invalid")
+        reference_payload = []
+        reference_ids: set[str] = set()
+        for reference in style_references:
+            if not isinstance(reference, StyleReference):
+                raise ValueError("style reference type is invalid")
+            if (
+                not _UUID_PATTERN.fullmatch(reference.source_item_id)
+                or reference.source_item_id.lower() in reference_ids
+                or not 1 <= len(reference.text.strip()) <= 600
+            ):
+                raise ValueError("style reference is invalid")
+            reference_ids.add(reference.source_item_id.lower())
+            reference_payload.append({
+                "source_item_id": reference.source_item_id.lower(),
+                "source_url": _validated_source_url(reference.source_url),
+                "text": reference.text.strip(),
+                "published_at": reference.published_at,
+            })
 
         if content_kind == "daily_news":
             if len(source_content) < 10 or len(source_content) > 20_000:
@@ -142,6 +171,10 @@ class StudioGenerationClient:
             }
         else:
             raise ValueError("unsupported automation content kind")
+
+        if style_reference_pack_hash and content_kind in {"daily_news", "article"}:
+            payload["style_references"] = reference_payload
+            payload["style_reference_pack_hash"] = style_reference_pack_hash
 
         try:
             async with httpx.AsyncClient(

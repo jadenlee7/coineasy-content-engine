@@ -6,7 +6,17 @@ import {
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
-import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
+import {
+  hasValidStudioAutomationAccess,
+  requireStudioGenerationAccess,
+} from "./_shared/studio-session.mts";
+import {
+  parseStyleReferencePack,
+  StyleReferenceInputError,
+  styleReferenceAudit,
+  type StyleReference,
+  type StyleReferencePack,
+} from "./_shared/style-references.mts";
 import {
   contentCatalogConfig,
   contentStoragePath,
@@ -28,6 +38,8 @@ type NewsCardRequest = {
   source_url?: unknown;
   mock_mode?: unknown;
   template_style?: unknown;
+  style_references?: unknown;
+  style_reference_pack_hash?: unknown;
 };
 
 type RailwayNewsCardResponse = {
@@ -95,6 +107,8 @@ export function newsCardRequestHash(input: {
   sourceUrl: string;
   mockMode: boolean;
   templateStyle: string;
+  styleReferences?: StyleReference[];
+  styleReferencePackHash?: string;
 }): string {
   return createHash("sha256").update(JSON.stringify({
     client_id: input.clientId,
@@ -103,6 +117,8 @@ export function newsCardRequestHash(input: {
     source_url: input.sourceUrl,
     mock_mode: input.mockMode,
     template_style: input.templateStyle,
+    style_references: input.styleReferences || [],
+    style_reference_pack_hash: input.styleReferencePackHash || "",
   }), "utf8").digest("hex");
 }
 
@@ -286,6 +302,23 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!allowedTemplateStyles.has(templateStyle)) {
     return json({ error: "invalid_template_style" }, 400);
   }
+  const submittedStyleReferences = body.style_references !== undefined
+    || body.style_reference_pack_hash !== undefined;
+  if (submittedStyleReferences && !hasValidStudioAutomationAccess(req)) {
+    return json({ error: "style_references_automation_only" }, 403);
+  }
+  let styleReferencePack: StyleReferencePack;
+  try {
+    styleReferencePack = parseStyleReferencePack(
+      body.style_references,
+      body.style_reference_pack_hash,
+    );
+  } catch (error) {
+    const code = error instanceof StyleReferenceInputError
+      ? error.code
+      : "invalid_style_references";
+    return json({ error: code }, 422);
+  }
   const mockMode = body.mock_mode === true;
   const requestHash = newsCardRequestHash({
     clientId,
@@ -294,6 +327,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
     sourceUrl,
     mockMode,
     templateStyle,
+    styleReferences: styleReferencePack.references,
+    styleReferencePackHash: styleReferencePack.packHash,
   });
 
   let existingGeneration: ContentCatalogLookup | null;
@@ -390,6 +425,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_image_url: resolvedSource.imageUrl,
           mock_mode: mockMode,
           template_style: templateStyle,
+          ...(styleReferencePack.packHash
+            ? {
+              style_references: styleReferencePack.references,
+              style_reference_pack_hash: styleReferencePack.packHash,
+            }
+            : {}),
         }),
         signal: deadlineSignal(
           requestDeadline,
@@ -458,6 +499,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       resolvedSource.content,
       resolvedSource.url,
     );
+    const referenceAudit = styleReferenceAudit(styleReferencePack);
     const assetId = randomUUID();
     const attemptedStoragePath = contentStoragePath(
       storageConfig.workspaceId,
@@ -510,9 +552,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
           renderer: "railway",
           storage_backend: "supabase",
           mock_mode: mockMode,
+          ...referenceAudit,
         },
         asset: storedAsset,
-        promptVersion: "news-card@1",
+        promptVersion: "news-card@2",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       catalogCommitted = true;
       return json({

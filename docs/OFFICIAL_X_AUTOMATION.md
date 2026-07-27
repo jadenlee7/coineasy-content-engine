@@ -5,6 +5,21 @@ account into Korean Content Studio drafts. It never approves or publishes
 content. Its only successful terminal state is `needs_review` in the team
 library.
 
+## Dynamic style references
+
+Scheduled review drafts freeze up to three earlier posts from the same active
+official client feed into an immutable reference pack before queueing. The pack
+is keyed by the deterministic request UUID, so retries receive the same prompt.
+
+The references are style-only: they can guide cadence, sentence length, and
+structure, but they are never added to `content_source_links` and cannot supply
+facts, entities, dates, numbers, URLs, or calls to action. Netlify accepts these
+runtime references only from the separate studio automation credential.
+Generated work still stops at `needs_review`; the worker has no publish path.
+
+See `docs/ADR-005-official-x-style-reference-packs.md` for the data and security
+contract.
+
 ## Content decision
 
 | Official source | Scheduled result |

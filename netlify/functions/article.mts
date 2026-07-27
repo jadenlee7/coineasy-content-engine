@@ -1,6 +1,16 @@
 import type { Config, Context } from "@netlify/functions";
 import { createHash } from "node:crypto";
-import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
+import {
+  hasValidStudioAutomationAccess,
+  requireStudioGenerationAccess,
+} from "./_shared/studio-session.mts";
+import {
+  parseStyleReferencePack,
+  StyleReferenceInputError,
+  styleReferenceAudit,
+  type StyleReference,
+  type StyleReferencePack,
+} from "./_shared/style-references.mts";
 import {
   contentCatalogConfig,
   ContentCatalogError,
@@ -15,6 +25,8 @@ type ArticleRequest = {
   source_content?: unknown;
   source_type?: unknown;
   source_url?: unknown;
+  style_references?: unknown;
+  style_reference_pack_hash?: unknown;
 };
 
 type RailwayArticleResponse = {
@@ -69,12 +81,16 @@ export function articleRequestHash(input: {
   sourceContent: string;
   sourceType: string;
   sourceUrl: string;
+  styleReferences?: StyleReference[];
+  styleReferencePackHash?: string;
 }): string {
   return createHash("sha256").update(JSON.stringify({
     client_id: input.clientId,
     source_content: input.sourceContent,
     source_type: input.sourceType,
     source_url: input.sourceUrl,
+    style_references: input.styleReferences || [],
+    style_reference_pack_hash: input.styleReferencePackHash || "",
   }), "utf8").digest("hex");
 }
 
@@ -210,11 +226,30 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!validSourceUrl(sourceUrl)) {
     return json({ error: "invalid_source_url" }, 400);
   }
+  const submittedStyleReferences = body.style_references !== undefined
+    || body.style_reference_pack_hash !== undefined;
+  if (submittedStyleReferences && !hasValidStudioAutomationAccess(req)) {
+    return json({ error: "style_references_automation_only" }, 403);
+  }
+  let styleReferencePack: StyleReferencePack;
+  try {
+    styleReferencePack = parseStyleReferencePack(
+      body.style_references,
+      body.style_reference_pack_hash,
+    );
+  } catch (error) {
+    const code = error instanceof StyleReferenceInputError
+      ? error.code
+      : "invalid_style_references";
+    return json({ error: code }, 422);
+  }
   const requestHash = articleRequestHash({
     clientId,
     sourceContent,
     sourceType,
     sourceUrl,
+    styleReferences: styleReferencePack.references,
+    styleReferencePackHash: styleReferencePack.packHash,
   });
 
   let existingGeneration: ContentCatalogLookup | null;
@@ -273,6 +308,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_content: sourceContent,
           source_type: sourceType,
           source_url: sourceUrl,
+          ...(styleReferencePack.packHash
+            ? {
+              style_references: styleReferencePack.references,
+              style_reference_pack_hash: styleReferencePack.packHash,
+            }
+            : {}),
         }),
         signal: deadlineSignal(
           requestDeadline,
@@ -295,6 +336,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (!isRailwayArticleResponse(result) || result.client_id !== clientId) {
       return json({ error: "invalid_article_response" }, 502);
     }
+    const referenceAudit = styleReferenceAudit(styleReferencePack);
     try {
       const catalog = await recordGeneratedContent(storageConfig, {
         requestId,
@@ -322,9 +364,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
           renderer: "railway",
           storage_backend: "supabase",
           mock_mode: false,
+          ...referenceAudit,
         },
         asset: null,
-        promptVersion: "article@1",
+        promptVersion: "article@2",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       return json({
         ...result,

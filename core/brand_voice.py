@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from core.client_config import ClientConfig
+from core.style_references import build_runtime_style_reference_prompt
 
 
 _CHANNEL_FOR_PIPELINE = {
@@ -17,7 +20,11 @@ def _bullet_block(items: list[str], fallback: str) -> str:
     return "\n".join(f"  - {item}" for item in items)
 
 
-def build_brand_voice_prompt(config: ClientConfig, pipeline: str) -> str:
+def build_brand_voice_prompt(
+    config: ClientConfig,
+    pipeline: str,
+    style_references: Sequence[Mapping[str, str]] = (),
+) -> str:
     """Return LLM-ready official-post voice and source-fidelity rules."""
     voice = config.brand_voice
     channel = _CHANNEL_FOR_PIPELINE.get(pipeline, pipeline)
@@ -41,7 +48,7 @@ def build_brand_voice_prompt(config: ClientConfig, pipeline: str) -> str:
         examples.append(f"  - [{example_type}] {text}{source_note}")
     example_block = "\n".join(examples) or "  - No official-post examples configured."
 
-    return f"""## Official Brand Voice Lock
+    static_prompt = f"""## Official Brand Voice Lock
 
 - Source fidelity target for this output: {fidelity}%.
 - Treat the source as the factual boundary. Do not add benefits, availability,
@@ -67,3 +74,5 @@ Channel rule ({channel}):
 Official-post reference examples:
 {example_block}
 """
+    runtime_prompt = build_runtime_style_reference_prompt(style_references)
+    return static_prompt if not runtime_prompt else f"{static_prompt}\n{runtime_prompt}"
