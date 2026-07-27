@@ -196,23 +196,31 @@ def test_article_pipeline_shortens_one_overweight_x_sentence_with_ellipsis(monke
     assert "https://" not in result["channel_copy"]["x"]
 
 
-def test_article_pipeline_ignores_duplicate_top_level_hashtags(monkeypatch):
+def test_article_pipeline_ignores_unconsumed_opus_metadata_fields(monkeypatch):
     recoverable = deepcopy(VALID_MODEL_RESULT)
     recoverable["hashtags"] = ["#Squid", "#크로스체인"]
+    recoverable["editorial_notes"] = "응답에 포함됐지만 제품 결과에는 사용하지 않는 메타데이터"
+    recoverable["sections"][0]["id"] = "model-section-id"
+    recoverable["sections"][0]["summary"] = "사용하지 않는 섹션 요약"
+    recoverable["telegram"]["cta"] = "사용하지 않는 CTA"
     _install_fake_anthropic(monkeypatch, recoverable)
 
     result = generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
 
     assert "#Squid #크로스체인" in result["channel_copy"]["telegram"]
     assert "hashtags" not in result
+    assert "editorial_notes" not in result
+    assert set(result["sections"][0]) == {"id", "heading", "body"}
+    assert result["sections"][0]["id"] == "section-1"
+    assert "사용하지 않는 CTA" not in result["channel_copy"]["telegram"]
 
 
-def test_article_pipeline_still_rejects_unknown_top_level_fields(monkeypatch):
+def test_article_pipeline_still_rejects_missing_required_top_level_fields(monkeypatch):
     invalid = deepcopy(VALID_MODEL_RESULT)
-    invalid["unsupported_claims"] = ["모델이 추가한 필드"]
+    del invalid["sections"]
     _install_fake_anthropic(monkeypatch, invalid)
 
-    with pytest.raises(ArticleOutputError, match=r"extra=\['unsupported_claims'\]"):
+    with pytest.raises(ArticleOutputError, match=r"missing=\['sections'\]"):
         generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
 
 
