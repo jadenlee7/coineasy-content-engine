@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import articleHandler from "../netlify/functions/article.mts";
+import articleBannerHandler from "../netlify/functions/article-banner.mts";
 import editableCardHandler from "../netlify/functions/editable-card.mts";
 import newsCardHandler from "../netlify/functions/news-card.mts";
 import studioSessionHandler, {
@@ -239,13 +240,16 @@ test("all privileged relays reject unauthenticated requests before fetching upst
       const responses = await Promise.all([
         newsCardHandler(request("/api/news-card/yellow"), { params: { clientId: "yellow" } } as never),
         articleHandler(request("/api/article/yellow"), { params: { clientId: "yellow" } } as never),
+        articleBannerHandler(request("/api/article-banner/yellow"), {
+          params: { clientId: "yellow" }, site: { url: "https://console.example" },
+        } as never),
         tutorialHandler(request("/api/tutorial/yellow"), { params: { clientId: "yellow" } } as never),
         editableCardHandler(request("/api/editable-card/yellow"), {
           params: { clientId: "yellow" }, site: { url: "https://console.example" },
         } as never),
       ]);
 
-      assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401]);
+      assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401, 401]);
       for (const response of responses) {
         assert.deepEqual(await response.json(), { error: "studio_auth_required" });
       }

@@ -273,6 +273,12 @@
     .preview-shell[data-client="origintrail"] { --brand-primary:#6344df; --brand-secondary:#6344df; --brand-bg:#0c2246; --brand-ink:#17171a; --brand-font:"Gmarket Sans", "Pretendard Variable", sans-serif; }
     .preview-shell[data-client="squid"] { --brand-primary:#e6fa36; --brand-secondary:#bc8ee4; --brand-bg:#1a0e2e; --brand-ink:#000; --brand-font:"Bagoss Condensed", "Pretendard Variable", sans-serif; }
     .preview-shell[data-client="babylon"] { --brand-primary:#ce6533; --brand-secondary:#f7931a; --brand-bg:#12495e; --brand-ink:#12495e; --brand-font:Inter, "Pretendard Variable", sans-serif; }
+    .preview-shell[data-output="article-banner"] {
+      width: min(100%, 1000px);
+      aspect-ratio: 1200 / 630;
+      border-radius: 14px;
+      background: var(--brand-bg);
+    }
 
     .mock-card { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4.45%; font-family: var(--brand-font); }
     .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2.4%; }
@@ -704,7 +710,7 @@
             </div>
             <img class="result-image" id="result-image" alt="생성된 브랜드 뉴스 카드" hidden>
             <div class="loading" id="loading" hidden>
-              <div class="loading-inner"><div class="spinner"></div><strong>실제 카드를 렌더링하고 있습니다</strong><span>AI 요약과 고해상도 PNG 생성에 잠시 시간이 걸릴 수 있어요.</span></div>
+              <div class="loading-inner"><div class="spinner"></div><strong id="loading-title">실제 카드를 렌더링하고 있습니다</strong><span id="loading-note">AI 요약과 고해상도 PNG 생성에 잠시 시간이 걸릴 수 있어요.</span></div>
             </div>
           </div>
         </div>
@@ -884,7 +890,7 @@
         archived: "보관됨"
       };
 
-      const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
+      const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", articleBannerPngUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
       const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, performanceRequest: { x: 0, telegram: 0 } };
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
@@ -939,6 +945,8 @@
       const tutorialMockWarning = document.getElementById("tutorial-mock-warning");
       const tutorialGallery = document.getElementById("tutorial-gallery");
       const loading = document.getElementById("loading");
+      const loadingTitle = document.getElementById("loading-title");
+      const loadingNote = document.getElementById("loading-note");
       const download = document.getElementById("download");
       const downloadSvg = document.getElementById("download-svg");
       const specDetails = document.getElementById("spec-details");
@@ -1723,6 +1731,7 @@
         state.svgUrl = "";
         downloadSvg.hidden = true;
         downloadSvg.removeAttribute("href");
+        downloadSvg.textContent = "Figma 편집용 SVG";
       }
 
       function clearTutorialResult() {
@@ -1733,7 +1742,18 @@
         tutorialMockWarning.hidden = true;
       }
 
+      function clearArticleBanner() {
+        if (state.articleBannerPngUrl) URL.revokeObjectURL(state.articleBannerPngUrl);
+        state.articleBannerPngUrl = "";
+        state.imageUrl = "";
+        shell.removeAttribute("data-output");
+        resultImage.hidden = true;
+        resultImage.removeAttribute("src");
+        resultImage.alt = "생성된 브랜드 뉴스 카드";
+      }
+
       function clearArticleResult() {
+        clearArticleBanner();
         articleResult.hidden = true;
         articleTitle.textContent = "";
         articleLead.textContent = "";
@@ -1824,6 +1844,89 @@
           downloadSvg.hidden = false;
           return true;
         } catch {
+          return false;
+        }
+      }
+
+      function rasterizeArticleBanner(svgUrl) {
+        return new Promise((resolve, reject) => {
+          const image = new Image();
+          image.decoding = "async";
+          image.onload = () => {
+            const canvas = document.createElement("canvas");
+            canvas.width = 1200;
+            canvas.height = 630;
+            const context = canvas.getContext("2d");
+            if (!context) {
+              reject(new Error("article_banner_canvas_unavailable"));
+              return;
+            }
+            context.drawImage(image, 0, 0, 1200, 630);
+            canvas.toBlob(blob => {
+              if (blob) resolve(blob);
+              else reject(new Error("article_banner_png_failed"));
+            }, "image/png");
+          };
+          image.onerror = () => reject(new Error("article_banner_svg_invalid"));
+          image.src = svgUrl;
+        });
+      }
+
+      async function prepareArticleBanner(payload, sessionEpoch, requestContext) {
+        let localSvgUrl = "";
+        try {
+          const sources = Array.isArray(payload.source_map) ? payload.source_map : [];
+          const sourceUrl = sources.find(source => typeof source?.source_url === "string")?.source_url || "";
+          const response = await fetch(`/api/article-banner/${encodeURIComponent(requestContext.client)}`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: payload.title,
+              lead: payload.lead,
+              source_url: sourceUrl,
+              date: today()
+            })
+          });
+          if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
+          if (!response.ok) {
+            const errorPayload = await response.json().catch(() => ({}));
+            if (handleStudioAccessResponse(response, errorPayload)) return null;
+            return false;
+          }
+          const svgBlob = await response.blob();
+          if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return null;
+          if (!svgBlob.type.includes("image/svg+xml")) return false;
+          localSvgUrl = URL.createObjectURL(svgBlob);
+          const pngBlob = await rasterizeArticleBanner(localSvgUrl);
+          if (sessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) {
+            URL.revokeObjectURL(localSvgUrl);
+            return null;
+          }
+
+          clearArticleBanner();
+          clearEditableDownload();
+          state.svgUrl = localSvgUrl;
+          localSvgUrl = "";
+          state.articleBannerPngUrl = URL.createObjectURL(pngBlob);
+          state.imageUrl = state.articleBannerPngUrl;
+          shell.dataset.output = "article-banner";
+          visualStage.hidden = false;
+          mockCard.hidden = true;
+          resultImage.src = state.articleBannerPngUrl;
+          resultImage.alt = `${BRAND[requestContext.client].name} 아티클 배너: ${payload.title}`;
+          resultImage.hidden = false;
+          download.href = state.articleBannerPngUrl;
+          download.download = `${requestContext.client}-article-banner-1200x630.png`;
+          download.textContent = "배너 PNG 저장";
+          download.hidden = false;
+          downloadSvg.href = state.svgUrl;
+          downloadSvg.download = `${requestContext.client}-article-banner-1200x630-figma.svg`;
+          downloadSvg.textContent = "Figma 배너 SVG";
+          downloadSvg.hidden = false;
+          return true;
+        } catch {
+          if (localSvgUrl) URL.revokeObjectURL(localSvgUrl);
           return false;
         }
       }
@@ -1971,17 +2074,22 @@
         );
       }
 
-      function renderArticleResult(payload) {
+      function renderArticleResult(payload, requestContext) {
         const sections = Array.isArray(payload.sections) ? payload.sections : [];
         const takeaways = Array.isArray(payload.key_takeaways) ? payload.key_takeaways : [];
         if (!payload.title || !payload.lead || sections.length < 3 || takeaways.length < 3) {
           throw new Error("article_result_missing");
         }
-        visualStage.hidden = true;
+        shell.dataset.client = requestContext.client;
+        shell.dataset.output = "article-banner";
+        visualStage.hidden = false;
+        mockCard.hidden = true;
+        resultImage.hidden = true;
         clearTutorialResult();
         resetReviewState();
         clearEditableDownload();
         download.hidden = true;
+        resultTitleText.textContent = "아티클 발행 패키지";
         articleTitle.textContent = payload.title;
         articleLead.textContent = payload.lead;
         articleSections.innerHTML = sections.map(section =>
@@ -2006,7 +2114,7 @@
         channelCopy.hidden = !(telegramCopy.value || xCopy.value);
         state.hasResult = true;
         markLibraryStale();
-        setStatus("아티클 초안과 Markdown, 텔레그램·X 문구가 완성되었습니다. 게시 전에 원문과 대조해주세요.", "success");
+        setStatus("아티클 초안이 완성되었습니다. 1200×630 발행 배너를 준비하고 있습니다…");
       }
 
       function setStatus(message, type = "") {
@@ -2310,6 +2418,14 @@
 
         generate.disabled = true;
         loading.hidden = false;
+        loadingTitle.textContent = requestContext.mode === "article"
+          ? "아티클과 발행 배너를 준비하고 있습니다"
+          : requestContext.mode === "tutorial"
+            ? "튜토리얼 캐러셀을 렌더링하고 있습니다"
+            : "실제 카드를 렌더링하고 있습니다";
+        loadingNote.textContent = requestContext.mode === "article"
+          ? "원고가 완성되면 1200×630 PNG와 Figma SVG를 이어서 만듭니다."
+          : "AI 구성과 고해상도 PNG 생성에 잠시 시간이 걸릴 수 있어요.";
         download.hidden = true;
         download.textContent = "PNG 저장";
         clearEditableDownload();
@@ -2347,8 +2463,24 @@
             handleStudioAccessResponse(articleResponse, articlePayload);
             if (!generationContextIsCurrent(requestContext)) return;
             if (!articleResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: articlePayload, status: articleResponse.status });
-            renderArticleResult(articlePayload);
+            renderArticleResult(articlePayload, requestContext);
             state.generationRequest = null;
+            const bannerReady = await prepareArticleBanner(articlePayload, requestSessionEpoch, requestContext);
+            if (
+              bannerReady === null
+              || requestSessionEpoch !== state.sessionEpoch
+              || !generationContextIsCurrent(requestContext)
+            ) return;
+            if (bannerReady) {
+              resultKind.textContent = `· 실제 Railway 원고 · ${articlePayload.sections.length}개 섹션 · 배너 1200×630`;
+              resultNote.textContent = `${BRAND[requestContext.client].name} 원문에 근거한 아티클 초안과 발행 배너입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(articlePayload.duration_ms / 1000).toFixed(1)}초`;
+              setStatus("아티클 초안·Markdown·게시 문구와 1200×630 배너가 완성되었습니다. PNG 또는 Figma SVG를 저장해 바로 발행할 수 있습니다.", "success");
+            } else {
+              clearArticleBanner();
+              visualStage.hidden = true;
+              resultNote.textContent = `${BRAND[requestContext.client].name} 아티클 초안은 완성됐지만 발행 배너를 준비하지 못했습니다. 원고와 게시 문구는 그대로 사용할 수 있습니다.`;
+              setStatus("아티클 원고는 완성됐지만 배너를 준비하지 못했습니다. 원고는 사용할 수 있으며, 배너만 다시 준비하려면 같은 내용으로 다시 생성해주세요.", "review");
+            }
             document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
             return;
           }
