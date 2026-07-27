@@ -1,6 +1,8 @@
+import inspect
 from types import SimpleNamespace
 
 import pytest
+from anthropic.resources.messages import Messages
 
 from core.llm.anthropic_compat import (
     create_message,
@@ -36,6 +38,11 @@ def _call(model: str, *, timeout=None):
         timeout=timeout,
     )
     return client.messages.kwargs
+
+
+def test_installed_anthropic_sdk_accepts_thinking_configuration():
+    """Keep the runtime SDK aligned with the Opus 5 compatibility request."""
+    assert "thinking" in inspect.signature(Messages.create).parameters
 
 
 def test_opus_4_8_omits_deprecated_temperature():
