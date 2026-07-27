@@ -38,7 +38,8 @@ _MAX_CLAIMS_PER_RUN = 8
 
 class AutomationRepository(Protocol):
     async def get_state(self, **kwargs) -> AutomationState: ...
-    async def record_ranking_evidence(self, **kwargs) -> None: ...
+    async def record_ranking_evidence(self, **kwargs) -> str: ...
+    async def record_promotion_candidates(self, **kwargs) -> int: ...
     async def record_sources(self, **kwargs) -> AutomationState: ...
     async def queue_job(self, **kwargs) -> QueueResult: ...
     async def claim_job(self, **kwargs) -> ClaimedJob | None: ...
@@ -311,7 +312,7 @@ class OfficialXDailyRunner:
             summary.add(client_id, "signals_unavailable")
             return ()
         try:
-            await self.repository.record_ranking_evidence(
+            snapshot_hash = await self.repository.record_ranking_evidence(
                 workspace_id=self.settings.workspace_id,
                 snapshot=snapshot,
                 ranking_version="official-x-demand-v1",
@@ -323,6 +324,29 @@ class OfficialXDailyRunner:
                 "ranking_evidence_not_recorded",
             )
             return ()
+        if snapshot.promotion_candidates:
+            try:
+                recommendation_count = (
+                    await self.repository.record_promotion_candidates(
+                        workspace_id=self.settings.workspace_id,
+                        snapshot=snapshot,
+                        snapshot_hash=snapshot_hash,
+                    )
+                )
+                summary.add(
+                    client_id,
+                    "promotion_candidates_recorded",
+                    (
+                        f"candidate_count={len(snapshot.promotion_candidates)}"
+                        f",recommendation_count={recommendation_count}"
+                    ),
+                )
+            except Exception:
+                summary.add(
+                    client_id,
+                    "promotion_candidates_unavailable",
+                    "performance_evidence_not_recorded",
+                )
         terms = tuple(
             (item.term, item.weight)
             for item in snapshot.demand_terms

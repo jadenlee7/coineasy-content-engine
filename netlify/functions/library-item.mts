@@ -5,6 +5,7 @@ import {
   getContentLibraryItem,
   isCatalogUuid,
 } from "./_shared/content-catalog.mts";
+import { listContentPromotionRecommendations } from "./_shared/content-promotions.mts";
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
 
 export default async (req: Request, context: Context): Promise<Response> => {
@@ -25,7 +26,28 @@ export default async (req: Request, context: Context): Promise<Response> => {
   try {
     const item = await getContentLibraryItem(config, contentItemId);
     if (!item) return studioSessionJson({ error: "library_item_not_found" }, 404);
-    return studioSessionJson(item, 200);
+    try {
+      const promotionSummary = await listContentPromotionRecommendations(
+        config,
+        contentItemId,
+        item.current_version_id,
+      );
+      return studioSessionJson({
+        ...item,
+        promotion_recommendations: promotionSummary.items,
+        manual_publications: promotionSummary.publications,
+        promotions_available: true,
+      }, 200);
+    } catch {
+      // Performance evidence is an optional editorial aid. A stale or
+      // unavailable signal bridge must never hide the durable content item.
+      return studioSessionJson({
+        ...item,
+        promotion_recommendations: [],
+        manual_publications: [],
+        promotions_available: false,
+      }, 200);
+    }
   } catch (error) {
     const code = error instanceof ContentCatalogError
       ? error.code

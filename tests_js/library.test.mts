@@ -279,6 +279,14 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
     if (request.url.endsWith("/rest/v1/rpc/get_content_library_item")) {
       return Response.json(detailRpcResult());
     }
+    if (request.url.endsWith("/rest/v1/rpc/list_content_promotion_recommendations")) {
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        target_workspace_id: WORKSPACE_ID,
+        target_content_item_id: ITEM_ID,
+        target_content_version_id: VERSION_ID,
+      });
+      return Response.json({ items: [], publications: [] });
+    }
     if (request.url.includes("/storage/v1/object/sign/content-studio/")) {
       return Response.json({
         signedURL: `/object/sign/content-studio/${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png?token=endpoint-signed`,
@@ -330,6 +338,9 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
       assert.equal(detail.headers.get("vary"), "Cookie");
       const detailPayload = await detail.json() as Record<string, any>;
       assert.match(detailPayload.assets[0].url, /token=endpoint-signed/);
+      assert.deepEqual(detailPayload.promotion_recommendations, []);
+      assert.deepEqual(detailPayload.manual_publications, []);
+      assert.equal(detailPayload.promotions_available, true);
       assert.doesNotMatch(JSON.stringify(detailPayload), /storage_path/);
     });
   } finally {

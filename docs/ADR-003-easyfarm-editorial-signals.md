@@ -4,6 +4,12 @@
 **Date:** 2026-07-27
 **Deciders:** CoinEasy product, community, and content operations leads
 
+The V1 aggregate-ranking, privacy, and fail-open decisions in this ADR remain
+active. Its former future design for exact attribution by correlation ID is
+superseded by [ADR-004](ADR-004-content-performance-promotions.md), which uses
+an exact canonical public URL recorded on the current immutable Content Studio
+version and does not add a cross-product write API.
+
 ## Context
 
 CoinEasy operates four global official-X sources in Content Engine:
@@ -139,13 +145,13 @@ Yellow and Squid may receive a Tutorial recommendation, but a reviewer must stil
 start the Tutorial from Content Studio. OriginTrail and Babylon Tutorial generation
 remains unsupported. V1 does not weaken `AUTOMATION_ENABLE_TUTORIALS=false`.
 
-Exact reaction-based promotion requires content-level attribution that does not yet
-exist across the products. Phase 2 must add a non-PII correlation ID from a Content
-Studio version to its Telegram message and Typefully draft/X post, wait for a
-12–72-hour observation window, and then create an idempotent promotion reservation.
-Until that contract exists, V1 ranks topics and sources but does not claim that a
-specific Daily News asset automatically became an Article or Tutorial because of
-its measured performance.
+Exact reaction-based promotion is now specified by ADR-004. A team member records
+the canonical URL of an already-public local X or Telegram post on the exact current
+Content Studio version. Content Engine then joins that URL to a same-client,
+same-channel EasyFarm aggregate candidate after the 12–72-hour observation window.
+The join needs neither the previously proposed correlation ID nor a cross-product
+write API. V1 ranking by aggregate demand remains independent of that Phase 2
+recommendation path.
 
 ## Options Considered
 
@@ -194,8 +200,8 @@ the community event ledger.
   source evidence.
 - EasyFarm and Content Engine can deploy and fail independently.
 - Operators must provision and rotate one new dedicated bridge secret.
-- V1 improves Daily News selection and preserves deeper-content recommendations,
-  but exact asset-to-performance promotion remains a Phase 2 deliverable.
+- V1 improves Daily News selection. Exact asset-to-performance recommendations
+  are the separate, review-only ADR-004 path.
 - Automatic approval, Telegram posting, X publishing, and Figma mutation remain
   outside this bridge.
 

@@ -479,6 +479,26 @@
     .library-action-status { min-height: 16px; margin-top: 10px; color: #4f5661; font-size: 10px; line-height: 1.5; }
     .library-action-status.error { color: #a93131; }
     .library-action-status.success { color: #16744a; }
+    .library-performance { margin-top: 20px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #eefcf7; box-shadow: 3px 3px 0 rgba(35,35,35,.12); }
+    .library-performance h3 { margin: 0; font-size: 13px; }
+    .library-performance > p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .library-performance-list { display: grid; gap: 9px; margin-top: 12px; }
+    .library-performance-card { padding: 12px; border: 1px solid #9ccfb9; border-radius: 9px; background: #fff; }
+    .library-performance-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .library-performance-card strong { font-size: 11px; }
+    .library-performance-score { color: #116446; font-size: 11px; font-weight: 850; }
+    .library-performance-card p { margin: 7px 0 0; color: #4f5661; font-size: 10px; line-height: 1.55; }
+    .library-performance-card a { display: inline-block; margin-top: 8px; color: #145ea8; font-size: 9px; overflow-wrap: anywhere; }
+    .library-performance-note { display: inline-flex; margin-top: 9px; padding: 5px 7px; border-radius: 6px; color: #7b531c; background: #fff3dc; font-size: 9px; font-weight: 750; }
+    .library-publication { margin-top: 20px; padding: 16px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+    .library-publication h3 { margin: 0; font-size: 13px; }
+    .library-publication > p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .library-publication-grid { display: grid; gap: 8px; margin-top: 12px; }
+    .library-publication-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+    .library-publication-row label { font-size: 10px; font-weight: 800; }
+    .library-publication-row input { min-width: 0; height: 38px; padding: 0 10px; border: 1.5px solid var(--line); border-radius: 7px; color: var(--ink); background: #fff; font-size: 10px; }
+    .library-publication-row button { min-height: 38px; padding: 0 11px; border: 1.5px solid var(--outline); border-radius: 7px; color: var(--ink); background: var(--accent); cursor: pointer; font-size: 10px; font-weight: 800; }
+    .library-publication-row button:disabled { cursor: wait; opacity: .55; }
     .library-figma { margin-top: 20px; padding: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
     .library-figma h3 { margin: 0 0 8px; font-size: 12px; }
     .library-figma a { display: inline-block; margin: 4px 10px 0 0; color: #145ea8; font-size: 10px; overflow-wrap: anywhere; }
@@ -508,6 +528,7 @@
       .library-filters { grid-template-columns: 1fr; }
       .library-card { grid-template-columns: 76px minmax(0, 1fr); }
       .library-thumb { width: 76px; }
+      .library-publication-row { grid-template-columns: 1fr; }
       .controls { padding: 20px; }
       .client-grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr; }
@@ -864,7 +885,7 @@
       };
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
-      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0 };
+      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, performanceRequest: { x: 0, telegram: 0 } };
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
       const accessCode = document.getElementById("access-code");
@@ -1032,6 +1053,8 @@
       function resetLibraryDetail(message = "왼쪽 목록에서 확인할 콘텐츠를 눌러주세요.") {
         libraryState.detailRequest += 1;
         libraryState.exportRequest += 1;
+        libraryState.performanceRequest.x += 1;
+        libraryState.performanceRequest.telegram += 1;
         libraryState.activeId = "";
         libraryState.activeDetail = null;
         libraryDetail.innerHTML = "";
@@ -1225,10 +1248,22 @@
         };
       }
 
-      function storedTutorialRequest(rawDetail) {
+      function storedPromotionRequest(rawDetail, recommendationId) {
         const detail = plainObject(rawDetail);
-        if (detail.content_kind === "tutorial" || !TUTORIAL_CLIENTS.has(detail.client_id)) return null;
+        if (detail.content_kind !== "daily_news" || typeof recommendationId !== "string") return null;
         const currentVersion = plainObject(detail.current_version);
+        const contentVersionId = detail.current_version_id || currentVersion.content_version_id;
+        const recommendation = (Array.isArray(detail.promotion_recommendations) ? detail.promotion_recommendations : [])
+          .map(plainObject)
+          .find(item =>
+            item.recommendation_id === recommendationId
+            && item.content_version_id === contentVersionId
+            && item.source_ready === true
+          );
+        if (!recommendation) return null;
+        const targetKind = recommendation.target_kind;
+        if (!["article", "tutorial"].includes(targetKind)) return null;
+        if (targetKind === "tutorial" && !TUTORIAL_CLIENTS.has(detail.client_id)) return null;
         const content = plainObject(currentVersion.content || detail.content);
         const rawSource = content.source;
         const source = plainObject(rawSource);
@@ -1241,12 +1276,69 @@
           typeof rawSource === "string" ? rawSource : ""
         ].find(value => typeof value === "string" && value.trim());
         const normalizedText = typeof sourceText === "string" ? sourceText.trim() : "";
-        if (normalizedText.length < 10 || normalizedText.length > 20_000) return null;
+        if (normalizedText.length < 300 || normalizedText.length > 20_000) return null;
         return {
           clientId: detail.client_id,
+          targetKind,
           sourceContent: normalizedText,
           sourceUrl: safeWebUrl(source.url || source.source_url || content.source_url)
         };
+      }
+
+      function promotionReasonLabel(code) {
+        return {
+          high_reach: "도달 상위",
+          high_interaction: "참여 상위",
+          community_alignment: "커뮤니티 관심 일치",
+          tutorial_learning_signal: "학습 수요 확인"
+        }[code] || "";
+      }
+
+      function renderPromotionMarkup(rawDetail, isMock) {
+        if (isMock) return "";
+        const detail = plainObject(rawDetail);
+        if (detail.content_kind !== "daily_news") return "";
+        if (detail.promotions_available === false) {
+          return `<section class="library-performance"><h3>성과 기반 다음 콘텐츠</h3><p>성과 추천 정보를 지금 불러오지 못했습니다. 저장된 콘텐츠와 게시 링크 연결은 그대로 사용할 수 있습니다.</p></section>`;
+        }
+        const recommendations = (Array.isArray(detail.promotion_recommendations) ? detail.promotion_recommendations : [])
+          .map(plainObject)
+          .filter(item => ["article", "tutorial"].includes(item.target_kind) && ["x", "telegram"].includes(item.channel));
+        if (!recommendations.length) return "";
+        const cards = recommendations.map(item => {
+          const targetLabel = item.target_kind === "tutorial" ? "튜토리얼" : "아티클";
+          const channelLabel = item.channel === "telegram" ? "Telegram" : "X";
+          const score = Number.isFinite(Number(item.score))
+            ? `${Math.round(Math.max(0, Math.min(1, Number(item.score))) * 100)}점`
+            : "";
+          const reasons = (Array.isArray(item.reason_codes) ? item.reason_codes : [])
+            .map(promotionReasonLabel)
+            .filter(Boolean)
+            .join(" · ");
+          const publicUrl = safeWebUrl(item.source_url);
+          const request = storedPromotionRequest(detail, item.recommendation_id);
+          const action = request
+            ? `<button class="library-action-button primary" type="button" data-library-promotion="${escapeHtml(item.recommendation_id)}">${targetLabel} 입력으로 넘기기</button>`
+            : `<span class="library-performance-note">이 추천에는 생성에 필요한 공식 원문 근거가 300자 이상 저장되지 않았습니다.</span>`;
+          return `<article class="library-performance-card"><div class="library-performance-card-head"><strong>${escapeHtml(channelLabel)} 반응 기반 ${escapeHtml(targetLabel)} 추천</strong><span class="library-performance-score">${escapeHtml(score)}</span></div><p>${escapeHtml(reasons || "동일 클라이언트·채널 기준 성과 임계값을 통과했습니다.")}</p>${publicUrl ? `<a href="${escapeHtml(publicUrl)}" target="_blank" rel="noopener noreferrer">연결한 게시물 열기</a>` : ""}<div class="library-action-buttons">${action}</div></article>`;
+        }).join("");
+        return `<section class="library-performance"><h3>성과 기반 다음 콘텐츠</h3><p>연결한 공개 게시물의 12–72시간 반응을 같은 클라이언트·채널 안에서 비교했습니다. 추천은 자동 게시되지 않으며 공식 원문 확인 후 시작됩니다.</p><div class="library-performance-list">${cards}</div></section>`;
+      }
+
+      function renderPublicationObservationMarkup(rawDetail, isMock) {
+        const detail = plainObject(rawDetail);
+        if (isMock || detail.content_kind !== "daily_news") return "";
+        const currentVersion = plainObject(detail.current_version);
+        const contentVersionId = detail.current_version_id || currentVersion.content_version_id;
+        const publications = (Array.isArray(detail.manual_publications) ? detail.manual_publications : [])
+          .map(plainObject)
+          .filter(item => item.content_version_id === contentVersionId);
+        const row = (channel, label, placeholder) => {
+          const publication = publications.find(item => item.channel === channel);
+          const externalUrl = publication ? safeWebUrl(publication.external_url) : "";
+          return `<div class="library-publication-row"><label for="library-publication-${channel}">${label}</label><input id="library-publication-${channel}" type="url" autocomplete="url" placeholder="${placeholder}"${externalUrl ? ` value="${escapeHtml(externalUrl)}" readonly` : ""}><button type="button" data-library-publication="${channel}"${externalUrl ? " disabled" : ""}>${externalUrl ? "연결됨" : "연결"}</button></div>`;
+        };
+        return `<section class="library-publication"><h3>게시 후 성과 연결</h3><p>직접 게시한 공개 링크를 연결하면 다음 자동 수집부터 반응을 확인합니다. 이 버튼은 게시를 실행하거나 게시물을 수정하지 않습니다.</p><div class="library-publication-grid">${row("x", "X 링크", "https://x.com/.../status/...")}${row("telegram", "Telegram 링크", "https://t.me/channel/123")}</div></section>`;
       }
 
       function renderLibraryDetail(payload) {
@@ -1274,18 +1366,21 @@
         const figmaMarkup = figmaLinks.length ? `<section class="library-figma"><h3>Figma 연결</h3>${figmaLinks.map((link, index) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Figma 작업 ${index + 1} 열기</a>`).join("")}</section>` : "";
         const sourceMarkup = renderSourceEvidence(content);
         const editableRequest = storedEditableRequest(detail);
-        const tutorialRequest = isMock ? null : storedTutorialRequest(detail);
         const actionButtons = [
-          editableRequest ? `<button class="library-action-button primary" type="button" data-library-editable>Figma 편집용 SVG 받기</button>` : "",
-          tutorialRequest ? `<button class="library-action-button" type="button" data-library-tutorial>이 원문으로 튜토리얼 만들기</button>` : ""
+          editableRequest ? `<button class="library-action-button primary" type="button" data-library-editable>Figma 편집용 SVG 받기</button>` : ""
         ].filter(Boolean).join("");
         const actionMarkup = actionButtons
-          ? `<section class="library-actions"><h3>다음 작업</h3><p>저장된 원문과 현재 버전을 기준으로 이어서 작업합니다. 승인이나 게시 상태는 바뀌지 않습니다.</p><div class="library-action-buttons">${actionButtons}</div><div class="library-action-status" data-library-action-status role="status" aria-live="polite"></div></section>`
+          ? `<section class="library-actions"><h3>디자인 작업</h3><p>저장된 현재 버전으로 편집 파일을 준비합니다. 승인이나 게시 상태는 바뀌지 않습니다.</p><div class="library-action-buttons">${actionButtons}</div></section>`
+          : "";
+        const promotionMarkup = renderPromotionMarkup(detail, isMock);
+        const publicationMarkup = renderPublicationObservationMarkup(detail, isMock);
+        const actionStatusMarkup = actionMarkup || promotionMarkup || publicationMarkup
+          ? `<div class="library-action-status" data-library-action-status role="status" aria-live="polite"></div>`
           : "";
         const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
         libraryState.activeDetail = detail;
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${sourceMarkup}${copyMarkup}${actionMarkup}${figmaMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}<section class="library-content">${renderStoredContent(contentKind, content)}</section>${sourceMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }
@@ -1296,6 +1391,8 @@
         libraryState.activeId = contentId;
         libraryState.activeDetail = null;
         libraryState.exportRequest += 1;
+        libraryState.performanceRequest.x += 1;
+        libraryState.performanceRequest.telegram += 1;
         renderLibraryList();
         libraryDetail.innerHTML = "";
         libraryDetail.hidden = true;
@@ -1408,31 +1505,117 @@
         }
       }
 
-      function continueStoredTutorial() {
-        if (generate.disabled) {
-          setLibraryActionStatus("현재 생성 작업이 끝난 뒤 튜토리얼로 이어갈 수 있습니다.", "error");
+      async function recordStoredPublication(button) {
+        const detail = libraryState.activeDetail;
+        const channel = button.dataset.libraryPublication;
+        const input = libraryDetail.querySelector(`#library-publication-${channel}`);
+        if (!detail || !["x", "telegram"].includes(channel) || !input) return;
+        const currentVersion = plainObject(detail.current_version);
+        const contentVersionId = detail.current_version_id || currentVersion.content_version_id;
+        if (typeof contentVersionId !== "string" || !contentVersionId) {
+          setLibraryActionStatus("현재 버전을 확인하지 못해 링크를 연결할 수 없습니다.", "error");
           return;
         }
-        const request = storedTutorialRequest(libraryState.activeDetail);
+        const externalUrl = input.value.trim();
+        if (!externalUrl) {
+          setLibraryActionStatus("게시한 공개 링크를 먼저 입력해주세요.", "error");
+          input.focus();
+          return;
+        }
+        const requestId = ++libraryState.performanceRequest[channel];
+        const requestSessionEpoch = state.sessionEpoch;
+        const activeContentId = libraryState.activeId;
+        const originalLabel = button.textContent;
+        let connected = false;
+        button.disabled = true;
+        button.textContent = "확인 중…";
+        setLibraryActionStatus("공개 게시물 링크를 현재 버전에 연결하고 있습니다.");
+        try {
+          const response = await fetch(`/api/library/${encodeURIComponent(activeContentId)}/performance`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content_version_id: contentVersionId, channel, external_url: externalUrl })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (
+            requestId !== libraryState.performanceRequest[channel]
+            || requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+            || contentVersionId !== (libraryState.activeDetail?.current_version_id || libraryState.activeDetail?.current_version?.content_version_id)
+          ) return;
+          if (handleStudioAccessResponse(response, payload)) return;
+          if (!response.ok) {
+            const error = new Error("publication_observation_failed");
+            error.code = payload.error || "";
+            throw error;
+          }
+          input.value = safeWebUrl(payload.external_url) || externalUrl;
+          input.readOnly = true;
+          button.textContent = "연결됨";
+          connected = true;
+          const activeDetail = plainObject(libraryState.activeDetail);
+          const publications = Array.isArray(activeDetail.manual_publications)
+            ? activeDetail.manual_publications
+            : [];
+          activeDetail.manual_publications = publications
+            .filter(item => plainObject(item).channel !== channel)
+            .concat([payload]);
+          setLibraryActionStatus("공개 링크를 연결했습니다. 12시간 이상 반응이 쌓인 뒤 다음 자동 수집에서 추천 여부를 확인합니다.", "success");
+        } catch (error) {
+          if (
+            requestId !== libraryState.performanceRequest[channel]
+            || requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+            || contentVersionId !== (libraryState.activeDetail?.current_version_id || libraryState.activeDetail?.current_version?.content_version_id)
+          ) return;
+          const message = error?.code === "publication_observation_conflict"
+            ? "이 공개 링크는 다른 작업에 이미 연결되어 있습니다."
+            : error?.code === "invalid_publication_observation"
+              ? "공개 X 게시물 또는 공개 Telegram 메시지 링크 형식을 확인해주세요."
+              : "링크를 연결하지 못했습니다. 잠시 후 다시 시도해주세요.";
+          setLibraryActionStatus(message, "error");
+          button.textContent = originalLabel;
+        } finally {
+          if (
+            requestId === libraryState.performanceRequest[channel]
+            && requestSessionEpoch === state.sessionEpoch
+            && activeContentId === libraryState.activeId
+            && button.isConnected
+          ) {
+            button.disabled = connected;
+            if (!connected) button.textContent = originalLabel;
+          }
+        }
+      }
+
+      function continueStoredPromotion(recommendationId) {
+        if (generate.disabled) {
+          setLibraryActionStatus("현재 생성 작업이 끝난 뒤 추천 작업으로 이어갈 수 있습니다.", "error");
+          return;
+        }
+        const request = storedPromotionRequest(libraryState.activeDetail, recommendationId);
         if (!request) {
-          setLibraryActionStatus("이 작업의 원문은 튜토리얼 입력으로 이어갈 수 없습니다.", "error");
+          setLibraryActionStatus("이 추천에는 생성에 필요한 공식 원문 근거가 충분하지 않습니다.", "error");
           return;
         }
         if (!confirmResultReset()) return;
         libraryState.exportRequest += 1;
-        state.mode = "tutorial";
+        state.mode = request.targetKind;
         state.generationRequest = null;
         modeSwitcher.querySelectorAll(".mode-option").forEach(item => {
-          const active = item.dataset.mode === "tutorial";
+          const active = item.dataset.mode === request.targetKind;
           item.classList.toggle("active", active);
           item.setAttribute("aria-selected", String(active));
         });
         selectClient(request.clientId);
         sourceContent.value = request.sourceContent;
         sourceUrl.value = request.sourceUrl;
+        sourceType.value = "article";
         selectStudioView("create", false);
         renderMode();
-        setStatus(`${BRAND[request.clientId].name} 원문을 튜토리얼 입력란에 불러왔습니다. 내용을 확인한 뒤 생성해주세요.`, "success");
+        const label = request.targetKind === "tutorial" ? "튜토리얼" : "아티클";
+        setStatus(`${BRAND[request.clientId].name} 공식 원문을 ${label} 입력란에 불러왔습니다. 내용을 확인한 뒤 생성해주세요.`, "success");
         sourceContent.focus();
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
@@ -1942,8 +2125,14 @@
           await downloadStoredEditable(editableButton);
           return;
         }
-        if (event.target.closest("[data-library-tutorial]")) {
-          continueStoredTutorial();
+        const publicationButton = event.target.closest("[data-library-publication]");
+        if (publicationButton) {
+          await recordStoredPublication(publicationButton);
+          return;
+        }
+        const promotionButton = event.target.closest("[data-library-promotion]");
+        if (promotionButton) {
+          continueStoredPromotion(promotionButton.dataset.libraryPromotion);
           return;
         }
         const card = event.target.closest("[data-content-id]");

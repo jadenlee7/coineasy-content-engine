@@ -95,7 +95,7 @@ publishing:
     social_set_id: null
     active: false
   telegram:
-    public_channel: "t.me/BabylonKorea"
+    public_channel: "t.me/babylonBTC"
     bot_token_env: "TELEGRAM_BOT_TOKEN_BABYLON"
     bot_env: TELEGRAM_BOT_TOKEN_BABYLON
     channel_env: TELEGRAM_CHANNEL_BABYLON

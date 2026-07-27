@@ -11,6 +11,7 @@ from core.automation.content_signals import (
     ContentSignalsError,
     ContentSignalsSnapshot,
     DemandTerm,
+    PromotionCandidate,
 )
 from core.automation.generation_client import GeneratedCatalogResult
 from core.automation.models import (
@@ -74,12 +75,14 @@ class FakeRepository:
         self.states = states
         self.records = []
         self.ranking_evidence = []
+        self.promotion_candidates = []
         self.queues = []
         self.claims = []
         self.completed = []
         self.failed = []
         self.complete_error = False
         self.ranking_evidence_error = None
+        self.promotion_candidates_error = None
 
     async def get_state(self, **kwargs):
         return self.states[kwargs["client_id"]]
@@ -88,6 +91,13 @@ class FakeRepository:
         if self.ranking_evidence_error:
             raise self.ranking_evidence_error
         self.ranking_evidence.append(kwargs)
+        return "a" * 64
+
+    async def record_promotion_candidates(self, **kwargs):
+        if self.promotion_candidates_error:
+            raise self.promotion_candidates_error
+        self.promotion_candidates.append(kwargs)
+        return len(kwargs["snapshot"].promotion_candidates)
 
     async def record_sources(self, **kwargs):
         self.records.append(kwargs)
@@ -191,9 +201,10 @@ class FakeGenerationClient:
 
 
 class FakeSignalsClient:
-    def __init__(self, terms=(), error=None):
+    def __init__(self, terms=(), error=None, *, with_candidate=False):
         self.terms = terms
         self.error = error
+        self.with_candidate = with_candidate
         self.calls = []
 
     async def fetch(self, *, client_id, now):
@@ -201,7 +212,7 @@ class FakeSignalsClient:
         if self.error:
             raise self.error
         return ContentSignalsSnapshot(
-            schema_version="1.0",
+            schema_version="1.1",
             client_id=client_id,
             generated_at=now,
             window_start=now - timedelta(days=7),
@@ -210,6 +221,28 @@ class FakeSignalsClient:
                 DemandTerm(term=term, weight=weight, sources=("community",))
                 for term, weight in self.terms
             ),
+            promotion_policy_version="content-performance-v1",
+            promotion_candidates=(
+                PromotionCandidate(
+                    candidate_id="b" * 64,
+                    channel="x",
+                    source_url="https://x.com/squidkorea/status/123456789",
+                    published_at=now - timedelta(hours=18),
+                    score=0.875,
+                    reach_percentile=0.9,
+                    interaction_percentile=0.8,
+                    community_match_count=3,
+                    cohort_size=12,
+                    observation_age_hours=18,
+                    recommended_formats=("article", "tutorial"),
+                    reason_codes=(
+                        "high_reach",
+                        "high_interaction",
+                        "community_alignment",
+                        "tutorial_learning_signal",
+                    ),
+                ),
+            ) if self.with_candidate else (),
         )
 
 
@@ -567,6 +600,59 @@ async def test_signals_reorder_pending_sources_but_never_enter_generation_input(
             "client_id": "squid",
             "status": "signals_used",
             "detail": "term_count=1",
+        }
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_promotion_persistence_fails_open_after_ranking_evidence():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    ecosystem = pending(
+        "squid",
+        text="A detailed ecosystem update for builders.",
+    )
+    liquidity = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text="A detailed liquidity update for builders.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "799",
+            "source_url": "https://x.com/SquidRouter/status/799",
+            "published_at": "2026-07-22T00:01:00Z",
+        }
+    )
+    states["squid"] = AutomationState(None, False, (ecosystem, liquidity))
+    repo = FakeRepository(states)
+    repo.promotion_candidates_error = AutomationRepositoryError(
+        "automation_database_unavailable",
+        retryable=True,
+    )
+    signals = FakeSignalsClient(
+        terms=(("ecosystem", 1.0),),
+        with_candidate=True,
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        content_signals_client=signals,
+    ).run()
+
+    assert len(repo.ranking_evidence) == 1
+    assert repo.queues[0]["source_content"] == ecosystem.source_content
+    assert summary.errors == 0
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "promotion_candidates_unavailable",
+            "detail": "performance_evidence_not_recorded",
         }
         for item in summary.outcomes
     )

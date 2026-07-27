@@ -11,7 +11,7 @@ library.
 |---|---|
 | Short, concrete announcement | Daily News card + Telegram/X copy |
 | Complete X Note of at least 300 characters | Article + Telegram/X copy + Markdown |
-| Tutorial signal for Yellow or Squid | Article or Daily News draft; reviewer can manually continue it as a Tutorial |
+| Tutorial signal for Yellow or Squid | Article or Daily News draft; no Tutorial is generated automatically |
 | Low-signal social post, reply, retweet, or configured skip phrase | No draft |
 
 When the optional EasyFarm bridge is configured, bounded aggregate Korean
@@ -21,16 +21,49 @@ campaign, or unsupported source, and they never enter the generation prompt as
 facts or copy.
 
 Tutorial carousel generation remains available in the human Studio UI for
-Yellow and Squid. Reviewers can open a stored News or Article draft and use
-**이 원문으로 튜토리얼 만들기** to prefill the manual Tutorial form. The
-scheduled worker deliberately cannot claim a `manual_only` Tutorial job, so
-`AUTOMATION_ENABLE_TUTORIALS` remains `false`; a human must review the source
-and explicitly start every carousel generation.
+Yellow and Squid. The scheduled worker deliberately cannot claim a
+`manual_only` Tutorial job, so `AUTOMATION_ENABLE_TUTORIALS` remains `false`.
+The library exposes a Tutorial continuation only after an exact linked
+publication receives a qualified performance recommendation and at least 300
+characters of pinned official source evidence are available. A human must
+review that source and explicitly start every carousel generation.
 
 Daily News automation uses the deterministic `classic` card. The source image
 is preserved in the source record but is not automatically remixed. This keeps
 scheduled drafts independent of the visual subtitle-cleanup path and leaves
 brand-sensitive visual localization to a reviewer.
+
+## Performance recommendation handoff
+
+After manually publishing a stored Daily News item, a team member can paste its
+public X status URL or public Telegram message URL into the library detail. The
+server records an idempotent publication observation for the current immutable
+version. It does not send, edit, approve, schedule, or delete a post.
+
+The next successful EasyFarm schema `1.1` snapshot may match that canonical URL
+to a same-client/channel performance candidate. Content Engine recomputes the
+score and stores immutable evidence before recording a review recommendation.
+Article needs `0.75`; Tutorial needs `0.80`, a Yellow or Squid client, an
+aggregate learning signal, and a matching official how-to/documentation source.
+Both remain manual. If pinned official sources total fewer than 300 characters,
+the recommendation is visible as the read-only **공식 원문 보강 필요** state
+and no generation CTA is enabled. There is no source-enrichment or rebinding
+flow in the current product, so that immutable recommendation cannot later
+become actionable. A later valid performance snapshot is retained as a new
+immutable history row; the library shows only the newest recommendation per
+publication, target kind, and policy version whose evidence is still within the
+latest 24 hours.
+
+The exact local-account allowlist is defined in
+[ADR-004](ADR-004-content-performance-promotions.md). In particular, the
+`channels.announce` URL in each EasyFarm `clients/<client>.json` is canonical
+for Telegram performance attribution and is mirrored by Content Engine's
+public-channel configuration. Actual Telegram publishing uses a server-only
+environment channel ID; that ID and other publisher settings must not be used
+to widen or replace the shared performance allowlist.
+
+See [ADR-004](ADR-004-content-performance-promotions.md) for the exact-link,
+privacy, and failure contract.
 
 ## Reliability and limits
 
@@ -59,6 +92,12 @@ brand-sensitive visual localization to a reviewer.
   `term`/`weight` envelope is committed to immutable, service-only Supabase
   ranking evidence. Signal retrieval, validation, freshness, or evidence-write
   failure falls back to the existing official-X-only ranking.
+- EasyFarm schema `1.1` performance candidates are matched only to the exact
+  canonical public URL recorded for a Content Studio publication in the same
+  client and channel. Missing or ambiguous links create no recommendation.
+- Performance candidates are 12–72 hours old, use fresh same-client/channel
+  cohorts, and are persisted as immutable evidence. They never queue a
+  generation job or change approval, publication, or Figma state.
 - Provider, database, and generation error bodies are never written to worker
   logs; only bounded internal error codes are emitted.
 
@@ -119,20 +158,45 @@ editable export, review a version, or publish it.
 
 ## Safe rollout
 
-1. Apply all Supabase migrations, including
-   `20260722150145_official_x_review_draft_worker.sql` and
-   `20260727120000_content_signal_ranking_evidence.sql`.
-2. Deploy the Netlify generation relays with the dedicated automation token.
-3. Configure a separate Railway cron service with the custom config path and
-   server-only variables above. Give it no public domain.
-4. Run `python -m scripts.run_official_x_daily --dry-run`. This reads candidates
-   but creates no source, job, asset, or content rows.
-5. Trigger one real run and confirm each result is `needs_review` in the team
-   library before enabling the schedule.
-6. If enabling EasyFarm signals, deploy its `content-signals-api` first,
-   provision the dedicated token in both server environments, and confirm the
-   worker reports only `signals_used` with a bounded term count or the safe
-   `signals_unavailable` fallback. No raw term text is emitted in telemetry.
+1. Deploy the EasyFarm `content-signals-api` provider first. Verify a schema
+   `1.0` request still returns the backward-compatible V1 envelope, then verify a
+   schema `1.1` request adds only bounded aggregate candidates and metadata. Do
+   not deploy the consumer while either contract check fails.
+2. Apply the Content Engine Supabase migrations in order, including
+   `20260722150145_official_x_review_draft_worker.sql`,
+   `20260727120000_content_signal_ranking_evidence.sql`, and
+   `20260727143000_content_performance_promotions.sql`. Run
+   `supabase/tests/content_performance_promotions_security.sql` against the
+   target schema and require its exact-version, exact-URL, account-allowlist,
+   idempotency, immutability, and no-side-effect checks to pass.
+3. Deploy the Content Engine Railway worker. Configure the separate cron service
+   with the custom config path and server-only variables above, with no public
+   domain. Run `python -m scripts.run_official_x_daily --dry-run`; it reads
+   candidates but creates no source, job, asset, or content rows.
+4. Deploy the Netlify functions and console with the dedicated automation token
+   only after the migrations and Railway checks pass. Trigger one real worker
+   run and confirm every generated result remains `needs_review` before enabling
+   the schedule.
+5. Provision the EasyFarm bridge token in both server environments and confirm
+   the worker reports only `signals_used` with bounded term/candidate counts or
+   the safe `signals_unavailable` fallback. No raw term text, public URL, or
+   score is emitted in telemetry.
+6. Perform an exact-version smoke test: in the library, record one
+   already-public allowlisted local X or Telegram URL on the current stored
+   Daily News version, run the next snapshot, and verify that only that exact
+   version receives a review recommendation. Verify a stale version, another
+   account, another channel, and another URL fail closed. Do not enable any
+   publisher or Figma credential for this smoke test.
+
+Rollback is consumer-first and leaves official-X drafting available. Disable or
+remove `EASYFARM_CONTENT_SIGNALS_URL` and
+`EASYFARM_CONTENT_SIGNALS_TOKEN` from the Railway worker, then roll back the
+Netlify recommendation controls and the Railway consumer. The worker must report
+the safe `signals_unavailable` path and continue official-X-only ranking,
+collection, and `needs_review` draft generation. Do not roll back by granting
+publisher credentials, deleting immutable evidence/history, or writing into
+EasyFarm; the provider can remain on backward-compatible schemas `1.0` and
+`1.1` while the consumer is disabled.
 
 Durable Figma links and the internal import plugin remain downstream of
 approval and are not exposed by the current shared-session UI.
