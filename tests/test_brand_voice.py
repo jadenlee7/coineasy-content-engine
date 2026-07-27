@@ -1,5 +1,6 @@
 from core.brand_voice import build_brand_voice_prompt
 from core.client_config import load_client_config
+from core.llm.article_pipeline import _build_user_prompt as _build_article_user_prompt
 from core.llm.news_card_pipeline import _build_user_prompt
 
 
@@ -17,6 +18,9 @@ def test_every_client_has_source_locked_voice_references():
         assert voice.source_fidelity["x"] >= 90
         assert voice.source_fidelity["telegram"] >= 80
         assert voice.source_fidelity["banner"] >= 90
+        assert voice.source_fidelity["article"] >= 90
+        assert len(voice.channel_guidance["article"]) >= 160
+        assert "visual" in voice.channel_guidance["article"].lower()
         assert len(voice.reference_examples) >= 3
         assert all(item.get("url", "").startswith("https://x.com/") for item in voice.reference_examples)
 
@@ -64,3 +68,36 @@ def test_runtime_references_are_explicitly_style_only_and_delimited():
     assert "REFERENCE_1_START" in prompt
     assert "REFERENCE_1_END" in prompt
     assert "A prior post claims a launch" in prompt
+
+
+def test_article_prompt_uses_distinct_client_editorial_and_visual_direction():
+    expected_direction = {
+        "yellow": ("measured infrastructure thesis", "system-led"),
+        "origintrail": ("problem-to-proof narrative", "provenance legible"),
+        "squid": ("recognizably compact and human", "punchy and sparse"),
+        "babylon": ("verified product state", "Bitcoin-native"),
+    }
+
+    for client_id, expected_phrases in expected_direction.items():
+        prompt = _build_article_user_prompt(
+            load_client_config(client_id),
+            "A source-supported factual article body.",
+            "article",
+            "https://example.com/source",
+        )
+
+        assert "Channel rule (article):" in prompt
+        assert "Source fidelity target for this output: 92%" in prompt
+        assert all(phrase in prompt for phrase in expected_phrases)
+
+
+def test_generation_fails_closed_when_channel_brand_direction_is_missing():
+    config = load_client_config("yellow")
+    config.brand_voice.channel_guidance.pop("article")
+
+    try:
+        build_brand_voice_prompt(config, "article")
+    except ValueError as exc:
+        assert "channel_guidance.article" in str(exc)
+    else:
+        raise AssertionError("missing article brand direction must fail closed")

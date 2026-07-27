@@ -38,11 +38,19 @@ brand_voice:
     telegram: 85
     banner: 90
     education: 82
+    article: 92
   channel_guidance:
     x: "Keep the source's problem-to-proof logic and terminology; avoid adding a broader AI thesis unless it is explicit."
     telegram: "Lead with the trust problem, explain the verified mechanism, then include CTA, original link, and focused hashtags."
     banner: "Use a concise problem-versus-verifiable-context headline with no unsupported benefits."
     education: "Teach provenance as a causal chain using one source-grounded real-world example."
+    article: >-
+      Build a problem-to-proof narrative around trust, provenance, or connected
+      context. Explain the causal break before the DKG or verifiable mechanism and
+      ground the conclusion in the source's real-world example. Keep the technical
+      depth high but the Korean causal chain easy to follow. Article visuals should
+      make provenance legible through networks, layers, or traceable flows, never
+      through abstract AI spectacle or benefits not stated by the source.
   reference_examples:
     - type: "contrast hook"
       url: "https://x.com/origin_trail/status/2078063452996661578"

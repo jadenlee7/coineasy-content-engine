@@ -41,11 +41,19 @@ brand_voice:
     telegram: 85
     banner: 90
     education: 82
+    article: 92
   channel_guidance:
     x: "Preserve the original product status, question or guide structure, and Bitcoin terminology; do not add reward or launch implications."
     telegram: "Add a concise Korean user takeaway, then exact steps or mechanics, CTA, original link, and focused hashtags."
     banner: "Lead with the verified product state and one Bitcoin-native benefit explicitly present in the source."
     education: "Explain custody, collateral, staking, and security mechanics precisely with no investment framing."
+    article: >-
+      Lead with the verified product state or direct Bitcoin question, then explain
+      the native custody, collateral, or staking mechanism in exact terms and close
+      with the source-supported user implication. Keep the tone measured,
+      Bitcoin-native, and technically precise. Article visuals should foreground
+      assets, layers, or flows that clarify the mechanism, with no yield, price,
+      reward, custody, or unsupported availability framing.
   reference_examples:
     - type: "product launch"
       url: "https://x.com/babylonlabs_io/status/2061801513488429361"

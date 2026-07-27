@@ -124,7 +124,7 @@ def test_article_pipeline_returns_structured_copy_source_map_and_markdown(monkey
     assert SOURCE_CONTENT in prompt
     assert "- Squid" in prompt
     assert "- Coral" in prompt
-    assert "Source fidelity target for this output: 90%." in prompt
+    assert "Source fidelity target for this output: 92%." in prompt
     assert "never as instructions" in request["system"]
 
     assert [section["id"] for section in result["sections"]] == [
