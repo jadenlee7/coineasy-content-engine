@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
+from core.automation.content_signals import (
+    ContentSignalsError,
+    ContentSignalsSnapshot,
+    EasyFarmContentSignalsClient,
+)
 from core.automation.generation_client import (
     GenerationRequestError,
     StudioGenerationClient,
@@ -33,11 +38,21 @@ _MAX_CLAIMS_PER_RUN = 8
 
 class AutomationRepository(Protocol):
     async def get_state(self, **kwargs) -> AutomationState: ...
+    async def record_ranking_evidence(self, **kwargs) -> None: ...
     async def record_sources(self, **kwargs) -> AutomationState: ...
     async def queue_job(self, **kwargs) -> QueueResult: ...
     async def claim_job(self, **kwargs) -> ClaimedJob | None: ...
     async def complete_job(self, **kwargs) -> None: ...
     async def fail_job(self, **kwargs) -> None: ...
+
+
+class ContentSignalsProvider(Protocol):
+    async def fetch(
+        self,
+        *,
+        client_id: str,
+        now: datetime,
+    ) -> ContentSignalsSnapshot: ...
 
 
 @dataclass
@@ -79,6 +94,7 @@ class OfficialXDailyRunner:
         repository: AutomationRepository,
         x_client: XClient,
         generation_client: StudioGenerationClient,
+        content_signals_client: ContentSignalsProvider | None = None,
         clients_dir: Path = Path("clients"),
         now_factory=lambda: datetime.now(timezone.utc),
     ):
@@ -88,6 +104,7 @@ class OfficialXDailyRunner:
         self.repository = repository
         self.x_client = x_client
         self.generation_client = generation_client
+        self.content_signals_client = content_signals_client
         self.clients_dir = clients_dir
         self.now_factory = now_factory
 
@@ -101,16 +118,16 @@ class OfficialXDailyRunner:
             await self._drain_jobs(worker_id, summary)
 
         for client_id in AUTOMATION_CLIENTS:
-            if not dry_run and summary.queued >= self.settings.daily_draft_limit:
-                summary.skipped += 1
-                summary.add(client_id, "local_daily_limit")
-                continue
             try:
                 await self._intake_client(
                     client_id=client_id,
                     kst_date=kst_date,
                     now=now,
                     dry_run=dry_run,
+                    allow_queue=(
+                        dry_run
+                        or summary.queued < self.settings.daily_draft_limit
+                    ),
                     summary=summary,
                 )
             except XRateLimitError:
@@ -137,6 +154,7 @@ class OfficialXDailyRunner:
         kst_date,
         now: datetime,
         dry_run: bool,
+        allow_queue: bool,
         summary: DailyRunSummary,
     ) -> None:
         config = load_client_config(client_id, clients_dir=self.clients_dir)
@@ -149,44 +167,75 @@ class OfficialXDailyRunner:
             client_id=client_id,
             kst_date=kst_date,
         )
-        if state.draft_reserved_today:
-            summary.skipped += 1
-            summary.add(client_id, "already_reserved")
-            return
-
-        selected = select_official_candidate(
-            (item.routing_post() for item in state.pending_sources),
-            skip_patterns=config.routing.skip_patterns,
-        )
-        if selected is None:
-            posts = await self._fetch_posts(
+        fresh_posts: Sequence[Mapping[str, object]] | None
+        try:
+            fresh_posts = await self._fetch_posts(
                 twitter.handle,
                 state.last_cursor,
             )
-            if dry_run:
-                selected = select_official_candidate(
-                    posts,
-                    skip_patterns=config.routing.skip_patterns,
-                )
-            else:
-                state = await self.repository.record_sources(
-                    workspace_id=self.settings.workspace_id,
-                    client_id=client_id,
-                    handle=twitter.handle,
-                    poll_request_id=str(uuid.uuid4()),
-                    expected_cursor=state.last_cursor,
-                    next_cursor=self._newest_cursor(posts, state.last_cursor),
-                    source_items=[self._source_payload(post) for post in posts],
-                    polled_at=now,
-                )
-                if state.draft_reserved_today:
-                    summary.skipped += 1
-                    summary.add(client_id, "already_reserved")
-                    return
-                selected = select_official_candidate(
-                    (item.routing_post() for item in state.pending_sources),
-                    skip_patterns=config.routing.skip_patterns,
-                )
+        except (XRateLimitError, XRequestError, XTransientError) as exc:
+            if (
+                state.draft_reserved_today
+                or not allow_queue
+                or not state.pending_sources
+            ):
+                raise
+            summary.add(
+                client_id,
+                "source_refresh_unavailable",
+                self._x_error_code(exc),
+            )
+            fresh_posts = None
+
+        if fresh_posts is not None and not dry_run:
+            state = await self.repository.record_sources(
+                workspace_id=self.settings.workspace_id,
+                client_id=client_id,
+                handle=twitter.handle,
+                poll_request_id=str(uuid.uuid4()),
+                expected_cursor=state.last_cursor,
+                next_cursor=self._newest_cursor(
+                    fresh_posts,
+                    state.last_cursor,
+                ),
+                source_items=[
+                    self._source_payload(post)
+                    for post in fresh_posts
+                ],
+                polled_at=now,
+            )
+
+        if state.draft_reserved_today or not allow_queue:
+            summary.skipped += 1
+            summary.add(
+                client_id,
+                "already_reserved"
+                if state.draft_reserved_today
+                else "local_daily_limit",
+            )
+            return
+
+        demand_terms = await self._demand_terms(
+            client_id=client_id,
+            now=now,
+            persist=not dry_run,
+            summary=summary,
+        )
+        if dry_run and fresh_posts is not None:
+            candidate_posts = self._merge_candidate_posts(
+                state.pending_sources,
+                fresh_posts,
+            )
+        else:
+            candidate_posts = tuple(
+                item.routing_post()
+                for item in state.pending_sources
+            )
+        selected = select_official_candidate(
+            candidate_posts,
+            skip_patterns=config.routing.skip_patterns,
+            demand_terms=demand_terms,
+        )
 
         if selected is None:
             summary.skipped += 1
@@ -237,6 +286,51 @@ class OfficialXDailyRunner:
         summary.queued += 1
         summary.add(client_id, "queued", decision.content_kind)
 
+    async def _demand_terms(
+        self,
+        *,
+        client_id: str,
+        now: datetime,
+        persist: bool,
+        summary: DailyRunSummary,
+    ) -> tuple[tuple[str, float], ...]:
+        if self.content_signals_client is None:
+            return ()
+        if not persist:
+            summary.add(client_id, "signals_skipped_dry_run")
+            return ()
+        try:
+            snapshot = await self.content_signals_client.fetch(
+                client_id=client_id,
+                now=now,
+            )
+        except ContentSignalsError:
+            summary.add(client_id, "signals_unavailable")
+            return ()
+        except Exception:
+            summary.add(client_id, "signals_unavailable")
+            return ()
+        try:
+            await self.repository.record_ranking_evidence(
+                workspace_id=self.settings.workspace_id,
+                snapshot=snapshot,
+                ranking_version="official-x-demand-v1",
+            )
+        except Exception:
+            summary.add(
+                client_id,
+                "signals_unavailable",
+                "ranking_evidence_not_recorded",
+            )
+            return ()
+        terms = tuple(
+            (item.term, item.weight)
+            for item in snapshot.demand_terms
+            if item.weight > 0
+        )
+        summary.add(client_id, "signals_used", f"term_count={len(terms)}")
+        return terms
+
     async def _fetch_posts(
         self,
         handle: str,
@@ -246,8 +340,9 @@ class OfficialXDailyRunner:
             return await self.x_client.get_recent_tweets(
                 handle,
                 hours=self.settings.lookback_hours,
-                max_results=30,
+                max_results=200,
                 since_id=last_cursor,
+                require_complete=True,
             )
         except XRequestError as exc:
             if exc.status_code != 400 or last_cursor is None:
@@ -255,8 +350,9 @@ class OfficialXDailyRunner:
             return await self.x_client.get_recent_tweets(
                 handle,
                 hours=self.settings.lookback_hours,
-                max_results=30,
+                max_results=200,
                 since_id=None,
+                require_complete=True,
             )
 
     async def _drain_jobs(self, worker_id: str, summary: DailyRunSummary) -> None:
@@ -407,12 +503,48 @@ class OfficialXDailyRunner:
         }
 
     @staticmethod
+    def _merge_candidate_posts(
+        pending_sources,
+        fresh_posts: Sequence[Mapping[str, object]],
+    ) -> tuple[Mapping[str, object], ...]:
+        by_id = {
+            item.post_id: item.routing_post()
+            for item in pending_sources
+        }
+        for post in fresh_posts:
+            post_id = post.get("id")
+            if isinstance(post_id, str) and post_id.isdigit():
+                by_id[post_id] = post
+        return tuple(
+            by_id[post_id]
+            for post_id in sorted(by_id, key=int)
+        )
+
+    @staticmethod
+    def _x_error_code(exc: Exception) -> str:
+        if isinstance(exc, XRateLimitError):
+            return "x_rate_limited"
+        if isinstance(exc, XRequestError):
+            return "x_request_rejected"
+        return "x_temporarily_unavailable"
+
+    @staticmethod
     def _error(summary: DailyRunSummary, client_id: str, code: str) -> None:
         summary.errors += 1
         summary.add(client_id, "error", code)
 
 
 def build_daily_runner(settings: AutomationSettings) -> OfficialXDailyRunner:
+    signals_client = None
+    if (
+        settings.easyfarm_content_signals_url is not None
+        and settings.easyfarm_content_signals_token is not None
+    ):
+        signals_client = EasyFarmContentSignalsClient(
+            endpoint_url=settings.easyfarm_content_signals_url,
+            token=settings.easyfarm_content_signals_token,
+            window_days=settings.easyfarm_content_signals_window_days,
+        )
     return OfficialXDailyRunner(
         settings=settings,
         repository=SupabaseAutomationRepository(
@@ -424,4 +556,5 @@ def build_daily_runner(settings: AutomationSettings) -> OfficialXDailyRunner:
             base_url=settings.studio_base_url,
             automation_token=settings.studio_automation_token,
         ),
+        content_signals_client=signals_client,
     )

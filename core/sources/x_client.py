@@ -113,9 +113,13 @@ class XClient:
         hours: int = 24,
         max_results: int = 30,
         since_id: Optional[str] = None,
+        require_complete: bool = False,
     ) -> List[Dict]:
         """Fetch tweets from the last N hours for a given username.
+
         Returns source-safe dictionaries including allowlisted X media metadata.
+        Set ``require_complete`` only for cursor-advancing consumers that must
+        fail instead of accepting a bounded newest-first sample.
         """
         if since_id is not None and (
             not isinstance(since_id, str)
@@ -167,6 +171,15 @@ class XClient:
             next_token = meta.get("next_token") if isinstance(meta, dict) else None
             if not isinstance(next_token, str) or not next_token:
                 break
+
+        if require_complete and isinstance(next_token, str) and next_token:
+            # Advancing the feed cursor from an incomplete newest-first page
+            # would make the unseen older posts impossible to fetch later.
+            # Fail closed so operations can increase/backfill the bounded
+            # window without silently losing official source evidence.
+            raise XTransientError(
+                "X API timeline exceeded the bounded collection window"
+            )
 
         data = data[:total_limit]
 

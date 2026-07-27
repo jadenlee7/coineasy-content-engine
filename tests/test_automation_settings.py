@@ -5,6 +5,12 @@ import pytest
 from core.automation.settings import AutomationSettings
 
 
+SIGNALS_URL = (
+    "https://jlxbywqofrltyttklcqy.supabase.co"
+    "/functions/v1/content-signals-api"
+)
+
+
 def _env(**overrides):
     values = {
         "SUPABASE_URL": "https://project-ref.supabase.co",
@@ -25,6 +31,21 @@ def test_automation_settings_are_review_first_by_default():
     assert settings.daily_draft_limit == 4
     assert settings.enable_tutorials is False
     assert settings.timezone == "Asia/Seoul"
+    assert settings.easyfarm_content_signals_url is None
+    assert settings.easyfarm_content_signals_token is None
+    assert settings.easyfarm_content_signals_window_days == 7
+
+
+def test_automation_settings_enable_the_exact_easyfarm_signals_endpoint():
+    settings = AutomationSettings.from_env(_env(
+        EASYFARM_CONTENT_SIGNALS_URL=SIGNALS_URL,
+        EASYFARM_CONTENT_SIGNALS_TOKEN="e" * 64,
+        EASYFARM_CONTENT_SIGNALS_WINDOW_DAYS="14",
+    ))
+
+    assert settings.easyfarm_content_signals_url == SIGNALS_URL
+    assert settings.easyfarm_content_signals_token == "e" * 64
+    assert settings.easyfarm_content_signals_window_days == 14
 
 
 @pytest.mark.parametrize(
@@ -38,6 +59,41 @@ def test_automation_settings_are_review_first_by_default():
         ({"AUTOMATION_ENABLE_TUTORIALS": "maybe"}, "boolean"),
         ({"AUTOMATION_ENABLE_TUTORIALS": "true"}, "must remain false"),
         ({"STUDIO_AUTOMATION_TOKEN": "a" * 513}, "at most 512"),
+        (
+            {"EASYFARM_CONTENT_SIGNALS_URL": SIGNALS_URL},
+            "must be configured together",
+        ),
+        (
+            {"EASYFARM_CONTENT_SIGNALS_TOKEN": "e" * 64},
+            "must be configured together",
+        ),
+        (
+            {
+                "EASYFARM_CONTENT_SIGNALS_URL": (
+                    "https://evil.test/functions/v1/content-signals-api"
+                ),
+                "EASYFARM_CONTENT_SIGNALS_TOKEN": "e" * 64,
+            },
+            "allowlist",
+        ),
+        (
+            {
+                "EASYFARM_CONTENT_SIGNALS_URL": SIGNALS_URL + "?redirect=1",
+                "EASYFARM_CONTENT_SIGNALS_TOKEN": "e" * 64,
+            },
+            "allowlist",
+        ),
+        (
+            {
+                "EASYFARM_CONTENT_SIGNALS_URL": SIGNALS_URL,
+                "EASYFARM_CONTENT_SIGNALS_TOKEN": "short",
+            },
+            "32 to 512",
+        ),
+        (
+            {"EASYFARM_CONTENT_SIGNALS_WINDOW_DAYS": "32"},
+            "between 1 and 31",
+        ),
     ],
 )
 def test_automation_settings_fail_closed(overrides, message):

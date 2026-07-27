@@ -72,3 +72,43 @@ def test_client_brand_skip_patterns_are_applied_before_selection():
         [post("40", "We are live in 15 minutes for the community AMA")],
         skip_patterns=["AMA", "15 minutes"],
     ) is None
+
+
+def test_bounded_demand_term_overlap_deterministically_reorders_valid_posts():
+    posts = [
+        post("50", "A detailed ecosystem update for builders."),
+        post("51", "A detailed liquidity update for builders."),
+    ]
+
+    assert select_official_candidate(posts)["id"] == "51"
+    assert select_official_candidate(
+        posts,
+        demand_terms=[("ecosystem", 1.0)],
+    )["id"] == "50"
+
+
+def test_demand_terms_cannot_admit_low_signal_or_skipped_posts():
+    assert select_official_candidate(
+        [post("60", "gm liquidity")],
+        demand_terms=[("liquidity", 1.0)],
+        skip_patterns=["liquidity"],
+    ) is None
+    assert select_official_candidate(
+        [post("61", "gm", is_reply=True)],
+        demand_terms=[("gm", 1.0)],
+    ) is None
+
+
+def test_equal_scores_use_numeric_post_id_not_lexicographic_order():
+    older_digits = post(
+        "9",
+        "A detailed ecosystem update for builders.",
+        created_at="2026-07-22T08:00:00Z",
+    )
+    newer_digits = post(
+        "10",
+        "A detailed ecosystem update for builders.",
+        created_at="2026-07-22T08:00:00Z",
+    )
+
+    assert select_official_candidate([older_digits, newer_digits])["id"] == "10"
