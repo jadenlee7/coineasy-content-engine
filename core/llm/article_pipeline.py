@@ -61,7 +61,8 @@ Create one useful Korean article from the pasted source. Return exactly this JSO
 - Telegram: concise hook + factual context. Do not include a URL or CTA; the server appends one restrained
   read-more CTA and the exact caller-provided source URL. Return 1-5 focused hashtags separately.
 - X: source-faithful copy only, at most 280 X-weighted characters. Korean and CJK characters
-  count as 2. No URL, CTA, hashtag, or added Korean angle.
+  count as 2, so keep a Korean X draft under 130 visible characters. No URL, CTA, hashtag,
+  or added Korean angle.
 - Do not return source URLs, citations, Markdown, IDs, or extra keys. The server creates those fields
   deterministically from the exact request after validating this JSON.
 - Never mention CoinEasy or the content-generation workflow.
@@ -131,6 +132,44 @@ def x_weighted_length(value: str) -> int:
             for start, end in _X_SINGLE_WEIGHT_RANGES
         ) else 2
     return weighted_length
+
+
+def _weighted_prefix(value: str, maximum_weight: int) -> str:
+    """Return the longest Unicode prefix that fits the X weighted limit."""
+    prefix: list[str] = []
+    current_weight = 0
+    for character in unicodedata.normalize("NFC", value):
+        character_weight = x_weighted_length(character)
+        if current_weight + character_weight > maximum_weight:
+            break
+        prefix.append(character)
+        current_weight += character_weight
+    return "".join(prefix)
+
+
+def _fit_x_copy(value: str, maximum_weight: int = 280) -> str:
+    """Shorten an otherwise valid draft without turning a minor miss into a 502."""
+    normalized = unicodedata.normalize("NFC", value).strip()
+    if x_weighted_length(normalized) <= maximum_weight:
+        return normalized
+
+    prefix = _weighted_prefix(normalized, maximum_weight)
+    sentence_boundary = max(prefix.rfind(mark) for mark in ".!?。！？")
+    if sentence_boundary >= 0:
+        completed = prefix[:sentence_boundary + 1].strip()
+        if completed:
+            return completed
+
+    # Preserve a readable word boundary and reserve one weighted character for
+    # the ellipsis. This path also handles a single overlong Korean sentence.
+    prefix = _weighted_prefix(normalized, maximum_weight - x_weighted_length("…"))
+    word_boundary = prefix.rfind(" ")
+    if word_boundary > 0:
+        prefix = prefix[:word_boundary]
+    shortened = prefix.rstrip(" ,.;:!?。！？") + "…"
+    if not shortened.strip("…"):
+        raise ArticleOutputError("article x could not be shortened safely")
+    return shortened
 
 
 def _build_user_prompt(
@@ -246,11 +285,16 @@ def _normalize_hashtags(value: object) -> list[str]:
 
 def _normalize_generated_result(result: dict, source_url: str) -> dict:
     expected_keys = {"title", "lead", "sections", "key_takeaways", "telegram", "x"}
-    if set(result) != expected_keys:
-        missing = sorted(expected_keys - set(result))
-        extra = sorted(set(result) - expected_keys)
+    result_keys = set(result)
+    missing = expected_keys - result_keys
+    extra = result_keys - expected_keys
+    # Claude occasionally repeats Telegram hashtags at the top level while
+    # still returning the complete requested object. The duplicate is never
+    # consumed, so ignore only this narrow, harmless shape deviation.
+    ignorable_extra = extra == {"hashtags"} and isinstance(result["hashtags"], list)
+    if missing or (extra and not ignorable_extra):
         raise ArticleOutputError(
-            f"article JSON keys mismatch; missing={missing}, extra={extra}"
+            f"article JSON keys mismatch; missing={sorted(missing)}, extra={sorted(extra)}"
         )
 
     title = _required_korean(result["title"], "title", maximum=80)
@@ -309,14 +353,12 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
         # Remove disallowed sampled URLs before applying the publishing limit.
         # This mirrors the deterministic cleanup performed for Telegram.
         raw_x_copy = _URL_PATTERN.sub("", raw_x_copy).strip()
-    x_copy = _required_korean(raw_x_copy, "x", maximum=280)
+    # Keep a finite sanity cap, then enforce the platform's stricter weighted
+    # limit below. A recoverable model overshoot should not fail the article.
+    x_copy = _required_korean(raw_x_copy, "x", maximum=1_000)
     if "#" in x_copy:
         raise ArticleOutputError("article x must not contain hashtags")
-    weighted_x_length = x_weighted_length(x_copy)
-    if weighted_x_length > 280:
-        raise ArticleOutputError(
-            f"article x exceeds 280 weighted characters ({weighted_x_length})"
-        )
+    x_copy = _fit_x_copy(x_copy)
 
     source_map = []
     if source_url:
