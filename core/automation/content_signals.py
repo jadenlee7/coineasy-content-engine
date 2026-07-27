@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -10,7 +11,8 @@ from urllib.parse import urlsplit
 import httpx
 
 
-CONTENT_SIGNALS_SCHEMA_VERSION = "1.0"
+CONTENT_SIGNALS_SCHEMA_VERSION = "1.1"
+CONTENT_PERFORMANCE_POLICY_VERSION = "content-performance-v1"
 CONTENT_SIGNALS_URL = (
     "https://jlxbywqofrltyttklcqy.supabase.co"
     "/functions/v1/content-signals-api"
@@ -20,6 +22,7 @@ _ALLOWED_SOURCES = frozenset({"community", "telegram_content", "local_x"})
 _AVAILABILITY_VALUES = frozenset({"ok", "unavailable"})
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_DEMAND_TERMS = 20
+_MAX_PROMOTION_CANDIDATES = 5
 _MAX_TERM_LENGTH = 80
 _MAX_SAFE_COUNT = 9_007_199_254_740_991
 _MAX_SIGNAL_AGE = timedelta(hours=24)
@@ -35,6 +38,36 @@ _HIGH_ENTROPY_TOKEN_PATTERN = re.compile(
     r"^(?:[A-Za-z0-9_-]{48,80}|"
     r"(?=[A-Za-z0-9_-]{32,80}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]+)$"
 )
+_SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+_X_PROMOTION_URL_PATTERN = re.compile(
+    r"^https://x\.com/[a-z0-9_]{1,15}/status/[1-9][0-9]{0,18}$"
+)
+_TELEGRAM_PROMOTION_URL_PATTERN = re.compile(
+    r"^https://t\.me/[a-z][a-z0-9_]{4,31}/[1-9][0-9]{0,18}$"
+)
+_PROMOTION_LOCAL_HANDLES = {
+    "x": {
+        "yellow": "yellow__korea",
+        "origintrail": "origin_trail_kr",
+        "squid": "squidkorea",
+        "babylon": "babylonkorean",
+    },
+    "telegram": {
+        "yellow": "yellowkorea_ann",
+        "origintrail": "origintrailkr",
+        "squid": "squid_kor_update",
+        "babylon": "babylonbtc",
+    },
+}
+_PROMOTION_REASON_ORDER = (
+    "high_reach",
+    "high_interaction",
+    "community_alignment",
+    "tutorial_learning_signal",
+)
+_PROMOTION_REASON_INDEX = {
+    reason: index for index, reason in enumerate(_PROMOTION_REASON_ORDER)
+}
 _PROHIBITED_KEYS = frozenset({
     "btc_address",
     "chat_id",
@@ -72,6 +105,22 @@ class DemandTerm:
 
 
 @dataclass(frozen=True)
+class PromotionCandidate:
+    candidate_id: str
+    channel: str
+    source_url: str
+    published_at: datetime
+    score: float
+    reach_percentile: float
+    interaction_percentile: float
+    community_match_count: int
+    cohort_size: int
+    observation_age_hours: float
+    recommended_formats: tuple[str, ...]
+    reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ContentSignalsSnapshot:
     schema_version: str
     client_id: str
@@ -79,6 +128,8 @@ class ContentSignalsSnapshot:
     window_start: datetime
     window_end: datetime
     demand_terms: tuple[DemandTerm, ...]
+    promotion_policy_version: str
+    promotion_candidates: tuple[PromotionCandidate, ...] = ()
 
 
 def validate_content_signals_url(value: str) -> str:
@@ -580,6 +631,242 @@ def _demand_terms(value: object) -> tuple[DemandTerm, ...]:
     return tuple(terms)
 
 
+def _promotion_candidates(
+    value: object,
+    *,
+    expected_client_id: str,
+    generated_at: datetime,
+    window_start: datetime,
+    window_end: datetime,
+    availability: Mapping[str, object],
+    stale_sources: set[str],
+) -> tuple[PromotionCandidate, ...]:
+    raw_candidates = _array(value, _MAX_PROMOTION_CANDIDATES)
+    candidates: list[PromotionCandidate] = []
+    seen_ids: set[str] = set()
+    seen_links: set[tuple[str, str]] = set()
+    candidate_keys = frozenset({
+        "candidate_id",
+        "channel",
+        "source_url",
+        "published_at",
+        "score",
+        "reach_percentile",
+        "interaction_percentile",
+        "community_match_count",
+        "cohort_size",
+        "observation_age_hours",
+        "recommended_formats",
+        "reason_codes",
+    })
+    for raw in raw_candidates:
+        item = _mapping(raw)
+        _exact_keys(item, candidate_keys)
+
+        candidate_id = item.get("candidate_id")
+        channel = item.get("channel")
+        source_url = item.get("source_url")
+        if (
+            not isinstance(candidate_id, str)
+            or not _SHA256_PATTERN.fullmatch(candidate_id)
+            or candidate_id in seen_ids
+            or channel not in {"x", "telegram"}
+            or not isinstance(source_url, str)
+            or not 1 <= len(source_url) <= 160
+            or (
+                channel == "x"
+                and not _X_PROMOTION_URL_PATTERN.fullmatch(source_url)
+            )
+            or (
+                channel == "telegram"
+                and not _TELEGRAM_PROMOTION_URL_PATTERN.fullmatch(source_url)
+            )
+            or (channel, source_url) in seen_links
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+        expected_handle = _PROMOTION_LOCAL_HANDLES[channel][
+            expected_client_id
+        ]
+        expected_prefix = (
+            f"https://x.com/{expected_handle}/status/"
+            if channel == "x"
+            else f"https://t.me/{expected_handle}/"
+        )
+        expected_candidate_id = hashlib.sha256(
+            (
+                f"{CONTENT_PERFORMANCE_POLICY_VERSION}\n"
+                f"{expected_client_id}\n{channel}\n{source_url}"
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            not source_url.startswith(expected_prefix)
+            or candidate_id != expected_candidate_id
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        source_section = (
+            "local_x" if channel == "x" else "telegram_content"
+        )
+        if (
+            availability.get(source_section) != "ok"
+            or source_section in stale_sources
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        published_at = _datetime(
+            item.get("published_at"),
+            "promotion_candidates.published_at",
+        )
+        computed_age = (
+            generated_at - published_at
+        ).total_seconds() / 3600
+        observation_age = _number(
+            item.get("observation_age_hours"),
+            minimum=12,
+            maximum=72,
+        )
+        if (
+            published_at < window_start
+            or published_at > window_end
+            or published_at > generated_at
+            or not 12 <= computed_age <= 72
+            or abs(observation_age - computed_age) > 0.25
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        score = _number(item.get("score"), minimum=0.7, maximum=1)
+        reach_percentile = _number(
+            item.get("reach_percentile"),
+            maximum=1,
+        )
+        interaction_percentile = _number(
+            item.get("interaction_percentile"),
+            maximum=1,
+        )
+        community_match_count = _count(
+            item.get("community_match_count"),
+            maximum=3,
+        )
+        cohort_size = _count(item.get("cohort_size"), maximum=1_000_000)
+        expected_score = (
+            0.55 * reach_percentile
+            + 0.35 * interaction_percentile
+            + 0.10 * min(community_match_count, 3) / 3
+        )
+        if cohort_size < 5 or abs(score - expected_score) > 0.001:
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        formats = _array(item.get("recommended_formats"), 2)
+        if formats not in (["article"], ["article", "tutorial"]):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        reasons = _array(item.get("reason_codes"), len(_PROMOTION_REASON_ORDER))
+        if (
+            not reasons
+            or any(
+                not isinstance(reason, str)
+                or reason not in _PROMOTION_REASON_INDEX
+                for reason in reasons
+            )
+            or len(set(reasons)) != len(reasons)
+            or reasons != sorted(
+                reasons,
+                key=lambda reason: _PROMOTION_REASON_INDEX[reason],
+            )
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        tutorial_recommended = formats == ["article", "tutorial"]
+        if (
+            ("high_reach" in reasons) != (reach_percentile >= 0.7)
+            or (
+                ("high_interaction" in reasons)
+                != (interaction_percentile >= 0.7)
+            )
+            or (
+                ("community_alignment" in reasons)
+                != (community_match_count > 0)
+            )
+            or tutorial_recommended
+            != ("tutorial_learning_signal" in reasons)
+            or (
+                tutorial_recommended
+                and (
+                    expected_client_id not in {"yellow", "squid"}
+                    or community_match_count == 0
+                    or score < 0.8
+                )
+            )
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+
+        seen_ids.add(candidate_id)
+        seen_links.add((channel, source_url))
+        candidates.append(PromotionCandidate(
+            candidate_id=candidate_id,
+            channel=channel,
+            source_url=source_url,
+            published_at=published_at,
+            score=score,
+            reach_percentile=reach_percentile,
+            interaction_percentile=interaction_percentile,
+            community_match_count=community_match_count,
+            cohort_size=cohort_size,
+            observation_age_hours=observation_age,
+            recommended_formats=tuple(formats),
+            reason_codes=tuple(reasons),
+        ))
+    return tuple(candidates)
+
+
+def _promotion_policy_version(value: object) -> str:
+    meta = _mapping(value)
+    _exact_keys(meta, frozenset({
+        "policy_version",
+        "method",
+        "max_items",
+        "score_threshold",
+        "minimum_cohort_size",
+        "minimum_post_age_hours",
+        "maximum_post_age_hours",
+        "maximum_freshness_hours",
+        "factual_evidence",
+        "auto_publish",
+    }))
+    if (
+        meta.get("policy_version") != CONTENT_PERFORMANCE_POLICY_VERSION
+        or meta.get("method") != "same-client-channel-percentile-v1"
+        or meta.get("max_items") != _MAX_PROMOTION_CANDIDATES
+        or meta.get("score_threshold") != 0.7
+        or meta.get("minimum_cohort_size") != 5
+        or meta.get("minimum_post_age_hours") != 12
+        or meta.get("maximum_post_age_hours") != 72
+        or meta.get("maximum_freshness_hours") != 24
+        or meta.get("factual_evidence") is not False
+        or meta.get("auto_publish") is not False
+    ):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
+    return CONTENT_PERFORMANCE_POLICY_VERSION
+
+
 def _snapshot(
     value: object,
     *,
@@ -602,6 +889,8 @@ def _snapshot(
         "local_x",
         "demand_terms",
         "demand_terms_meta",
+        "promotion_candidates",
+        "promotion_candidates_meta",
         "privacy",
     }))
     _reject_prohibited_fields(body)
@@ -752,6 +1041,19 @@ def _snapshot(
             "content_signals_invalid_response", retryable=False
         )
 
+    promotion_policy_version = _promotion_policy_version(
+        body.get("promotion_candidates_meta")
+    )
+    promotion_candidates = _promotion_candidates(
+        body.get("promotion_candidates"),
+        expected_client_id=expected_client_id,
+        generated_at=generated_at,
+        window_start=window_start,
+        window_end=window_end,
+        availability=availability,
+        stale_sources=stale_sources,
+    )
+
     privacy = _mapping(body.get("privacy"))
     _exact_keys(
         privacy,
@@ -772,6 +1074,8 @@ def _snapshot(
         window_start=window_start,
         window_end=window_end,
         demand_terms=demand_terms,
+        promotion_policy_version=promotion_policy_version,
+        promotion_candidates=promotion_candidates,
     )
 
 

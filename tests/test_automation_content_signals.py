@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -15,13 +16,20 @@ from core.automation.content_signals import (
 
 NOW = datetime(2026, 7, 27, 6, 0, tzinfo=timezone.utc)
 TOKEN = "e" * 64
+PROMOTION_URL = "https://x.com/squidkorea/status/123456789"
+PROMOTION_CANDIDATE_ID = hashlib.sha256(
+    (
+        "content-performance-v1\n"
+        f"squid\nx\n{PROMOTION_URL}"
+    ).encode("utf-8")
+).hexdigest()
 
 
 def response_body(**overrides):
     start = NOW - timedelta(days=7)
     body = {
         "ok": True,
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "generated_at": "2026-07-27T06:00:00Z",
         "client_id": "squid",
         "window": {
@@ -140,6 +148,37 @@ def response_body(**overrides):
             "factual_evidence": False,
             "translation": False,
         },
+        "promotion_candidates": [{
+            "candidate_id": PROMOTION_CANDIDATE_ID,
+            "channel": "x",
+            "source_url": PROMOTION_URL,
+            "published_at": "2026-07-26T12:00:00Z",
+            "score": 0.875,
+            "reach_percentile": 0.9,
+            "interaction_percentile": 0.8,
+            "community_match_count": 3,
+            "cohort_size": 12,
+            "observation_age_hours": 18,
+            "recommended_formats": ["article", "tutorial"],
+            "reason_codes": [
+                "high_reach",
+                "high_interaction",
+                "community_alignment",
+                "tutorial_learning_signal",
+            ],
+        }],
+        "promotion_candidates_meta": {
+            "policy_version": "content-performance-v1",
+            "method": "same-client-channel-percentile-v1",
+            "max_items": 5,
+            "score_threshold": 0.7,
+            "minimum_cohort_size": 5,
+            "minimum_post_age_hours": 12,
+            "maximum_post_age_hours": 72,
+            "maximum_freshness_hours": 24,
+            "factual_evidence": False,
+            "auto_publish": False,
+        },
         "privacy": {
             "raw_messages_included": False,
             "user_identifiers_included": False,
@@ -150,13 +189,13 @@ def response_body(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_client_posts_exact_contract_and_returns_only_bounded_terms():
+async def test_client_posts_exact_contract_and_returns_bounded_signals():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == CONTENT_SIGNALS_URL
         assert request.headers["authorization"] == f"Bearer {TOKEN}"
         assert request.headers["accept"] == "application/json"
         assert json.loads(request.content) == {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "client_id": "squid",
             "start": "2026-07-20T06:00:00Z",
             "end": "2026-07-27T06:00:00Z",
@@ -175,6 +214,15 @@ async def test_client_posts_exact_contract_and_returns_only_bounded_terms():
     assert [(item.term, item.weight, item.sources) for item in snapshot.demand_terms] == [
         ("bridge", 0.9, ("community",)),
     ]
+    assert snapshot.promotion_policy_version == "content-performance-v1"
+    assert len(snapshot.promotion_candidates) == 1
+    assert snapshot.promotion_candidates[0].source_url == (
+        PROMOTION_URL
+    )
+    assert snapshot.promotion_candidates[0].recommended_formats == (
+        "article",
+        "tutorial",
+    )
     assert not hasattr(snapshot, "community")
     assert not hasattr(snapshot, "telegram_content")
     assert not hasattr(snapshot, "local_x")
@@ -197,6 +245,34 @@ async def test_optional_aggregate_section_can_fail_closed_without_stopping_terms
     ).fetch(client_id="squid", now=NOW)
 
     assert snapshot.demand_terms[0].sources == ("community",)
+
+
+@pytest.mark.asyncio
+async def test_telegram_candidate_requires_the_client_local_public_channel():
+    body = response_body()
+    source_url = "https://t.me/squid_kor_update/123456"
+    body["promotion_candidates"][0].update(
+        candidate_id=hashlib.sha256(
+            (
+                "content-performance-v1\n"
+                f"squid\ntelegram\n{source_url}"
+            ).encode("utf-8")
+        ).hexdigest(),
+        channel="telegram",
+        source_url=source_url,
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    snapshot = await EasyFarmContentSignalsClient(
+        endpoint_url=CONTENT_SIGNALS_URL,
+        token=TOKEN,
+        transport=httpx.MockTransport(handler),
+    ).fetch(client_id="squid", now=NOW)
+
+    assert snapshot.promotion_candidates[0].channel == "telegram"
+    assert snapshot.promotion_candidates[0].source_url == source_url
 
 
 @pytest.mark.asyncio
@@ -261,6 +337,46 @@ async def test_optional_aggregate_section_can_fail_closed_without_stopping_terms
         ),
         (
             lambda body: body["local_x"]["sample_size"].update(returned=501),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates_meta"].update(
+                auto_publish=True
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(
+                source_url="https://x.com/SquidKorea/status/123456789"
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(
+                source_url="https://x.com/squidrouter/status/123456789"
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(score=0.99),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(
+                candidate_id="f" * 64
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(
+                recommended_formats=["article"],
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["promotion_candidates"][0].update(
+                community_match_count=4,
+            ),
             "content_signals_invalid_response",
         ),
         (

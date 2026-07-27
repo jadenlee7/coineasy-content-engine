@@ -124,7 +124,7 @@ test("renders deduplicated and escaped source evidence from every stored content
 
 test("rebuilds Figma SVGs from only the stored daily-news render envelope", () => {
   const functionSource = consoleHtml.match(
-    /function storedEditableRequest\(rawDetail\) \{[\s\S]*?\n      \}(?=\n\n      function storedTutorialRequest)/,
+    /function storedEditableRequest\(rawDetail\) \{[\s\S]*?\n      \}(?=\n\n      function storedPromotionRequest)/,
   )?.[0];
   assert.ok(functionSource, "storedEditableRequest must be present in the console");
   const storedEditableRequest = Function(
@@ -190,57 +190,148 @@ test("rebuilds Figma SVGs from only the stored daily-news render envelope", () =
   assert.match(consoleHtml, /activeContentId !== libraryState\.activeId/);
 });
 
-test("prefills a manual Yellow or Squid tutorial without changing review state", () => {
+test("prefills deeper work only from an exact performance recommendation and source-ready official evidence", () => {
   const functionSource = consoleHtml.match(
-    /function storedTutorialRequest\(rawDetail\) \{[\s\S]*?\n      \}(?=\n\n      function renderLibraryDetail)/,
+    /function storedPromotionRequest\(rawDetail, recommendationId\) \{[\s\S]*?\n      \}(?=\n\n      function promotionReasonLabel)/,
   )?.[0];
-  assert.ok(functionSource, "storedTutorialRequest must be present in the console");
-  const storedTutorialRequest = Function(
+  assert.ok(functionSource, "storedPromotionRequest must be present in the console");
+  const storedPromotionRequest = Function(
     "plainObject",
     "TUTORIAL_CLIENTS",
     "safeWebUrl",
-    `"use strict"; ${functionSource}; return storedTutorialRequest;`,
+    `"use strict"; ${functionSource}; return storedPromotionRequest;`,
   )(
     (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
     new Set(["yellow", "squid"]),
     (value: unknown) => typeof value === "string" && value.startsWith("https://")
       ? value
       : "",
-  ) as (detail: unknown) => Record<string, any> | null;
+  ) as (detail: unknown, targetKind: string) => Record<string, any> | null;
 
-  assert.deepEqual(storedTutorialRequest({
+  const officialSource = "공식 원문 근거입니다. ".repeat(30);
+  const versionId = "33333333-3333-4333-8333-333333333333";
+  const tutorialId = "44444444-4444-4444-8444-444444444444";
+  assert.deepEqual(storedPromotionRequest({
     client_id: "yellow",
-    content_kind: "article",
+    content_kind: "daily_news",
+    current_version_id: versionId,
+    promotion_recommendations: [{
+      recommendation_id: tutorialId,
+      content_version_id: versionId,
+      target_kind: "tutorial",
+      source_ready: true,
+    }],
     current_version: {
+      content_version_id: versionId,
       content: {
         source: {
-          submitted_content: "튜토리얼로 이어 만들 충분한 공식 원문입니다.",
+          submitted_content: officialSource,
           url: "https://x.com/Yellow/status/123",
         },
       },
     },
-  }), {
+  }, tutorialId), {
     clientId: "yellow",
-    sourceContent: "튜토리얼로 이어 만들 충분한 공식 원문입니다.",
+    targetKind: "tutorial",
+    sourceContent: officialSource.trim(),
     sourceUrl: "https://x.com/Yellow/status/123",
   });
-  assert.equal(storedTutorialRequest({
-    client_id: "babylon",
-    content_kind: "article",
-    current_version: { content: { source: { submitted_content: "충분히 긴 공식 원문입니다." } } },
-  }), null);
-  assert.equal(storedTutorialRequest({
+  assert.equal(storedPromotionRequest({
     client_id: "squid",
-    content_kind: "tutorial",
-    current_version: { content: { source: { content: "이미 생성된 튜토리얼 원문입니다." } } },
-  }), null);
+    content_kind: "daily_news",
+    current_version_id: versionId,
+    promotion_recommendations: [{
+      recommendation_id: tutorialId,
+      content_version_id: versionId,
+      target_kind: "tutorial",
+      source_ready: false,
+    }],
+    current_version: { content_version_id: versionId, content: { source: { content: officialSource } } },
+  }, tutorialId), null);
+  assert.equal(storedPromotionRequest({
+    client_id: "squid",
+    content_kind: "daily_news",
+    current_version_id: versionId,
+    promotion_recommendations: [{
+      recommendation_id: tutorialId,
+      content_version_id: versionId,
+      target_kind: "tutorial",
+      source_ready: true,
+    }],
+    current_version: { content_version_id: versionId, content: { source: { content: "짧은 공식 원문" } } },
+  }, tutorialId), null);
+  assert.equal(storedPromotionRequest({
+    client_id: "babylon",
+    content_kind: "daily_news",
+    current_version_id: versionId,
+    promotion_recommendations: [{
+      recommendation_id: tutorialId,
+      content_version_id: versionId,
+      target_kind: "tutorial",
+      source_ready: true,
+    }],
+    current_version: { content_version_id: versionId, content: { source: { content: officialSource } } },
+  }, tutorialId), null);
 
-  assert.match(consoleHtml, /data-library-tutorial>이 원문으로 튜토리얼 만들기</);
-  assert.match(consoleHtml, /state\.mode = "tutorial"/);
+  const firstArticleId = "55555555-5555-4555-8555-555555555555";
+  const secondArticleId = "66666666-6666-4666-8666-666666666666";
+  const sameKindDetail = {
+    client_id: "yellow",
+    content_kind: "daily_news",
+    current_version_id: versionId,
+    promotion_recommendations: [
+      {
+        recommendation_id: firstArticleId,
+        content_version_id: versionId,
+        target_kind: "article",
+        source_ready: false,
+      },
+      {
+        recommendation_id: secondArticleId,
+        content_version_id: versionId,
+        target_kind: "article",
+        source_ready: true,
+      },
+    ],
+    current_version: {
+      content_version_id: versionId,
+      content: { source: { content: officialSource } },
+    },
+  };
+  assert.equal(storedPromotionRequest(sameKindDetail, firstArticleId), null);
+  assert.equal(storedPromotionRequest(sameKindDetail, secondArticleId)?.targetKind, "article");
+
+  assert.match(consoleHtml, /data-library-promotion="\$\{escapeHtml\(item\.recommendation_id\)\}"/);
+  assert.match(consoleHtml, /state\.mode = request\.targetKind/);
   assert.match(consoleHtml, /sourceContent\.value = request\.sourceContent/);
   assert.match(consoleHtml, /sourceUrl\.value = request\.sourceUrl/);
-  assert.match(consoleHtml, /function continueStoredTutorial\(\) \{[\s\S]*if \(generate\.disabled\)[\s\S]*if \(!confirmResultReset\(\)\) return;[\s\S]*state\.mode = "tutorial"/);
-  assert.match(consoleHtml, /승인이나 게시 상태는 바뀌지 않습니다/);
+  assert.match(consoleHtml, /function continueStoredPromotion\(recommendationId\) \{[\s\S]*if \(generate\.disabled\)[\s\S]*storedPromotionRequest\(libraryState\.activeDetail, recommendationId\)[\s\S]*if \(!confirmResultReset\(\)\) return;[\s\S]*state\.mode = request\.targetKind/);
+  assert.doesNotMatch(consoleHtml, /data-library-tutorial/);
+  assert.match(consoleHtml, /추천은 자동 게시되지 않으며 공식 원문 확인 후 시작됩니다/);
+});
+
+test("links only already-public posts and explains the observation window", () => {
+  assert.match(consoleHtml, /id="library-publication-\$\{channel\}"/);
+  assert.match(consoleHtml, /row\("x", "X 링크"/);
+  assert.match(consoleHtml, /row\("telegram", "Telegram 링크"/);
+  assert.match(consoleHtml, /data-library-publication="\$\{channel\}"/);
+  assert.match(consoleHtml, /직접 게시한 공개 링크를 연결하면/);
+  assert.match(consoleHtml, /이 버튼은 게시를 실행하거나 게시물을 수정하지 않습니다/);
+  assert.match(consoleHtml, /fetch\(`\/api\/library\/\$\{encodeURIComponent\(activeContentId\)\}\/performance`/);
+  assert.match(consoleHtml, /body: JSON\.stringify\(\{ content_version_id: contentVersionId, channel, external_url: externalUrl \}\)/);
+  assert.match(consoleHtml, /12시간 이상 반응이 쌓인 뒤/);
+  assert.match(consoleHtml, /publication_observation_conflict/);
+  assert.match(consoleHtml, /performanceRequest: \{ x: 0, telegram: 0 \}/);
+  assert.match(consoleHtml, /requestId = \+\+libraryState\.performanceRequest\[channel\]/);
+  const recordFunction = consoleHtml.match(
+    /async function recordStoredPublication\(button\) \{[\s\S]*?\n      \}(?=\n\n      function continueStoredPromotion)/,
+  )?.[0] || "";
+  assert.match(recordFunction, /requestId === libraryState\.performanceRequest\[channel\]/);
+  assert.match(recordFunction, /button\.disabled = connected/);
+  assert.doesNotMatch(recordFunction, /exportRequest/);
+  assert.match(consoleHtml, /manual_publications/);
+  assert.match(consoleHtml, /성과 추천 정보를 지금 불러오지 못했습니다/);
+  assert.doesNotMatch(consoleHtml, /공식 원문 300자 이상 보강 후 생성 가능/);
 });
 
 test("permits only web URLs before rendering signed assets and links", () => {

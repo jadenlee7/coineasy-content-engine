@@ -198,7 +198,7 @@ class SupabaseAutomationRepository:
         workspace_id: str,
         snapshot: ContentSignalsSnapshot,
         ranking_version: str,
-    ) -> None:
+    ) -> str:
         if ranking_version != "official-x-demand-v1":
             raise ValueError("unsupported content signal ranking version")
         demand_terms = [
@@ -209,6 +209,23 @@ class SupabaseAutomationRepository:
             }
             for term in snapshot.demand_terms
         ]
+        promotion_candidates = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "channel": candidate.channel,
+                "source_url": candidate.source_url,
+                "published_at": candidate.published_at.isoformat(),
+                "score": candidate.score,
+                "reach_percentile": candidate.reach_percentile,
+                "interaction_percentile": candidate.interaction_percentile,
+                "community_match_count": candidate.community_match_count,
+                "cohort_size": candidate.cohort_size,
+                "observation_age_hours": candidate.observation_age_hours,
+                "recommended_formats": list(candidate.recommended_formats),
+                "reason_codes": list(candidate.reason_codes),
+            }
+            for candidate in snapshot.promotion_candidates
+        ]
         fingerprint = {
             "schema_version": snapshot.schema_version,
             "client_id": snapshot.client_id,
@@ -217,6 +234,8 @@ class SupabaseAutomationRepository:
             "window_end": snapshot.window_end.isoformat(),
             "ranking_version": ranking_version,
             "demand_terms": demand_terms,
+            "promotion_policy_version": snapshot.promotion_policy_version,
+            "promotion_candidates": promotion_candidates,
         }
         snapshot_hash = hashlib.sha256(json.dumps(
             fingerprint,
@@ -244,6 +263,64 @@ class SupabaseAutomationRepository:
                 "invalid_ranking_evidence_receipt",
                 retryable=False,
             )
+        return snapshot_hash
+
+    async def record_promotion_candidates(
+        self,
+        *,
+        workspace_id: str,
+        snapshot: ContentSignalsSnapshot,
+        snapshot_hash: str,
+    ) -> int:
+        if (
+            snapshot.schema_version != "1.1"
+            or snapshot.promotion_policy_version != "content-performance-v1"
+            or not isinstance(snapshot_hash, str)
+            or re.fullmatch(r"[a-f0-9]{64}", snapshot_hash) is None
+        ):
+            raise ValueError("unsupported content promotion evidence")
+        candidates = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "channel": candidate.channel,
+                "source_url": candidate.source_url,
+                "published_at": candidate.published_at.isoformat(),
+                "score": candidate.score,
+                "reach_percentile": candidate.reach_percentile,
+                "interaction_percentile": candidate.interaction_percentile,
+                "community_match_count": candidate.community_match_count,
+                "cohort_size": candidate.cohort_size,
+                "observation_age_hours": candidate.observation_age_hours,
+                "recommended_formats": list(candidate.recommended_formats),
+                "reason_codes": list(candidate.reason_codes),
+            }
+            for candidate in snapshot.promotion_candidates
+        ]
+        raw = await self._rpc("record_content_promotion_candidates", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_client_id": self._client(snapshot.client_id),
+            "target_snapshot_hash": snapshot_hash,
+            "target_schema_version": snapshot.schema_version,
+            "target_generated_at": snapshot.generated_at.isoformat(),
+            "target_window_start": snapshot.window_start.isoformat(),
+            "target_window_end": snapshot.window_end.isoformat(),
+            "target_policy_version": snapshot.promotion_policy_version,
+            "target_candidates": candidates,
+        })
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("recorded") is not True
+            or raw.get("snapshot_hash") != snapshot_hash
+            or raw.get("candidate_count") != len(candidates)
+            or isinstance(raw.get("recommendation_count"), bool)
+            or not isinstance(raw.get("recommendation_count"), int)
+            or not 0 <= raw["recommendation_count"] <= len(candidates) * 2
+        ):
+            raise AutomationRepositoryError(
+                "invalid_promotion_evidence_receipt",
+                retryable=False,
+            )
+        return raw["recommendation_count"]
 
     async def record_sources(
         self,

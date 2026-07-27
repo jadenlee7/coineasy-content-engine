@@ -122,7 +122,7 @@ publishing:
     social_set_id: 291349
     active: true
   telegram:
-    public_channel: "@SquidKorea"
+    public_channel: "@squid_kor_update"
     bot_token_env: "TELEGRAM_BOT_TOKEN_SQUID"
     bot_env: TELEGRAM_BOT_TOKEN_SQUID
     channel_env: TELEGRAM_CHANNEL_SQUID

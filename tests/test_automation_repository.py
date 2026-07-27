@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime, timedelta, timezone
 import json
 
 import httpx
 import pytest
 
-from core.automation.content_signals import ContentSignalsSnapshot, DemandTerm
+from core.automation.content_signals import (
+    ContentSignalsSnapshot,
+    DemandTerm,
+    PromotionCandidate,
+)
 from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
@@ -18,6 +23,13 @@ SOURCE_ID = "22222222-2222-4222-8222-222222222222"
 JOB_ID = "33333333-3333-4333-8333-333333333333"
 REQUEST_ID = "44444444-4444-4444-8444-444444444444"
 SERVICE_KEY = "service-role-key-that-is-longer-than-thirty-two-characters"
+PROMOTION_URL = "https://x.com/squidkorea/status/123456789"
+PROMOTION_CANDIDATE_ID = hashlib.sha256(
+    (
+        "content-performance-v1\n"
+        f"squid\nx\n{PROMOTION_URL}"
+    ).encode("utf-8")
+).hexdigest()
 
 
 def _repo(handler):
@@ -28,10 +40,10 @@ def _repo(handler):
     )
 
 
-def _signals_snapshot():
+def _signals_snapshot(*, with_candidate: bool = False):
     now = datetime(2026, 7, 27, 6, 0, tzinfo=timezone.utc)
     return ContentSignalsSnapshot(
-        schema_version="1.0",
+        schema_version="1.1",
         client_id="squid",
         generated_at=now,
         window_start=now - timedelta(days=7),
@@ -43,6 +55,28 @@ def _signals_snapshot():
                 sources=("community", "telegram_content"),
             ),
         ),
+        promotion_policy_version="content-performance-v1",
+        promotion_candidates=(
+            PromotionCandidate(
+                candidate_id=PROMOTION_CANDIDATE_ID,
+                channel="x",
+                source_url=PROMOTION_URL,
+                published_at=now - timedelta(hours=18),
+                score=0.875,
+                reach_percentile=0.9,
+                interaction_percentile=0.8,
+                community_match_count=3,
+                cohort_size=12,
+                observation_age_hours=18,
+                recommended_formats=("article", "tutorial"),
+                reason_codes=(
+                    "high_reach",
+                    "high_interaction",
+                    "community_alignment",
+                    "tutorial_learning_signal",
+                ),
+            ),
+        ) if with_candidate else (),
     )
 
 
@@ -165,7 +199,7 @@ async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
             "reused": False,
         })
 
-    await _repo(handler).record_ranking_evidence(
+    snapshot_hash = await _repo(handler).record_ranking_evidence(
         workspace_id=WORKSPACE_ID,
         snapshot=_signals_snapshot(),
         ranking_version="official-x-demand-v1",
@@ -183,11 +217,60 @@ async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
         "target_demand_terms",
     }
     assert len(captured["target_snapshot_hash"]) == 64
+    assert snapshot_hash == captured["target_snapshot_hash"]
     assert captured["target_demand_terms"] == [{
         "term": "bridge",
         "weight": 0.9,
         "sources": ["community", "telegram_content"],
     }]
+
+
+@pytest.mark.asyncio
+async def test_promotion_candidate_rpc_is_bound_to_ranking_snapshot():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (
+            request.url.path
+            == "/rest/v1/rpc/record_content_promotion_candidates"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": captured["target_snapshot_hash"],
+            "candidate_count": 1,
+            "matched_count": 1,
+            "evidence_count": 1,
+            "recommendation_count": 2,
+        })
+
+    recommendation_count = await _repo(handler).record_promotion_candidates(
+        workspace_id=WORKSPACE_ID,
+        snapshot=_signals_snapshot(with_candidate=True),
+        snapshot_hash="b" * 64,
+    )
+
+    assert recommendation_count == 2
+    assert set(captured) == {
+        "target_workspace_id",
+        "target_client_id",
+        "target_snapshot_hash",
+        "target_schema_version",
+        "target_generated_at",
+        "target_window_start",
+        "target_window_end",
+        "target_policy_version",
+        "target_candidates",
+    }
+    assert captured["target_policy_version"] == "content-performance-v1"
+    assert (
+        captured["target_candidates"][0]["candidate_id"]
+        == PROMOTION_CANDIDATE_ID
+    )
+    assert captured["target_candidates"][0]["recommended_formats"] == [
+        "article",
+        "tutorial",
+    ]
 
 
 @pytest.mark.asyncio
