@@ -287,15 +287,13 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
     expected_keys = {"title", "lead", "sections", "key_takeaways", "telegram", "x"}
     result_keys = set(result)
     missing = expected_keys - result_keys
-    extra = result_keys - expected_keys
-    # Claude occasionally repeats Telegram hashtags at the top level while
-    # still returning the complete requested object. The duplicate is never
-    # consumed, so ignore only this narrow, harmless shape deviation.
-    ignorable_extra = extra == {"hashtags"} and isinstance(result["hashtags"], list)
-    if missing or (extra and not ignorable_extra):
+    if missing:
         raise ArticleOutputError(
-            f"article JSON keys mismatch; missing={sorted(missing)}, extra={sorted(extra)}"
+            f"article JSON keys mismatch; missing={sorted(missing)}"
         )
+    # Only the required allowlisted fields below are consumed and returned.
+    # Opus 5 may add harmless metadata keys despite the prompt; rejecting
+    # unconsumed extras turns a valid article into a user-visible 502.
 
     title = _required_korean(result["title"], "title", maximum=80)
     lead = _required_korean(result["lead"], "lead", maximum=500)
@@ -305,9 +303,12 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
         raise ArticleOutputError("article sections must contain 3-5 items")
     sections: list[dict[str, str]] = []
     for index, raw_section in enumerate(raw_sections, start=1):
-        if not isinstance(raw_section, dict) or set(raw_section) != {"heading", "body"}:
+        if (
+            not isinstance(raw_section, dict)
+            or not {"heading", "body"}.issubset(raw_section)
+        ):
             raise ArticleOutputError(
-                f"article sections[{index - 1}] must contain heading and body only"
+                f"article sections[{index - 1}] must contain heading and body"
             )
         sections.append({
             "id": f"section-{index}",
@@ -332,8 +333,11 @@ def _normalize_generated_result(result: dict, source_url: str) -> dict:
     ]
 
     raw_telegram = result["telegram"]
-    if not isinstance(raw_telegram, dict) or set(raw_telegram) != {"body", "hashtags"}:
-        raise ArticleOutputError("article telegram must contain body and hashtags only")
+    if (
+        not isinstance(raw_telegram, dict)
+        or not {"body", "hashtags"}.issubset(raw_telegram)
+    ):
+        raise ArticleOutputError("article telegram must contain body and hashtags")
     telegram_body = _required_korean(raw_telegram["body"], "telegram.body", maximum=1_500)
     # The exact request URL is authoritative. Remove any URL sampled by the
     # model before adding the caller-provided source once.
