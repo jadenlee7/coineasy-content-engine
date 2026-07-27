@@ -25,12 +25,14 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /제목·리드·3~5개 섹션·핵심 요약/);
   assert.match(consoleHtml, /\/api\/article\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
   assert.match(consoleHtml, /renderArticleResult\(articlePayload, requestContext\)/);
-  assert.match(consoleHtml, /\/api\/article-banner\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
+  assert.match(consoleHtml, /\/api\/article-visual\/\$\{encodeURIComponent\(contentId\)\}\/\$\{encodeURIComponent\(visualId\)\}/);
   assert.match(consoleHtml, /prepareArticleBanner\(articlePayload, requestSessionEpoch, requestContext\)/);
-  assert.match(consoleHtml, /canvas\.width = 1200/);
-  assert.match(consoleHtml, /canvas\.height = 630/);
+  assert.match(consoleHtml, /canvas\.width = width/);
+  assert.match(consoleHtml, /canvas\.height = height/);
   assert.match(consoleHtml, /배너 PNG 저장/);
   assert.match(consoleHtml, /Figma 배너 SVG/);
+  assert.match(consoleHtml, /data-article-visual-png/);
+  assert.match(consoleHtml, /비주얼 3장/);
   assert.match(consoleHtml, /id="article-markdown"/);
   assert.match(consoleHtml, /data-copy-target="article-markdown"/);
   assert.match(consoleHtml, /sourceContent\.maxLength = articleMode \? 60_000 : 20_000/);

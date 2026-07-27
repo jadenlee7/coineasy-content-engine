@@ -3,7 +3,11 @@ import test from "node:test";
 
 import {
   buildArticleBannerSvg,
+  buildArticleInlineVisualSvg,
 } from "../netlify/functions/_shared/article-banner-svg.mts";
+import {
+  deriveArticleVisuals,
+} from "../netlify/functions/_shared/article-visual-plan.mts";
 import articleBannerHandler from "../netlify/functions/article-banner.mts";
 import {
   createStudioSessionValue,
@@ -41,6 +45,7 @@ test("builds a layered 1200 by 630 Figma-editable article banner", () => {
     lead: "공식 발표를 바탕으로 핵심 변화와 이용자 영향을 짚어봅니다.",
     sourceUrl: "https://www.squidrouter.com/blog/update",
     date: "2026.07.27",
+    motif: "flow",
   }, "data:image/png;base64,AQ==");
 
   assert.match(svg, /width="1200" height="630" viewBox="0 0 1200 630"/);
@@ -50,6 +55,39 @@ test("builds a layered 1200 by 630 Figma-editable article banner", () => {
   assert.match(svg, /SQUIDROUTER\.COM/);
   assert.match(svg, /#E6FA36/);
   assert.match(svg, /Bagoss Condensed/);
+  assert.match(svg, /id="Hero-Motif-flow"/);
+  assert.match(svg, /ARTICLE \/ INSIGHT/);
+  assert.doesNotMatch(svg, /foreignObject/);
+});
+
+test("derives two source-locked inline visuals and renders an editable 16:9 figure", () => {
+  const visuals = deriveArticleVisuals({
+    title: "에이전트에 필요한 검증 가능한 메모리",
+    sections: [
+      { id: "section-1", heading: "결제 레일의 역할", body: "결제 레일은 값을 이동합니다." },
+      { id: "section-2", heading: "검증 가능한 컨텍스트", body: "컨텍스트는 출처에 고정됩니다." },
+      { id: "section-3", heading: "세 가지 메모리 계층", body: "작업, 공유, 검증 가능한 메모리로 구성됩니다." },
+    ],
+    key_takeaways: [
+      "에이전트에는 결제 레일이 필요합니다.",
+      "검증 가능한 컨텍스트가 필요합니다.",
+      "메모리는 세 계층으로 구성됩니다.",
+    ],
+  });
+  assert.equal(visuals.length, 2);
+  assert.equal(visuals[0].after_section_id, "section-1");
+  assert.equal(visuals[1].after_section_id, "section-3");
+
+  const svg = buildArticleInlineVisualSvg("origintrail", {
+    visual: { ...visuals[1], motif: "layers" },
+    sourceUrl: "https://x.com/origin_trail/status/123",
+    date: "2026.07.27",
+  }, "data:image/png;base64,AQ==");
+  assert.match(svg, /width="1200" height="675"/);
+  assert.match(svg, /id="Visual-Headline-Line-1"/);
+  assert.match(svg, /id="Visual-Point-1"/);
+  assert.match(svg, /id="Inline-visual-2-Motif-layers"/);
+  assert.match(svg, /SOURCE-LOCKED EDITORIAL VISUAL/);
   assert.doesNotMatch(svg, /foreignObject/);
 });
 

@@ -36,6 +36,16 @@ type RailwayArticleResponse = {
   lead: string;
   sections: Array<{ id: string; heading: string; body: string }>;
   key_takeaways: string[];
+  visuals?: Array<{
+    id: string;
+    after_section_id: string;
+    role: "overview" | "explainer";
+    motif: "network" | "layers" | "flow" | "signal" | "event" | "asset";
+    eyebrow: string;
+    headline: string;
+    caption: string;
+    points: string[];
+  }>;
   source_map: Array<{ source_url: string; applies_to: string[] }>;
   channel_copy: { telegram: string; x: string };
   markdown: string;
@@ -116,6 +126,7 @@ function articleRetryResponse(
     lead: content.lead,
     sections: content.sections,
     key_takeaways: content.key_takeaways,
+    visuals: Array.isArray(content.visuals) ? content.visuals : [],
     source_map: content.source_map,
     channel_copy: existing.channelCopy,
     markdown: content.markdown,
@@ -167,6 +178,28 @@ export function isRailwayArticleResponse(value: unknown): value is RailwayArticl
     && article.key_takeaways.length >= 3
     && article.key_takeaways.length <= 5
     && article.key_takeaways.every((item) => typeof item === "string" && Boolean(item.trim()))
+    && (
+      article.visuals === undefined
+      || (
+        Array.isArray(article.visuals)
+        && (article.visuals.length === 0 || article.visuals.length === 2)
+        && article.visuals.every((visual) => visual
+          && typeof visual.id === "string"
+          && typeof visual.after_section_id === "string"
+          && ["overview", "explainer"].includes(visual.role)
+          && ["network", "layers", "flow", "signal", "event", "asset"].includes(visual.motif)
+          && typeof visual.eyebrow === "string"
+          && Boolean(visual.eyebrow.trim())
+          && typeof visual.headline === "string"
+          && Boolean(visual.headline.trim())
+          && typeof visual.caption === "string"
+          && Boolean(visual.caption.trim())
+          && Array.isArray(visual.points)
+          && visual.points.length >= 2
+          && visual.points.length <= 4
+          && visual.points.every(point => typeof point === "string" && Boolean(point.trim())))
+      )
+    )
     && Array.isArray(article.source_map)
     && article.source_map.every((source) => source
       && typeof source.source_url === "string"
@@ -348,6 +381,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           lead: result.lead,
           sections: result.sections,
           key_takeaways: result.key_takeaways,
+          visuals: result.visuals || [],
           source_map: result.source_map,
           markdown: result.markdown,
           source: {
@@ -367,7 +401,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...referenceAudit,
         },
         asset: null,
-        promptVersion: "article@2",
+        promptVersion: "article@3",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       return json({
         ...result,
