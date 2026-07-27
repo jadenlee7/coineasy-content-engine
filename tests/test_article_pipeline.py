@@ -169,15 +169,50 @@ def test_x_weighted_length_matches_x_v3_ranges_for_ascii_and_korean():
     assert x_weighted_length("e\u0301") == 1
 
 
-def test_article_pipeline_rejects_141_hangul_x_characters(monkeypatch):
+def test_article_pipeline_shortens_overweight_x_copy_at_a_readable_boundary(monkeypatch):
+    recoverable = deepcopy(VALID_MODEL_RESULT)
+    recoverable["x"] = (
+        "첫 번째 문장은 원문의 핵심을 충실하게 설명합니다. "
+        + "두 번째 문장은 한글 가중치 제한을 넘기도록 충분히 길게 작성합니다. " * 4
+    )
+    _install_fake_anthropic(monkeypatch, recoverable)
+
+    result = generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
+
+    assert result["channel_copy"]["x"].endswith("작성합니다.")
+    assert len(result["channel_copy"]["x"]) < len(recoverable["x"])
+    assert x_weighted_length(result["channel_copy"]["x"]) <= 280
+
+
+def test_article_pipeline_shortens_one_overweight_x_sentence_with_ellipsis(monkeypatch):
+    recoverable = deepcopy(VALID_MODEL_RESULT)
+    recoverable["x"] = "한글로 작성한 하나의 긴 문장을 안전하게 줄입니다 " * 12
+    _install_fake_anthropic(monkeypatch, recoverable)
+
+    result = generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
+
+    assert result["channel_copy"]["x"].endswith("…")
+    assert x_weighted_length(result["channel_copy"]["x"]) <= 280
+    assert "https://" not in result["channel_copy"]["x"]
+
+
+def test_article_pipeline_ignores_duplicate_top_level_hashtags(monkeypatch):
+    recoverable = deepcopy(VALID_MODEL_RESULT)
+    recoverable["hashtags"] = ["#Squid", "#크로스체인"]
+    _install_fake_anthropic(monkeypatch, recoverable)
+
+    result = generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
+
+    assert "#Squid #크로스체인" in result["channel_copy"]["telegram"]
+    assert "hashtags" not in result
+
+
+def test_article_pipeline_still_rejects_unknown_top_level_fields(monkeypatch):
     invalid = deepcopy(VALID_MODEL_RESULT)
-    invalid["x"] = "한" * 141
+    invalid["unsupported_claims"] = ["모델이 추가한 필드"]
     _install_fake_anthropic(monkeypatch, invalid)
 
-    with pytest.raises(
-        ArticleOutputError,
-        match=r"x exceeds 280 weighted characters \(282\)",
-    ):
+    with pytest.raises(ArticleOutputError, match=r"extra=\['unsupported_claims'\]"):
         generate_article_spec("squid", SOURCE_CONTENT, source_url=SOURCE_URL)
 
 
