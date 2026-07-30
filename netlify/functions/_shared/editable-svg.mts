@@ -56,6 +56,7 @@ type NormalizedSpec = {
 };
 
 type Brand = {
+  id: EditableClientId;
   name: string;
   primary: string;
   dark: string;
@@ -67,6 +68,7 @@ type Brand = {
 
 const BRANDS: Record<EditableClientId, Brand> = {
   yellow: {
+    id: "yellow",
     name: "Yellow Network",
     primary: "#FDDA16",
     dark: "#000000",
@@ -76,6 +78,7 @@ const BRANDS: Record<EditableClientId, Brand> = {
     displayFont: "Pretendard",
   },
   origintrail: {
+    id: "origintrail",
     name: "OriginTrail Korea",
     primary: "#6344DF",
     dark: "#0C2246",
@@ -85,6 +88,7 @@ const BRANDS: Record<EditableClientId, Brand> = {
     displayFont: "Gmarket Sans",
   },
   squid: {
+    id: "squid",
     name: "Squid",
     primary: "#E6FA36",
     dark: "#1A0E2E",
@@ -94,6 +98,7 @@ const BRANDS: Record<EditableClientId, Brand> = {
     displayFont: "Bagoss Condensed",
   },
   babylon: {
+    id: "babylon",
     name: "Babylon Korea",
     primary: "#CE6533",
     dark: "#12495E",
@@ -313,9 +318,68 @@ function imageLayer(id: string, href: string | undefined, x: number, y: number, 
   return `<image id="${id}" x="${x}" y="${y}" width="${width}" height="${height}" href="${escapeXml(href)}" preserveAspectRatio="xMidYMid meet"/>`;
 }
 
-function logoLayer(brand: Brand, href: string | undefined, x: number, y: number, width: number, height: number, color: string): string {
-  if (href) return imageLayer("Brand-Logo", href, x, y, width, height);
-  return `<text id="Brand-Logo-Fallback" x="${x + width}" y="${y + height * 0.7}" text-anchor="end" fill="${color}" font-family="${escapeXml(brand.font)}, sans-serif" font-size="24" font-weight="800">${escapeXml(brand.name)}</text>`;
+type LogoSlot = "classic" | "editorial" | "signal" | "remix";
+type LogoBox = { width: number; height: number };
+
+const OFFICIAL_LOGO_BOXES: Record<LogoSlot, Record<EditableClientId, LogoBox>> = {
+  classic: {
+    yellow: { width: 118, height: 44 },
+    origintrail: { width: 164, height: 71 },
+    squid: { width: 88, height: 50 },
+    babylon: { width: 48, height: 48 },
+  },
+  editorial: {
+    yellow: { width: 150, height: 50 },
+    origintrail: { width: 196, height: 84 },
+    squid: { width: 108, height: 61 },
+    babylon: { width: 56, height: 56 },
+  },
+  signal: {
+    yellow: { width: 142, height: 46 },
+    origintrail: { width: 196, height: 84 },
+    squid: { width: 110, height: 62 },
+    babylon: { width: 56, height: 56 },
+  },
+  remix: {
+    yellow: { width: 160, height: 49 },
+    origintrail: { width: 151, height: 65 },
+    squid: { width: 110, height: 62 },
+    babylon: { width: 54, height: 54 },
+  },
+};
+
+function logoLayer(
+  brand: Brand,
+  href: string | undefined,
+  right: number,
+  centerY: number,
+  slot: LogoSlot,
+  color: string,
+): string {
+  const box = OFFICIAL_LOGO_BOXES[slot][brand.id];
+  const x = right - box.width;
+  const y = centerY - box.height / 2;
+  if (href) return imageLayer("Brand-Logo", href, x, y, box.width, box.height);
+  return `<text id="Brand-Logo-Fallback" x="${right}" y="${centerY + 8}" text-anchor="end" fill="${color}" font-family="${escapeXml(brand.font)}, sans-serif" font-size="24" font-weight="800">${escapeXml(brand.name)}</text>`;
+}
+
+function logoChipLayer(
+  brand: Brand,
+  href: string | undefined,
+  right = 1036,
+  centerY = 753,
+): string {
+  const box = OFFICIAL_LOGO_BOXES.remix[brand.id];
+  const paddingX = 10;
+  const paddingY = 7;
+  const chipWidth = box.width + paddingX * 2;
+  const chipHeight = box.height + paddingY * 2;
+  const x = right - chipWidth;
+  const y = centerY - chipHeight / 2;
+  return `<g id="Official-Logo-Safe-Area">
+  <rect id="Logo-Chip" x="${x}" y="${y}" width="${chipWidth}" height="${chipHeight}" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.18"/>
+  ${logoLayer(brand, href, right - paddingX, centerY, "remix", "#FFFFFF")}
+</g>`;
 }
 
 function footer(spec: NormalizedSpec, y: number, color: string, x = 96, maxSourceLength = 86): string {
@@ -343,7 +407,7 @@ function classicSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsse
     </g>`;
   }).join("\n");
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${background}"/>
-  <g id="Header">${logoLayer(brand, logo, 914, 48, 118, 44, isYellow ? brand.ink : "#FFFFFF")}</g>
+  <g id="Header">${logoLayer(brand, logo, 1032, 70, "classic", isYellow ? brand.ink : "#FFFFFF")}</g>
   <g id="Main-Card">
     <rect id="Main-Card-Background" x="48" y="116" width="984" height="916" rx="20" fill="#FFFFFF"/>
     <g id="Label"><rect id="Label-Background" x="96" y="172" width="150" height="48" rx="8" fill="${isYellow ? brand.dark : brand.primary}"/><text id="Label-Text" x="171" y="203" text-anchor="middle" fill="${isYellow ? brand.primary : brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="18" font-weight="750">${escapeXml(spec.label)}</text></g>
@@ -370,7 +434,7 @@ function editorialSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAs
   }).join("\n");
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${background}"/>
   <g id="Header">
-    ${logoLayer(brand, logo, 874, 58, 142, 58, foreground)}
+    ${logoLayer(brand, logo, 1016, 87, "editorial", foreground)}
     <line id="Header-Divider" x1="64" y1="158" x2="1016" y2="158" stroke="${foreground}" stroke-opacity="0.2" stroke-width="2"/>
   </g>
   <g id="Label"><rect id="Label-Background" x="64" y="208" width="148" height="48" rx="24" fill="${isYellow ? brand.dark : brand.primary}"/><text id="Label-Text" x="138" y="239" text-anchor="middle" fill="${isYellow ? "#FFFFFF" : brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="18" font-weight="800">${escapeXml(spec.label)}</text></g>
@@ -395,7 +459,7 @@ function signalSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsset
   }).join("\n");
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="#ECEEEB"/>
   <g id="Card-Frame"><rect id="Card-Background" x="46" y="46" width="988" height="988" rx="28" fill="#FFFFFF"/><rect id="Brand-Rail" x="46" y="46" width="28" height="988" rx="14" fill="${brand.primary}"/></g>
-  <g id="Header"><path id="Header-Background" d="M74 46H1006C1021.46 46 1034 58.54 1034 74V196H74V46Z" fill="${brand.dark}"/>${logoLayer(brand, assets.logoDark, 840, 90, 138, 62, "#FFFFFF")}</g>
+  <g id="Header"><path id="Header-Background" d="M74 46H1006C1021.46 46 1034 58.54 1034 74V196H74V46Z" fill="${brand.dark}"/>${logoLayer(brand, assets.logoDark, 978, 121, "signal", "#FFFFFF")}</g>
   <g id="Content">
     <g id="Label"><rect id="Label-Background" x="124" y="258" width="148" height="42" rx="8" fill="${brand.primary}"/><text id="Label-Text" x="198" y="285" text-anchor="middle" fill="${brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="17" font-weight="800">${escapeXml(spec.label)}</text></g>
     <text id="Signal-Number" x="974" y="298" text-anchor="end" fill="${brand.primary}" font-family="${escapeXml(brand.displayFont)}, sans-serif" font-size="52" font-weight="800">01</text>
@@ -418,7 +482,7 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
     : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="710" fill="#17242B"/>`;
   const panelLogo = spec.sourceLogoVisible
     ? ""
-    : `<g id="Official-Logo-Safe-Area"><rect id="Logo-Chip" x="908" y="728" width="128" height="50" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.18"/>${logoLayer(brand, assets.logoDark, 916, 735, 112, 36, "#FFFFFF")}</g>`;
+    : logoChipLayer(brand, assets.logoDark);
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
   <g id="Source-Visual-Layer">${visual}</g>
   <g id="Localized-Content-Panel"><rect id="Panel-Background" x="0" y="710" width="1080" height="370" fill="${brand.dark}"/><rect id="Panel-Accent" x="44" y="710" width="992" height="5" rx="2.5" fill="${brand.primary}"/>

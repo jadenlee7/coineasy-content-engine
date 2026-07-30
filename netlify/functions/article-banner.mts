@@ -8,6 +8,10 @@ import {
   type ArticleVisualMotif,
 } from "./_shared/article-visual-plan.mts";
 import type { EditableClientId } from "./_shared/editable-svg.mts";
+import {
+  fetchOfficialBrandLogoDataUrl,
+  OFFICIAL_BRAND_ASSETS,
+} from "./_shared/official-brand-assets.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
 type ArticleBannerRequest = {
@@ -16,13 +20,6 @@ type ArticleBannerRequest = {
   source_url?: unknown;
   date?: unknown;
   motif?: unknown;
-};
-
-const CLIENT_LOGOS: Record<EditableClientId, string> = {
-  yellow: "/assets/brands/yellow-dark.svg",
-  origintrail: "/assets/brands/origintrail-dark.png",
-  squid: "/assets/brands/squid-dark.png",
-  babylon: "/assets/brands/babylon-dark.png",
 };
 
 function jsonError(error: string, status: number): Response {
@@ -59,18 +56,6 @@ function optionalWebUrl(value: unknown): string {
   }
 }
 
-async function fetchLogoDataUrl(url: string): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) throw new Error("logo_fetch_failed");
-  const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
-  if (!/^image\/(?:png|svg\+xml)$/.test(contentType)) throw new Error("unsupported_logo_type");
-  const declaredSize = Number(response.headers.get("content-length") || 0);
-  if (declaredSize > 512_000) throw new Error("logo_too_large");
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > 512_000) throw new Error("logo_too_large");
-  return `data:${contentType};base64,${bytes.toString("base64")}`;
-}
-
 export default async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") return jsonError("method_not_allowed", 405);
 
@@ -78,7 +63,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (studioAccessError) return studioAccessError;
 
   const clientId = context.params.clientId as EditableClientId | undefined;
-  if (!clientId || !(clientId in CLIENT_LOGOS)) return jsonError("unknown_client", 404);
+  if (!clientId || !(clientId in OFFICIAL_BRAND_ASSETS)) return jsonError("unknown_client", 404);
 
   let body: ArticleBannerRequest;
   try {
@@ -101,8 +86,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
 
   const siteOrigin = new URL(context.site.url).origin;
-  const logoUrl = new URL(CLIENT_LOGOS[clientId], siteOrigin).toString();
-  const logoDataUrl = await fetchLogoDataUrl(logoUrl).catch(() => "");
+  let logoDataUrl: string;
+  try {
+    logoDataUrl = await fetchOfficialBrandLogoDataUrl(clientId, "dark", siteOrigin);
+  } catch {
+    return jsonError("official_logo_unavailable", 503);
+  }
   const input: ArticleBannerInput = {
     title,
     lead,

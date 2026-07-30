@@ -80,6 +80,7 @@ async function requestEditableCard(generatedImageResponse: GeneratedImageRespons
 async function requestRemixCard(
   body: Record<string, unknown>,
   sourceImageResponse?: GeneratedImageResponse,
+  officialLogoResponse?: GeneratedImageResponse,
 ): Promise<Response> {
   const originalFetch = globalThis.fetch;
   const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
@@ -90,6 +91,9 @@ async function requestRemixCard(
       return sourceImageResponse
         ? sourceImageResponse()
         : new Response("missing", { status: 404 });
+    }
+    if (url.includes("/assets/brands/") && officialLogoResponse) {
+      return officialLogoResponse();
     }
     return new Response(new Uint8Array([1]), {
       status: 200,
@@ -203,6 +207,19 @@ test("embeds an available regular remix source image", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") || "", /image\/svg\+xml/);
   assert.match(await response.text(), /data:image\/jpeg;base64,AQID/);
+});
+
+test("fails closed when a template-required official logo is unavailable", async () => {
+  const response = await requestRemixCard({
+    template_style: "classic",
+    spec: {
+      theme: "yellow",
+      headline: "공식 로고가 필요한 카드",
+    },
+  }, undefined, () => new Response("missing", { status: 404 }));
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "official_logo_unavailable" });
 });
 
 test("rejects a cleaned Squid JPEG whose streamed bytes exceed the SVG-safe cap", async () => {

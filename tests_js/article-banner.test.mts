@@ -51,7 +51,7 @@ test("builds a layered 1200 by 630 Figma-editable article banner", () => {
   assert.match(svg, /width="1200" height="630" viewBox="0 0 1200 630"/);
   assert.match(svg, /id="Article-Title-Line-1"/);
   assert.match(svg, /id="Article-Lead-Line-1"/);
-  assert.match(svg, /id="Brand-Logo"/);
+  assert.match(svg, /id="Brand-Official-Logo"/);
   assert.match(svg, /SQUIDROUTER\.COM/);
   assert.match(svg, /#E6FA36/);
   assert.match(svg, /Bagoss Condensed/);
@@ -109,13 +109,26 @@ test("escapes banner copy and truncates long headlines to three editable lines",
   const svg = buildArticleBannerSvg("yellow", {
     title: `<새 소식> ${"아주 긴 제목 ".repeat(30)}`,
     lead: "A & B를 함께 설명합니다.",
-  });
+  }, "data:image/svg+xml;base64,AQ==");
 
   assert.match(svg, /&lt;새 소식&gt;/);
   assert.match(svg, /A &amp; B/);
   assert.equal((svg.match(/id="Article-Title-Line-/g) || []).length, 3);
   assert.match(svg, /…/);
-  assert.match(svg, /Brand-Logo-Fallback/);
+  assert.match(svg, /Brand-Official-Logo/);
+  assert.doesNotMatch(svg, /Brand-Logo-Fallback/);
+});
+
+test("keeps the official Babylon symbol separate from its Korean market name", () => {
+  const svg = buildArticleBannerSvg("babylon", {
+    title: "비트코인 네이티브 보안의 다음 단계",
+    lead: "공식 발표의 제품 상태와 작동 방식을 정확히 설명합니다.",
+  }, "data:image/png;base64,AQ==");
+
+  assert.match(svg, /id="Brand-Official-Lockup"/);
+  assert.match(svg, /id="Brand-Official-Logo"/);
+  assert.match(svg, /id="Brand-Local-Market-Name"/);
+  assert.match(svg, />Babylon Korea<\/text>/);
 });
 
 test("article banner endpoint embeds the client logo behind a Studio session", async () => {
@@ -192,4 +205,35 @@ test("article banner endpoint rejects malformed copy and unsafe source URLs", as
     assert.equal(unsafeSource.status, 400);
     assert.deepEqual(await unsafeSource.json(), { error: "invalid_source_url" });
   });
+});
+
+test("article banner endpoint fails closed when the official logo is unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("missing", { status: 404 });
+  try {
+    await withStudioEnvironment(async () => {
+      const response = await articleBannerHandler(new Request(
+        "https://console.example/api/article-banner/yellow",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue(ACCESS_TOKEN)}`,
+          },
+          body: JSON.stringify({
+            title: "공식 로고가 필요한 배너",
+            lead: "공식 자산을 불러오지 못하면 배너 생성을 중단합니다.",
+          }),
+        },
+      ), {
+        params: { clientId: "yellow" },
+        site: { url: "https://console.example" },
+      } as never);
+
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: "official_logo_unavailable" });
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

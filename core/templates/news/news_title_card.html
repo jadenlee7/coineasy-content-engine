@@ -44,14 +44,19 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
+    position: relative;
     min-height: 44px;
     margin-bottom: 24px;
   }
   .brand-logo {
     width: 118px; height: 44px;
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
     object-fit: contain; object-position: right center;
     flex-shrink: 0; display: block;
   }
+  .canvas[data-client="origintrail"] .brand-logo { width: 164px; height: 71px; }
+  .canvas[data-client="squid"] .brand-logo { width: 88px; height: 50px; }
+  .canvas[data-client="babylon"] .brand-logo { width: 48px; height: 48px; }
 
   /* Main white card */
   .main-card {
@@ -163,7 +168,7 @@
     client_name, client_id
 #}
 
-<div class="canvas theme-{{ theme | default('dark') }}">
+<div class="canvas theme-{{ theme | default('dark') }}" data-client="{{ client_id }}">
   <div class="top-header">
     {% if theme == 'yellow' %}
     <img src="{{ logo_light_path }}" class="brand-logo" alt="{{ client_name | default('') }}"/>

@@ -5,6 +5,11 @@ import {
   type EditableClientId,
   type EditableTemplateStyle,
 } from "./_shared/editable-svg.mts";
+import {
+  fetchOfficialBrandLogoDataUrl,
+  OFFICIAL_BRAND_ASSETS,
+  type OfficialLogoVariant,
+} from "./_shared/official-brand-assets.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
 type EditableCardRequest = {
@@ -18,13 +23,6 @@ type EditableCardRequest = {
 // roughly 4/3 when embedded as a base64 data URL, so 3 MB leaves about 2 MB for
 // the SVG document and response metadata.
 export const CLEANED_SOURCE_IMAGE_MAX_BYTES = 3_000_000;
-
-const CLIENT_ASSETS: Record<EditableClientId, { dark: string; light: string }> = {
-  yellow: { dark: "/assets/brands/yellow-dark.svg", light: "/assets/brands/yellow-light.svg" },
-  origintrail: { dark: "/assets/brands/origintrail-dark.png", light: "/assets/brands/origintrail-light.png" },
-  squid: { dark: "/assets/brands/squid-dark.png", light: "/assets/brands/squid-light.png" },
-  babylon: { dark: "/assets/brands/babylon-dark.png", light: "/assets/brands/babylon-light.png" },
-};
 
 function jsonError(error: string, status: number): Response {
   return Response.json({ error }, {
@@ -72,6 +70,19 @@ export function needsCleanedSquidVisual(
     && spec.translation_regions.length > 0;
 }
 
+export function requiredOfficialLogoVariant(
+  clientId: EditableClientId,
+  templateStyle: EditableTemplateStyle,
+  spec: Record<string, unknown>,
+): OfficialLogoVariant | null {
+  if (templateStyle === "remix") {
+    if (clientId === "squid" || spec.source_logo_visible === true) return null;
+    return "dark";
+  }
+  if (templateStyle === "signal") return "dark";
+  return spec.theme === "yellow" ? "light" : "dark";
+}
+
 async function fetchImageDataUrl(
   url: string,
   maxBytes: number,
@@ -95,7 +106,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (studioAccessError) return studioAccessError;
 
   const clientId = context.params.clientId as EditableClientId | undefined;
-  if (!clientId || !(clientId in CLIENT_ASSETS)) return jsonError("unknown_client", 404);
+  if (!clientId || !(clientId in OFFICIAL_BRAND_ASSETS)) return jsonError("unknown_client", 404);
 
   let body: EditableCardRequest;
   try {
@@ -112,7 +123,6 @@ export default async (req: Request, context: Context): Promise<Response> => {
     ? body.template_style as EditableTemplateStyle
     : "classic";
 
-  const assetPaths = CLIENT_ASSETS[clientId];
   const siteOrigin = new URL(context.site.url).origin;
   const sourceImageUrl = allowlistedSourceImage(body.source_image_url);
   const sourceVisualFile = clientScopedSourceVisualFile(body.source_visual_file, clientId);
@@ -127,14 +137,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return jsonError("cleaned_source_required", 422);
   }
   const assets: EditableCardAssets = {};
-  const assetRequests: Array<Promise<void>> = [
-    fetchImageDataUrl(new URL(assetPaths.dark, siteOrigin).toString(), 512_000)
-      .then((value) => { assets.logoDark = value; })
-      .catch(() => undefined),
-    fetchImageDataUrl(new URL(assetPaths.light, siteOrigin).toString(), 512_000)
-      .then((value) => { assets.logoLight = value; })
-      .catch(() => undefined),
-  ];
+  let officialLogoUnavailable = false;
+  const assetRequests: Array<Promise<void>> = [];
+  const logoVariant = requiredOfficialLogoVariant(clientId, templateStyle, spec);
+  if (logoVariant) {
+    assetRequests.push(
+      fetchOfficialBrandLogoDataUrl(clientId, logoVariant, siteOrigin)
+        .then((value) => {
+          if (logoVariant === "dark") assets.logoDark = value;
+          else assets.logoLight = value;
+        })
+        .catch(() => {
+          officialLogoUnavailable = true;
+        }),
+    );
+  }
   if (cleanedSourceRequired) {
     const apiSecret = Netlify.env.get("API_SECRET");
     if (!apiSecret) return jsonError("server_not_configured", 503);
@@ -160,6 +177,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   await Promise.all(assetRequests);
 
+  if (officialLogoUnavailable) {
+    return jsonError("official_logo_unavailable", 503);
+  }
   if (cleanedSourceRequired && !assets.sourceImage) {
     return jsonError("cleaned_source_unavailable", 502);
   }

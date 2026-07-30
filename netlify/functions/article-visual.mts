@@ -13,17 +13,14 @@ import {
   getContentLibraryItem,
 } from "./_shared/content-catalog.mts";
 import type { EditableClientId } from "./_shared/editable-svg.mts";
+import {
+  fetchOfficialBrandLogoDataUrl,
+  OFFICIAL_BRAND_ASSETS,
+} from "./_shared/official-brand-assets.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const VISUAL_IDS = new Set(["hero", "visual-1", "visual-2"]);
-const CLIENT_LOGOS: Record<EditableClientId, string> = {
-  yellow: "/assets/brands/yellow-dark.svg",
-  origintrail: "/assets/brands/origintrail-dark.png",
-  squid: "/assets/brands/squid-dark.png",
-  babylon: "/assets/brands/babylon-dark.png",
-};
-
 function jsonError(error: string, status: number): Response {
   return Response.json({ error }, {
     status,
@@ -49,18 +46,6 @@ function firstWebUrl(...values: unknown[]): string {
     }
   }
   return "";
-}
-
-async function fetchLogoDataUrl(url: string): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) throw new Error("logo_fetch_failed");
-  const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
-  if (!/^image\/(?:png|svg\+xml)$/.test(contentType)) throw new Error("unsupported_logo_type");
-  const declaredSize = Number(response.headers.get("content-length") || 0);
-  if (declaredSize > 512_000) throw new Error("logo_too_large");
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > 512_000) throw new Error("logo_too_large");
-  return `data:${contentType};base64,${bytes.toString("base64")}`;
 }
 
 export default async (req: Request, context: Context): Promise<Response> => {
@@ -95,6 +80,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (detail.content_kind !== "article") return jsonError("content_is_not_article", 422);
 
   const clientId = detail.client_id as EditableClientId;
+  if (!(clientId in OFFICIAL_BRAND_ASSETS)) return jsonError("unknown_client", 404);
   const content = detail.current_version.content;
   const sections = Array.isArray(content.sections) ? content.sections : [];
   const keyTakeaways = Array.isArray(content.key_takeaways) ? content.key_takeaways : [];
@@ -115,8 +101,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
   );
   const date = detail.created_at.slice(0, 10).replace(/-/g, ".");
   const siteOrigin = new URL(context.site.url).origin;
-  const logoUrl = new URL(CLIENT_LOGOS[clientId], siteOrigin).toString();
-  const logoDataUrl = await fetchLogoDataUrl(logoUrl).catch(() => "");
+  let logoDataUrl: string;
+  try {
+    logoDataUrl = await fetchOfficialBrandLogoDataUrl(clientId, "dark", siteOrigin);
+  } catch {
+    return jsonError("official_logo_unavailable", 503);
+  }
 
   let svg: string;
   if (visualId === "hero") {
