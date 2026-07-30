@@ -47,6 +47,21 @@ OFFICIAL_LOGOS = {
     ),
 }
 
+OFFICIAL_ILLUSTRATIONS = {
+    "squid-form-language-purple.png": (
+        ROOT / "clients/squid/assets/form-language-purple.png",
+        "8bdd2f22798e21fd051f147fd30504c87bd30d9b665b4229b2b8ae72c4927bf5",
+    ),
+    "squid-squib-token-juggle.png": (
+        ROOT / "clients/squid/assets/squib-token-juggle.png",
+        "baa2a56d4f2215d92236b90b7bfa14a65249935f742f5a3a656644a0cbd94554",
+    ),
+    "squid-squib-bubbles.png": (
+        ROOT / "clients/squid/assets/squib-bubbles.png",
+        "32871a17cc1f51c8a4ae4a8597d3551d9e6002735cd42ad7844c6812d24c3ddb",
+    ),
+}
+
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -55,6 +70,16 @@ def _sha256(path: Path) -> str:
 def test_reviewed_official_logo_exports_and_console_copies_are_exact() -> None:
     public_dir = ROOT / "web/console/assets/brands"
     for public_name, (canonical_path, expected_hash) in OFFICIAL_LOGOS.items():
+        public_path = public_dir / public_name
+        assert canonical_path.is_file()
+        assert public_path.is_file()
+        assert _sha256(canonical_path) == expected_hash
+        assert _sha256(public_path) == expected_hash
+
+
+def test_reviewed_squid_illustrations_and_console_copies_are_exact() -> None:
+    public_dir = ROOT / "web/console/assets/brands"
+    for public_name, (canonical_path, expected_hash) in OFFICIAL_ILLUSTRATIONS.items():
         public_path = public_dir / public_name
         assert canonical_path.is_file()
         assert public_path.is_file()

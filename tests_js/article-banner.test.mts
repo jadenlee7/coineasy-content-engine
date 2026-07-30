@@ -13,8 +13,23 @@ import {
   createStudioSessionValue,
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
+import {
+  articleHeroLogoVariant,
+} from "../netlify/functions/_shared/official-brand-assets.mts";
 
 const ACCESS_TOKEN = "article-banner-studio-access-token";
+const SQUID_HERO_ASSETS = {
+  formLanguage: "data:image/png;base64,Zm9ybQ==",
+  squib: "data:image/png;base64,c3F1aWI=",
+  bubbles: "data:image/png;base64,YnViYmxlcw==",
+};
+
+test("selects a contrast-safe official logo for each hero canvas", () => {
+  assert.equal(articleHeroLogoVariant("yellow"), "light");
+  assert.equal(articleHeroLogoVariant("squid"), "light");
+  assert.equal(articleHeroLogoVariant("origintrail"), "dark");
+  assert.equal(articleHeroLogoVariant("babylon"), "dark");
+});
 
 async function withStudioEnvironment(run: () => Promise<void>): Promise<void> {
   const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
@@ -39,14 +54,14 @@ async function withStudioEnvironment(run: () => Promise<void>): Promise<void> {
   }
 }
 
-test("builds a layered 1200 by 630 Figma-editable article banner", () => {
+test("builds a distinct 1200 by 630 Squid editorial world", () => {
   const svg = buildArticleBannerSvg("squid", {
     title: "스퀴드가 여는 새로운 크로스체인 유동성 경험",
     lead: "공식 발표를 바탕으로 핵심 변화와 이용자 영향을 짚어봅니다.",
     sourceUrl: "https://www.squidrouter.com/blog/update",
     date: "2026.07.27",
     motif: "flow",
-  }, "data:image/png;base64,AQ==");
+  }, "data:image/png;base64,AQ==", SQUID_HERO_ASSETS);
 
   assert.match(svg, /width="1200" height="630" viewBox="0 0 1200 630"/);
   assert.match(svg, /id="Article-Title-Line-1"/);
@@ -54,12 +69,54 @@ test("builds a layered 1200 by 630 Figma-editable article banner", () => {
   assert.match(svg, /id="Brand-Official-Logo"/);
   assert.match(svg, /SQUIDROUTER\.COM/);
   assert.match(svg, /#E6FA36/);
+  assert.match(svg, /#BC8EE4/);
   assert.match(svg, /Bagoss Condensed/);
-  assert.match(svg, /id="Hero-Motif-flow"/);
-  assert.match(svg, /SQUID \/ PRODUCT NOTE/);
-  assert.match(svg, /id="Brand-Atmosphere-Squid"/);
-  assert.match(svg, /ROUTE IN MOTION/);
+  assert.match(svg, /id="Editorial-Hero-v2"/);
+  assert.match(svg, /id="Hero-Squid-Official-World"/);
+  assert.match(svg, /id="Squid-Official-Form-Language"/);
+  assert.match(svg, /id="Squid-Official-Bubbles"/);
+  assert.match(svg, /id="Squid-Official-SQUIB"/);
+  assert.match(svg, /SQUID KOREA \/ NOTE 01/);
+  assert.match(svg, /CROSS-CHAIN, MADE HUMAN/);
+  assert.doesNotMatch(svg, /id="Visual-Panel"/);
   assert.doesNotMatch(svg, /foreignObject/);
+});
+
+test("fails closed instead of drawing a generic Squid character", () => {
+  assert.throws(() => buildArticleBannerSvg("squid", {
+    title: "공식 애셋이 필요한 Squid 배너",
+    lead: "필수 애셋이 없으면 생성하지 않습니다.",
+  }, "data:image/png;base64,AQ=="), /official_squid_hero_assets_required/);
+});
+
+test("uses client-specific hero structures and exact reviewed brand tokens", () => {
+  const input = {
+    title: "한국 시장을 위한 핵심 업데이트",
+    lead: "공식 발표에서 확인된 내용을 간결하게 정리합니다.",
+    sourceUrl: "https://x.com/example/status/123",
+    date: "2026.07.31",
+  };
+  const logo = "data:image/png;base64,AQ==";
+
+  const yellow = buildArticleBannerSvg("yellow", input, logo);
+  assert.match(yellow, /id="Hero-Yellow-Studio"/);
+  assert.match(yellow, /fill="#FDDA16"/);
+  assert.match(yellow, /KOREA MARKET INTELLIGENCE/);
+
+  const squid = buildArticleBannerSvg("squid", input, logo, SQUID_HERO_ASSETS);
+  assert.match(squid, /id="Hero-Squid-Official-World"/);
+  assert.match(squid, /fill="#E8E6EA"/);
+  assert.match(squid, /#BC8EE4/);
+
+  const originTrail = buildArticleBannerSvg("origintrail", input, logo);
+  assert.match(originTrail, /id="Hero-OriginTrail-Knowledge-Graph"/);
+  assert.match(originTrail, /fill="#0C2246"/);
+  assert.match(originTrail, /fill="#6344DF"/);
+
+  const babylon = buildArticleBannerSvg("babylon", input, logo);
+  assert.match(babylon, /id="Hero-Babylon-Proof-Panel"/);
+  assert.match(babylon, /fill="#12495E"/);
+  assert.match(babylon, /fill="#CE6533"/);
 });
 
 test("derives two source-locked inline visuals and renders an editable 16:9 figure", () => {
@@ -232,6 +289,55 @@ test("article banner endpoint fails closed when the official logo is unavailable
 
       assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { error: "official_logo_unavailable" });
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Squid article banner embeds every required official hero asset", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = async input => {
+    const url = String(input);
+    requests.push(url);
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "content-type": "image/png", "content-length": "3" },
+    });
+  };
+  try {
+    await withStudioEnvironment(async () => {
+      const response = await articleBannerHandler(new Request(
+        "https://console.example/api/article-banner/squid",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue(ACCESS_TOKEN)}`,
+          },
+          body: JSON.stringify({
+            title: "Squid로 Canton Network를 간편하게 탐색하세요",
+            lead: "공식 Squid 애셋과 함께 한국 이용자가 이해하기 쉽게 정리합니다.",
+          }),
+        },
+      ), {
+        params: { clientId: "squid" },
+        site: { url: "https://console.example" },
+      } as never);
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(requests.sort(), [
+        "https://console.example/assets/brands/squid-form-language-purple.png",
+        "https://console.example/assets/brands/squid-light.png",
+        "https://console.example/assets/brands/squid-squib-bubbles.png",
+        "https://console.example/assets/brands/squid-squib-token-juggle.png",
+      ].sort());
+      const svg = await response.text();
+      assert.match(svg, /id="Squid-Official-Form-Language"/);
+      assert.match(svg, /id="Squid-Official-Bubbles"/);
+      assert.match(svg, /id="Squid-Official-SQUIB"/);
+      assert.equal((svg.match(/data:image\/png;base64,AQID/g) || []).length, 4);
     });
   } finally {
     globalThis.fetch = originalFetch;

@@ -25,6 +25,22 @@ same artwork.
 - Replacing an official export requires a brand review, updating both copies,
   updating the pinned hash, and rendering all affected templates.
 
+## Squid article illustration kit
+
+The Squid article hero uses official illustration exports from CoinEasy
+Management Figma file `hsRSASQjEMxl5NMLH9y5Wm`, reviewed frame `2910:2690`.
+The transparent source artwork was proportionally downsampled for the web
+without cropping, recoloring, redrawing, or changing opacity data.
+
+| Role | Canonical file | Public Netlify copy |
+| --- | --- | --- |
+| Purple form language | `clients/squid/assets/form-language-purple.png` | `web/console/assets/brands/squid-form-language-purple.png` |
+| SQUIB TokenJuggle character | `clients/squid/assets/squib-token-juggle.png` | `web/console/assets/brands/squid-squib-token-juggle.png` |
+| SQUIB Parts Bubbles A | `clients/squid/assets/squib-bubbles.png` | `web/console/assets/brands/squid-squib-bubbles.png` |
+
+The Squid hero renderer fails closed when any of these three files is
+unavailable. Generic character substitutes are not permitted.
+
 ## Licensed type
 
 `clients/squid/assets/BagossCondensed.woff2` is activated automatically only
