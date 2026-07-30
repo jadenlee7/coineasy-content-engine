@@ -13,6 +13,11 @@ import {
   type StyleReferencePack,
 } from "./_shared/style-references.mts";
 import {
+  brandReviewGuidanceAudit,
+  emptyBrandReviewGuidance,
+  getBrandReviewGuidance,
+} from "./_shared/content-reviews.mts";
+import {
   contentCatalogConfig,
   ContentCatalogError,
   findGeneratedContent,
@@ -325,6 +330,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
+  let brandReviewGuidance = emptyBrandReviewGuidance();
+  let brandReviewGuidanceAvailable = false;
+  try {
+    brandReviewGuidance = await getBrandReviewGuidance(
+      storageConfig,
+      clientId,
+      "article",
+      fetch,
+      deadlineSignal(requestDeadline, 4_000),
+    );
+    brandReviewGuidanceAvailable = true;
+  } catch {
+    // Review guidance is optional style context, never source evidence.
+  }
+
   const railwayUrl = cleanBaseUrl(
     Netlify.env.get("RAILWAY_API_URL")
       || "https://coineasy-content-engine-production.up.railway.app",
@@ -348,6 +368,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
               style_references: styleReferencePack.references,
               style_reference_pack_hash: styleReferencePack.packHash,
             }
+            : {}),
+          ...(brandReviewGuidanceAvailable
+            ? { brand_review_guidance: brandReviewGuidance }
             : {}),
         }),
         signal: deadlineSignal(
@@ -383,6 +406,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
       channelCopy: result.channel_copy,
     });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
+    const reviewGuidanceAudit = {
+      ...brandReviewGuidanceAudit(brandReviewGuidance),
+      brand_review_guidance_available: brandReviewGuidanceAvailable,
+    };
     try {
       const catalog = await recordGeneratedContent(storageConfig, {
         requestId,
@@ -412,6 +439,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           storage_backend: "supabase",
           mock_mode: false,
           ...referenceAudit,
+          ...reviewGuidanceAudit,
           brand_qa: brandQa,
         },
         asset: null,

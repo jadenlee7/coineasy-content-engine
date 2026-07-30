@@ -369,6 +369,7 @@ async def generate_edu_carousel(
     output_dir: Optional[Path] = None,
     mock_llm: bool = False,
     mock_llm_response: Optional[dict] = None,
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> CarouselResult:
     """
     End-to-end async: source content → LLM spec → N PNGs + manifest.
@@ -402,6 +403,7 @@ async def generate_edu_carousel(
             series_number=series_number,
             mock_mode=mock_llm,
             mock_response=mock_llm_response,
+            brand_review_guidance=brand_review_guidance,
         )
     except Exception as e:
         print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")
@@ -503,6 +505,7 @@ async def generate_news_card(
     template_style: str = "classic",
     source_image_url: str = "",
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> NewsCardResult:
     """
     End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
@@ -604,6 +607,7 @@ async def generate_news_card(
             source_image=source_image,
             cached_visual_localization=cached_visual_localization,
             style_references=style_references,
+            brand_review_guidance=brand_review_guidance,
         )
     except Exception as e:
         print(f"[{client_id}] ✗ LLM stage failed: {type(e).__name__}: {e}")

@@ -6,6 +6,7 @@ import {
   isCatalogUuid,
 } from "./_shared/content-catalog.mts";
 import { listContentPromotionRecommendations } from "./_shared/content-promotions.mts";
+import { getContentReviewSummary } from "./_shared/content-reviews.mts";
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
 
 export default async (req: Request, context: Context): Promise<Response> => {
@@ -26,6 +27,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
   try {
     const item = await getContentLibraryItem(config, contentItemId);
     if (!item) return studioSessionJson({ error: "library_item_not_found" }, 404);
+    let latestReview = null;
+    try {
+      latestReview = await getContentReviewSummary(config, contentItemId);
+    } catch {
+      // Keep the durable item readable during a rolling database migration.
+    }
     try {
       const promotionSummary = await listContentPromotionRecommendations(
         config,
@@ -34,6 +41,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       );
       return studioSessionJson({
         ...item,
+        latest_review: latestReview,
         promotion_recommendations: promotionSummary.items,
         manual_publications: promotionSummary.publications,
         promotions_available: true,
@@ -43,6 +51,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       // unavailable signal bridge must never hide the durable content item.
       return studioSessionJson({
         ...item,
+        latest_review: latestReview,
         promotion_recommendations: [],
         manual_publications: [],
         promotions_available: false,

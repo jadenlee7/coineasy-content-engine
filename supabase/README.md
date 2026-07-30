@@ -87,6 +87,21 @@ the current approved version; direct browser/plugin mutation is denied. Raw tabl
 writes and asset/Storage mutations remain server-only. `content_versions`,
 `approvals`, and `event_log` are append-only for the service role as well.
 
+The signed Studio session records human decisions through the service-only
+`record_studio_content_review` RPC. These rows use
+`reviewer_source = 'studio_session'` and a null `reviewer_id`; authenticated
+Supabase users continue to use `reviewer_source = 'supabase_auth'` with their
+real user ID. No fake `auth.users` identity is created. Review requests are
+current-version checked and idempotent, and mock content cannot be approved.
+
+`get_brand_review_guidance` returns at most three approved, non-mock excerpts for
+the same workspace, client, and content kind plus aggregated allowlisted
+rejection reason codes from the last 90 days. It never returns reviewer identity
+or free-form comments. Netlify passes this bounded projection to Railway as
+style-only context and stores only its IDs, codes, policy version, and hash in
+generation metadata. The current source remains the factual boundary, and review
+does not trigger publishing.
+
 `tests/content_studio_security.sql` is a transactional integration smoke. It checks
 cross-client and cross-version foreign keys, editor/viewer permissions, sensitive
 column denial, immutable assets, tutorial catalog idempotency, and

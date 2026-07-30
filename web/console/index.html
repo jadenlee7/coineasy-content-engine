@@ -514,6 +514,23 @@
     .library-action-status { min-height: 16px; margin-top: 10px; color: #4f5661; font-size: 10px; line-height: 1.5; }
     .library-action-status.error { color: #a93131; }
     .library-action-status.success { color: #16744a; }
+    .library-review { margin-top: 20px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #f0f8ff; box-shadow: 3px 3px 0 rgba(35,35,35,.12); }
+    .library-review.resolved { background: #f3fbf6; }
+    .library-review.rejected { background: #fff4ed; }
+    .library-review h3 { margin: 0; font-size: 13px; }
+    .library-review > p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .library-review-reasons { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+    .library-review-reason { position: relative; }
+    .library-review-reason input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .library-review-reason span { display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px; border: 1.5px solid var(--line); border-radius: 999px; color: #5f5650; background: #fff; cursor: pointer; font-size: 9px; font-weight: 750; }
+    .library-review-reason input:checked + span { color: #7c2d12; border-color: #bb5a32; background: #ffe3d7; }
+    .library-review-reason input:focus-visible + span { outline: 3px solid rgba(255,107,26,.26); outline-offset: 2px; }
+    .library-review textarea { width: 100%; min-height: 88px; margin-top: 11px; padding: 10px; resize: vertical; border: 1.5px solid var(--line); border-radius: 8px; color: var(--ink); background: #fff; font: inherit; font-size: 10px; line-height: 1.55; }
+    .library-review-note { display: block; margin-top: 6px; color: #7b7168; font-size: 9px; line-height: 1.45; }
+    .library-review-summary { display: grid; gap: 7px; margin-top: 11px; color: #4f5661; font-size: 10px; line-height: 1.55; }
+    .library-review-summary strong { color: var(--ink); }
+    .library-action-button.approve { color: #fff; border-color: #176147; background: #23765b; }
+    .library-action-button.reject { color: #7c2d12; border-color: #b8522f; background: #fff; }
     .library-performance { margin-top: 20px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #eefcf7; box-shadow: 3px 3px 0 rgba(35,35,35,.12); }
     .library-performance h3 { margin: 0; font-size: 13px; }
     .library-performance > p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
@@ -920,9 +937,19 @@
         failed: "실패",
         archived: "보관됨"
       };
+      const REVIEW_REASON_LABEL = {
+        off_brand_tone: "브랜드 톤 불일치",
+        unsupported_claim: "원문에 없는 주장",
+        awkward_korean: "한국어 표현 어색함",
+        visual_brand_mismatch: "비주얼 브랜딩 불일치",
+        duplicate_logo: "로고 중복",
+        source_fidelity: "원문 충실도 부족",
+        channel_fit: "채널 문법 불일치",
+        other: "기타"
+      };
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", articleBannerPngUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
-      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, performanceRequest: { x: 0, telegram: 0 } };
+      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, performanceRequest: { x: 0, telegram: 0 } };
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
       const accessCode = document.getElementById("access-code");
@@ -1160,6 +1187,7 @@
         libraryState.exportRequest += 1;
         libraryState.performanceRequest.x += 1;
         libraryState.performanceRequest.telegram += 1;
+        libraryState.reviewRequest = null;
         libraryState.activeId = "";
         libraryState.activeDetail = null;
         libraryDetail.innerHTML = "";
@@ -1463,6 +1491,23 @@
         return `<section class="library-publication"><h3>게시 후 성과 연결</h3><p>직접 게시한 공개 링크를 연결하면 다음 자동 수집부터 반응을 확인합니다. 이 버튼은 게시를 실행하거나 게시물을 수정하지 않습니다.</p><div class="library-publication-grid">${row("x", "X 링크", "https://x.com/.../status/...")}${row("telegram", "Telegram 링크", "https://t.me/channel/123")}</div></section>`;
       }
 
+      function renderContentReviewMarkup(rawDetail, isMock) {
+        const detail = plainObject(rawDetail);
+        const latestReview = plainObject(detail.latest_review);
+        if (detail.status === "needs_review") {
+          const reasons = Object.entries(REVIEW_REASON_LABEL).map(([code, label]) =>
+            `<label class="library-review-reason"><input type="checkbox" value="${escapeHtml(code)}" data-library-review-reason><span>${escapeHtml(label)}</span></label>`
+          ).join("");
+          return `<section class="library-review"><h3>팀 검토 · 브랜드 학습</h3><p>승인된 결과는 같은 클라이언트·콘텐츠 유형의 문체 예시로만 활용됩니다. 수정 사유는 제한된 코드만 다음 생성의 주의점에 반영되며 메모 원문은 모델에 전달되지 않습니다.</p><div class="library-review-reasons" aria-label="수정 요청 사유">${reasons}</div><textarea maxlength="1000" data-library-review-comment placeholder="팀 메모를 남겨주세요. 수정 요청은 사유 또는 메모가 필요합니다."></textarea><small class="library-review-note">비밀번호·API 키·개인정보는 입력하지 마세요. 자동 게시되지 않습니다.</small><div class="library-action-buttons"><button class="library-action-button approve" type="button" data-library-review="approved"${isMock ? " disabled" : ""}>${isMock ? "샘플은 승인 불가" : "브랜드 기준 승인"}</button><button class="library-action-button reject" type="button" data-library-review="rejected">수정 요청</button></div></section>`;
+        }
+        if (!latestReview.decision) return "";
+        const reasonLabels = (Array.isArray(latestReview.reason_codes) ? latestReview.reason_codes : [])
+          .map(code => REVIEW_REASON_LABEL[code])
+          .filter(Boolean);
+        const approved = latestReview.decision === "approved";
+        return `<section class="library-review resolved${approved ? "" : " rejected"}"><h3>${approved ? "팀 승인 완료" : "수정 요청 기록됨"}</h3><div class="library-review-summary"><span><strong>결정</strong> · ${escapeHtml(approved ? "브랜드 기준 승인" : "수정 요청")}</span>${reasonLabels.length ? `<span><strong>사유</strong> · ${escapeHtml(reasonLabels.join(", "))}</span>` : ""}${latestReview.comment ? `<span><strong>팀 메모</strong> · ${escapeHtml(latestReview.comment)}</span>` : ""}<span>이 기록은 자동 게시를 실행하지 않습니다.</span></div></section>`;
+      }
+
       function renderLibraryDetail(payload) {
         const detail = plainObject(payload);
         const contentKind = Object.hasOwn(CONTENT_KIND_LABEL, detail.content_kind) ? detail.content_kind : "daily_news";
@@ -1518,13 +1563,14 @@
         const promotionMarkup = renderPromotionMarkup(detail, isMock);
         const publicationMarkup = renderPublicationObservationMarkup(detail, isMock);
         const brandQaMarkup = renderBrandQaMarkup(generationMeta.brand_qa);
-        const actionStatusMarkup = actionMarkup || promotionMarkup || publicationMarkup
+        const reviewMarkup = renderContentReviewMarkup(detail, isMock);
+        const actionStatusMarkup = actionMarkup || promotionMarkup || publicationMarkup || reviewMarkup
           ? `<div class="library-action-status" data-library-action-status role="status" aria-live="polite"></div>`
           : "";
         const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
         libraryState.activeDetail = detail;
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${brandQaMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${brandQaMarkup}${reviewMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }
@@ -1567,6 +1613,117 @@
         if (!target) return;
         target.textContent = message;
         target.className = `library-action-status${kind ? ` ${kind}` : ""}`;
+      }
+
+      async function submitStoredReview(button) {
+        const detail = plainObject(libraryState.activeDetail);
+        const currentVersion = plainObject(detail.current_version);
+        const contentVersionId = detail.current_version_id || currentVersion.content_version_id;
+        const decision = button.dataset.libraryReview;
+        if (
+          !detail.content_item_id
+          || typeof contentVersionId !== "string"
+          || !["approved", "rejected"].includes(decision)
+        ) {
+          setLibraryActionStatus("현재 검토 버전을 확인하지 못했습니다.", "error");
+          return;
+        }
+        const generationMeta = plainObject(currentVersion.generation_meta || detail.generation_meta);
+        if (decision === "approved" && generationMeta.mock_mode === true) {
+          setLibraryActionStatus("빠른 테스트로 만든 샘플은 승인할 수 없습니다.", "error");
+          return;
+        }
+        const reasonCodes = decision === "rejected"
+          ? [...libraryDetail.querySelectorAll("[data-library-review-reason]:checked")].map(input => input.value)
+          : [];
+        const commentInput = libraryDetail.querySelector("[data-library-review-comment]");
+        const comment = commentInput ? commentInput.value.trim() : "";
+        if (decision === "rejected" && !reasonCodes.length && !comment) {
+          setLibraryActionStatus("수정 요청 사유를 하나 이상 선택하거나 팀 메모를 입력해주세요.", "error");
+          commentInput?.focus();
+          return;
+        }
+        const decisionLabel = decision === "approved" ? "승인" : "수정 요청";
+        if (!window.confirm(`${decisionLabel}을 기록할까요? 이 작업은 게시를 실행하지 않지만 현재 버전의 검토 상태를 확정합니다.`)) return;
+
+        const fingerprint = JSON.stringify([
+          detail.content_item_id,
+          contentVersionId,
+          decision,
+          [...reasonCodes].sort(),
+          comment
+        ]);
+        if (!libraryState.reviewRequest || libraryState.reviewRequest.fingerprint !== fingerprint) {
+          libraryState.reviewRequest = { fingerprint, id: newGenerationRequestId() };
+        }
+        const reviewRequest = libraryState.reviewRequest;
+        const requestSessionEpoch = state.sessionEpoch;
+        const activeContentId = libraryState.activeId;
+        const reviewButtons = [...libraryDetail.querySelectorAll("[data-library-review]")];
+        reviewButtons.forEach(item => { item.disabled = true; });
+        setLibraryActionStatus(`${decisionLabel}을 안전하게 기록하고 있습니다.`);
+        try {
+          const response = await fetch(`/api/library/${encodeURIComponent(activeContentId)}/review`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": reviewRequest.id
+            },
+            body: JSON.stringify({
+              content_version_id: contentVersionId,
+              decision,
+              reason_codes: reasonCodes,
+              comment
+            })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+          ) return;
+          if (handleStudioAccessResponse(response, payload)) return;
+          if (!response.ok) {
+            const error = new Error("content_review_failed");
+            error.code = payload.error || "";
+            throw error;
+          }
+          const result = plainObject(payload.result);
+          detail.status = result.status;
+          detail.latest_review = plainObject(payload.latest_review);
+          libraryState.activeDetail = detail;
+          libraryState.reviewRequest = null;
+          libraryState.stale = true;
+          const listItem = libraryState.items.find(item => item.content_item_id === activeContentId);
+          if (listItem) listItem.status = result.status;
+          renderLibraryList();
+          renderLibraryDetail(detail);
+          setLibraryActionStatus(
+            decision === "approved"
+              ? "승인했습니다. 이 결과는 같은 브랜드·콘텐츠 유형의 문체 예시로 제한적으로 반영됩니다."
+              : "수정 요청을 기록했습니다. 선택한 사유 코드만 다음 생성의 주의점에 반영됩니다.",
+            "success"
+          );
+        } catch (error) {
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || activeContentId !== libraryState.activeId
+          ) return;
+          const messages = {
+            mock_content_cannot_be_approved: "빠른 테스트로 만든 샘플은 승인할 수 없습니다.",
+            content_not_awaiting_review: "이 작업은 이미 검토가 끝났습니다. 보관함을 새로고침해주세요.",
+            content_review_version_conflict: "검토 중 새 버전이 생겼습니다. 상세를 다시 열어 현재 버전을 확인해주세요.",
+            content_review_idempotency_conflict: "같은 검토 요청 키로 다른 결정이 감지됐습니다. 상세를 다시 열어주세요.",
+            invalid_content_review: "수정 요청 사유와 팀 메모를 확인해주세요."
+          };
+          setLibraryActionStatus(
+            messages[error?.code] || "검토 결과를 저장하지 못했습니다. 같은 버튼을 다시 누르면 중복 없이 재시도합니다.",
+            "error"
+          );
+          reviewButtons.forEach(item => {
+            if (item.isConnected) item.disabled = item.dataset.libraryReview === "approved" && generationMeta.mock_mode === true;
+          });
+        }
       }
 
       async function downloadStoredEditable(button) {
@@ -2486,6 +2643,11 @@
         const editableButton = event.target.closest("[data-library-editable]");
         if (editableButton) {
           await downloadStoredEditable(editableButton);
+          return;
+        }
+        const reviewButton = event.target.closest("[data-library-review]");
+        if (reviewButton) {
+          await submitStoredReview(reviewButton);
           return;
         }
         const publicationButton = event.target.closest("[data-library-publication]");

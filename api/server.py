@@ -94,12 +94,97 @@ def _check_client_auth(x_api_key: str, client_id: str) -> str:
 # Request/Response models
 # ────────────────────────────────────────────────────
 
+class BrandReviewExampleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_item_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    content_version_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    content_kind: Literal["daily_news", "article", "tutorial"]
+    text: str = Field(min_length=1, max_length=1200)
+    approved_at: str = Field(min_length=20, max_length=40)
+
+    @field_validator("text")
+    @classmethod
+    def normalize_approved_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("approved brand review example is empty")
+        return normalized
+
+    @field_validator("approved_at")
+    @classmethod
+    def require_aware_approved_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("approved_at is invalid") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("approved_at must include a timezone")
+        return value
+
+
+class BrandReviewReasonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal[
+        "off_brand_tone",
+        "unsupported_claim",
+        "awkward_korean",
+        "visual_brand_mismatch",
+        "duplicate_logo",
+        "source_fidelity",
+        "channel_fit",
+        "other",
+    ]
+    count: int = Field(ge=1, le=1_000_000)
+
+
+class BrandReviewGuidanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_version: Literal["brand-review-learning@1"]
+    approved_examples: list[BrandReviewExampleRequest] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    avoid_reason_codes: list[BrandReviewReasonRequest] = Field(
+        default_factory=list,
+        max_length=5,
+    )
+
+    @model_validator(mode="after")
+    def require_unique_review_guidance(self):
+        item_ids = [item.content_item_id.lower() for item in self.approved_examples]
+        reason_codes = [item.code for item in self.avoid_reason_codes]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("approved brand review examples must be unique")
+        if len(reason_codes) != len(set(reason_codes)):
+            raise ValueError("brand review reason codes must be unique")
+        return self
+
+
+def _require_brand_review_kind(
+    guidance: Optional[BrandReviewGuidanceRequest],
+    expected_kind: Literal["daily_news", "article", "tutorial"],
+) -> None:
+    if guidance is not None and any(
+        example.content_kind != expected_kind
+        for example in guidance.approved_examples
+    ):
+        raise HTTPException(422, "brand_review_guidance_kind_mismatch")
+
+
 class GenerateRequest(BaseModel):
     source_content: str
     source_type: str = "tweet"  # "tweet" | "blog" | "article"
     source_url: str = ""
     series_number: Optional[str] = None
     mock_llm: bool = False  # for smoke testing
+    brand_review_guidance: Optional[BrandReviewGuidanceRequest] = None
 
 
 class GenerateResponse(BaseModel):
@@ -161,6 +246,7 @@ class NewsCardRequest(BaseModel):
         default="",
         pattern=r"^(?:|[a-f0-9]{32})$",
     )
+    brand_review_guidance: Optional[BrandReviewGuidanceRequest] = None
 
     @model_validator(mode="after")
     def require_complete_style_reference_pack(self):
@@ -210,6 +296,7 @@ class ArticleRequest(BaseModel):
         default="",
         pattern=r"^(?:|[a-f0-9]{32})$",
     )
+    brand_review_guidance: Optional[BrandReviewGuidanceRequest] = None
 
     @model_validator(mode="after")
     def require_complete_style_reference_pack(self):
@@ -342,7 +429,10 @@ async def generate_carousel(
     x_api_key: str = Header(default=""),
 ):
     """Generate an education carousel for a client."""
-    _check_client_auth(x_api_key, client_id)
+    authenticated_client = _check_client_auth(x_api_key, client_id)
+    if req.brand_review_guidance is not None and authenticated_client != "admin":
+        raise HTTPException(403, "brand_review_guidance_requires_admin_key")
+    _require_brand_review_kind(req.brand_review_guidance, "tutorial")
 
     # Verify client exists
     try:
@@ -365,6 +455,11 @@ async def generate_carousel(
             series_number=req.series_number,
             output_dir=output_dir,
             mock_llm=req.mock_llm,
+            brand_review_guidance=(
+                req.brand_review_guidance.model_dump()
+                if req.brand_review_guidance is not None
+                else None
+            ),
         )
     except HTTPException:
         raise
@@ -400,6 +495,9 @@ async def generate_news(
         and authenticated_client != "admin"
     ):
         raise HTTPException(403, "style_references_require_admin_key")
+    if req.brand_review_guidance is not None and authenticated_client != "admin":
+        raise HTTPException(403, "brand_review_guidance_requires_admin_key")
+    _require_brand_review_kind(req.brand_review_guidance, "daily_news")
 
     try:
         load_client_config(client_id)
@@ -426,6 +524,11 @@ async def generate_news(
                 reference.model_dump()
                 for reference in req.style_references
             ],
+            brand_review_guidance=(
+                req.brand_review_guidance.model_dump()
+                if req.brand_review_guidance is not None
+                else None
+            ),
         )
     except HTTPException:
         raise
@@ -463,6 +566,9 @@ async def generate_article(
         and authenticated_client != "admin"
     ):
         raise HTTPException(403, "style_references_require_admin_key")
+    if req.brand_review_guidance is not None and authenticated_client != "admin":
+        raise HTTPException(403, "brand_review_guidance_requires_admin_key")
+    _require_brand_review_kind(req.brand_review_guidance, "article")
 
     try:
         load_client_config(client_id)
@@ -481,6 +587,11 @@ async def generate_article(
                 reference.model_dump()
                 for reference in req.style_references
             ],
+            brand_review_guidance=(
+                req.brand_review_guidance.model_dump()
+                if req.brand_review_guidance is not None
+                else None
+            ),
         )
     except ArticleInputError as exc:
         raise HTTPException(422, str(exc)) from exc

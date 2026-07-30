@@ -136,7 +136,13 @@ Current incremental Netlify bridge:
   PNG pages in their immutable deliverable order as `tutorial`.
 - `GET /api/library` returns a cursor-paginated, filterable team library, and
   `GET /api/library/{content_item_id}` returns the current immutable version,
-  sanitized copy, Figma link metadata, and short-lived private asset URLs.
+  sanitized copy, latest review summary, Figma link metadata, and short-lived
+  private asset URLs.
+- `POST /api/library/{content_item_id}/review` accepts `approved` or `rejected`
+  for the exact current version through the signed Studio session. It requires a
+  UUID `Idempotency-Key`, appends an immutable approval row, and never publishes.
+  Mock generations cannot be approved. Rejections carry at most five allowlisted
+  reason codes and an optional bounded team comment.
 
 All three generation calls require a UUID `Idempotency-Key`. The UUID is bound to a
 SHA-256 digest of the normalized submitted request, not mutable content later
@@ -147,6 +153,13 @@ reusing the UUID for changed input returns a mode-specific
 asset IDs. Every generated item starts in `needs_review`, and generation never
 implies approval. Missing catalog rows, metadata mismatches, or missing private
 objects fail closed rather than returning an untracked temporary result.
+
+Approved non-mock output excerpts are available to later generation only for the
+same client and content kind. They guide Korean cadence, terminology, and channel
+structure; the current source remains the sole factual boundary. Recent rejection
+reason codes add static guardrails. Free-form review comments never enter model
+prompts or Railway generation requests. The selected guidance IDs, reason codes,
+policy version, and payload hash are stored in generation metadata for audit.
 
 Source content is stored in full and test-mode generations are explicitly marked
 in generation metadata, the generation response, and the team library.
@@ -162,6 +175,25 @@ Queues a new version; it never overwrites a prior version. Optional input contai
 review instructions and an explicit base version.
 
 ### Review
+
+Current signed-session bridge:
+
+`POST /api/library/{content_item_id}/review`
+
+```json
+{
+  "content_version_id": "version-uuid",
+  "decision": "rejected",
+  "reason_codes": ["off_brand_tone", "awkward_korean"],
+  "comment": "문장 리듬을 브랜드 기준에 맞춰주세요."
+}
+```
+
+The route calls the service-only `record_studio_content_review` RPC. Studio
+session reviews are identified explicitly as `reviewer_source = studio_session`;
+they do not create a fake Supabase Auth user. An approval becomes a bounded
+positive style example. For a rejection, only allowlisted reason codes—not the
+free-form comment—can influence later generation.
 
 `POST /v1/workspaces/{workspace_id}/content/{content_id}/approve`
 

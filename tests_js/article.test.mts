@@ -55,6 +55,8 @@ const GENERATED_ARTICLE = {
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
 const VERSION_ID = "33333333-3333-4333-8333-333333333333";
+const APPROVED_ITEM_ID = "44444444-4444-4444-8444-444444444444";
+const APPROVED_VERSION_ID = "55555555-5555-4555-8555-555555555555";
 
 const PASTED_SOURCE = (
   "Squid published a cross-chain routing update for App, API, SDK, and Widget. "
@@ -119,6 +121,22 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
     if (requestUrl.endsWith("/rest/v1/rpc/get_generated_content")) {
       return Response.json(null);
     }
+    if (requestUrl.endsWith("/rest/v1/rpc/get_brand_review_guidance")) {
+      return Response.json({
+        policy_version: "brand-review-learning@1",
+        approved_examples: [{
+          content_item_id: APPROVED_ITEM_ID,
+          content_version_id: APPROVED_VERSION_ID,
+          content_kind: "article",
+          text: "승인된 Squid 한국어 아티클 문체 예시",
+          approved_at: "2026-07-31T09:00:00.000Z",
+        }],
+        avoid_reason_codes: [{
+          code: "unsupported_claim",
+          count: 2,
+        }],
+      });
+    }
     if (requestUrl.endsWith("/rest/v1/rpc/record_generated_content")) {
       recordBody = JSON.parse(String(init?.body));
       return Response.json({
@@ -156,6 +174,20 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
       source_content: PASTED_SOURCE,
       source_type: "article",
       source_url: "https://example.com/source",
+      brand_review_guidance: {
+        policy_version: "brand-review-learning@1",
+        approved_examples: [{
+          content_item_id: APPROVED_ITEM_ID,
+          content_version_id: APPROVED_VERSION_ID,
+          content_kind: "article",
+          text: "승인된 Squid 한국어 아티클 문체 예시",
+          approved_at: "2026-07-31T09:00:00.000Z",
+        }],
+        avoid_reason_codes: [{
+          code: "unsupported_claim",
+          count: 2,
+        }],
+      },
     });
     const payload = await response.json();
     assert.equal(payload.brand_qa.policy_version, "brand-qa@1");
@@ -163,6 +195,24 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
     assert.equal(payload.brand_qa.content_kind, "article");
     assert.equal(payload.brand_qa.human_review_required, true);
     assert.deepEqual(recordBody.target_generation_meta.brand_qa, payload.brand_qa);
+    assert.equal(
+      recordBody.target_generation_meta.brand_review_policy_version,
+      "brand-review-learning@1",
+    );
+    assert.deepEqual(
+      recordBody.target_generation_meta.brand_review_example_ids,
+      [APPROVED_ITEM_ID],
+    );
+    assert.deepEqual(
+      recordBody.target_generation_meta.brand_review_avoid_reason_codes,
+      ["unsupported_claim"],
+    );
+    assert.equal(recordBody.target_generation_meta.brand_review_guidance_available, true);
+    assert.match(
+      recordBody.target_generation_meta.brand_review_guidance_hash,
+      /^[a-f0-9]{64}$/,
+    );
+    assert.doesNotMatch(JSON.stringify(recordBody.target_generation_meta), /승인된 Squid/);
     const { brand_qa: _brandQa, ...responseWithoutQa } = payload;
     assert.deepEqual(responseWithoutQa, {
       ...GENERATED_ARTICLE,
