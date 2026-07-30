@@ -223,23 +223,25 @@ def _inject_brand_slots(
     return enhanced
 
 
-_TRANSPARENT_PNG = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-)
+class OfficialBrandAssetError(RuntimeError):
+    """Raised when a required, reviewed client brand asset is unavailable."""
 
 
 def _logo_to_data_url(logo_path: Path) -> str:
     """Convert a logo file to a base64 data URL for embedding in HTML.
-    Falls back to a 1x1 transparent PNG when the file is absent, is a
-    directory, or can't be read (perms / TOCTOU race) — never crashes render."""
+    Official brand marks fail closed so a branded deliverable cannot silently
+    render with a blank or improvised logo."""
     if not logo_path.is_file():
-        return _TRANSPARENT_PNG
+        raise OfficialBrandAssetError(f"Official logo is unavailable: {logo_path}")
 
     try:
         raw = logo_path.read_bytes()
-    except OSError:
-        return _TRANSPARENT_PNG
+    except OSError as exc:
+        raise OfficialBrandAssetError(
+            f"Official logo cannot be read: {logo_path}",
+        ) from exc
+    if not raw:
+        raise OfficialBrandAssetError(f"Official logo is empty: {logo_path}")
 
     ext = logo_path.suffix.lower().lstrip(".")
     mime = {
@@ -248,7 +250,11 @@ def _logo_to_data_url(logo_path: Path) -> str:
         "jpeg": "image/jpeg",
         "svg": "image/svg+xml",
         "webp": "image/webp",
-    }.get(ext, "image/png")
+    }.get(ext)
+    if not mime:
+        raise OfficialBrandAssetError(
+            f"Official logo has an unsupported format: {logo_path}",
+        )
 
     b64 = base64.b64encode(raw).decode()
     return f"data:{mime};base64,{b64}"

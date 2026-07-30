@@ -7,6 +7,7 @@ import type {
   ArticleVisualBrief,
   ArticleVisualMotif,
 } from "./article-visual-plan.mts";
+import { OFFICIAL_BRAND_ASSETS } from "./official-brand-assets.mts";
 
 export type ArticleBannerInput = {
   title: string;
@@ -32,7 +33,6 @@ type ArticleBannerBrand = {
   bodyFont: string;
   editorialLabel: string;
   signalLabel: string;
-  logoIsSymbol?: boolean;
 };
 
 const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
@@ -79,7 +79,6 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
     bodyFont: "Pretendard",
     editorialLabel: "BABYLON / BITCOIN BRIEF",
     signalLabel: "BITCOIN MECHANISM",
-    logoIsSymbol: true,
   },
 };
 
@@ -114,18 +113,21 @@ function textLayers(
 }
 
 function logoMarkup(
+  clientId: EditableClientId,
   brand: ArticleBannerBrand,
-  logoDataUrl: string | undefined,
+  logoDataUrl: string,
   x = 72,
-  y = 42,
 ): string {
-  if (logoDataUrl) {
-    return brand.logoIsSymbol
-      ? `<image id="Brand-Logo" x="${x}" y="${y}" width="54" height="54" href="${escapeXml(logoDataUrl)}" preserveAspectRatio="xMidYMid meet"/>
-  <text id="Brand-Name" x="${x + 70}" y="${y + 36}" fill="#FFFFFF" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="22" font-weight="800">${escapeXml(brand.name)}</text>`
-      : `<image id="Brand-Logo" x="${x}" y="${y}" width="190" height="54" href="${escapeXml(logoDataUrl)}" preserveAspectRatio="xMinYMid meet"/>`;
+  if (!logoDataUrl) throw new Error("official_logo_required");
+  const layout = OFFICIAL_BRAND_ASSETS[clientId].article;
+  const officialLogo = `<image id="Brand-Official-Logo" x="${x}" y="${layout.y}" width="${layout.width}" height="${layout.height}" href="${escapeXml(logoDataUrl)}" preserveAspectRatio="xMinYMid meet"/>`;
+  if (layout.localMarketName) {
+    return `<g id="Brand-Official-Lockup">
+  ${officialLogo}
+  <text id="Brand-Local-Market-Name" x="${x + layout.width + 14}" y="${layout.y + 39}" fill="#FFFFFF" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="22" font-weight="800">${escapeXml(layout.localMarketName)}</text>
+</g>`;
   }
-  return `<text id="Brand-Logo-Fallback" x="${x}" y="${y + 37}" fill="#FFFFFF" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="24" font-weight="800">${escapeXml(brand.name)}</text>`;
+  return officialLogo;
 }
 
 function motifMarkup(
@@ -266,7 +268,7 @@ function brandAtmosphereMarkup(
 export function buildArticleBannerSvg(
   clientId: EditableClientId,
   input: ArticleBannerInput,
-  logoDataUrl?: string,
+  logoDataUrl: string,
 ): string {
   const brand = ARTICLE_BANNER_BRANDS[clientId];
   const title = cleanText(input.title, 200) || "새로운 소식을 전합니다";
@@ -292,7 +294,7 @@ export function buildArticleBannerSvg(
     <circle id="Ambient-Ring" cx="1116" cy="42" r="188" stroke="${brand.primary}" stroke-opacity=".11" stroke-width="2"/>
   </g>
   <g id="Header">
-    ${logoMarkup(brand, logoDataUrl)}
+    ${logoMarkup(clientId, brand, logoDataUrl)}
     <g id="Editorial-Label">
       <rect x="866" y="48" width="262" height="44" rx="22" fill="${brand.primary}"/>
       <text x="997" y="77" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="12.5" font-weight="900" letter-spacing="1.45">${escapeXml(brand.editorialLabel)}</text>
@@ -337,7 +339,7 @@ export function buildArticleBannerSvg(
 export function buildArticleInlineVisualSvg(
   clientId: EditableClientId,
   input: ArticleInlineVisualInput,
-  logoDataUrl?: string,
+  logoDataUrl: string,
 ): string {
   const brand = ARTICLE_BANNER_BRANDS[clientId];
   const visual = input.visual;
@@ -374,7 +376,7 @@ export function buildArticleInlineVisualSvg(
     <path id="Corner-Accent" d="M1064 675H1200V539L1064 675Z" fill="${brand.primary}" fill-opacity=".9"/>
   </g>
   <g id="Header">
-    ${logoMarkup(brand, logoDataUrl)}
+    ${logoMarkup(clientId, brand, logoDataUrl)}
     <g id="Visual-Label">
       <rect x="914" y="47" width="214" height="42" rx="21" fill="${brand.primary}"/>
       <text x="1021" y="75" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="${eyebrowFontSize}" font-weight="900" letter-spacing="${eyebrowLetterSpacing}">${escapeXml(eyebrow)}</text>

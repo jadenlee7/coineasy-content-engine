@@ -20,8 +20,11 @@
   .canvas { width: 1080px; height: 1080px; padding: 64px; display: flex; flex-direction: column; overflow: hidden; }
   .theme-dark { color: #fff; background: var(--dark); }
   .theme-yellow { color: var(--ink); background: var(--accent); }
-  .top { display: flex; align-items: center; justify-content: flex-end; min-height: 64px; }
-  .logo { width: 142px; height: 58px; object-fit: contain; object-position: right center; }
+  .top { display: flex; align-items: center; justify-content: flex-end; position: relative; min-height: 64px; }
+  .logo { width: 150px; height: 50px; position: absolute; right: 0; top: 50%; transform: translateY(-50%); object-fit: contain; object-position: right center; }
+  .canvas[data-client="origintrail"] .logo { width: 196px; height: 84px; }
+  .canvas[data-client="squid"] .logo { width: 108px; height: 61px; }
+  .canvas[data-client="babylon"] .logo { width: 56px; height: 56px; }
   .rule { height: 2px; margin: 30px 0 50px; background: currentColor; opacity: .2; }
   .label { align-self: flex-start; padding: 11px 18px; border-radius: 999px; font-size: 18px; font-weight: 800; letter-spacing: -.2px; }
   .theme-dark .label { color: var(--ink); background: var(--primary); }
@@ -38,7 +41,7 @@
 </style>
 </head>
 <body>
-<div class="canvas theme-{{ theme | default('dark') }}">
+<div class="canvas theme-{{ theme | default('dark') }}" data-client="{{ client_id }}">
   <div class="top">
     {% if theme == 'yellow' %}
     <img class="logo" src="{{ logo_light_path }}" alt="{{ client_name | default('') }}">
