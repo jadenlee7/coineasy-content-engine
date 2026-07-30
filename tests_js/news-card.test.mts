@@ -226,11 +226,18 @@ test("news card generation persists one immutable PNG before returning", async (
     assert.equal(result.asset_ids.length, 1);
     assert.equal(result.storage_backend, "supabase");
     assert.equal(result.reused, false);
+    assert.equal(result.brand_qa.policy_version, "brand-qa@1");
+    assert.equal(result.brand_qa.client_id, "squid");
+    assert.equal(result.brand_qa.content_kind, "daily_news");
     assert.match(result.image_data_url, /^data:image\/png;base64,/);
     assert.equal(railwayCalls, 1);
     assert.equal(uploadUpsert, "false");
     assert.equal(recordBody.target_content_kind, "daily_news");
     assert.equal((recordBody.target_generation_meta as Record<string, unknown>).mock_mode, false);
+    assert.deepEqual(
+      (recordBody.target_generation_meta as Record<string, unknown>).brand_qa,
+      result.brand_qa,
+    );
     assert.equal(
       (recordBody.target_generation_meta as Record<string, unknown>).figma_template_version,
       "2026-07-30.1",

@@ -699,6 +699,9 @@ test("tutorial generation catalogs uploaded PNGs before returning durable slide 
       ));
       assert.equal(payload.slides.length, 2);
       assert.equal(payload.mock_mode, true);
+      assert.equal(payload.brand_qa.policy_version, "brand-qa@1");
+      assert.equal(payload.brand_qa.client_id, "squid");
+      assert.equal(payload.brand_qa.content_kind, "tutorial");
       assert.equal(rpcBody.target_title, "스퀴드 핵심 이해하기");
       assert.equal(rpcBody.target_content.source.mode, "provided");
       assert.equal(rpcBody.target_content.request_hash, expectedRequestHash);
@@ -709,6 +712,7 @@ test("tutorial generation catalogs uploaded PNGs before returning durable slide 
       assert.equal(rpcBody.target_generation_meta.duration_ms, 321);
       assert.equal(rpcBody.target_generation_meta.mock_mode, true);
       assert.equal(rpcBody.target_generation_meta.request_hash, expectedRequestHash);
+      assert.deepEqual(rpcBody.target_generation_meta.brand_qa, payload.brand_qa);
       assert.deepEqual(
         rpcBody.target_slides.map((slide: Record<string, unknown>) => ({
           number: slide.number,

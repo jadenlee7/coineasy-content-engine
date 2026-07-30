@@ -60,6 +60,20 @@ test("marks failed visual localization as requiring a manual review", () => {
   assert.match(consoleHtml, /visualLocalizationNeedsReview\(payload\)/);
 });
 
+test("renders deterministic brand QA without treating it as publication approval", () => {
+  assert.match(consoleHtml, /id="brand-qa-panel"[^>]+aria-live="polite"/);
+  assert.match(consoleHtml, /function normalizeBrandQa\(value\)/);
+  assert.match(consoleHtml, /report\.policy_version !== "brand-qa@1"/);
+  assert.match(consoleHtml, /function showBrandQa\(rawReport\)/);
+  assert.match(consoleHtml, /showBrandQa\(payload\.brand_qa\)/);
+  assert.match(consoleHtml, /renderBrandQaMarkup\(generationMeta\.brand_qa\)/);
+  assert.match(consoleHtml, /최종 사실·브랜드·이미지 검토 후 승인/);
+  assert.match(consoleHtml, /자동으로 게시되지는 않습니다/);
+  assert.match(consoleHtml, /escapeHtml\(check\.label\)/);
+  assert.match(consoleHtml, /escapeHtml\(check\.detail\)/);
+  assert.match(consoleHtml, /clearBrandQa\(\)/);
+});
+
 test("preserves the existing news-card, editable SVG, and channel-copy flow", () => {
   assert.match(consoleHtml, /const state = \{ mode: "news"/);
   assert.match(consoleHtml, /fetch\(`\/api\/news-card\/\$\{encodeURIComponent\(requestContext\.client\)\}`/);

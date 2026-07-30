@@ -6,6 +6,7 @@ import {
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
+import { evaluateBrandQuality } from "./_shared/brand-quality.mts";
 import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
@@ -282,6 +283,7 @@ async function catalogRetryResponse(
     duration_ms: typeof duration === "number" && Number.isFinite(duration) ? duration : 0,
     mock_mode: existing.generationMeta.mock_mode === true,
     channel_copy: existing.channelCopy,
+    brand_qa: existing.generationMeta.brand_qa || null,
     image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
     filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
     storage_backend: "supabase",
@@ -581,6 +583,18 @@ export default async (req: Request, context: Context): Promise<Response> => {
       resolvedSource.content,
       resolvedSource.url,
     );
+    const brandQa = evaluateBrandQuality({
+      clientId,
+      contentKind: "daily_news",
+      sourceText: resolvedSource.content,
+      headline: result.spec.headline,
+      bodyLines: result.spec.body_lines,
+      channelCopy,
+      templateStyle: actualTemplateStyle,
+      sourceImageUsed: result.source_image_used,
+      sourceLogoVisible: result.spec.source_logo_visible,
+      visualLocalizationStatus: result.spec.visual_localization_status,
+    });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
     const assetId = randomUUID();
     const attemptedStoragePath = contentStoragePath(
@@ -637,6 +651,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           mock_mode: mockMode,
           ...referenceAudit,
           figma_template_version: figmaTemplate?.version || null,
+          brand_qa: brandQa,
         },
         asset: storedAsset,
         promptVersion: "news-card@2",
@@ -657,6 +672,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         duration_ms: result.duration_ms,
         mock_mode: mockMode,
         channel_copy: channelCopy,
+        brand_qa: brandQa,
         image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
         filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
         storage_backend: "supabase",
