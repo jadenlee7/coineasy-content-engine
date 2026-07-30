@@ -702,6 +702,7 @@
           <div class="actions">
             <a class="action" id="download" href="#" download hidden>PNG 저장</a>
             <a class="action figma" id="download-svg" href="#" download hidden>Figma 편집용 SVG</a>
+            <a class="action figma" id="figma-template-link" href="#" target="_blank" rel="noopener noreferrer" hidden>승인 Figma 템플릿</a>
           </div>
         </div>
 
@@ -959,6 +960,7 @@
       const loadingNote = document.getElementById("loading-note");
       const download = document.getElementById("download");
       const downloadSvg = document.getElementById("download-svg");
+      const figmaTemplateLink = document.getElementById("figma-template-link");
       const specDetails = document.getElementById("spec-details");
       const spec = document.getElementById("spec");
       const channelCopy = document.getElementById("channel-copy");
@@ -1775,6 +1777,21 @@
         downloadSvg.hidden = true;
         downloadSvg.removeAttribute("href");
         downloadSvg.textContent = "Figma 편집용 SVG";
+        figmaTemplateLink.hidden = true;
+        figmaTemplateLink.removeAttribute("href");
+      }
+
+      function showApprovedFigmaTemplate(reference) {
+        if (
+          !reference
+          || typeof reference.file_key !== "string"
+          || typeof reference.node_id !== "string"
+          || typeof reference.version !== "string"
+        ) return;
+        const nodeId = reference.node_id.replace(":", "-");
+        figmaTemplateLink.href = `https://www.figma.com/design/${encodeURIComponent(reference.file_key)}/CoinEasy-Management?node-id=${encodeURIComponent(nodeId)}`;
+        figmaTemplateLink.textContent = `승인 Figma 템플릿 · ${reference.version}`;
+        figmaTemplateLink.hidden = false;
       }
 
       function clearTutorialResult() {
@@ -2720,6 +2737,7 @@
             || requestSessionEpoch !== state.sessionEpoch
             || !generationContextIsCurrent(requestContext)
           ) return;
+          showApprovedFigmaTemplate(payload.figma_template);
 
           const generatedSpec = payload.spec || {};
           const lines = Array.isArray(generatedSpec.body_lines) ? generatedSpec.body_lines : [];

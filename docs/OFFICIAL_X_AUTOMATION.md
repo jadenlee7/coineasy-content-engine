@@ -30,10 +30,14 @@ contract.
 | Low-signal social post, reply, retweet, or configured skip phrase | No draft |
 
 When the optional EasyFarm bridge is configured, bounded aggregate Korean
-audience demand terms may reorder otherwise eligible official posts. Those terms
-are ranking hints only: they cannot admit a greeting, reply, retweet, skipped
-campaign, or unsupported source, and they never enter the generation prompt as
-facts or copy.
+audience demand terms may reorder otherwise eligible official posts. Schema
+`1.2` also adds a thresholded quiz-learning priority: after immutable evidence
+is recorded, it may lift an already eligible official guide/documentation post.
+Those signals are ranking hints only: they cannot admit a greeting, reply,
+retweet, skipped campaign, or unsupported source, and they never enter the
+generation prompt as facts or copy. Quiz aggregates require at least 20 attempts
+and 5 participants globally and per returned category; no question, answer, or
+audience identifier is exported.
 
 Tutorial carousel generation remains available in the human Studio UI for
 Yellow and Squid. The scheduled worker deliberately cannot claim a
@@ -107,7 +111,8 @@ privacy, and failure contract.
   `term`/`weight` envelope is committed to immutable, service-only Supabase
   ranking evidence. Signal retrieval, validation, freshness, or evidence-write
   failure falls back to the existing official-X-only ranking.
-- EasyFarm schema `1.1` performance candidates are matched only to the exact
+- EasyFarm schema `1.2` preserves schema `1.1` performance candidates, which are
+  matched only to the exact
   canonical public URL recorded for a Content Studio publication in the same
   client and channel. Missing or ambiguous links create no recommendation.
 - Performance candidates are 12–72 hours old, use fresh same-client/channel

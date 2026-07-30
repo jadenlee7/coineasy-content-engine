@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from core.client_config import get_client_config
+from core.figma_template_registry import approved_figma_template
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
 from core.llm.news_card_pipeline import (
     VISUAL_PLACEMENT_AUDIT_MODEL,
@@ -319,6 +320,7 @@ class NewsCardResult:
     requested_template_style: str
     source_image_used: bool
     source_visual_path: Optional[str]
+    figma_template: Optional[dict]
     manifest_path: str
     duration_ms: int
     llm_cost_usd: Optional[float] = None
@@ -764,6 +766,14 @@ async def generate_news_card(
     print(f"  ✓ {output_png.name}")
 
     # ── Manifest ──────────────────────────────────
+    # Figma is an explicit approval registry, not a "newest frame wins" source.
+    # Only an approved [KEEP] frame whose mapped renderer style was actually
+    # used is attached to the immutable generation result.
+    figma_template = approved_figma_template(
+        client_id,
+        content_kind="daily_news",
+        template_style=actual_template_style,
+    )
     manifest = {
         "client_id": client_id,
         "content_type": "news_card",
@@ -780,6 +790,7 @@ async def generate_news_card(
         "spec": spec,
         "requested_template_style": requested_template_style,
         "template_style": actual_template_style,
+        "figma_template": figma_template,
         "png_path": str(output_png),
     }
     manifest_path = output_dir / "manifest.json"
@@ -797,6 +808,7 @@ async def generate_news_card(
         requested_template_style=requested_template_style,
         source_image_used=source_image is not None,
         source_visual_path=str(source_visual_path) if source_visual_path else None,
+        figma_template=figma_template,
         manifest_path=str(manifest_path),
         duration_ms=duration,
     )

@@ -11,7 +11,8 @@ from urllib.parse import urlsplit
 import httpx
 
 
-CONTENT_SIGNALS_SCHEMA_VERSION = "1.1"
+CONTENT_SIGNALS_SCHEMA_VERSION = "1.2"
+CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION = "1.1"
 CONTENT_PERFORMANCE_POLICY_VERSION = "content-performance-v1"
 CONTENT_SIGNALS_URL = (
     "https://jlxbywqofrltyttklcqy.supabase.co"
@@ -23,6 +24,7 @@ _AVAILABILITY_VALUES = frozenset({"ok", "unavailable"})
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_DEMAND_TERMS = 20
 _MAX_PROMOTION_CANDIDATES = 5
+_MAX_LEARNING_GAPS = 8
 _MAX_TERM_LENGTH = 80
 _MAX_SAFE_COUNT = 9_007_199_254_740_991
 _MAX_SIGNAL_AGE = timedelta(hours=24)
@@ -71,12 +73,16 @@ _PROMOTION_REASON_INDEX = {
 _PROHIBITED_KEYS = frozenset({
     "btc_address",
     "chat_id",
+    "choice",
     "group_id",
     "operator_key",
+    "answer",
     "questions",
     "raw_message",
     "raw_messages",
+    "quest_id",
     "service_role_key",
+    "session_id",
     "summaries",
     "summary",
     "telegram_id",
@@ -121,6 +127,14 @@ class PromotionCandidate:
 
 
 @dataclass(frozen=True)
+class LearningGap:
+    category: str
+    attempts: int
+    participants: int
+    accuracy_pct: float
+
+
+@dataclass(frozen=True)
 class ContentSignalsSnapshot:
     schema_version: str
     client_id: str
@@ -130,6 +144,8 @@ class ContentSignalsSnapshot:
     demand_terms: tuple[DemandTerm, ...]
     promotion_policy_version: str
     promotion_candidates: tuple[PromotionCandidate, ...] = ()
+    tutorial_priority: float = 0.0
+    learning_gaps: tuple[LearningGap, ...] = ()
 
 
 def validate_content_signals_url(value: str) -> str:
@@ -565,6 +581,113 @@ def _validate_local_x(value: Mapping[str, object]) -> None:
             _count(item_metrics.get("link_clicks"))
 
 
+def _validate_learning(
+    value: Mapping[str, object],
+) -> tuple[float, tuple[LearningGap, ...]]:
+    _exact_keys(value, frozenset({
+        "method",
+        "suppressed",
+        "sample_size",
+        "overall_accuracy_pct",
+        "tutorial_priority",
+        "gaps",
+    }))
+    if (
+        value.get("method") != "aggregate-quiz-learning-gap-v1"
+        or not isinstance(value.get("suppressed"), bool)
+    ):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
+    sample = _mapping(value.get("sample_size"))
+    _exact_keys(sample, frozenset({
+        "meets_threshold",
+        "attempts",
+        "participants",
+        "minimum_attempts",
+        "minimum_participants",
+    }))
+    meets = sample.get("meets_threshold")
+    if (
+        not isinstance(meets, bool)
+        or sample.get("minimum_attempts") != 20
+        or sample.get("minimum_participants") != 5
+        or value.get("suppressed") is meets
+    ):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
+
+    raw_gaps = _array(value.get("gaps"), _MAX_LEARNING_GAPS)
+    if not meets:
+        if (
+            sample.get("attempts") is not None
+            or sample.get("participants") is not None
+            or value.get("overall_accuracy_pct") is not None
+            or value.get("tutorial_priority") is not None
+            or raw_gaps
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+        return 0.0, ()
+
+    if (
+        _count(sample.get("attempts")) < 20
+        or _count(sample.get("participants")) < 5
+    ):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
+    overall_accuracy = _number(
+        value.get("overall_accuracy_pct"),
+        maximum=100,
+    )
+    priority = _number(value.get("tutorial_priority"), maximum=1)
+    gaps: list[LearningGap] = []
+    seen: set[str] = set()
+    previous: tuple[float, int, str] | None = None
+    for raw in raw_gaps:
+        gap = _mapping(raw)
+        _exact_keys(gap, frozenset({
+            "category", "attempts", "participants", "accuracy_pct",
+        }))
+        category = _public_text(gap.get("category"), maximum=80)
+        normalized = category.casefold()
+        attempts = _count(gap.get("attempts"))
+        participants = _count(gap.get("participants"))
+        accuracy = _number(gap.get("accuracy_pct"), maximum=100)
+        order = (accuracy, -attempts, category)
+        if (
+            normalized in seen
+            or attempts < 20
+            or participants < 5
+            or participants > attempts
+            or previous is not None and order < previous
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+        seen.add(normalized)
+        previous = order
+        gaps.append(LearningGap(
+            category=category,
+            attempts=attempts,
+            participants=participants,
+            accuracy_pct=accuracy,
+        ))
+
+    weakest_accuracy = min(
+        [overall_accuracy, *(gap.accuracy_pct for gap in gaps)]
+    )
+    expected_priority = round(1 - weakest_accuracy / 100, 3)
+    if not math.isclose(priority, expected_priority, abs_tol=0.0001):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
+    return priority, tuple(gaps)
+
+
 def _demand_terms(value: object) -> tuple[DemandTerm, ...]:
     if not isinstance(value, list) or len(value) > _MAX_DEMAND_TERMS:
         raise ContentSignalsError(
@@ -891,6 +1014,8 @@ def _snapshot(
         "demand_terms_meta",
         "promotion_candidates",
         "promotion_candidates_meta",
+        "learning",
+        "learning_meta",
         "privacy",
     }))
     _reject_prohibited_fields(body)
@@ -935,7 +1060,7 @@ def _snapshot(
     availability = _mapping(body.get("availability"))
     _exact_keys(
         availability,
-        frozenset({"community", "telegram_content", "local_x"}),
+        frozenset({"community", "telegram_content", "local_x", "learning"}),
     )
     if any(value not in _AVAILABILITY_VALUES for value in availability.values()):
         raise ContentSignalsError(
@@ -945,12 +1070,13 @@ def _snapshot(
     freshness = _mapping(body.get("freshness"))
     _exact_keys(
         freshness,
-        frozenset({"community", "telegram_content", "local_x"}),
+        frozenset({"community", "telegram_content", "local_x", "learning"}),
     )
     freshness_rules = {
         "community": (48, "metrics_event"),
         "telegram_content": (24, "metrics_update"),
         "local_x": (24, "metrics_fetch"),
+        "learning": (72, "quiz_answer"),
     }
     stale_sources: set[str] = set()
     for source, (stale_after_hours, basis) in freshness_rules.items():
@@ -1012,6 +1138,43 @@ def _snapshot(
                 raise ContentSignalsError(
                     "content_signals_invalid_response", retryable=False
                 )
+
+    tutorial_priority = 0.0
+    learning_gaps: tuple[LearningGap, ...] = ()
+    learning_value = body.get("learning")
+    if availability["learning"] == "ok":
+        tutorial_priority, learning_gaps = _validate_learning(
+            _mapping(learning_value)
+        )
+        if "learning" in stale_sources:
+            tutorial_priority = 0.0
+            learning_gaps = ()
+    else:
+        learning_freshness = _mapping(freshness.get("learning"))
+        if (
+            learning_value is not None
+            or learning_freshness.get("as_of") is not None
+            or learning_freshness.get("stale") is not True
+        ):
+            raise ContentSignalsError(
+                "content_signals_invalid_response", retryable=False
+            )
+    learning_meta = _mapping(body.get("learning_meta"))
+    _exact_keys(learning_meta, frozenset({
+        "method",
+        "selection_only",
+        "factual_evidence",
+        "auto_publish",
+    }))
+    if (
+        learning_meta.get("method") != "tutorial-priority-v1"
+        or learning_meta.get("selection_only") is not True
+        or learning_meta.get("factual_evidence") is not False
+        or learning_meta.get("auto_publish") is not False
+    ):
+        raise ContentSignalsError(
+            "content_signals_invalid_response", retryable=False
+        )
 
     demand_terms = _demand_terms(body.get("demand_terms"))
     if any(
@@ -1076,6 +1239,8 @@ def _snapshot(
         demand_terms=demand_terms,
         promotion_policy_version=promotion_policy_version,
         promotion_candidates=promotion_candidates,
+        tutorial_priority=tutorial_priority,
+        learning_gaps=learning_gaps,
     )
 
 
