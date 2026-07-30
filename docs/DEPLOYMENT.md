@@ -92,19 +92,22 @@ railway variables --set API_SECRET="$(openssl rand -hex 32)"
 # railway variables --set TELEGRAM_BOT_TOKEN_YELLOW="..."
 ```
 
-### Netlify 개인 검토 DM
+### Railway 개인 검토 DM
 
 Content Studio가 생성한 실제 결과를 한 명의 검토자에게 배너와 함께
-보내려면 Netlify production Functions에 다음 두 secret을 설정합니다.
+보내려면 Content Engine Railway 서비스에 다음 두 변수를 설정합니다.
+기존 알림 봇 값을 읽거나 복사하지 않고 Railway 내부 참조를 사용합니다.
 
 ```bash
-npx netlify env:set TELEGRAM_REVIEW_BOT_TOKEN "<review-bot-token>" --context production --scope functions
-npx netlify env:set TELEGRAM_REVIEW_CHAT_ID "<numeric-private-chat-id>" --context production --scope functions
+railway variable set 'TELEGRAM_REVIEW_BOT_TOKEN=${{coineasytgtracker.TG_BOT_TOKEN}}' --service coineasy-content-engine
+railway variable set 'TELEGRAM_REVIEW_CHAT_ID=${{coineasytgtracker.TG_NOTIFY_USER_ID}}' --service coineasy-content-engine
 ```
 
 검토자는 먼저 해당 봇과 개인 대화를 시작해야 합니다. 공개 채널명은
 허용되지 않습니다. DM 버튼은 인증된 보관함 항목만 열며 승인이나 게시를
-직접 실행하지 않습니다.
+직접 실행하지 않습니다. Netlify는 기존 `RAILWAY_API_URL`과 `API_SECRET`로
+인증된 검토 패키지만 relay하며 Telegram token이나 chat ID를 저장하지
+않습니다.
 
 ### 3.3 첫 배포
 

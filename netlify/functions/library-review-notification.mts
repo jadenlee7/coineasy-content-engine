@@ -8,11 +8,11 @@ import {
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
 import {
   sendTelegramReviewNotification,
-  telegramReviewConfig,
+  telegramReviewRelayConfig,
 } from "./_shared/telegram-review-notification.mts";
 
-const MAX_REQUEST_BYTES = 10_500_000;
-const MAX_BANNER_BYTES = 10_000_000;
+const MAX_REQUEST_BYTES = 3_500_000;
+const MAX_BANNER_BYTES = 3_000_000;
 const ALLOWED_BANNER_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 function contentLength(req: Request): number | null {
@@ -58,9 +58,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!catalogConfig) {
     return studioSessionJson({ error: "content_catalog_not_configured" }, 503);
   }
-  const reviewConfig = telegramReviewConfig((name) => Netlify.env.get(name));
+  const reviewConfig = telegramReviewRelayConfig((name) => Netlify.env.get(name));
   if (!reviewConfig) {
-    return studioSessionJson({ error: "telegram_review_not_configured" }, 503);
+    return studioSessionJson({ error: "telegram_review_relay_not_configured" }, 503);
   }
 
   let form: FormData;

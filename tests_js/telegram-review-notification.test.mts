@@ -6,7 +6,7 @@ import {
   buildTelegramReviewCaption,
   buildTelegramReviewMessage,
   sendTelegramReviewNotification,
-  telegramReviewConfig,
+  telegramReviewRelayConfig,
   telegramReviewUrl,
 } from "../netlify/functions/_shared/telegram-review-notification.mts";
 import {
@@ -18,8 +18,8 @@ const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const ITEM_ID = "22222222-2222-4222-8222-222222222222";
 const VERSION_ID = "33333333-3333-4333-8333-333333333333";
 const ACCESS_TOKEN = "test-studio-access-token-32-bytes";
-const BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345";
-const CHAT_ID = "123456789";
+const API_SECRET = "test-admin-api-secret-32-bytes";
+const RAILWAY_URL = "https://content-engine.example";
 const CREATED_AT = "2026-07-31T09:00:00.000Z";
 const PNG_BYTES = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
@@ -116,60 +116,59 @@ test("Telegram review copy is concise, branded, and excludes raw source text", (
   );
 });
 
-test("Telegram review config requires a dedicated numeric DM target", () => {
-  assert.deepEqual(telegramReviewConfig((name) => ({
-    TELEGRAM_REVIEW_BOT_TOKEN: BOT_TOKEN,
-    TELEGRAM_REVIEW_CHAT_ID: CHAT_ID,
+test("Telegram review relay reuses the existing authenticated Railway boundary", () => {
+  assert.deepEqual(telegramReviewRelayConfig((name) => ({
+    RAILWAY_API_URL: RAILWAY_URL,
+    API_SECRET,
   })[name]), {
-    botToken: BOT_TOKEN,
-    chatId: CHAT_ID,
+    railwayUrl: RAILWAY_URL,
+    apiSecret: API_SECRET,
   });
-  assert.equal(telegramReviewConfig((name) => ({
-    TELEGRAM_REVIEW_BOT_TOKEN: BOT_TOKEN,
-    TELEGRAM_REVIEW_CHAT_ID: "@public_channel",
+  assert.equal(telegramReviewRelayConfig((name) => ({
+    RAILWAY_API_URL: "https://content-engine.example/unsafe/path",
+    API_SECRET,
   })[name]), null);
 });
 
-test("Telegram sender attaches the banner and links only to authenticated review UI", async () => {
+test("Telegram relay sends the banner and authenticated review link without bot secrets", async () => {
   const calls: Request[] = [];
   const result = await sendTelegramReviewNotification(
-    { botToken: BOT_TOKEN, chatId: CHAT_ID },
+    { railwayUrl: RAILWAY_URL, apiSecret: API_SECRET },
     detail(),
-    "https://console.example",
+    "https://coineasy-newscard.netlify.app",
     new Blob([PNG_BYTES], { type: "image/png" }),
     async (input, init) => {
       const request = new Request(input, init);
       calls.push(request);
-      return Response.json({ ok: true });
+      return Response.json({ sent: true, photo_sent: true, text_sent: true });
     },
   );
   assert.deepEqual(result, { sent: true, photoSent: true, textSent: true });
-  assert.equal(calls.length, 2);
-  assert.match(calls[0].url, /\/sendPhoto$/);
-  const photoForm = await calls[0].formData();
-  assert.equal(photoForm.get("chat_id"), CHAT_ID);
-  assert.ok(photoForm.get("photo") instanceof Blob);
-  assert.match(String(photoForm.get("caption")), /Squid/);
-  assert.match(calls[1].url, /\/sendMessage$/);
-  const message = await calls[1].json() as Record<string, any>;
-  assert.equal(message.chat_id, CHAT_ID);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/review-notifications\/telegram$/);
+  assert.equal(calls[0].headers.get("x-api-key"), API_SECRET);
+  const message = await calls[0].json() as Record<string, any>;
+  assert.equal(message.client_id, "squid");
+  assert.match(message.caption_html, /Squid/);
+  assert.match(message.image_data_url, /^data:image\/png;base64,/);
+  assert.equal(message.image_url, "");
   assert.equal(
-    message.reply_markup.inline_keyboard[0][0].url,
-    `https://console.example/?view=library&content=${ITEM_ID}`,
+    message.review_url,
+    `https://coineasy-newscard.netlify.app/?view=library&content=${ITEM_ID}`,
   );
 });
 
 test("review notification route requires Studio auth and uses the stored current version", async () => {
   const originalFetch = globalThis.fetch;
-  const telegramCalls: Request[] = [];
+  const relayCalls: Request[] = [];
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     if (request.url.endsWith("/rpc/get_content_library_item")) {
       return Response.json(rpcDetailResult());
     }
-    if (request.url.includes("api.telegram.org")) {
-      telegramCalls.push(request);
-      return Response.json({ ok: true });
+    if (request.url.endsWith("/review-notifications/telegram")) {
+      relayCalls.push(request);
+      return Response.json({ sent: true, photo_sent: true, text_sent: true });
     }
     throw new Error(`unexpected request ${request.url}`);
   };
@@ -180,15 +179,15 @@ test("review notification route requires Studio auth and uses the stored current
       SUPABASE_URL: "https://project.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
       CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
-      TELEGRAM_REVIEW_BOT_TOKEN: BOT_TOKEN,
-      TELEGRAM_REVIEW_CHAT_ID: CHAT_ID,
+      RAILWAY_API_URL: RAILWAY_URL,
+      API_SECRET,
     }, async () => {
       const unauthorized = await reviewNotificationHandler(
         new Request(`https://console.example/api/library/${ITEM_ID}/review-notification`, {
           method: "POST",
           body: new FormData(),
         }),
-        { params: { contentId: ITEM_ID }, site: { url: "https://console.example" } } as never,
+        { params: { contentId: ITEM_ID }, site: { url: "https://coineasy-newscard.netlify.app" } } as never,
       );
       assert.equal(unauthorized.status, 401);
 
@@ -203,7 +202,7 @@ test("review notification route requires Studio auth and uses the stored current
           },
           body: form,
         }),
-        { params: { contentId: ITEM_ID }, site: { url: "https://console.example" } } as never,
+        { params: { contentId: ITEM_ID }, site: { url: "https://coineasy-newscard.netlify.app" } } as never,
       );
       assert.equal(authorized.status, 200);
       const body = await authorized.json() as Record<string, unknown>;
@@ -212,9 +211,9 @@ test("review notification route requires Studio auth and uses the stored current
         photo_sent: true,
         text_sent: true,
       });
-      assert.equal(telegramCalls.length, 2);
-      assert.doesNotMatch(JSON.stringify(body), new RegExp(BOT_TOKEN));
-      assert.doesNotMatch(JSON.stringify(body), new RegExp(CHAT_ID));
+      assert.equal(relayCalls.length, 1);
+      assert.equal(relayCalls[0].headers.get("x-api-key"), API_SECRET);
+      assert.doesNotMatch(JSON.stringify(body), new RegExp(API_SECRET));
     });
   } finally {
     globalThis.fetch = originalFetch;
