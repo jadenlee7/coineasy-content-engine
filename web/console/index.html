@@ -345,6 +345,25 @@
     .area-guide { margin-top: 10px; padding: 10px; border: 1px dashed #b76516; border-radius: 8px; color: #73502c; background: rgba(255,255,255,.58); font-size: 10px; line-height: 1.55; }
     .review-check { display: flex; align-items: flex-start; gap: 7px; margin-top: 11px; color: #674522; cursor: pointer; font-size: 10px; line-height: 1.5; }
     .review-check input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: #9a4f0e; }
+    .brand-qa { margin-top: 14px; padding: 14px; border: 2px solid #23765b; border-radius: 11px; background: #eefcf7; box-shadow: 3px 3px 0 rgba(35,35,35,.14); }
+    .brand-qa.review { border-color: #b76516; background: #fff3d8; }
+    .brand-qa-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .brand-qa-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .brand-qa-title strong { font-size: 13px; }
+    .brand-qa-badge { display: inline-flex; padding: 5px 8px; border-radius: 5px; color: #fff; background: #23765b; font-size: 9px; font-weight: 850; }
+    .brand-qa.review .brand-qa-badge { background: #9a4f0e; }
+    .brand-qa-score { flex: 0 0 auto; color: #176147; font-size: 17px; font-weight: 900; }
+    .brand-qa.review .brand-qa-score { color: #8b480e; }
+    .brand-qa-note { margin: 8px 0 0; color: #42695b; font-size: 10px; line-height: 1.55; }
+    .brand-qa.review .brand-qa-note { color: #73502c; }
+    .brand-qa-checks { display: grid; gap: 7px; margin: 11px 0 0; padding: 0; list-style: none; }
+    .brand-qa-check { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid #a7d3c1; border-radius: 8px; background: rgba(255,255,255,.72); }
+    .brand-qa-check.review { border-color: #e0a967; background: rgba(255,255,255,.76); }
+    .brand-qa-check-mark { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: #fff; background: #23765b; font-size: 10px; font-weight: 900; }
+    .brand-qa-check.review .brand-qa-check-mark { background: #b76516; }
+    .brand-qa-check strong { display: block; font-size: 10px; }
+    .brand-qa-check p { margin: 3px 0 0; color: #52635d; font-size: 9px; line-height: 1.5; }
+    .brand-qa-check.review p { color: #73502c; }
     .tutorial-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 9px; padding: 0 24px 22px; background: linear-gradient(135deg, #fff2e9, #fff8f0 48%, #ecfdff); }
     .tutorial-thumb { padding: 6px; overflow: hidden; border: 1.5px solid var(--line); border-radius: 9px; color: var(--ink); background: #fff; cursor: pointer; font-size: 9px; font-weight: 750; text-align: left; }
     .tutorial-thumb.active { border-color: var(--outline); box-shadow: 3px 3px 0 var(--accent); }
@@ -749,6 +768,7 @@
             <span>샘플 · 게시 금지</span>
             <strong>빠른 테스트용 샘플 문구로 만든 결과입니다. 승인·게시하지 말고 브랜딩과 레이아웃 확인에만 사용하세요.</strong>
           </div>
+          <section class="brand-qa" id="brand-qa-panel" hidden aria-live="polite"></section>
           <section class="review-warning" id="review-warning" hidden aria-live="polite">
             <span class="review-badge" id="review-badge">검토 필요</span>
             <h3>원문 자막을 자동으로 안전하게 교체하지 못했습니다.</h3>
@@ -968,6 +988,7 @@
       const xCopy = document.getElementById("x-copy");
       const telegramCopyCount = document.getElementById("telegram-copy-count");
       const xCopyCount = document.getElementById("x-copy-count");
+      const brandQaPanel = document.getElementById("brand-qa-panel");
       const reviewWarning = document.getElementById("review-warning");
       const reviewBadge = document.getElementById("review-badge");
       const reviewConfirm = document.getElementById("review-confirm");
@@ -987,6 +1008,70 @@
 
       function plainObject(value) {
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      }
+
+      function normalizeBrandQa(value) {
+        const report = plainObject(value);
+        if (
+          report.schema_version !== "1.0"
+          || report.policy_version !== "brand-qa@1"
+          || !Object.hasOwn(BRAND, report.client_id)
+          || !["daily_news", "article", "tutorial"].includes(report.content_kind)
+          || !["pass", "review"].includes(report.status)
+          || report.human_review_required !== true
+        ) return null;
+        const score = Number(report.score);
+        if (!Number.isFinite(score)) return null;
+        const checks = (Array.isArray(report.checks) ? report.checks : [])
+          .slice(0, 12)
+          .map(plainObject)
+          .filter(check => (
+            typeof check.id === "string"
+            && check.id.length <= 80
+            && ["pass", "review"].includes(check.status)
+            && ["critical", "warning", "info"].includes(check.severity)
+            && typeof check.label === "string"
+            && check.label.length <= 100
+            && typeof check.detail === "string"
+            && check.detail.length <= 800
+          ));
+        if (!checks.length) return null;
+        return {
+          status: report.status,
+          score: Math.round(Math.max(0, Math.min(100, score))),
+          checks
+        };
+      }
+
+      function brandQaInnerMarkup(rawReport) {
+        const report = normalizeBrandQa(rawReport);
+        if (!report) return "";
+        const reviewCount = report.checks.filter(check => check.status === "review").length;
+        const label = report.status === "pass" ? "자동 검사 통과" : `수정 필요 ${reviewCount}건`;
+        const note = report.status === "pass"
+          ? "자동 검사를 통과했습니다. 최종 사실·브랜드·이미지 검토 후 승인해주세요."
+          : "아래 항목을 수정하거나 직접 확인한 뒤 승인해주세요. 자동으로 게시되지는 않습니다.";
+        const checks = report.checks.map(check => `<li class="brand-qa-check ${check.status}"><span class="brand-qa-check-mark" aria-hidden="true">${check.status === "pass" ? "✓" : "!"}</span><div><strong>${escapeHtml(check.label)}</strong><p>${escapeHtml(check.detail)}</p></div></li>`).join("");
+        return `<div class="brand-qa-head"><div><div class="brand-qa-title"><span class="brand-qa-badge">${escapeHtml(label)}</span><strong>브랜드 QA</strong></div><p class="brand-qa-note">${escapeHtml(note)}</p></div><span class="brand-qa-score">${report.score}점</span></div><ul class="brand-qa-checks">${checks}</ul>`;
+      }
+
+      function renderBrandQaMarkup(rawReport) {
+        const report = normalizeBrandQa(rawReport);
+        if (!report) return "";
+        return `<section class="brand-qa ${report.status}">${brandQaInnerMarkup(rawReport)}</section>`;
+      }
+
+      function showBrandQa(rawReport) {
+        const report = normalizeBrandQa(rawReport);
+        brandQaPanel.innerHTML = report ? brandQaInnerMarkup(rawReport) : "";
+        brandQaPanel.className = `brand-qa${report?.status === "review" ? " review" : ""}`;
+        brandQaPanel.hidden = !report;
+      }
+
+      function clearBrandQa() {
+        brandQaPanel.innerHTML = "";
+        brandQaPanel.className = "brand-qa";
+        brandQaPanel.hidden = true;
       }
 
       function safeWebUrl(value) {
@@ -1432,13 +1517,14 @@
           : "";
         const promotionMarkup = renderPromotionMarkup(detail, isMock);
         const publicationMarkup = renderPublicationObservationMarkup(detail, isMock);
+        const brandQaMarkup = renderBrandQaMarkup(generationMeta.brand_qa);
         const actionStatusMarkup = actionMarkup || promotionMarkup || publicationMarkup
           ? `<div class="library-action-status" data-library-action-status role="status" aria-live="polite"></div>`
           : "";
         const hasChannelCopy = typeof channelCopyValue.telegram === "string" && channelCopyValue.telegram.trim() || typeof channelCopyValue.x === "string" && channelCopyValue.x.trim();
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy">복사</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy">복사</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
         libraryState.activeDetail = detail;
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${brandQaMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }
@@ -2155,6 +2241,7 @@
         clearTutorialResult();
         clearArticleResult();
         resetReviewState();
+        clearBrandQa();
         specDetails.hidden = true;
         channelCopy.hidden = true;
         telegramCopy.value = "";
@@ -2210,6 +2297,7 @@
         showTutorialSlide(0);
         state.hasResult = true;
         markLibraryStale();
+        showBrandQa(payload.brand_qa);
         setStatus(
           isMockTutorial
             ? `샘플 튜토리얼 ${state.slides.length}장이 생성되었습니다. 게시하지 말고 브랜딩과 레이아웃 확인에만 사용하세요.`
@@ -2267,6 +2355,7 @@
         channelCopy.hidden = !(telegramCopy.value || xCopy.value);
         state.hasResult = true;
         markLibraryStale();
+        showBrandQa(payload.brand_qa);
         setStatus("아티클 초안이 완성되었습니다. 1200×630 발행 배너를 준비하고 있습니다…");
       }
 
@@ -2593,6 +2682,7 @@
         clearTutorialResult();
         clearArticleResult();
         resetReviewState();
+        clearBrandQa();
         specDetails.hidden = true;
         channelCopy.hidden = true;
         state.hasResult = false;
@@ -2750,6 +2840,7 @@
           xCopy.value = isMockNews ? "" : payload.channel_copy?.x || "";
           updateCopyCounts();
           channelCopy.hidden = isMockNews || !(telegramCopy.value || xCopy.value);
+          showBrandQa(payload.brand_qa);
           const needsReview = visualLocalizationNeedsReview(payload);
           reviewWarning.hidden = !needsReview;
           setStatus(isMockNews
@@ -2777,6 +2868,7 @@
           clearTutorialResult();
           clearArticleResult();
           resetReviewState();
+          clearBrandQa();
         } finally {
           loading.hidden = true;
           generate.disabled = false;

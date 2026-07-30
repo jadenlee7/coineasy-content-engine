@@ -4,6 +4,7 @@ import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
 } from "./_shared/studio-session.mts";
+import { evaluateBrandQuality } from "./_shared/brand-quality.mts";
 import {
   parseStyleReferencePack,
   StyleReferenceInputError,
@@ -141,6 +142,7 @@ function articleRetryResponse(
     content_item_id: existing.contentItemId,
     content_version_id: existing.contentVersionId,
     asset_ids: [],
+    brand_qa: existing.generationMeta.brand_qa || null,
     reused: true,
   };
 }
@@ -369,6 +371,17 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (!isRailwayArticleResponse(result) || result.client_id !== clientId) {
       return json({ error: "invalid_article_response" }, 502);
     }
+    const brandQa = evaluateBrandQuality({
+      clientId,
+      contentKind: "article",
+      sourceText: sourceContent,
+      title: result.title,
+      lead: result.lead,
+      sections: result.sections,
+      keyTakeaways: result.key_takeaways,
+      visuals: result.visuals,
+      channelCopy: result.channel_copy,
+    });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
     try {
       const catalog = await recordGeneratedContent(storageConfig, {
@@ -399,6 +412,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           storage_backend: "supabase",
           mock_mode: false,
           ...referenceAudit,
+          brand_qa: brandQa,
         },
         asset: null,
         promptVersion: "article@4",
@@ -409,6 +423,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         content_item_id: catalog.contentItemId,
         content_version_id: catalog.contentVersionId,
         asset_ids: catalog.assetIds,
+        brand_qa: brandQa,
         reused: false,
       });
     } catch (error) {

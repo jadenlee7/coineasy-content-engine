@@ -5,6 +5,10 @@ import {
   SourceInputError,
   type ResolvedSource,
 } from "./_shared/source-content.mts";
+import {
+  evaluateBrandQuality,
+  type BrandQaClient,
+} from "./_shared/brand-quality.mts";
 import { signTutorialSlide } from "./_shared/tutorial-slide-token.mts";
 import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
@@ -227,6 +231,7 @@ function catalogRetryResponse(
     content_item_id: existing.contentItemId,
     content_version_id: existing.contentVersionId,
     asset_ids: existing.slides.map((slide) => slide.assetId),
+    brand_qa: existing.generationMeta.brand_qa || null,
     mock_mode: mockMode,
     reused: true,
     slides: signedSlides(
@@ -430,6 +435,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
       }
       generatedPngs.push(generatedPng);
     }
+    const brandQa = evaluateBrandQuality({
+      clientId: clientId as BrandQaClient,
+      contentKind: "tutorial",
+      sourceText: resolvedSource.content,
+      series: result.series,
+      lessonCount: result.lesson_count,
+    });
 
     const storedSlides: StoredTutorialSlide[] = [];
     const attemptedStoragePaths: string[] = [];
@@ -492,6 +504,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           renderer: "railway",
           storage_backend: "supabase",
           mock_mode: mockMode,
+          brand_qa: brandQa,
         },
         slides: catalogSlides,
       }, fetch, deadlineSignal(requestDeadline, 6_000));
@@ -514,6 +527,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         content_item_id: catalog.contentItemId,
         content_version_id: catalog.contentVersionId,
         asset_ids: catalog.assetIds,
+        brand_qa: brandQa,
         mock_mode: body.mock_mode === true,
         reused: false,
         slides,

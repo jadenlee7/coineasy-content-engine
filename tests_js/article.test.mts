@@ -105,6 +105,7 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
   let upstreamUrl = "";
   let upstreamApiKey = "";
   let upstreamBody: Record<string, unknown> = {};
+  let recordBody: Record<string, any> = {};
 
   await withArticleEnvironment(async (input, init) => {
     const requestUrl = String(input);
@@ -119,6 +120,7 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
       return Response.json(null);
     }
     if (requestUrl.endsWith("/rest/v1/rpc/record_generated_content")) {
+      recordBody = JSON.parse(String(init?.body));
       return Response.json({
         content_item_id: REQUEST_ID,
         content_version_id: VERSION_ID,
@@ -155,7 +157,14 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
       source_type: "article",
       source_url: "https://example.com/source",
     });
-    assert.deepEqual(await response.json(), {
+    const payload = await response.json();
+    assert.equal(payload.brand_qa.policy_version, "brand-qa@1");
+    assert.equal(payload.brand_qa.client_id, "squid");
+    assert.equal(payload.brand_qa.content_kind, "article");
+    assert.equal(payload.brand_qa.human_review_required, true);
+    assert.deepEqual(recordBody.target_generation_meta.brand_qa, payload.brand_qa);
+    const { brand_qa: _brandQa, ...responseWithoutQa } = payload;
+    assert.deepEqual(responseWithoutQa, {
       ...GENERATED_ARTICLE,
       storage_backend: "supabase",
       content_item_id: REQUEST_ID,
@@ -344,7 +353,10 @@ test("an exact article retry returns the immutable catalog without Railway", asy
     ), { params: { clientId: "squid" } } as never);
 
     assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
-    assert.deepEqual(await response.json(), {
+    const payload = await response.json();
+    assert.equal(payload.brand_qa, null);
+    const { brand_qa: _brandQa, ...responseWithoutQa } = payload;
+    assert.deepEqual(responseWithoutQa, {
       ...GENERATED_ARTICLE,
       storage_backend: "supabase",
       content_item_id: REQUEST_ID,
