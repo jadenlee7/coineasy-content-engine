@@ -346,7 +346,7 @@ class OfficialXDailyRunner:
             snapshot_hash = await self.repository.record_ranking_evidence(
                 workspace_id=self.settings.workspace_id,
                 snapshot=snapshot,
-                ranking_version="official-x-demand-v1",
+                ranking_version="official-x-demand-v2",
             )
         except Exception:
             summary.add(

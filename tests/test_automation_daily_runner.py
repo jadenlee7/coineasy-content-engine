@@ -700,7 +700,7 @@ async def test_signals_reorder_pending_sources_but_never_enter_generation_input(
     assert repo.queues[0]["source_content"] == ecosystem.source_content
     assert len(repo.ranking_evidence) == 1
     assert len(repo.learning_evidence) == 1
-    assert repo.ranking_evidence[0]["ranking_version"] == "official-x-demand-v1"
+    assert repo.ranking_evidence[0]["ranking_version"] == "official-x-demand-v2"
     assert generation.calls[0]["source_content"] == ecosystem.source_content
     assert "demand_terms" not in generation.calls[0]
     assert any(

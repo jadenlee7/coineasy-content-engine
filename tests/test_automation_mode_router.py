@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from core.automation.mode_router import choose_content_mode, select_official_candidate
+from core.automation.mode_router import (
+    _normalize_demand_term,
+    choose_content_mode,
+    select_official_candidate,
+)
 
 
 def post(post_id: str, text: str, **extra):
@@ -85,6 +89,16 @@ def test_bounded_demand_term_overlap_deterministically_reorders_valid_posts():
         posts,
         demand_terms=[("ecosystem", 1.0)],
     )["id"] == "50"
+
+
+def test_demand_term_quality_guard_drops_dates_cadence_and_tokenization_noise():
+    assert _normalize_demand_term("2026") == ""
+    assert _normalize_demand_term("7월") == ""
+    assert _normalize_demand_term("넷째주") == ""
+    assert _normalize_demand_term("기다려온") == ""
+    assert _normalize_demand_term("channel의") == ""
+    assert _normalize_demand_term("AI의") == "ai"
+    assert _normalize_demand_term("비트코인 담보") == "비트코인 담보"
 
 
 def test_demand_terms_cannot_admit_low_signal_or_skipped_posts():

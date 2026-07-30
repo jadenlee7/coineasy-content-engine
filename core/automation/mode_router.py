@@ -42,6 +42,27 @@ _LOW_SIGNAL_PATTERN = re.compile(
 _DEMAND_SIGNAL_BONUS_CAP = 3.0
 _TUTORIAL_LEARNING_BONUS_CAP = 2.0
 _ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
+_TEMPORAL_DEMAND_PATTERN = re.compile(
+    r"^(?:20\d{2}|\d{1,2}월|(?:첫째|둘째|셋째|넷째|다섯째)주|"
+    r"(?:이번|지난|다음)(?:주|주간|달|월|분기|연도))$",
+    re.IGNORECASE,
+)
+_ASCII_WITH_KOREAN_PARTICLE_PATTERN = re.compile(
+    r"^([a-z0-9][a-z0-9 _-]{1,70})(은|는|이|가|을|를|의|에|와|과|도|로)$",
+    re.IGNORECASE,
+)
+_GENERIC_DEMAND_TERMS = frozenset({
+    "channel",
+    "official",
+    "project",
+    "update",
+    "공식",
+    "기다려온",
+    "소식",
+    "업데이트",
+    "채널",
+    "프로젝트",
+})
 
 
 @dataclass(frozen=True)
@@ -95,7 +116,7 @@ def _demand_signal_score(
     text = str(post.get("text") or "").casefold()
     total = 0.0
     for raw_term, raw_weight in demand_terms:
-        term = " ".join(raw_term.casefold().split())
+        term = _normalize_demand_term(raw_term)
         if not term or raw_weight <= 0:
             continue
         if _ASCII_TERM_PATTERN.fullmatch(term):
@@ -108,6 +129,44 @@ def _demand_signal_score(
         if matched:
             total += min(float(raw_weight), 1.0) * _DEMAND_SIGNAL_BONUS_CAP
     return min(total, _DEMAND_SIGNAL_BONUS_CAP)
+
+
+def _normalize_demand_term(value: str) -> str:
+    """Remove date, cadence, and tokenization noise from ranking-only hints."""
+    term = " ".join(value.casefold().split())
+    if not term or _TEMPORAL_DEMAND_PATTERN.fullmatch(term):
+        return ""
+    particle_match = _ASCII_WITH_KOREAN_PARTICLE_PATTERN.fullmatch(term)
+    if particle_match:
+        term = particle_match.group(1).strip()
+    if term in _GENERIC_DEMAND_TERMS:
+        return ""
+    return term
+
+
+def _normalize_demand_terms(
+    demand_terms: Iterable[tuple[str, float]],
+) -> tuple[tuple[str, float], ...]:
+    normalized: dict[str, float] = {}
+    for term, weight in demand_terms:
+        if (
+            not isinstance(term, str)
+            or not isinstance(weight, (int, float))
+            or isinstance(weight, bool)
+            or not math.isfinite(float(weight))
+            or float(weight) <= 0
+        ):
+            continue
+        clean_term = _normalize_demand_term(term)
+        if not clean_term:
+            continue
+        normalized[clean_term] = max(
+            normalized.get(clean_term, 0.0),
+            float(weight),
+        )
+        if len(normalized) >= 20:
+            break
+    return tuple(normalized.items())
 
 
 def _tutorial_learning_score(
@@ -132,16 +191,7 @@ def select_official_candidate(
         for pattern in skip_patterns
         if isinstance(pattern, str) and pattern.strip()
     )
-    normalized_demand_terms = tuple(
-        (term, float(weight))
-        for term, weight in demand_terms
-        if isinstance(term, str)
-        and term.strip()
-        and isinstance(weight, (int, float))
-        and not isinstance(weight, bool)
-        and math.isfinite(float(weight))
-        and float(weight) > 0
-    )[:20]
+    normalized_demand_terms = _normalize_demand_terms(demand_terms)
     normalized_tutorial_priority = (
         float(tutorial_priority)
         if isinstance(tutorial_priority, (int, float))

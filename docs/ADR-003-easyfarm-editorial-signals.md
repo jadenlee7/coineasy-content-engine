@@ -126,6 +126,10 @@ Candidate ranking combines:
 The community contribution is capped so it can reorder otherwise valid official
 candidates but cannot turn a greeting, reply, retweet, skipped campaign, or
 unsupported source into a candidate. Ranking is deterministic and versioned.
+Content Engine's `official-x-demand-v2` scorer also removes numeric years,
+month/week cadence labels, generic announcement words, and mixed-language
+particle residue before matching. The immutable EasyFarm envelope remains
+unchanged for audit, while only useful topic terms can affect ordering.
 
 Sentiment and attention remain separate:
 
