@@ -12,6 +12,11 @@ import {
 import { signTutorialSlide } from "./_shared/tutorial-slide-token.mts";
 import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
+  brandReviewGuidanceAudit,
+  emptyBrandReviewGuidance,
+  getBrandReviewGuidance,
+} from "./_shared/content-reviews.mts";
+import {
   findTutorialGeneration,
   pngDimensions,
   recordTutorialGeneration,
@@ -335,6 +340,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return json(catalogRetryResponse(existingGeneration, apiSecret, clientId));
   }
 
+  let brandReviewGuidance = emptyBrandReviewGuidance();
+  let brandReviewGuidanceAvailable = false;
+  try {
+    brandReviewGuidance = await getBrandReviewGuidance(
+      storageConfig,
+      clientId,
+      "tutorial",
+      fetch,
+      deadlineSignal(requestDeadline, 4_000),
+    );
+    brandReviewGuidanceAvailable = true;
+  } catch {
+    // Review guidance is optional style context, never source evidence.
+  }
+
   let resolvedSource: ResolvedSource;
   try {
     resolvedSource = await resolveSourceInput(sourceContent, sourceUrl, fetch, false);
@@ -365,6 +385,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_url: resolvedSource.url,
           series_number: seriesNumber,
           mock_llm: mockMode,
+          ...(brandReviewGuidanceAvailable
+            ? { brand_review_guidance: brandReviewGuidance }
+            : {}),
         }),
         signal: deadlineSignal(requestDeadline, RAILWAY_GENERATION_BUDGET_MS),
       },
@@ -504,6 +527,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
           renderer: "railway",
           storage_backend: "supabase",
           mock_mode: mockMode,
+          ...brandReviewGuidanceAudit(brandReviewGuidance),
+          brand_review_guidance_available: brandReviewGuidanceAvailable,
           brand_qa: brandQa,
         },
         slides: catalogSlides,

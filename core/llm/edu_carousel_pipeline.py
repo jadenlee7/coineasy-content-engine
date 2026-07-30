@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Literal, Optional
 
 from core.brand_voice import build_brand_voice_prompt
@@ -186,6 +187,7 @@ def _build_user_prompt(
     source_content: str,
     source_type: str,
     source_url: str,
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> str:
     """Build the client-specific user prompt."""
     llm = config.llm.edu_carousel
@@ -210,7 +212,11 @@ def _build_user_prompt(
         preserve_terms_block=preserve_block,
         glossary_block=glossary_block,
         tone_guidance=tone,
-        brand_voice_block=build_brand_voice_prompt(config, "education"),
+        brand_voice_block=build_brand_voice_prompt(
+            config,
+            "education",
+            brand_review_guidance=brand_review_guidance,
+        ),
         client_name=config.name,
         client_id=config.client_id,
         source_type=source_type,
@@ -231,6 +237,7 @@ def generate_carousel_spec(
     series_number: Optional[str] = None,
     mock_mode: bool = False,
     mock_response: Optional[dict] = None,
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> dict:
     """
     Generate a carousel spec (metadata + lessons) for a given client.
@@ -253,7 +260,13 @@ def generate_carousel_spec(
     config = get_client_config(client_id)
     llm_cfg = config.llm.edu_carousel
     
-    prompt = _build_user_prompt(config, source_content, source_type, source_url)
+    prompt = _build_user_prompt(
+        config,
+        source_content,
+        source_type,
+        source_url,
+        brand_review_guidance,
+    )
     
     try:
         from anthropic import Anthropic

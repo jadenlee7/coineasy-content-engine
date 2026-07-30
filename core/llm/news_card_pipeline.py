@@ -263,6 +263,7 @@ def _build_user_prompt(
     source_url: str,
     has_source_image: bool = False,
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> str:
     """Build the client-specific user prompt."""
     llm = config.llm.news_card
@@ -312,6 +313,7 @@ def _build_user_prompt(
             config,
             "news_card",
             style_references,
+            brand_review_guidance,
         ),
         client_name=config.name,
         client_id=config.client_id,
@@ -2499,6 +2501,7 @@ def generate_news_card_spec(
     source_image: Optional[PreparedSourceImage] = None,
     cached_visual_localization: Optional[list[dict]] = None,
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -2555,6 +2558,7 @@ def generate_news_card_spec(
         source_url,
         has_source_image=source_image is not None,
         style_references=style_references,
+        brand_review_guidance=brand_review_guidance,
     )
 
     try:

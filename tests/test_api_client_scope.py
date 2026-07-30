@@ -66,6 +66,53 @@ def test_admin_key_can_list_all_registered_clients(client):
     assert all(item["features"]["article"] is True for item in response.json())
 
 
+def test_client_key_cannot_inject_human_review_guidance(client):
+    guidance = {
+        "policy_version": "brand-review-learning@1",
+        "approved_examples": [],
+        "avoid_reason_codes": [{
+            "code": "off_brand_tone",
+            "count": 1,
+        }],
+    }
+    response = client.post(
+        "/clients/squid/generate/article",
+        headers={"x-api-key": KEYS["squid"]},
+        json={
+            "source_content": "공식 원문에 근거한 충분한 테스트 본문입니다. " * 20,
+            "brand_review_guidance": guidance,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "brand_review_guidance_requires_admin_key"
+
+
+def test_brand_review_guidance_cannot_cross_content_kinds(client):
+    guidance = {
+        "policy_version": "brand-review-learning@1",
+        "approved_examples": [{
+            "content_item_id": "22222222-2222-4222-8222-222222222222",
+            "content_version_id": "33333333-3333-4333-8333-333333333333",
+            "content_kind": "daily_news",
+            "text": "뉴스 카드 문체 예시",
+            "approved_at": "2026-07-31T09:00:00.000Z",
+        }],
+        "avoid_reason_codes": [],
+    }
+    response = client.post(
+        "/clients/squid/generate/article",
+        headers={"x-api-key": KEYS["admin"]},
+        json={
+            "source_content": "공식 원문에 근거한 충분한 테스트 본문입니다. " * 20,
+            "brand_review_guidance": guidance,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "brand_review_guidance_kind_mismatch"
+
+
 def test_duplicate_or_weak_configured_keys_fail_closed(client, monkeypatch):
     from api import security
 

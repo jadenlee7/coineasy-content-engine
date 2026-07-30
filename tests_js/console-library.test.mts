@@ -53,6 +53,25 @@ test("loads safe detail DTOs for news, articles, and tutorials", () => {
   assert.doesNotMatch(consoleHtml, /card\.dataset\.contentId === libraryState\.activeId/);
 });
 
+test("records explicit approve or change-request decisions without auto publishing", () => {
+  assert.match(consoleHtml, /팀 검토 · 브랜드 학습/);
+  assert.match(consoleHtml, /data-library-review="approved"/);
+  assert.match(consoleHtml, /data-library-review="rejected"/);
+  assert.match(consoleHtml, /data-library-review-reason/);
+  assert.match(consoleHtml, /메모 원문은 모델에 전달되지 않습니다/);
+  assert.match(consoleHtml, /샘플은 승인 불가/);
+  assert.match(consoleHtml, /fetch\(`\/api\/library\/\$\{encodeURIComponent\(activeContentId\)\}\/review`/);
+  assert.match(consoleHtml, /"Idempotency-Key": reviewRequest\.id/);
+  assert.match(consoleHtml, /reason_codes: reasonCodes/);
+  assert.match(consoleHtml, /window\.confirm\(`\$\{decisionLabel\}을 기록할까요\?/);
+  assert.match(consoleHtml, /이 작업은 게시를 실행하지 않지만/);
+  assert.match(consoleHtml, /선택한 사유 코드만 다음 생성의 주의점에 반영됩니다/);
+  const reviewFunction = consoleHtml.match(
+    /async function submitStoredReview\(button\) \{[\s\S]*?\n      \}(?=\n\n      async function downloadStoredEditable)/,
+  )?.[0] || "";
+  assert.doesNotMatch(reviewFunction, /publication|publish/);
+});
+
 test("renders deduplicated and escaped source evidence from every stored content shape", () => {
   const functionSource = consoleHtml.match(
     /function renderSourceEvidence\(rawContent\) \{[\s\S]*?\n      \}(?=\n\n      function renderStoredContent)/,
@@ -379,7 +398,7 @@ test("shows loading, empty, failure, and retry states in plain Korean", () => {
 });
 
 test("scrubs library data and ignores stale list or detail responses after logout", () => {
-  assert.match(consoleHtml, /function resetLibraryDetail[\s\S]*libraryState\.detailRequest \+= 1;[\s\S]*libraryDetail\.innerHTML = "";/);
+  assert.match(consoleHtml, /function resetLibraryDetail[\s\S]*libraryState\.detailRequest \+= 1;[\s\S]*libraryState\.reviewRequest = null;[\s\S]*libraryDetail\.innerHTML = "";/);
   assert.match(consoleHtml, /function clearLibrary\(\) \{[\s\S]*libraryState\.listRequest \+= 1;[\s\S]*libraryState\.items = \[\];[\s\S]*resetLibraryDetail\(\);/);
   assert.match(consoleHtml, /if \(reset\) \{[\s\S]*resetLibraryDetail\(\);[\s\S]*보관함을 불러오는 중입니다/);
   assert.match(consoleHtml, /function scrubStudioWork\(\) \{[\s\S]*clearLibrary\(\);[\s\S]*selectStudioView\("create", false\);/);

@@ -209,6 +209,7 @@ def _build_user_prompt(
     source_type: str,
     source_url: str,
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> str:
     """Build an article prompt from the existing per-client language config."""
     # All four current clients configure news_card, so Article v1 deliberately
@@ -235,6 +236,7 @@ def _build_user_prompt(
             config,
             "article",
             style_references,
+            brand_review_guidance,
         ),
         source_type=source_type,
         source_url=source_url or "(not provided)",
@@ -578,6 +580,7 @@ def generate_article_spec(
     source_type: Literal["tweet", "blog", "article"] = "article",
     source_url: str = "",
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> dict:
     """Generate a source-grounded Korean article and ready-to-copy channel text."""
     normalized_content, normalized_url = _validate_source(source_content, source_url)
@@ -589,6 +592,7 @@ def generate_article_spec(
         source_type,
         normalized_url,
         style_references,
+        brand_review_guidance,
     )
 
     try:

@@ -19,6 +19,11 @@ import {
   type StyleReferencePack,
 } from "./_shared/style-references.mts";
 import {
+  brandReviewGuidanceAudit,
+  emptyBrandReviewGuidance,
+  getBrandReviewGuidance,
+} from "./_shared/content-reviews.mts";
+import {
   contentCatalogConfig,
   contentStoragePath,
   ContentCatalogError,
@@ -464,6 +469,22 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
+  let brandReviewGuidance = emptyBrandReviewGuidance();
+  let brandReviewGuidanceAvailable = false;
+  try {
+    brandReviewGuidance = await getBrandReviewGuidance(
+      storageConfig,
+      clientId,
+      "daily_news",
+      fetch,
+      deadlineSignal(requestDeadline, 4_000),
+    );
+    brandReviewGuidanceAvailable = true;
+  } catch {
+    // Human-review guidance improves brand fit but is not factual evidence.
+    // A missing projection must not block source-locked generation.
+  }
+
   let resolvedSource: ResolvedSource;
   try {
     resolvedSource = await resolveSourceInput(
@@ -506,6 +527,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
               style_references: styleReferencePack.references,
               style_reference_pack_hash: styleReferencePack.packHash,
             }
+            : {}),
+          ...(brandReviewGuidanceAvailable
+            ? { brand_review_guidance: brandReviewGuidance }
             : {}),
         }),
         signal: deadlineSignal(
@@ -596,6 +620,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
       visualLocalizationStatus: result.spec.visual_localization_status,
     });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
+    const reviewGuidanceAudit = {
+      ...brandReviewGuidanceAudit(brandReviewGuidance),
+      brand_review_guidance_available: brandReviewGuidanceAvailable,
+    };
     const assetId = randomUUID();
     const attemptedStoragePath = contentStoragePath(
       storageConfig.workspaceId,
@@ -650,6 +678,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           storage_backend: "supabase",
           mock_mode: mockMode,
           ...referenceAudit,
+          ...reviewGuidanceAudit,
           figma_template_version: figmaTemplate?.version || null,
           brand_qa: brandQa,
         },

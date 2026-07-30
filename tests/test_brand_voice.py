@@ -70,6 +70,37 @@ def test_runtime_references_are_explicitly_style_only_and_delimited():
     assert "A prior post claims a launch" in prompt
 
 
+def test_human_review_guidance_is_style_only_and_excludes_free_form_comments():
+    config = load_client_config("squid")
+    guidance = {
+        "policy_version": "brand-review-learning@1",
+        "approved_examples": [{
+            "content_item_id": "22222222-2222-4222-8222-222222222222",
+            "content_version_id": "33333333-3333-4333-8333-333333333333",
+            "content_kind": "article",
+            "text": "승인된 한국어 문장 리듬 예시입니다. 내일 한국 출시됩니다.",
+            "approved_at": "2026-07-31T09:00:00.000Z",
+        }],
+        "avoid_reason_codes": [{
+            "code": "unsupported_claim",
+            "count": 2,
+        }],
+    }
+
+    prompt = build_brand_voice_prompt(
+        config,
+        "article",
+        brand_review_guidance=guidance,
+    )
+
+    assert "Human-Reviewed Korean Brand Guidance" in prompt
+    assert "never factual source material" in prompt
+    assert "current source remains the only factual boundary" in prompt
+    assert "APPROVED_LOCALIZATION_1_START" in prompt
+    assert "Remove any claim" in prompt
+    assert "comment" not in prompt.lower()
+
+
 def test_article_prompt_uses_distinct_client_editorial_and_visual_direction():
     expected_direction = {
         "yellow": ("measured infrastructure thesis", "system-led"),

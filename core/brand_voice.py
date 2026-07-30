@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from core.client_config import ClientConfig
+from core.brand_review_guidance import build_brand_review_guidance_prompt
 from core.style_references import build_runtime_style_reference_prompt
 
 
@@ -24,6 +25,7 @@ def build_brand_voice_prompt(
     config: ClientConfig,
     pipeline: str,
     style_references: Sequence[Mapping[str, str]] = (),
+    brand_review_guidance: Mapping[str, object] | None = None,
 ) -> str:
     """Return LLM-ready official-post voice and source-fidelity rules."""
     voice = config.brand_voice
@@ -77,4 +79,7 @@ Official-post reference examples:
 {example_block}
 """
     runtime_prompt = build_runtime_style_reference_prompt(style_references)
-    return static_prompt if not runtime_prompt else f"{static_prompt}\n{runtime_prompt}"
+    review_prompt = build_brand_review_guidance_prompt(brand_review_guidance)
+    return "\n".join(
+        block for block in (static_prompt, runtime_prompt, review_prompt) if block
+    )
