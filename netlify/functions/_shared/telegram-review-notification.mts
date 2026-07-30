@@ -3,14 +3,14 @@ import type {
   PublicCatalogAsset,
 } from "./content-catalog.mts";
 
-const TELEGRAM_API_BASE = "https://api.telegram.org";
 const TELEGRAM_CAPTION_LIMIT = 1_024;
 const TELEGRAM_TEXT_LIMIT = 4_096;
-const TELEGRAM_TIMEOUT_MS = 12_000;
+const REVIEW_RELAY_TIMEOUT_MS = 18_000;
+const MAX_RELAY_IMAGE_BYTES = 3_000_000;
 
-export type TelegramReviewConfig = {
-  botToken: string;
-  chatId: string;
+export type TelegramReviewRelayConfig = {
+  railwayUrl: string;
+  apiSecret: string;
 };
 
 export type TelegramReviewResult = {
@@ -59,16 +59,26 @@ export function escapeTelegramHtml(value: string): string {
   })[character] || character);
 }
 
-export function telegramReviewConfig(
+export function telegramReviewRelayConfig(
   getEnv: (name: string) => string | undefined,
-): TelegramReviewConfig | null {
-  const botToken = (getEnv("TELEGRAM_REVIEW_BOT_TOKEN") || "").trim();
-  const chatId = (getEnv("TELEGRAM_REVIEW_CHAT_ID") || "").trim();
-  if (
-    !/^[0-9]{6,14}:[A-Za-z0-9_-]{30,100}$/.test(botToken)
-    || !/^-?[1-9][0-9]{5,19}$/.test(chatId)
-  ) return null;
-  return { botToken, chatId };
+): TelegramReviewRelayConfig | null {
+  const railwayUrl = (getEnv("RAILWAY_API_URL") || "").trim().replace(/\/+$/, "");
+  const apiSecret = (getEnv("API_SECRET") || "").trim();
+  try {
+    const url = new URL(railwayUrl);
+    if (
+      url.protocol !== "https:"
+      || url.username
+      || url.password
+      || (url.pathname !== "/" && url.pathname !== "")
+      || url.search
+      || url.hash
+      || apiSecret.length < 16
+    ) return null;
+  } catch {
+    return null;
+  }
+  return { railwayUrl, apiSecret };
 }
 
 function fallbackReviewBody(detail: ContentLibraryDetail): string {
@@ -140,76 +150,58 @@ function reviewPhoto(detail: ContentLibraryDetail): PublicCatalogAsset | null {
   )) || null;
 }
 
-async function telegramPost(
-  config: TelegramReviewConfig,
-  method: "sendPhoto" | "sendMessage",
-  body: BodyInit,
-  contentType: string | null,
-  fetcher: typeof fetch,
-): Promise<boolean> {
-  const headers = contentType ? { "Content-Type": contentType } : undefined;
-  try {
-    const response = await fetcher(
-      `${TELEGRAM_API_BASE}/bot${config.botToken}/${method}`,
-      {
-        method: "POST",
-        headers,
-        body,
-        signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
-      },
-    );
-    if (!response.ok) return false;
-    const result = await response.json() as { ok?: unknown };
-    return result.ok === true;
-  } catch {
-    return false;
-  }
+async function imageDataUrl(banner: Blob | null): Promise<string> {
+  if (!banner) return "";
+  if (
+    banner.size > MAX_RELAY_IMAGE_BYTES
+    || !["image/png", "image/jpeg", "image/webp"].includes(banner.type)
+  ) return "";
+  const encoded = Buffer.from(await banner.arrayBuffer()).toString("base64");
+  return `data:${banner.type};base64,${encoded}`;
 }
 
 export async function sendTelegramReviewNotification(
-  config: TelegramReviewConfig,
+  config: TelegramReviewRelayConfig,
   detail: ContentLibraryDetail,
   siteUrl: string,
   banner: Blob | null = null,
   fetcher: typeof fetch = fetch,
 ): Promise<TelegramReviewResult> {
-  let photoSent = false;
   const storedPhoto = reviewPhoto(detail);
-  if (banner || storedPhoto) {
-    const form = new FormData();
-    form.set("chat_id", config.chatId);
-    form.set("caption", buildTelegramReviewCaption(detail));
-    form.set("parse_mode", "HTML");
-    if (banner) {
-      form.set("photo", banner, `${detail.client_id}-${detail.content_kind}-review.png`);
-    } else if (storedPhoto) {
-      form.set("photo", storedPhoto.url);
+  const body = {
+    content_item_id: detail.content_item_id,
+    content_version_id: detail.current_version_id,
+    client_id: detail.client_id,
+    content_kind: detail.content_kind,
+    caption_html: buildTelegramReviewCaption(detail),
+    message_html: buildTelegramReviewMessage(detail),
+    review_url: telegramReviewUrl(siteUrl, detail.content_item_id),
+    image_url: banner ? "" : storedPhoto?.url || "",
+    image_data_url: await imageDataUrl(banner),
+  };
+  try {
+    const response = await fetcher(
+      `${config.railwayUrl}/review-notifications/telegram`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": config.apiSecret,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(REVIEW_RELAY_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) {
+      return { sent: false, photoSent: false, textSent: false };
     }
-    photoSent = await telegramPost(config, "sendPhoto", form, null, fetcher);
+    const result = await response.json() as Record<string, unknown>;
+    return {
+      sent: result.sent === true,
+      photoSent: result.photo_sent === true,
+      textSent: result.text_sent === true,
+    };
+  } catch {
+    return { sent: false, photoSent: false, textSent: false };
   }
-
-  const messageBody = {
-    chat_id: config.chatId,
-    text: buildTelegramReviewMessage(detail),
-    parse_mode: "HTML",
-    link_preview_options: { is_disabled: true },
-    reply_markup: {
-      inline_keyboard: [[{
-        text: "✅ 승인·수정 확인",
-        url: telegramReviewUrl(siteUrl, detail.content_item_id),
-      }]],
-    },
-  };
-  const textSent = await telegramPost(
-    config,
-    "sendMessage",
-    JSON.stringify(messageBody),
-    "application/json",
-    fetcher,
-  );
-  return {
-    sent: textSent,
-    photoSent,
-    textSent,
-  };
 }

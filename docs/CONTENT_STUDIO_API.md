@@ -215,9 +215,10 @@ Multipart fields:
 
 The server ignores browser-supplied title, body, client, and channel copy. It
 reloads the immutable current version from the catalog, refuses mock or
-non-`needs_review` items, and sends a private photo plus the stored Telegram
-copy. `TELEGRAM_REVIEW_BOT_TOKEN` and numeric `TELEGRAM_REVIEW_CHAT_ID` are
-Functions-only Netlify secrets. Telegram delivery failure never rolls back or
+non-`needs_review` items, and relays a bounded review package through the
+admin-authenticated Railway API. Railway alone receives
+`TELEGRAM_REVIEW_BOT_TOKEN` and numeric `TELEGRAM_REVIEW_CHAT_ID`; Netlify never
+stores either Telegram secret. Telegram delivery failure never rolls back or
 publishes the stored content.
 
 `POST /v1/workspaces/{workspace_id}/content/{content_id}/approve`

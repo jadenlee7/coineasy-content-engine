@@ -9,11 +9,13 @@ Deployment: Railway
 """
 import asyncio
 import os
+import re
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Header
@@ -42,6 +44,11 @@ from core.sources.x_client import XClient
 from core.generators.daily_news import DailyNewsGenerator
 from core.publishers.base import Publisher
 from core.publishers.telegram import TelegramPublisher
+from core.publishers.telegram_review import (
+    decode_review_image_data_url,
+    send_telegram_review,
+    telegram_review_config,
+)
 from core.publishers.typefully import TypefullyPublisher
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 from api.output_retention import (
@@ -356,6 +363,78 @@ class ArticleResponse(BaseModel):
     duration_ms: int
 
 
+_TELEGRAM_HTML_TAG_PATTERN = re.compile(r"</?([A-Za-z][A-Za-z0-9]*)[^>]*>")
+
+
+class TelegramReviewNotificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_item_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    content_version_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    client_id: Literal["yellow", "origintrail", "squid", "babylon"]
+    content_kind: Literal["daily_news", "article", "tutorial"]
+    caption_html: str = Field(min_length=1, max_length=1_024)
+    message_html: str = Field(min_length=1, max_length=4_096)
+    review_url: str = Field(min_length=20, max_length=500)
+    image_url: str = Field(default="", max_length=2_500)
+    image_data_url: str = Field(default="", max_length=4_100_000)
+
+    @field_validator("caption_html", "message_html")
+    @classmethod
+    def require_safe_telegram_html(cls, value: str) -> str:
+        normalized = value.strip()
+        if any(
+            tag.lower() not in {"b", "i"}
+            for tag in _TELEGRAM_HTML_TAG_PATTERN.findall(normalized)
+        ):
+            raise ValueError("telegram_review_html_tag_not_allowed")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_review_targets(self):
+        review_url = urlparse(self.review_url)
+        review_query = parse_qs(review_url.query, keep_blank_values=True)
+        if (
+            review_url.scheme != "https"
+            or review_url.hostname != "coineasy-newscard.netlify.app"
+            or review_url.port is not None
+            or review_url.username is not None
+            or review_url.password is not None
+            or review_url.path != "/"
+            or review_url.fragment
+            or set(review_query) != {"view", "content"}
+            or review_query.get("view") != ["library"]
+            or review_query.get("content") != [self.content_item_id.lower()]
+        ):
+            raise ValueError("telegram_review_url_not_allowed")
+        if self.image_url and self.image_data_url:
+            raise ValueError("telegram_review_image_is_ambiguous")
+        if self.image_url:
+            image_url = urlparse(self.image_url)
+            if (
+                image_url.scheme != "https"
+                or not image_url.hostname
+                or not image_url.hostname.endswith(".supabase.co")
+                or not image_url.path.startswith(
+                    "/storage/v1/object/sign/content-studio/"
+                )
+                or image_url.username is not None
+                or image_url.password is not None
+                or image_url.fragment
+            ):
+                raise ValueError("telegram_review_image_url_not_allowed")
+        if (
+            self.image_data_url
+            and decode_review_image_data_url(self.image_data_url) is None
+        ):
+            raise ValueError("telegram_review_image_data_invalid")
+        return self
+
+
 CHANNEL_NAMES = ("typefully", "telegram")
 
 
@@ -419,6 +498,29 @@ async def list_clients(x_api_key: str = Header(default="")):
         except Exception as e:
             print(f"⚠ Failed to load client '{client_id}': {e}")
     return results
+
+
+@app.post("/review-notifications/telegram")
+async def notify_telegram_review(
+    req: TelegramReviewNotificationRequest,
+    x_api_key: str = Header(default=""),
+):
+    if _check_auth(x_api_key) != "admin":
+        raise HTTPException(403, "telegram_review_requires_admin_key")
+    config = telegram_review_config()
+    if config is None:
+        raise HTTPException(503, "telegram_review_not_configured")
+    result = await send_telegram_review(
+        config=config,
+        caption_html=req.caption_html,
+        message_html=req.message_html,
+        review_url=req.review_url,
+        image_url=req.image_url,
+        image_data_url=req.image_data_url,
+    )
+    if not result["text_sent"]:
+        raise HTTPException(502, "telegram_review_send_failed")
+    return result
 
 
 @app.post("/clients/{client_id}/generate/edu-carousel", response_model=GenerateResponse)
