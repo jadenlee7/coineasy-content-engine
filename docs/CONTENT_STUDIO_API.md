@@ -143,6 +143,12 @@ Current incremental Netlify bridge:
   UUID `Idempotency-Key`, appends an immutable approval row, and never publishes.
   Mock generations cannot be approved. Rejections carry at most five allowlisted
   reason codes and an optional bounded team comment.
+- `POST /api/library/{content_item_id}/review-notification` sends the stored
+  current version to the configured private Telegram reviewer. The request
+  carries the exact `content_version_id` and may attach a generated article
+  banner. Daily News and Tutorial use the first private stored PNG through a
+  short-lived signed URL. The DM contains a review-only deep link; it cannot
+  approve or publish without the signed Studio session.
 
 All three generation calls require a UUID `Idempotency-Key`. The UUID is bound to a
 SHA-256 digest of the normalized submitted request, not mutable content later
@@ -194,6 +200,25 @@ session reviews are identified explicitly as `reviewer_source = studio_session`;
 they do not create a fake Supabase Auth user. An approval becomes a bounded
 positive style example. For a rejection, only allowlisted reason codes—not the
 free-form comment—can influence later generation.
+
+### Telegram review notification
+
+Current signed-session bridge:
+
+`POST /api/library/{content_item_id}/review-notification`
+
+Multipart fields:
+
+- `content_version_id`: required current version UUID;
+- `banner`: optional PNG/JPEG/WebP up to 10 MB, used for the transient Article
+  hero preview.
+
+The server ignores browser-supplied title, body, client, and channel copy. It
+reloads the immutable current version from the catalog, refuses mock or
+non-`needs_review` items, and sends a private photo plus the stored Telegram
+copy. `TELEGRAM_REVIEW_BOT_TOKEN` and numeric `TELEGRAM_REVIEW_CHAT_ID` are
+Functions-only Netlify secrets. Telegram delivery failure never rolls back or
+publishes the stored content.
 
 `POST /v1/workspaces/{workspace_id}/content/{content_id}/approve`
 

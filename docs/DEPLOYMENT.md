@@ -92,6 +92,20 @@ railway variables --set API_SECRET="$(openssl rand -hex 32)"
 # railway variables --set TELEGRAM_BOT_TOKEN_YELLOW="..."
 ```
 
+### Netlify 개인 검토 DM
+
+Content Studio가 생성한 실제 결과를 한 명의 검토자에게 배너와 함께
+보내려면 Netlify production Functions에 다음 두 secret을 설정합니다.
+
+```bash
+npx netlify env:set TELEGRAM_REVIEW_BOT_TOKEN "<review-bot-token>" --context production --scope functions
+npx netlify env:set TELEGRAM_REVIEW_CHAT_ID "<numeric-private-chat-id>" --context production --scope functions
+```
+
+검토자는 먼저 해당 봇과 개인 대화를 시작해야 합니다. 공개 채널명은
+허용되지 않습니다. DM 버튼은 인증된 보관함 항목만 열며 승인이나 게시를
+직접 실행하지 않습니다.
+
 ### 3.3 첫 배포
 
 Railway가 `Dockerfile`을 자동 감지해서 빌드 시작합니다.
