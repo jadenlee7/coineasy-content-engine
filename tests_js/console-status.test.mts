@@ -18,6 +18,14 @@ test("passes the Railway-cleaned source file to the Figma editable endpoint", ()
   assert.match(consoleHtml, /source_visual_file: payload\.source_visual_file \|\| ""/);
 });
 
+test("links a matching generated card back to its approved Figma template", () => {
+  assert.match(consoleHtml, /id="figma-template-link"/);
+  assert.match(consoleHtml, /function showApprovedFigmaTemplate\(reference\)/);
+  assert.match(consoleHtml, /reference\.node_id\.replace\(":", "-"\)/);
+  assert.match(consoleHtml, /showApprovedFigmaTemplate\(payload\.figma_template\)/);
+  assert.match(consoleHtml, /승인 Figma 템플릿 · \$\{reference\.version\}/);
+});
+
 test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /data-mode="news"/);
   assert.match(consoleHtml, /data-mode="article"/);

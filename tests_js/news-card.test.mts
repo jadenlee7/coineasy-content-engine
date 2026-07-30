@@ -7,6 +7,7 @@ import newsCardHandler, {
   deadlineSignal as newsCardDeadlineSignal,
   MAX_NEWS_CARD_BYTES,
   newsCardRequestHash,
+  normalizedFigmaTemplate,
 } from "../netlify/functions/news-card.mts";
 import {
   createStudioSessionValue,
@@ -103,6 +104,33 @@ test("news card request hash binds every submitted generation input", () => {
   assert.notEqual(newsCardRequestHash({ ...input, sourceUrl: `${SOURCE_URL}1` }), newsCardRequestHash(input));
 });
 
+test("accepts only the explicitly approved Figma template for the rendered client", () => {
+  const approved = {
+    registry_schema_version: "1.0",
+    file_key: "hsRSASQjEMxl5NMLH9y5Wm",
+    file_name: "CoinEasy Management",
+    page_name: "Daily content",
+    node_id: "1479:1954",
+    frame_name: "[KEEP] Banner_Squid_Sample",
+    status: "approved",
+    version: "2026-07-30.1",
+  };
+  assert.deepEqual(
+    normalizedFigmaTemplate(approved, "squid", "classic"),
+    approved,
+  );
+  assert.equal(normalizedFigmaTemplate(approved, "yellow", "classic"), null);
+  assert.equal(normalizedFigmaTemplate(approved, "squid", "remix"), null);
+  assert.equal(
+    normalizedFigmaTemplate(
+      { ...approved, node_id: "1835:1877" },
+      "squid",
+      "classic",
+    ),
+    null,
+  );
+});
+
 test("news card Railway deadline preserves the persistence reserve", () => {
   const now = Date.now();
   assert.throws(
@@ -156,6 +184,16 @@ test("news card generation persists one immutable PNG before returning", async (
         requested_template_style: "classic",
         source_image_used: false,
         source_visual_path: null,
+        figma_template: {
+          registry_schema_version: "1.0",
+          file_key: "hsRSASQjEMxl5NMLH9y5Wm",
+          file_name: "CoinEasy Management",
+          page_name: "Daily content",
+          node_id: "1479:1954",
+          frame_name: "[KEEP] Banner_Squid_Sample",
+          status: "approved",
+          version: "2026-07-30.1",
+        },
         manifest_path: "/app/output/squid/news_123/manifest.json",
         duration_ms: 1234,
       });
@@ -193,6 +231,10 @@ test("news card generation persists one immutable PNG before returning", async (
     assert.equal(uploadUpsert, "false");
     assert.equal(recordBody.target_content_kind, "daily_news");
     assert.equal((recordBody.target_generation_meta as Record<string, unknown>).mock_mode, false);
+    assert.equal(
+      (recordBody.target_generation_meta as Record<string, unknown>).figma_template_version,
+      "2026-07-30.1",
+    );
     assert.deepEqual(
       (recordBody.target_content as Record<string, any>).source,
       {
@@ -211,6 +253,16 @@ test("news card generation persists one immutable PNG before returning", async (
         template_style: "classic",
         source_image_used: false,
         source_visual_file: null,
+        figma_template: {
+          registry_schema_version: "1.0",
+          file_key: "hsRSASQjEMxl5NMLH9y5Wm",
+          file_name: "CoinEasy Management",
+          page_name: "Daily content",
+          node_id: "1479:1954",
+          frame_name: "[KEEP] Banner_Squid_Sample",
+          status: "approved",
+          version: "2026-07-30.1",
+        },
       },
     );
   });

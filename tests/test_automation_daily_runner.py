@@ -77,6 +77,7 @@ class FakeRepository:
         self.states = states
         self.records = []
         self.ranking_evidence = []
+        self.learning_evidence = []
         self.promotion_candidates = []
         self.queues = []
         self.style_packs = []
@@ -85,6 +86,7 @@ class FakeRepository:
         self.failed = []
         self.complete_error = False
         self.ranking_evidence_error = None
+        self.learning_evidence_error = None
         self.promotion_candidates_error = None
 
     async def get_state(self, **kwargs):
@@ -95,6 +97,11 @@ class FakeRepository:
             raise self.ranking_evidence_error
         self.ranking_evidence.append(kwargs)
         return "a" * 64
+
+    async def record_learning_evidence(self, **kwargs):
+        if self.learning_evidence_error:
+            raise self.learning_evidence_error
+        self.learning_evidence.append(kwargs)
 
     async def record_promotion_candidates(self, **kwargs):
         if self.promotion_candidates_error:
@@ -233,10 +240,18 @@ class FakeGenerationClient:
 
 
 class FakeSignalsClient:
-    def __init__(self, terms=(), error=None, *, with_candidate=False):
+    def __init__(
+        self,
+        terms=(),
+        error=None,
+        *,
+        with_candidate=False,
+        tutorial_priority=0.0,
+    ):
         self.terms = terms
         self.error = error
         self.with_candidate = with_candidate
+        self.tutorial_priority = tutorial_priority
         self.calls = []
 
     async def fetch(self, *, client_id, now):
@@ -244,7 +259,7 @@ class FakeSignalsClient:
         if self.error:
             raise self.error
         return ContentSignalsSnapshot(
-            schema_version="1.1",
+            schema_version="1.2",
             client_id=client_id,
             generated_at=now,
             window_start=now - timedelta(days=7),
@@ -275,6 +290,7 @@ class FakeSignalsClient:
                     ),
                 ),
             ) if self.with_candidate else (),
+            tutorial_priority=self.tutorial_priority,
         )
 
 
@@ -631,6 +647,7 @@ async def test_signals_reorder_pending_sources_but_never_enter_generation_input(
 
     assert repo.queues[0]["source_content"] == ecosystem.source_content
     assert len(repo.ranking_evidence) == 1
+    assert len(repo.learning_evidence) == 1
     assert repo.ranking_evidence[0]["ranking_version"] == "official-x-demand-v1"
     assert generation.calls[0]["source_content"] == ecosystem.source_content
     assert "demand_terms" not in generation.calls[0]
@@ -638,7 +655,7 @@ async def test_signals_reorder_pending_sources_but_never_enter_generation_input(
         item == {
             "client_id": "squid",
             "status": "signals_used",
-            "detail": "term_count=1",
+            "detail": "term_count=1,tutorial_priority=0.000",
         }
         for item in summary.outcomes
     )

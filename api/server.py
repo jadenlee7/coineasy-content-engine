@@ -178,6 +178,7 @@ class NewsCardResponse(BaseModel):
     requested_template_style: str
     source_image_used: bool
     source_visual_path: Optional[str] = None
+    figma_template: Optional[dict] = None
     manifest_path: str
     duration_ms: int
 
@@ -443,6 +444,7 @@ async def generate_news(
         requested_template_style=result.requested_template_style,
         source_image_used=result.source_image_used,
         source_visual_path=result.source_visual_path,
+        figma_template=result.figma_template,
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
     )

@@ -40,6 +40,7 @@ _LOW_SIGNAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DEMAND_SIGNAL_BONUS_CAP = 3.0
+_TUTORIAL_LEARNING_BONUS_CAP = 2.0
 _ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
 
 
@@ -109,11 +110,22 @@ def _demand_signal_score(
     return min(total, _DEMAND_SIGNAL_BONUS_CAP)
 
 
+def _tutorial_learning_score(
+    post: Mapping[str, object],
+    tutorial_priority: float,
+) -> float:
+    text = str(post.get("text") or "").casefold()
+    if not any(signal in text for signal in _TUTORIAL_SIGNALS):
+        return 0.0
+    return min(tutorial_priority, 1.0) * _TUTORIAL_LEARNING_BONUS_CAP
+
+
 def select_official_candidate(
     posts: Iterable[Mapping[str, object]],
     *,
     skip_patterns: Iterable[str] = (),
     demand_terms: Iterable[tuple[str, float]] = (),
+    tutorial_priority: float = 0.0,
 ) -> Mapping[str, object] | None:
     normalized_skips = tuple(
         pattern.strip().lower()
@@ -130,6 +142,14 @@ def select_official_candidate(
         and math.isfinite(float(weight))
         and float(weight) > 0
     )[:20]
+    normalized_tutorial_priority = (
+        float(tutorial_priority)
+        if isinstance(tutorial_priority, (int, float))
+        and not isinstance(tutorial_priority, bool)
+        and math.isfinite(float(tutorial_priority))
+        and 0 <= float(tutorial_priority) <= 1
+        else 0.0
+    )
     candidates = [
         post
         for post in posts
@@ -149,7 +169,8 @@ def select_official_candidate(
         candidates,
         key=lambda post: (
             announcement_score(post)
-            + _demand_signal_score(post, normalized_demand_terms),
+            + _demand_signal_score(post, normalized_demand_terms)
+            + _tutorial_learning_score(post, normalized_tutorial_priority),
             _published_timestamp(post),
             int(str(post["id"])),
         ),

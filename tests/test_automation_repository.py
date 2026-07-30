@@ -10,6 +10,7 @@ import pytest
 from core.automation.content_signals import (
     ContentSignalsSnapshot,
     DemandTerm,
+    LearningGap,
     PromotionCandidate,
 )
 from core.automation.repository import (
@@ -43,7 +44,7 @@ def _repo(handler):
 def _signals_snapshot(*, with_candidate: bool = False):
     now = datetime(2026, 7, 27, 6, 0, tzinfo=timezone.utc)
     return ContentSignalsSnapshot(
-        schema_version="1.1",
+        schema_version="1.2",
         client_id="squid",
         generated_at=now,
         window_start=now - timedelta(days=7),
@@ -77,6 +78,15 @@ def _signals_snapshot(*, with_candidate: bool = False):
                 ),
             ),
         ) if with_candidate else (),
+        tutorial_priority=0.48,
+        learning_gaps=(
+            LearningGap(
+                category="squid_advanced",
+                attempts=48,
+                participants=12,
+                accuracy_pct=52,
+            ),
+        ),
     )
 
 
@@ -218,6 +228,7 @@ async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
     }
     assert len(captured["target_snapshot_hash"]) == 64
     assert snapshot_hash == captured["target_snapshot_hash"]
+    assert captured["target_schema_version"] == "1.1"
     assert captured["target_demand_terms"] == [{
         "term": "bridge",
         "weight": 0.9,
@@ -263,6 +274,7 @@ async def test_promotion_candidate_rpc_is_bound_to_ranking_snapshot():
         "target_candidates",
     }
     assert captured["target_policy_version"] == "content-performance-v1"
+    assert captured["target_schema_version"] == "1.1"
     assert (
         captured["target_candidates"][0]["candidate_id"]
         == PROMOTION_CANDIDATE_ID
@@ -271,6 +283,41 @@ async def test_promotion_candidate_rpc_is_bound_to_ranking_snapshot():
         "article",
         "tutorial",
     ]
+
+
+@pytest.mark.asyncio
+async def test_learning_evidence_rpc_is_bound_to_the_same_snapshot_hash():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (
+            request.url.path
+            == "/rest/v1/rpc/record_content_learning_evidence"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": captured["target_snapshot_hash"],
+            "reused": False,
+        })
+
+    await _repo(handler).record_learning_evidence(
+        workspace_id=WORKSPACE_ID,
+        snapshot=_signals_snapshot(),
+        snapshot_hash="c" * 64,
+    )
+
+    assert captured["target_schema_version"] == "1.2"
+    assert captured["target_learning_method"] == "tutorial-priority-v1"
+    assert captured["target_learning"] == {
+        "tutorial_priority": 0.48,
+        "gaps": [{
+            "category": "squid_advanced",
+            "attempts": 48,
+            "participants": 12,
+            "accuracy_pct": 52,
+        }],
+    }
 
 
 @pytest.mark.asyncio

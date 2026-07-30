@@ -17,7 +17,10 @@ from core.automation.models import (
     StyleReference,
     StyleReferencePack,
 )
-from core.automation.content_signals import ContentSignalsSnapshot
+from core.automation.content_signals import (
+    CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION,
+    ContentSignalsSnapshot,
+)
 from core.automation.settings import AUTOMATION_CLIENTS, _supabase_url
 from core.sources.x_client import XClient
 
@@ -308,6 +311,16 @@ class SupabaseAutomationRepository:
             "demand_terms": demand_terms,
             "promotion_policy_version": snapshot.promotion_policy_version,
             "promotion_candidates": promotion_candidates,
+            "tutorial_priority": snapshot.tutorial_priority,
+            "learning_gaps": [
+                {
+                    "category": gap.category,
+                    "attempts": gap.attempts,
+                    "participants": gap.participants,
+                    "accuracy_pct": gap.accuracy_pct,
+                }
+                for gap in snapshot.learning_gaps
+            ],
         }
         snapshot_hash = hashlib.sha256(json.dumps(
             fingerprint,
@@ -319,7 +332,7 @@ class SupabaseAutomationRepository:
             "target_workspace_id": _uuid(workspace_id, "workspace_id"),
             "target_client_id": self._client(snapshot.client_id),
             "target_snapshot_hash": snapshot_hash,
-            "target_schema_version": snapshot.schema_version,
+            "target_schema_version": CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION,
             "target_generated_at": snapshot.generated_at.isoformat(),
             "target_window_start": snapshot.window_start.isoformat(),
             "target_window_end": snapshot.window_end.isoformat(),
@@ -337,6 +350,52 @@ class SupabaseAutomationRepository:
             )
         return snapshot_hash
 
+    async def record_learning_evidence(
+        self,
+        *,
+        workspace_id: str,
+        snapshot: ContentSignalsSnapshot,
+        snapshot_hash: str,
+    ) -> None:
+        if (
+            snapshot.schema_version != "1.2"
+            or not isinstance(snapshot_hash, str)
+            or re.fullmatch(r"[a-f0-9]{64}", snapshot_hash) is None
+        ):
+            raise ValueError("unsupported content learning evidence")
+        learning = {
+            "tutorial_priority": snapshot.tutorial_priority,
+            "gaps": [
+                {
+                    "category": gap.category,
+                    "attempts": gap.attempts,
+                    "participants": gap.participants,
+                    "accuracy_pct": gap.accuracy_pct,
+                }
+                for gap in snapshot.learning_gaps
+            ],
+        }
+        raw = await self._rpc("record_content_learning_evidence", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_client_id": self._client(snapshot.client_id),
+            "target_snapshot_hash": snapshot_hash,
+            "target_schema_version": snapshot.schema_version,
+            "target_generated_at": snapshot.generated_at.isoformat(),
+            "target_window_start": snapshot.window_start.isoformat(),
+            "target_window_end": snapshot.window_end.isoformat(),
+            "target_learning_method": "tutorial-priority-v1",
+            "target_learning": learning,
+        })
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("recorded") is not True
+            or raw.get("snapshot_hash") != snapshot_hash
+        ):
+            raise AutomationRepositoryError(
+                "invalid_learning_evidence_receipt",
+                retryable=False,
+            )
+
     async def record_promotion_candidates(
         self,
         *,
@@ -345,7 +404,7 @@ class SupabaseAutomationRepository:
         snapshot_hash: str,
     ) -> int:
         if (
-            snapshot.schema_version != "1.1"
+            snapshot.schema_version != "1.2"
             or snapshot.promotion_policy_version != "content-performance-v1"
             or not isinstance(snapshot_hash, str)
             or re.fullmatch(r"[a-f0-9]{64}", snapshot_hash) is None
@@ -372,7 +431,7 @@ class SupabaseAutomationRepository:
             "target_workspace_id": _uuid(workspace_id, "workspace_id"),
             "target_client_id": self._client(snapshot.client_id),
             "target_snapshot_hash": snapshot_hash,
-            "target_schema_version": snapshot.schema_version,
+            "target_schema_version": CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION,
             "target_generated_at": snapshot.generated_at.isoformat(),
             "target_window_start": snapshot.window_start.isoformat(),
             "target_window_end": snapshot.window_end.isoformat(),

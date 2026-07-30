@@ -51,8 +51,20 @@ type RailwayNewsCardResponse = {
   requested_template_style?: string;
   source_image_used?: boolean;
   source_visual_path?: unknown;
+  figma_template?: unknown;
   manifest_path: string;
   duration_ms: number;
+};
+
+type FigmaTemplateReference = {
+  registry_schema_version: "1.0";
+  file_key: "hsRSASQjEMxl5NMLH9y5Wm";
+  file_name: "CoinEasy Management";
+  page_name: "Daily content";
+  node_id: string;
+  frame_name: string;
+  status: "approved";
+  version: string;
 };
 
 const ALLOWED_CLIENTS = new Set<ContentCatalogClient>([
@@ -69,6 +81,19 @@ const RAILWAY_GENERATION_BUDGET_MS = 38_000;
 // binary ceiling comfortably below Netlify's 6 MB synchronous response limit.
 export const MAX_NEWS_CARD_BYTES = 3_000_000;
 const NEWS_CARD_PERSISTENCE_RESERVE_MS = 18_000;
+const FIGMA_TEMPLATE_NODES: Partial<Record<ContentCatalogClient, {
+  nodeId: string;
+  frameName: string;
+}>> = {
+  squid: {
+    nodeId: "1479:1954",
+    frameName: "[KEEP] Banner_Squid_Sample",
+  },
+  yellow: {
+    nodeId: "1507:12",
+    frameName: "[KEEP] Banner_Yellow_Sample",
+  },
+};
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
@@ -98,6 +123,46 @@ function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+export function normalizedFigmaTemplate(
+  value: unknown,
+  clientId: ContentCatalogClient,
+  templateStyle: string,
+): FigmaTemplateReference | null {
+  if (value === null || value === undefined) return null;
+  if (
+    templateStyle !== "classic"
+    || !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+  ) return null;
+  const reference = value as Record<string, unknown>;
+  const expected = FIGMA_TEMPLATE_NODES[clientId];
+  if (
+    !expected
+    || Object.keys(reference).sort().join(",")
+      !== [
+        "file_key",
+        "file_name",
+        "frame_name",
+        "node_id",
+        "page_name",
+        "registry_schema_version",
+        "status",
+        "version",
+      ].sort().join(",")
+    || reference.registry_schema_version !== "1.0"
+    || reference.file_key !== "hsRSASQjEMxl5NMLH9y5Wm"
+    || reference.file_name !== "CoinEasy Management"
+    || reference.page_name !== "Daily content"
+    || reference.node_id !== expected.nodeId
+    || reference.frame_name !== expected.frameName
+    || reference.status !== "approved"
+    || typeof reference.version !== "string"
+    || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}\.[1-9][0-9]*$/.test(reference.version)
+  ) return null;
+  return reference as FigmaTemplateReference;
 }
 
 export function newsCardRequestHash(input: {
@@ -183,6 +248,14 @@ async function catalogRetryResponse(
   if (!["remix", "classic", "editorial", "signal"].includes(actualTemplateStyle)) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
+  const figmaTemplate = normalizedFigmaTemplate(
+    render.figma_template,
+    clientId,
+    actualTemplateStyle,
+  );
+  if (render.figma_template != null && !figmaTemplate) {
+    throw new ContentCatalogError("durable_storage_invalid_response");
+  }
   const imageBytes = await downloadCatalogPng(
     storageConfig,
     clientId,
@@ -203,6 +276,7 @@ async function catalogRetryResponse(
     source_visual_file: typeof render.source_visual_file === "string" ? render.source_visual_file : null,
     source_image_detected: Boolean(source.image_url),
     source_image_used: render.source_image_used === true,
+    figma_template: figmaTemplate,
     requested_template_style: requestedTemplateStyle,
     template_style: actualTemplateStyle,
     duration_ms: typeof duration === "number" && Number.isFinite(duration) ? duration : 0,
@@ -469,6 +543,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (needsCleanedSquidVisual(clientId, actualTemplateStyle, result.spec) && !sourceVisualFile) {
       return json({ error: "cleaned_source_unavailable" }, 502);
     }
+    const figmaTemplate = normalizedFigmaTemplate(
+      result.figma_template,
+      clientId,
+      actualTemplateStyle,
+    );
+    if (result.figma_template != null && !figmaTemplate) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
 
     const imageResponse = await fetch(
       `${railwayUrl}/files/${filePath.split("/").map(encodeURIComponent).join("/")}`,
@@ -543,6 +625,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
             template_style: actualTemplateStyle,
             source_image_used: result.source_image_used === true,
             source_visual_file: sourceVisualFile,
+            figma_template: figmaTemplate,
           },
         },
         channelCopy,
@@ -553,6 +636,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           storage_backend: "supabase",
           mock_mode: mockMode,
           ...referenceAudit,
+          figma_template_version: figmaTemplate?.version || null,
         },
         asset: storedAsset,
         promptVersion: "news-card@2",
@@ -569,6 +653,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         source_image_used: result.source_image_used === true,
         requested_template_style: result.requested_template_style || templateStyle,
         template_style: actualTemplateStyle,
+        figma_template: figmaTemplate,
         duration_ms: result.duration_ms,
         mock_mode: mockMode,
         channel_copy: channelCopy,

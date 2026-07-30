@@ -39,6 +39,7 @@ _MAX_CLAIMS_PER_RUN = 8
 class AutomationRepository(Protocol):
     async def get_state(self, **kwargs) -> AutomationState: ...
     async def record_ranking_evidence(self, **kwargs) -> str: ...
+    async def record_learning_evidence(self, **kwargs) -> None: ...
     async def record_promotion_candidates(self, **kwargs) -> int: ...
     async def record_sources(self, **kwargs) -> AutomationState: ...
     async def get_or_create_style_reference_pack(self, **kwargs): ...
@@ -217,7 +218,7 @@ class OfficialXDailyRunner:
             )
             return
 
-        demand_terms = await self._demand_terms(
+        demand_terms, tutorial_priority = await self._demand_terms(
             client_id=client_id,
             now=now,
             persist=not dry_run,
@@ -237,6 +238,7 @@ class OfficialXDailyRunner:
             candidate_posts,
             skip_patterns=config.routing.skip_patterns,
             demand_terms=demand_terms,
+            tutorial_priority=tutorial_priority,
         )
 
         if selected is None:
@@ -301,12 +303,12 @@ class OfficialXDailyRunner:
         now: datetime,
         persist: bool,
         summary: DailyRunSummary,
-    ) -> tuple[tuple[str, float], ...]:
+    ) -> tuple[tuple[tuple[str, float], ...], float]:
         if self.content_signals_client is None:
-            return ()
+            return (), 0.0
         if not persist:
             summary.add(client_id, "signals_skipped_dry_run")
-            return ()
+            return (), 0.0
         try:
             snapshot = await self.content_signals_client.fetch(
                 client_id=client_id,
@@ -314,10 +316,10 @@ class OfficialXDailyRunner:
             )
         except ContentSignalsError:
             summary.add(client_id, "signals_unavailable")
-            return ()
+            return (), 0.0
         except Exception:
             summary.add(client_id, "signals_unavailable")
-            return ()
+            return (), 0.0
         try:
             snapshot_hash = await self.repository.record_ranking_evidence(
                 workspace_id=self.settings.workspace_id,
@@ -330,7 +332,20 @@ class OfficialXDailyRunner:
                 "signals_unavailable",
                 "ranking_evidence_not_recorded",
             )
-            return ()
+            return (), 0.0
+        try:
+            await self.repository.record_learning_evidence(
+                workspace_id=self.settings.workspace_id,
+                snapshot=snapshot,
+                snapshot_hash=snapshot_hash,
+            )
+        except Exception:
+            summary.add(
+                client_id,
+                "signals_unavailable",
+                "learning_evidence_not_recorded",
+            )
+            return (), 0.0
         if snapshot.promotion_candidates:
             try:
                 recommendation_count = (
@@ -359,8 +374,15 @@ class OfficialXDailyRunner:
             for item in snapshot.demand_terms
             if item.weight > 0
         )
-        summary.add(client_id, "signals_used", f"term_count={len(terms)}")
-        return terms
+        summary.add(
+            client_id,
+            "signals_used",
+            (
+                f"term_count={len(terms)},"
+                f"tutorial_priority={snapshot.tutorial_priority:.3f}"
+            ),
+        )
+        return terms, snapshot.tutorial_priority
 
     async def _fetch_posts(
         self,

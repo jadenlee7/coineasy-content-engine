@@ -29,7 +29,7 @@ def response_body(**overrides):
     start = NOW - timedelta(days=7)
     body = {
         "ok": True,
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "generated_at": "2026-07-27T06:00:00Z",
         "client_id": "squid",
         "window": {
@@ -57,11 +57,18 @@ def response_body(**overrides):
                 "stale_after_hours": 24,
                 "basis": "metrics_fetch",
             },
+            "learning": {
+                "as_of": "2026-07-27T05:45:00Z",
+                "stale": False,
+                "stale_after_hours": 72,
+                "basis": "quiz_answer",
+            },
         },
         "availability": {
             "community": "ok",
             "telegram_content": "ok",
             "local_x": "ok",
+            "learning": "ok",
         },
         "community": {
             "method": {
@@ -179,6 +186,31 @@ def response_body(**overrides):
             "factual_evidence": False,
             "auto_publish": False,
         },
+        "learning": {
+            "method": "aggregate-quiz-learning-gap-v1",
+            "suppressed": False,
+            "sample_size": {
+                "meets_threshold": True,
+                "attempts": 120,
+                "participants": 18,
+                "minimum_attempts": 20,
+                "minimum_participants": 5,
+            },
+            "overall_accuracy_pct": 68,
+            "tutorial_priority": 0.48,
+            "gaps": [{
+                "category": "squid_advanced",
+                "attempts": 48,
+                "participants": 12,
+                "accuracy_pct": 52,
+            }],
+        },
+        "learning_meta": {
+            "method": "tutorial-priority-v1",
+            "selection_only": True,
+            "factual_evidence": False,
+            "auto_publish": False,
+        },
         "privacy": {
             "raw_messages_included": False,
             "user_identifiers_included": False,
@@ -195,7 +227,7 @@ async def test_client_posts_exact_contract_and_returns_bounded_signals():
         assert request.headers["authorization"] == f"Bearer {TOKEN}"
         assert request.headers["accept"] == "application/json"
         assert json.loads(request.content) == {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "client_id": "squid",
             "start": "2026-07-20T06:00:00Z",
             "end": "2026-07-27T06:00:00Z",
@@ -223,6 +255,9 @@ async def test_client_posts_exact_contract_and_returns_bounded_signals():
         "article",
         "tutorial",
     )
+    assert snapshot.tutorial_priority == 0.48
+    assert snapshot.learning_gaps[0].category == "squid_advanced"
+    assert snapshot.learning_gaps[0].accuracy_pct == 52
     assert not hasattr(snapshot, "community")
     assert not hasattr(snapshot, "telegram_content")
     assert not hasattr(snapshot, "local_x")
@@ -376,6 +411,22 @@ async def test_telegram_candidate_requires_the_client_local_public_channel():
         (
             lambda body: body["promotion_candidates"][0].update(
                 community_match_count=4,
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["learning"].update(tutorial_priority=0.99),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["learning"]["gaps"][0].update(
+                participants=4,
+            ),
+            "content_signals_invalid_response",
+        ),
+        (
+            lambda body: body["learning"]["gaps"][0].update(
+                question="private quiz text",
             ),
             "content_signals_invalid_response",
         ),

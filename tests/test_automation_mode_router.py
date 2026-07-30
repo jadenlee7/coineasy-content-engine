@@ -99,6 +99,21 @@ def test_demand_terms_cannot_admit_low_signal_or_skipped_posts():
     ) is None
 
 
+def test_quiz_learning_priority_reorders_only_eligible_official_how_to_posts():
+    tutorial = post("70", "Our new developer guide is available.")
+    product = post("71", "Our new developer update is available.")
+
+    assert select_official_candidate([tutorial, product])["id"] == "71"
+    assert select_official_candidate(
+        [tutorial, product],
+        tutorial_priority=1.0,
+    )["id"] == "70"
+    assert select_official_candidate(
+        [post("72", "Our guide is available.", is_reply=True)],
+        tutorial_priority=1.0,
+    ) is None
+
+
 def test_equal_scores_use_numeric_post_id_not_lexicographic_order():
     older_digits = post(
         "9",
