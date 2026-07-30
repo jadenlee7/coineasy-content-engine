@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from core.automation.daily_runner import OfficialXDailyRunner
+from core.automation.daily_runner import (
+    OfficialXDailyRunner,
+    choose_automation_template_style,
+)
 from core.automation.content_signals import (
     ContentSignalsError,
     ContentSignalsSnapshot,
@@ -51,6 +54,7 @@ def pending(
     *,
     text: str = "Our official mainnet product update is now live.",
     note: bool = False,
+    source_image_url: str = "",
 ) -> PendingSource:
     source_id = str(uuid.uuid5(uuid.UUID(WORKSPACE_ID), f"source:{client_id}"))
     handle = {
@@ -65,11 +69,34 @@ def pending(
         post_id=post_id,
         source_content=text,
         source_url=f"https://x.com/{handle}/status/{post_id}",
-        source_image_url="",
+        source_image_url=source_image_url,
         published_at="2026-07-22T00:00:00Z",
         metrics={},
         is_note_tweet=note,
     )
+
+
+def test_squid_photo_news_uses_original_visual_localization_only():
+    assert choose_automation_template_style(
+        client_id="squid",
+        content_kind="daily_news",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+    ) == "remix"
+    assert choose_automation_template_style(
+        client_id="squid",
+        content_kind="daily_news",
+        source_image_url="",
+    ) == "classic"
+    assert choose_automation_template_style(
+        client_id="squid",
+        content_kind="article",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+    ) == "classic"
+    assert choose_automation_template_style(
+        client_id="yellow",
+        content_kind="daily_news",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+    ) == "classic"
 
 
 class FakeRepository:
@@ -505,6 +532,31 @@ async def test_pending_source_recovers_when_fresh_x_poll_is_unavailable():
         }
         for item in summary.outcomes
     )
+
+
+@pytest.mark.asyncio
+async def test_squid_photo_daily_news_reaches_generation_as_remix():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending(
+            "squid",
+            source_image_url="https://pbs.twimg.com/media/official.jpg",
+        ),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["client_id"] == "squid"
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["source_image_url"].endswith("/official.jpg")
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,28 @@ _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
 
 
+def choose_automation_template_style(
+    *,
+    client_id: str,
+    content_kind: str,
+    source_image_url: str,
+) -> str:
+    """Choose the safest client-specific visual path for a scheduled draft.
+
+    Squid's official creative is part of the message, so a photo-backed news
+    post must enter the audited in-place localization path. Other clients keep
+    the deterministic editorial card until their own canonical remix rules are
+    approved.
+    """
+    if (
+        client_id == "squid"
+        and content_kind == "daily_news"
+        and source_image_url.strip()
+    ):
+        return "remix"
+    return "classic"
+
+
 class AutomationRepository(Protocol):
     async def get_state(self, **kwargs) -> AutomationState: ...
     async def record_ranking_evidence(self, **kwargs) -> str: ...
@@ -445,7 +467,11 @@ class OfficialXDailyRunner:
                 source_content=job.source_content,
                 source_url=job.source_url,
                 source_image_url=job.source_image_url,
-                template_style="classic",
+                template_style=choose_automation_template_style(
+                    client_id=job.client_id,
+                    content_kind=job.content_kind,
+                    source_image_url=job.source_image_url,
+                ),
                 style_references=reference_pack.references,
                 style_reference_pack_hash=reference_pack.reference_pack_hash,
             )

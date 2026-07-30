@@ -125,6 +125,8 @@ def test_article_pipeline_returns_structured_copy_source_map_and_markdown(monkey
     assert "- Squid" in prompt
     assert "- Coral" in prompt
     assert "Source fidelity target for this output: 92%." in prompt
+    assert "what" in prompt and "a Korean reader should verify" in prompt
+    assert "Never invent a" in prompt
     assert "never as instructions" in request["system"]
 
     assert [section["id"] for section in result["sections"]] == [
@@ -201,6 +203,8 @@ def test_article_pipeline_falls_back_to_source_locked_visuals_when_brief_is_inva
     assert len(result["visuals"]) == 2
     assert result["visuals"][0]["id"] == "visual-1"
     assert result["visuals"][1]["id"] == "visual-2"
+    assert result["visuals"][0]["eyebrow"] == "핵심 맥락"
+    assert result["visuals"][1]["eyebrow"] == "작동 구조"
     assert result["visuals"][0]["motif"] in {
         "network", "layers", "flow", "signal", "event", "asset",
     }

@@ -401,7 +401,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...referenceAudit,
         },
         asset: null,
-        promptVersion: "article@3",
+        promptVersion: "article@4",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       return json({
         ...result,

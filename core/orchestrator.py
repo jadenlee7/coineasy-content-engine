@@ -535,9 +535,17 @@ async def generate_news_card(
                     f"{source_image.width}x{source_image.height}"
                 )
             except SourceImageError as exc:
+                if client_id == "squid":
+                    raise SourceImageError(
+                        "Squid original-visual localization requires the official source image"
+                    ) from exc
                 print(f"[{client_id}] ⚠ Source visual unavailable, falling back to classic: {exc}")
                 actual_template_style = "classic"
         else:
+            if client_id == "squid":
+                raise SourceImageError(
+                    "Squid original-visual localization requires a source image"
+                )
             print(f"[{client_id}] ⚠ Remix requested without an image, falling back to classic")
             actual_template_style = "classic"
 

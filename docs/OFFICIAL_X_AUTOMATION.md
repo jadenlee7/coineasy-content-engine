@@ -47,10 +47,19 @@ publication receives a qualified performance recommendation and at least 300
 characters of pinned official source evidence are available. A human must
 review that source and explicitly start every carousel generation.
 
-Daily News automation uses the deterministic `classic` card. The source image
-is preserved in the source record but is not automatically remixed. This keeps
-scheduled drafts independent of the visual subtitle-cleanup path and leaves
-brand-sensitive visual localization to a reviewer.
+Daily News automation uses a client-specific visual policy:
+
+- Yellow, OriginTrail, and Babylon use the deterministic `classic` card. Their
+  source image remains preserved in the source record until each client has an
+  approved canonical remix treatment.
+- A Squid Daily News source with an official X photo uses `remix` automatically.
+  The official creative remains authoritative and only audited meaningful copy
+  may be localized in place. No new panel, footer, CTA, or duplicate logo is
+  added.
+- A Squid source without a photo uses `classic`. Once a photo-backed Squid job
+  requests `remix`, an unavailable or unsafe source image fails closed for
+  review/retry instead of silently replacing the official campaign creative
+  with a generic card.
 
 ## Performance recommendation handoff
 

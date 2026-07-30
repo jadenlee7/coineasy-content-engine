@@ -56,7 +56,9 @@ test("builds a layered 1200 by 630 Figma-editable article banner", () => {
   assert.match(svg, /#E6FA36/);
   assert.match(svg, /Bagoss Condensed/);
   assert.match(svg, /id="Hero-Motif-flow"/);
-  assert.match(svg, /ARTICLE \/ INSIGHT/);
+  assert.match(svg, /SQUID \/ PRODUCT NOTE/);
+  assert.match(svg, /id="Brand-Atmosphere-Squid"/);
+  assert.match(svg, /ROUTE IN MOTION/);
   assert.doesNotMatch(svg, /foreignObject/);
 });
 
@@ -98,7 +100,8 @@ test("derives two source-locked inline visuals and renders an editable 16:9 figu
   assert.match(svg, /id="Visual-Point-1-Line-2"/);
   assert.match(svg, /font-size="11" font-weight="900" letter-spacing="1.2">SMART MANUFACTURING/);
   assert.match(svg, /id="Inline-visual-2-Motif-layers"/);
-  assert.match(svg, /SOURCE-LOCKED EDITORIAL VISUAL/);
+  assert.match(svg, /공식 원문 기반 에디토리얼 비주얼/);
+  assert.match(svg, /id="Brand-Atmosphere-OriginTrail"/);
   assert.doesNotMatch(svg, /foreignObject/);
 });
 

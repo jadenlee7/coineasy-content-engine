@@ -59,7 +59,7 @@ function fallbackVisuals(
   takeaways: string[],
 ): ArticleVisualBrief[] {
   const targetIndexes = [0, Math.min(2, sections.length - 1)];
-  const labels = ["WHY IT MATTERS", "HOW IT CONNECTS"];
+  const labels = ["핵심 맥락", "작동 구조"];
   const roles: ArticleVisualRole[] = ["overview", "explainer"];
   return targetIndexes.map((sectionIndex, index) => {
     const section = sections[sectionIndex];

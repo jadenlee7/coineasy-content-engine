@@ -30,6 +30,8 @@ type ArticleBannerBrand = {
   surface: string;
   displayFont: string;
   bodyFont: string;
+  editorialLabel: string;
+  signalLabel: string;
   logoIsSymbol?: boolean;
 };
 
@@ -42,6 +44,8 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
     surface: "#202126",
     displayFont: "Pretendard",
     bodyFont: "Pretendard",
+    editorialLabel: "YELLOW / MARKET BRIEF",
+    signalLabel: "MARKET STRUCTURE",
   },
   origintrail: {
     name: "OriginTrail Korea",
@@ -51,6 +55,8 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
     surface: "#102957",
     displayFont: "Gmarket Sans",
     bodyFont: "Pretendard",
+    editorialLabel: "ORIGINTRAIL / TRUST BRIEF",
+    signalLabel: "TRUST MAP",
   },
   squid: {
     name: "Squid",
@@ -60,6 +66,8 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
     surface: "#2A1744",
     displayFont: "Bagoss Condensed",
     bodyFont: "Pretendard",
+    editorialLabel: "SQUID / PRODUCT NOTE",
+    signalLabel: "ROUTE IN MOTION",
   },
   babylon: {
     name: "Babylon Korea",
@@ -69,6 +77,8 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
     surface: "#124C60",
     displayFont: "Inter",
     bodyFont: "Pretendard",
+    editorialLabel: "BABYLON / BITCOIN BRIEF",
+    signalLabel: "BITCOIN MECHANISM",
     logoIsSymbol: true,
   },
 };
@@ -214,6 +224,45 @@ function sharedDefinitions(brand: ArticleBannerBrand, width: number, height: num
 </defs>`;
 }
 
+function brandAtmosphereMarkup(
+  clientId: EditableClientId,
+  brand: ArticleBannerBrand,
+  height: number,
+): string {
+  if (clientId === "yellow") {
+    return `<g id="Brand-Atmosphere-Yellow" opacity=".38">
+  <path d="M842 0V${height}M940 0V${height}M1038 0V${height}" stroke="${brand.primary}" stroke-opacity=".08"/>
+  <path d="M804 116H1162M804 214H1162M804 312H1162" stroke="#FFFFFF" stroke-opacity=".045"/>
+  <path d="M1045 22L1178 22L1126 74L993 74Z" fill="${brand.primary}" fill-opacity=".18"/>
+  <circle cx="1090" cy="116" r="5" fill="${brand.primary}"/>
+</g>`;
+  }
+  if (clientId === "origintrail") {
+    return `<g id="Brand-Atmosphere-OriginTrail" opacity=".34">
+  <path d="M825 48L914 19L1010 83L1117 31M914 19L957 148L1117 31M1010 83L1151 151" stroke="${brand.primary}" stroke-opacity=".28" stroke-width="2"/>
+  <circle cx="825" cy="48" r="8" fill="${brand.surface}" stroke="${brand.accent}" stroke-width="2"/>
+  <circle cx="914" cy="19" r="11" fill="${brand.primary}"/>
+  <circle cx="1010" cy="83" r="7" fill="${brand.accent}"/>
+  <circle cx="1117" cy="31" r="9" fill="${brand.surface}" stroke="${brand.primary}" stroke-width="2"/>
+  <circle cx="1151" cy="151" r="5" fill="${brand.accent}"/>
+</g>`;
+  }
+  if (clientId === "squid") {
+    return `<g id="Brand-Atmosphere-Squid" opacity=".4">
+  <path d="M812 34C895 5 934 96 1017 59C1089 27 1111 75 1192 38" stroke="${brand.primary}" stroke-opacity=".25" stroke-width="8" stroke-linecap="round"/>
+  <path d="M862 99C918 60 971 145 1032 105C1087 69 1128 132 1184 101" stroke="${brand.accent}" stroke-opacity=".28" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="821" cy="36" r="11" fill="${brand.primary}" fill-opacity=".5"/>
+  <circle cx="1181" cy="102" r="8" fill="${brand.accent}" fill-opacity=".72"/>
+</g>`;
+  }
+  return `<g id="Brand-Atmosphere-Babylon" opacity=".36">
+  <path d="M874 18L1001 18L1061 70L934 70Z" fill="${brand.primary}" fill-opacity=".2" stroke="${brand.primary}" stroke-opacity=".35"/>
+  <path d="M934 70L1061 70L1121 122L994 122Z" fill="${brand.accent}" fill-opacity=".12" stroke="${brand.accent}" stroke-opacity=".3"/>
+  <path d="M994 122L1121 122L1181 174L1054 174Z" fill="${brand.surface}" stroke="#FFFFFF" stroke-opacity=".15"/>
+  <path d="M1001 18V64M1061 70V116M1121 122V168" stroke="#FFFFFF" stroke-opacity=".14" stroke-dasharray="5 7"/>
+</g>`;
+}
+
 export function buildArticleBannerSvg(
   clientId: EditableClientId,
   input: ArticleBannerInput,
@@ -237,6 +286,7 @@ export function buildArticleBannerSvg(
     <rect id="Background" width="1200" height="630" fill="${brand.background}"/>
     <rect id="Grid" width="1200" height="630" fill="url(#Editorial-Grid)"/>
     <rect id="Glow" width="1200" height="630" fill="url(#Background-Glow)"/>
+    ${brandAtmosphereMarkup(clientId, brand, 630)}
     <path id="Accent-Rail" d="M0 0H14V630H0Z" fill="${brand.primary}"/>
     <path id="Top-Accent" d="M14 0H340L294 14H14V0Z" fill="${brand.primary}"/>
     <circle id="Ambient-Ring" cx="1116" cy="42" r="188" stroke="${brand.primary}" stroke-opacity=".11" stroke-width="2"/>
@@ -244,13 +294,13 @@ export function buildArticleBannerSvg(
   <g id="Header">
     ${logoMarkup(brand, logoDataUrl)}
     <g id="Editorial-Label">
-      <rect x="924" y="48" width="204" height="44" rx="22" fill="${brand.primary}"/>
-      <text x="1026" y="77" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="900" letter-spacing="2.4">ARTICLE / INSIGHT</text>
+      <rect x="866" y="48" width="262" height="44" rx="22" fill="${brand.primary}"/>
+      <text x="997" y="77" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="12.5" font-weight="900" letter-spacing="1.45">${escapeXml(brand.editorialLabel)}</text>
     </g>
     <line x1="72" y1="125" x2="1128" y2="125" stroke="#FFFFFF" stroke-opacity=".16"/>
   </g>
   <g id="Article-Copy">
-    <text id="Story-Index" x="72" y="179" fill="${brand.primary}" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="850" letter-spacing="2.6">STORY 01</text>
+    <text id="Story-Index" x="72" y="179" fill="${brand.primary}" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="850" letter-spacing="2.2">KOREA EDITION / 01</text>
     ${textLayers(
       "Article-Title",
       titleLines,
@@ -271,7 +321,7 @@ export function buildArticleBannerSvg(
   <g id="Visual-Panel">
     <rect x="756" y="150" width="372" height="334" rx="34" fill="${brand.surface}" stroke="#FFFFFF" stroke-opacity=".14" stroke-width="2"/>
     <rect x="756" y="150" width="372" height="334" rx="34" fill="url(#Panel-Sheen)"/>
-    <text x="790" y="190" fill="#FFFFFF" fill-opacity=".48" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="800" letter-spacing="2.2">VISUAL SIGNAL</text>
+    <text x="790" y="190" fill="#FFFFFF" fill-opacity=".48" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="800" letter-spacing="1.8">${escapeXml(brand.signalLabel)}</text>
     <circle cx="1092" cy="185" r="7" fill="${brand.primary}"/>
     ${motifMarkup(motif, brand, "Hero", 734, 215)}
   </g>
@@ -319,6 +369,7 @@ export function buildArticleInlineVisualSvg(
     <rect id="Background" width="1200" height="675" fill="${brand.background}"/>
     <rect id="Grid" width="1200" height="675" fill="url(#Editorial-Grid)"/>
     <rect id="Glow" width="1200" height="675" fill="url(#Background-Glow)"/>
+    ${brandAtmosphereMarkup(clientId, brand, 675)}
     <path id="Accent-Rail" d="M0 0H14V675H0Z" fill="${brand.primary}"/>
     <path id="Corner-Accent" d="M1064 675H1200V539L1064 675Z" fill="${brand.primary}" fill-opacity=".9"/>
   </g>
@@ -356,7 +407,7 @@ export function buildArticleInlineVisualSvg(
     ${pointMarkup}
   </g>
   <g id="Footer">
-    <text x="72" y="631" fill="#FFFFFF" fill-opacity=".46" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">SOURCE-LOCKED EDITORIAL VISUAL · ${escapeXml(sourceLabel(input.sourceUrl))}</text>
+    <text x="72" y="631" fill="#FFFFFF" fill-opacity=".46" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="700" letter-spacing=".7">공식 원문 기반 에디토리얼 비주얼 · ${escapeXml(sourceLabel(input.sourceUrl))}</text>
     <text x="1008" y="631" text-anchor="end" fill="#FFFFFF" fill-opacity=".46" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="700">${escapeXml(date)}</text>
   </g>
 </svg>`;

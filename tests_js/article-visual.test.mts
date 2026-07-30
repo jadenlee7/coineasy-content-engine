@@ -110,7 +110,8 @@ test("renders stored article hero and inline visuals without a new model call", 
     assert.equal(hero.status, 200);
     assert.equal(hero.headers.get("content-type"), "image/svg+xml; charset=utf-8");
     const heroSvg = await hero.text();
-    assert.match(heroSvg, /ARTICLE \/ INSIGHT/);
+    assert.match(heroSvg, /ORIGINTRAIL \/ TRUST BRIEF/);
+    assert.match(heroSvg, /id="Brand-Atmosphere-OriginTrail"/);
     assert.match(heroSvg, /결제 레일의 역할/);
     assert.doesNotMatch(heroSvg, /AI 에이전트에 필요한 검증 가능한 메모리/);
 
@@ -121,7 +122,7 @@ test("renders stored article hero and inline visuals without a new model call", 
     assert.equal(inline.status, 200);
     assert.match(inline.headers.get("content-disposition") || "", /origintrail-article-visual-2-1200x675\.svg/);
     const svg = await inline.text();
-    assert.match(svg, /SOURCE-LOCKED EDITORIAL VISUAL/);
+    assert.match(svg, /공식 원문 기반 에디토리얼 비주얼/);
     assert.match(svg, /세 가지 메모리 계층/);
   });
 });
