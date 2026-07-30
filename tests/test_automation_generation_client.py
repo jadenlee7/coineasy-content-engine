@@ -59,6 +59,39 @@ async def test_daily_news_uses_review_generation_route_and_classic_by_default():
 
 
 @pytest.mark.asyncio
+async def test_squid_remix_forwards_only_the_official_x_image():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    await client.generate(
+        client_id="squid",
+        content_kind="daily_news",
+        request_id=REQUEST_ID,
+        source_content="Squid official product update",
+        source_url="https://x.com/SquidRouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg",
+        template_style="remix",
+    )
+
+    assert captured["template_style"] == "remix"
+    assert captured["source_image_url"] == "https://pbs.twimg.com/media/source.jpg"
+
+
+@pytest.mark.asyncio
 async def test_complete_note_can_use_article_route_without_assets():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/article/yellow"

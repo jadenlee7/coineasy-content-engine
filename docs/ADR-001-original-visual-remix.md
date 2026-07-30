@@ -21,7 +21,11 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 5. The same vision response reports whether the current client's official logo or wordmark is already visible in the source image.
 6. The renderer keeps the full original image with `object-fit: contain` and adds a separate Korean localization panel below it, with no agency mark.
 7. If the official logo is visible in the source image, the renderer preserves it and omits an extra logo. Otherwise it places the official logo once in the localization panel's safe area.
-8. If no valid image is available, the request automatically renders with the `classic` template and reports the actual style in the response.
+8. If no valid image is available, non-Squid requests automatically render with
+   the `classic` template and report the actual style in the response. Squid
+   requests fail closed once `remix` is selected, because replacing an official
+   campaign creative with a generic card would violate its brand-localization
+   contract.
 
 ## Options Considered
 
@@ -64,7 +68,9 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 
 - Original artwork remains visually authoritative while a clearly separated Korean editorial layer provides the localization treatment without an agency mark.
 - Official-logo presence is checked on every vision-backed remix to prevent redundant logo placement.
-- X syndication metadata is an external dependency that may change; the classic fallback is therefore mandatory.
+- X syndication metadata is an external dependency that may change. Non-Squid
+  clients retain the classic fallback; Squid photo-backed remixes surface a
+  retry/review failure rather than silently changing the approved composition.
 - Only the first public photo is used in v1. Multi-image selection, video posters, manual uploads, and in-place translation can be added later.
 - Article and blog URLs still require pasted text and an approved image ingestion path.
 

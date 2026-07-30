@@ -66,10 +66,17 @@ Create one useful Korean article from the pasted source. Return exactly this JSO
 
 - title, lead, every section, takeaways, Telegram body, and X copy must be natural Korean.
 - Produce 3-5 sections and 3-5 key takeaways. Do not pad thin source material with invented facts.
-- Each section must add a distinct source-supported point. Avoid repeating the lead.
+- Use a professional editorial progression: what changed, how it works or connects, and what
+  a Korean reader should verify or can practically understand from the source. Each section
+  must add a distinct source-supported point and avoid repeating the lead.
+- The Korean-reader section is an explanation layer, not a localization claim. When the source
+  does not establish Korea availability or a direct benefit, use a heading such as
+  "확인할 포인트" and separate what is stated from what remains unstated. Never invent a
+  Korea launch, user benefit, workflow, eligibility, or availability.
 - Produce exactly 2 editorial visuals. Each visual must use only facts already stated in the
   article, contain 2-4 short points, and choose one allowlisted motif. Visual 1 should explain
-  context or significance; visual 2 should explain structure, flow, comparison, or implications.
+  the source-supported core context; visual 2 should explain structure, flow, comparison, or
+  practical verification points.
 - Visual copy is rendered directly into an image. Keep the headline under 55 Korean characters,
   each point under 70 characters, and the caption under 140 characters. Do not put URLs,
   hashtags, speculative imagery, price charts, or unsourced numbers in visuals.
@@ -334,7 +341,7 @@ def _fallback_visuals(
     key_takeaways: list[str],
 ) -> list[dict[str, object]]:
     target_indexes = (0, min(2, len(sections) - 1))
-    labels = ("WHY IT MATTERS", "HOW IT CONNECTS")
+    labels = ("핵심 맥락", "작동 구조")
     roles = ("overview", "explainer")
     visuals: list[dict[str, object]] = []
     for visual_index, section_index in enumerate(target_indexes, start=1):

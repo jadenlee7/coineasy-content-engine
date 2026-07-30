@@ -11,7 +11,7 @@ from core.orchestrator import (
 )
 from core.client_config import get_client_config
 from core.renderers.playwright_renderer import _build_font_head
-from core.sources.source_image import PreparedSourceImage
+from core.sources.source_image import PreparedSourceImage, SourceImageError
 from core.sources.source_text_cleanup import SourceTextCleanupError
 
 
@@ -756,6 +756,19 @@ async def test_remix_without_visual_falls_back_to_classic(monkeypatch, tmp_path)
     assert result.template_style == "classic"
     assert result.requested_template_style == "remix"
     assert result.source_image_used is False
+
+
+@pytest.mark.asyncio
+async def test_squid_remix_without_official_visual_fails_closed(tmp_path):
+    with pytest.raises(SourceImageError, match="requires a source image"):
+        await generate_news_card(
+            client_id="squid",
+            source_content="A long enough source for a fail-closed smoke test.",
+            output_dir=tmp_path,
+            mock_mode=True,
+            mock_response=MOCK_SPEC,
+            template_style="remix",
+        )
 
 
 @pytest.mark.asyncio
