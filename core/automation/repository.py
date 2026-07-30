@@ -29,6 +29,7 @@ _X_STATUS_RE = re.compile(
     r"^https://x\.com/[A-Za-z0-9_]{1,15}/status/([0-9]{1,19})$"
 )
 _SAFE_ERROR_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _JOB_STATUSES = frozenset({
     "queued",
     "running",
@@ -69,6 +70,21 @@ def _cursor(value: object) -> str | None:
     if not isinstance(value, str) or not value.isdigit() or len(value) > 19:
         raise AutomationRepositoryError("invalid_feed_cursor", retryable=False)
     return value
+
+
+def _date(value: object, name: str) -> date:
+    if not isinstance(value, str):
+        raise AutomationRepositoryError(f"invalid_{name}", retryable=False)
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise AutomationRepositoryError(
+            f"invalid_{name}",
+            retryable=False,
+        ) from exc
+    if parsed.isoformat() != value:
+        raise AutomationRepositoryError(f"invalid_{name}", retryable=False)
+    return parsed
 
 
 def _pending_source(value: object) -> PendingSource:
@@ -588,6 +604,7 @@ class SupabaseAutomationRepository:
         return ClaimedJob(
             job_id=_uuid(raw.get("job_id") or raw.get("id"), "job_id"),
             client_id=self._client(client_id),
+            kst_date=_date(job_input.get("kst_date"), "kst_date"),
             content_kind=content_kind,
             request_id=_uuid(job_input.get("request_id"), "request_id"),
             primary_source_item_id=_uuid(
@@ -608,6 +625,59 @@ class SupabaseAutomationRepository:
             locked_by=worker_id,
         )
 
+    async def bind_execution_plane(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        requested_plane: str,
+    ) -> str:
+        if requested_plane not in {"studio_sync", "openai_batch"}:
+            raise ValueError("unsupported execution plane")
+        normalized_job_id = _uuid(job_id, "job_id")
+        try:
+            raw = await self._rpc("bind_review_draft_execution_plane", {
+                "target_job_id": normalized_job_id,
+                "target_worker_id": self._worker(worker_id),
+                "target_requested_plane": requested_plane,
+            })
+        except AutomationRepositoryError as exc:
+            if exc.code == "automation_database_invalid_response":
+                raise AutomationRepositoryError(
+                    "invalid_execution_plane_response",
+                    retryable=True,
+                ) from exc
+            raise
+        try:
+            returned_plane = (
+                raw.get("execution_plane")
+                if isinstance(raw, Mapping)
+                else None
+            )
+            reused = (
+                raw.get("reused")
+                if isinstance(raw, Mapping)
+                else None
+            )
+            valid = (
+                isinstance(raw, Mapping)
+                and _uuid(raw.get("job_id"), "job_id") == normalized_job_id
+                and returned_plane in {"studio_sync", "openai_batch"}
+                and isinstance(reused, bool)
+                and (reused or returned_plane == requested_plane)
+            )
+        except AutomationRepositoryError as exc:
+            raise AutomationRepositoryError(
+                "invalid_execution_plane_response",
+                retryable=True,
+            ) from exc
+        if not valid:
+            raise AutomationRepositoryError(
+                "invalid_execution_plane_response",
+                retryable=True,
+            )
+        return returned_plane
+
     async def complete_job(
         self,
         *,
@@ -622,6 +692,39 @@ class SupabaseAutomationRepository:
             "target_content_item_id": _uuid(content_item_id, "content_item_id"),
             "target_content_version_id": _uuid(content_version_id, "content_version_id"),
         })
+
+    async def complete_batch_handoff(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        batch_job_id: str,
+        input_sha256: str,
+    ) -> None:
+        if not isinstance(input_sha256, str) or not _SHA256_RE.fullmatch(
+            input_sha256
+        ):
+            raise ValueError("input_sha256 must be a SHA-256 hex digest")
+        normalized_job_id = _uuid(job_id, "job_id")
+        normalized_batch_job_id = _uuid(batch_job_id, "batch_job_id")
+        raw = await self._rpc("complete_review_draft_batch_handoff", {
+            "target_job_id": normalized_job_id,
+            "target_worker_id": self._worker(worker_id),
+            "target_batch_job_id": normalized_batch_job_id,
+            "target_input_sha256": input_sha256,
+        })
+        if (
+            not isinstance(raw, Mapping)
+            or _uuid(raw.get("job_id"), "job_id") != normalized_job_id
+            or raw.get("status") != "succeeded"
+            or _uuid(raw.get("batch_job_id"), "batch_job_id")
+            != normalized_batch_job_id
+            or not isinstance(raw.get("reused"), bool)
+        ):
+            raise AutomationRepositoryError(
+                "invalid_batch_handoff_response",
+                retryable=False,
+            )
 
     async def fail_job(
         self,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,10 @@ from core.automation.models import (
 )
 from core.automation.repository import AutomationRepositoryError
 from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
+from core.batch.bridge import BatchQueueBridge
+from core.batch.policy import BatchPolicy
+from core.batch.repository import BatchRepositoryError
+from core.batch.settings import BatchSettings
 from core.sources.x_client import XTransientError
 
 
@@ -110,8 +115,11 @@ class FakeRepository:
         self.style_packs = []
         self.claims = []
         self.completed = []
+        self.batch_handoffs = []
+        self.execution_planes = {}
         self.failed = []
         self.complete_error = False
+        self.batch_handoff_error = None
         self.ranking_evidence_error = None
         self.learning_evidence_error = None
         self.promotion_candidates_error = None
@@ -177,6 +185,7 @@ class FakeRepository:
         self.claims.append(ClaimedJob(
             job_id=job_id,
             client_id=kwargs["client_id"],
+            kst_date=kwargs["kst_date"],
             content_kind=kwargs["content_kind"],
             request_id=kwargs["request_id"],
             primary_source_item_id=kwargs["source_item_ids"][0],
@@ -224,10 +233,22 @@ class FakeRepository:
         item = self.claims.pop(0)
         return ClaimedJob(**{**item.__dict__, "locked_by": kwargs["worker_id"]})
 
+    async def bind_execution_plane(self, **kwargs):
+        plane = self.execution_planes.get(kwargs["job_id"])
+        if plane is None:
+            plane = kwargs["requested_plane"]
+            self.execution_planes[kwargs["job_id"]] = plane
+        return plane
+
     async def complete_job(self, **kwargs):
         if self.complete_error:
             raise AutomationRepositoryError("automation_database_unavailable", retryable=True)
         self.completed.append(kwargs)
+
+    async def complete_batch_handoff(self, **kwargs):
+        if self.batch_handoff_error:
+            raise self.batch_handoff_error
+        self.batch_handoffs.append(kwargs)
 
     async def fail_job(self, **kwargs):
         self.failed.append(kwargs)
@@ -327,6 +348,8 @@ def runner(
     generation,
     *,
     content_signals_client=None,
+    batch_settings=None,
+    batch_bridge=None,
     **setting_overrides,
 ):
     return OfficialXDailyRunner(
@@ -334,6 +357,8 @@ def runner(
         repository=repo,
         x_client=x_client,
         generation_client=generation,
+        batch_settings=batch_settings,
+        batch_bridge=batch_bridge,
         content_signals_client=content_signals_client,
         clients_dir=ROOT / "clients",
         now_factory=lambda: NOW,
@@ -620,6 +645,700 @@ async def test_dry_run_merges_fresh_post_over_pending_copy_without_writes():
         }
         for item in summary.outcomes
     )
+
+
+class FakeBatchQueueRepository:
+    def __init__(self, *, error=None, budget_error=None):
+        self.error = error
+        self.budget_error = budget_error
+        self.calls = []
+        self.budget_calls = []
+        self.operations = []
+
+    async def configure_daily_budget(self, **kwargs):
+        self.operations.append("configure_budget")
+        self.budget_calls.append(kwargs)
+        if self.budget_error:
+            raise self.budget_error
+
+    async def queue_job(self, **kwargs):
+        self.operations.append("queue_job")
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return kwargs["item"].job_id
+
+
+def active_batch_settings(*, start_offset_days=-1, end_offset_days=4):
+    return BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW + timedelta(days=start_offset_days),
+        experiment_end_at=NOW + timedelta(days=end_offset_days),
+    )
+
+
+def batch_bridge(repository):
+    return BatchQueueBridge(
+        repository=repository,
+        policy=BatchPolicy(allowed_clients=frozenset({"squid"})),
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_squid_job_hands_immutable_copy_only_work_to_batch():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert generation.calls == []
+    assert repo.completed == []
+    assert repo.failed == []
+    assert len(repo.batch_handoffs) == 1
+    assert set(repo.execution_planes.values()) == {"openai_batch"}
+    assert len(batch_repository.calls) == 1
+    assert len(batch_repository.budget_calls) == 1
+    assert batch_repository.operations == [
+        "configure_budget",
+        "queue_job",
+    ]
+    assert batch_repository.budget_calls[0] == {
+        "budget_key": "batch-general:2026-07-22",
+        "window_start": datetime(
+            2026,
+            7,
+            21,
+            15,
+            tzinfo=timezone.utc,
+        ),
+        "window_end": datetime(
+            2026,
+            7,
+            22,
+            15,
+            tzinfo=timezone.utc,
+        ),
+        "limit_usd": Decimal("6.00"),
+    }
+    queued = batch_repository.calls[0]
+    item = queued["item"]
+    assert item.job_id == repo.batch_handoffs[0]["batch_job_id"]
+    assert item.client_id == "squid"
+    assert item.model_tier == "S"
+    assert item.model == "gpt-5.6-luna"
+    assert item.priority == "P2"
+    assert item.risk_tier == "T1"
+    assert item.approval_required is True
+    assert item.max_cost_usd == Decimal("0.05")
+    assert item.max_output_tokens == 2_000
+    assert item.deadline_at.isoformat() == "2026-07-25T00:00:00+09:00"
+    assert "visual" not in item.output_schema["properties"]
+    assert {
+        name: field["pattern"]
+        for name, field in item.output_schema["properties"].items()
+    } == {
+        "headline_ko": r"^[\s\S]{0,119}\S$",
+        "body_ko": r"^[\s\S]{0,1799}\S$",
+        "x_copy_ko": r"^[\s\S]{0,499}\S$",
+        "telegram_copy_ko": r"^[\s\S]{0,1799}\S$",
+    }
+    assert all(
+        "minLength" not in field and "maxLength" not in field
+        for field in item.output_schema["properties"].values()
+    )
+    assert queued["budget_key"] == "batch-general:2026-07-22"
+    assert len(queued["idempotency_key"]) == 64
+    assert (
+        repo.batch_handoffs[0]["input_sha256"]
+        == item.input_sha256
+    )
+    assert summary.generated == 0
+    assert any(
+        outcome == {
+            "client_id": "squid",
+            "status": "batch_queued",
+            "detail": "daily_news",
+        }
+        for outcome in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_backlog_uses_the_queue_attempt_kst_budget():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="squid",
+        kst_date=date(2026, 7, 21),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid backlog update.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 0
+    assert generation.calls == []
+    assert batch_repository.calls[0]["budget_key"] == (
+        "batch-general:2026-07-22"
+    )
+    assert batch_repository.budget_calls[0]["window_start"] == datetime(
+        2026,
+        7,
+        21,
+        15,
+        tzinfo=timezone.utc,
+    )
+    assert len(repo.batch_handoffs) == 1
+
+
+@pytest.mark.asyncio
+async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+    ending_soon = BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW - timedelta(days=1),
+        experiment_end_at=NOW + timedelta(hours=25),
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=ending_soon,
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert generation.calls == []
+    assert batch_repository.budget_calls == []
+    assert batch_repository.calls == []
+    assert repo.batch_handoffs == []
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["error_code"] == "batch_handoff_not_admitted"
+    assert repo.failed[0]["retryable"] is False
+    assert summary.errors == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_deadline_is_clamped_to_the_experiment_end():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    batch_repository = FakeBatchQueueRepository()
+    experiment_end = NOW + timedelta(hours=30)
+    clamped = BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW - timedelta(days=1),
+        experiment_end_at=experiment_end,
+    )
+
+    await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        batch_settings=clamped,
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert batch_repository.calls[0]["item"].deadline_at == experiment_end
+
+
+@pytest.mark.asyncio
+async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="squid",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid retry.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=2,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    batch_repository = FakeBatchQueueRepository()
+    ending_soon = BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW - timedelta(days=1),
+        experiment_end_at=NOW + timedelta(hours=25),
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        batch_settings=ending_soon,
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 0
+    assert batch_repository.budget_calls == []
+    assert len(batch_repository.calls) == 1
+    assert batch_repository.calls[0]["replay_only"] is True
+    assert len(repo.batch_handoffs) == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job_id = "77777777-7777-4777-8777-777777777777"
+    repo.claims.append(ClaimedJob(
+        job_id=job_id,
+        client_id="squid",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid retry.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=2,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    repo.execution_planes[job_id] = "openai_batch"
+    batch_repository = FakeBatchQueueRepository()
+    expired = BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW - timedelta(days=2),
+        experiment_end_at=NOW - timedelta(hours=1),
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        batch_settings=expired,
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 0
+    assert batch_repository.budget_calls == []
+    assert batch_repository.calls[0]["replay_only"] is True
+    assert len(repo.batch_handoffs) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_plane_binding_survives_experiment_start():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job_id = "77777777-7777-4777-8777-777777777777"
+    repo.claims.append(ClaimedJob(
+        job_id=job_id,
+        client_id="squid",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid sync retry.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=2,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    repo.execution_planes[job_id] = "studio_sync"
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert len(generation.calls) == 1
+    assert batch_repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_batch_plane_binding_never_falls_back_to_sync_when_disabled():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job_id = "77777777-7777-4777-8777-777777777777"
+    repo.claims.append(ClaimedJob(
+        job_id=job_id,
+        client_id="squid",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid Batch retry.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=2,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    repo.execution_planes[job_id] = "openai_batch"
+    generation = FakeGenerationClient()
+    disabled = BatchSettings(
+        mode="off",
+        allowed_clients=frozenset({"squid"}),
+        daily_cap_usd=Decimal("0.50"),
+        max_claims=1,
+        max_requests_per_batch=1,
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=disabled,
+        batch_bridge=None,
+    ).run()
+
+    assert generation.calls == []
+    assert len(repo.failed) == 1
+    assert summary.errors == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_queue_failure_never_falls_through_to_sync_generation():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository(error=BatchRepositoryError(
+        "batch_database_unavailable",
+        retryable=True,
+    ))
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert generation.calls == []
+    assert repo.batch_handoffs == []
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["retryable"] is True
+    assert summary.errors == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retryable", [True, False])
+async def test_producer_first_budget_failure_never_queues_or_syncs(retryable):
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository(
+        budget_error=BatchRepositoryError(
+            "batch_budget_unavailable",
+            retryable=retryable,
+        )
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert len(batch_repository.budget_calls) == 1
+    assert batch_repository.calls == []
+    assert generation.calls == []
+    assert repo.batch_handoffs == []
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["retryable"] is retryable
+    assert summary.errors == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_policy_rejection_never_falls_through_to_sync_generation():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="squid",
+        kst_date=date(2026, 7, 20),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable official Squid update.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert generation.calls == []
+    assert batch_repository.calls == []
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["retryable"] is False
+    assert summary.errors == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_handoff_completion_failure_leaves_durable_queue_for_replay():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    repo.batch_handoff_error = AutomationRepositoryError(
+        "automation_database_unavailable",
+        retryable=True,
+    )
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert len(batch_repository.calls) == 1
+    assert generation.calls == []
+    assert repo.failed == []
+    assert summary.errors == 1
+    assert any(
+        outcome.get("detail") == "automation_database_unavailable"
+        for outcome in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_experiment_does_not_change_non_squid_generation():
+    states = {
+        client_id: AutomationState(None, client_id != "yellow", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["yellow"] = AutomationState(
+        None,
+        False,
+        (pending("yellow"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["client_id"] == "yellow"
+    assert batch_repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_squid_uses_existing_sync_path_outside_experiment_window():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(
+            start_offset_days=1,
+            end_offset_days=2,
+        ),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["client_id"] == "squid"
+    assert batch_repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_new_squid_job_resumes_sync_after_experiment_expiry():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        None,
+        False,
+        (pending("squid"),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(
+            start_offset_days=-2,
+            end_offset_days=-1,
+        ),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["client_id"] == "squid"
+    assert batch_repository.calls == []
 
 
 @pytest.mark.asyncio

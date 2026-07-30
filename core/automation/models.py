@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Mapping
 
 
@@ -75,6 +76,7 @@ class StyleReferencePack:
 class ClaimedJob:
     job_id: str
     client_id: str
+    kst_date: date
     content_kind: str
     request_id: str
     primary_source_item_id: str

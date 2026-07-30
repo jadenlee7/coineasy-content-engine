@@ -451,6 +451,9 @@
     .library-panel-head { padding: 24px; border-bottom: 2px solid var(--outline); background: var(--surface-soft); }
     .library-panel-head h2 { margin: 0; font-size: 19px; letter-spacing: -.5px; }
     .library-panel-head p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .library-source-switcher { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 16px; padding: 5px; border: 1.5px solid var(--outline); border-radius: 10px; background: #fff; }
+    .library-source-option { min-height: 36px; padding: 0 9px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 10px; font-weight: 800; }
+    .library-source-option.active { color: var(--ink); background: var(--accent); box-shadow: inset 0 0 0 1px var(--outline); }
     .library-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: 18px; }
     .library-filters label { min-width: 0; }
     .library-filters span { display: block; margin-bottom: 6px; color: #4e4742; font-size: 10px; font-weight: 750; }
@@ -501,6 +504,14 @@
     .library-source-body details { border-top: 1px solid var(--line); padding-top: 11px; }
     .library-source-body summary { color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 800; }
     .library-source-body p { max-height: 360px; margin: 9px 0 0; overflow: auto; color: #4f5661; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .batch-review-readonly { margin-top: 22px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #f7f3ff; box-shadow: 3px 3px 0 rgba(35,35,35,.1); }
+    .batch-review-readonly h3 { margin: 0; font-size: 13px; }
+    .batch-review-readonly p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .batch-review-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0 0; }
+    .batch-review-facts div { padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .batch-review-facts dt { color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+    .batch-review-facts dd { margin: 4px 0 0; color: var(--ink); font-size: 10px; overflow-wrap: anywhere; }
+    .batch-review-result { max-height: 520px; margin: 12px 0 0; padding: 13px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; color: #36313b; background: #fff; font: 10px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
     .library-copy-grid { display: grid; gap: 10px; margin-top: 22px; }
     .library-copy-grid .channel-copy-text { min-height: 130px; }
     .library-copy-grid .channel-copy-text.x-copy { min-height: 110px; }
@@ -823,7 +834,11 @@
       <section class="panel library-panel">
         <div class="library-panel-head">
           <h2 id="library-title">팀 보관함</h2>
-          <p>최근에 만든 뉴스·아티클·튜토리얼을 최신순으로 확인합니다. 모든 결과는 게시 전 검토가 필요합니다.</p>
+          <p id="library-description">최근에 만든 뉴스·아티클·튜토리얼을 최신순으로 확인합니다. 모든 결과는 게시 전 검토가 필요합니다.</p>
+          <div class="library-source-switcher" id="library-source-switcher" role="tablist" aria-label="검토 소스">
+            <button class="library-source-option active" type="button" data-library-source="content_studio" aria-selected="true">Content Studio</button>
+            <button class="library-source-option" type="button" data-library-source="batch" aria-selected="false">Batch 검토</button>
+          </div>
           <div class="library-filters" id="library-filters">
             <label><span>클라이언트</span><select id="library-client-filter">
               <option value="">전체</option><option value="yellow">Yellow</option><option value="origintrail">OriginTrail</option><option value="squid">Squid</option><option value="babylon">Babylon</option>
@@ -949,7 +964,8 @@
       };
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", articleBannerPngUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
-      const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, performanceRequest: { x: 0, telegram: 0 } };
+      const BATCH_REVIEW_REF_PATTERN = /^batch:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+      const libraryState = { source: "content_studio", items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, performanceRequest: { x: 0, telegram: 0 } };
       const reviewNotificationVersions = new Set();
       const initialQuery = new URLSearchParams(window.location.search);
       const initialReviewContentId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initialQuery.get("content") || "")
@@ -965,6 +981,8 @@
       const studioViewSwitcher = document.getElementById("studio-view-switcher");
       const createView = document.getElementById("create-view");
       const libraryView = document.getElementById("library-view");
+      const libraryDescription = document.getElementById("library-description");
+      const librarySourceSwitcher = document.getElementById("library-source-switcher");
       const libraryFilters = document.getElementById("library-filters");
       const libraryClientFilter = document.getElementById("library-client-filter");
       const libraryKindFilter = document.getElementById("library-kind-filter");
@@ -1154,7 +1172,44 @@
           status: typeof item.status === "string" ? item.status : "needs_review",
           mock_mode: item.mock_mode === true,
           thumbnail_url: safeWebUrl(item.thumbnail_url),
-          created_at: item.created_at
+          created_at: item.created_at,
+          source: "content_studio"
+        };
+      }
+
+      function batchJobIdFromRef(value) {
+        const match = typeof value === "string" ? value.match(BATCH_REVIEW_REF_PATTERN) : null;
+        return match ? match[1].toLowerCase() : "";
+      }
+
+      function normalizeBatchReviewItem(value) {
+        const item = plainObject(value);
+        const jobId = typeof item.job_id === "string" ? item.job_id.toLowerCase() : "";
+        const ref = typeof item.ref === "string" ? item.ref.toLowerCase() : "";
+        if (
+          ref !== `batch:${jobId}`
+          || batchJobIdFromRef(ref) !== jobId
+          || item.client_id !== "squid"
+          || item.workflow_kind !== "official_source_nonurgent_pack"
+          || item.stage !== "generate"
+          || item.status !== "completed"
+          || item.result_code !== "needs_review"
+          || typeof item.title !== "string"
+          || !item.title.trim()
+          || item.title.length > 200
+        ) return null;
+        return {
+          content_item_id: ref,
+          batch_job_id: jobId,
+          client_id: "squid",
+          content_kind: "daily_news",
+          title: item.title.trim(),
+          status: "needs_review",
+          mock_mode: false,
+          thumbnail_url: "",
+          created_at: item.finished_at,
+          source_url: safeWebUrl(item.source_url),
+          source: "batch"
         };
       }
 
@@ -1162,10 +1217,11 @@
         const brandName = BRAND[item.client_id]?.name || "클라이언트 미지정";
         const thumbnail = item.thumbnail_url
           ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">`
-          : escapeHtml(CONTENT_KIND_MARK[item.content_kind] || "C");
+          : item.source === "batch" ? "B" : escapeHtml(CONTENT_KIND_MARK[item.content_kind] || "C");
+        const sourceLabel = item.source === "batch" ? "Batch 검토" : "Content Studio";
         return `<button class="library-card${item.content_item_id === libraryState.activeId ? " active" : ""}" type="button" data-content-id="${escapeHtml(item.content_item_id)}" aria-pressed="${item.content_item_id === libraryState.activeId}">` +
           `<span class="library-thumb">${thumbnail}</span><span class="library-card-copy"><span class="library-card-meta">` +
-          `<span class="library-chip">${escapeHtml(brandName)}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[item.content_kind])}</span>` +
+          `<span class="library-chip">${escapeHtml(sourceLabel)}</span><span class="library-chip">${escapeHtml(brandName)}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[item.content_kind])}</span>` +
           `<span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[item.status] || item.status)}</span>${item.mock_mode ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}` +
           `</span><h3>${escapeHtml(item.title)}</h3><time datetime="${escapeHtml(item.created_at || "")}">${escapeHtml(formatLibraryDate(item.created_at))}</time></span></button>`;
       }
@@ -1175,7 +1231,9 @@
           libraryList.innerHTML = "";
           libraryList.hidden = true;
           libraryMoreWrap.hidden = true;
-          libraryListState.innerHTML = "<strong>아직 저장된 작업이 없습니다</strong>필터를 바꾸거나 만들기 화면에서 첫 콘텐츠를 생성해보세요.";
+          libraryListState.innerHTML = libraryState.source === "batch"
+            ? "<strong>검토할 Batch 결과가 없습니다</strong>현재는 완료된 Squid 공식 원문 비긴급 팩 중 검토 대기 결과만 표시합니다."
+            : "<strong>아직 저장된 작업이 없습니다</strong>필터를 바꾸거나 만들기 화면에서 첫 콘텐츠를 생성해보세요.";
           libraryListState.className = "library-state";
           libraryListState.hidden = false;
           return;
@@ -1203,8 +1261,32 @@
         libraryDetailState.hidden = false;
       }
 
+      function syncLibrarySourceControls() {
+        const showingBatch = libraryState.source === "batch";
+        libraryFilters.hidden = showingBatch;
+        libraryDescription.textContent = showingBatch
+          ? "완료된 Squid 공식 원문 비긴급 팩의 검토 대기 결과를 읽기 전용으로 확인합니다."
+          : "최근에 만든 뉴스·아티클·튜토리얼을 최신순으로 확인합니다. 모든 결과는 게시 전 검토가 필요합니다.";
+        librarySourceSwitcher.querySelectorAll("[data-library-source]").forEach(button => {
+          const active = button.dataset.librarySource === libraryState.source;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-selected", String(active));
+        });
+      }
+
+      function selectLibrarySource(nextSource) {
+        const normalizedSource = nextSource === "batch" ? "batch" : "content_studio";
+        if (normalizedSource === libraryState.source) return;
+        libraryState.source = normalizedSource;
+        libraryState.loaded = false;
+        libraryState.stale = true;
+        syncLibrarySourceControls();
+        loadLibrary({ reset: true });
+      }
+
       function clearLibrary() {
         libraryState.listRequest += 1;
+        libraryState.source = "content_studio";
         libraryState.items = [];
         libraryState.nextCursor = null;
         libraryState.loaded = false;
@@ -1218,6 +1300,7 @@
         libraryListState.textContent = "보관함을 불러오는 중입니다…";
         libraryListState.className = "library-state";
         libraryListState.hidden = false;
+        syncLibrarySourceControls();
         resetLibraryDetail();
       }
 
@@ -1244,37 +1327,57 @@
         }
 
         const params = new URLSearchParams({ limit: "12" });
-        if (libraryClientFilter.value) params.set("client", libraryClientFilter.value);
-        if (libraryKindFilter.value) params.set("kind", libraryKindFilter.value);
-        if (libraryStatusFilter.value) params.set("status", libraryStatusFilter.value);
+        const batchSource = libraryState.source === "batch";
+        if (!batchSource && libraryClientFilter.value) params.set("client", libraryClientFilter.value);
+        if (!batchSource && libraryKindFilter.value) params.set("kind", libraryKindFilter.value);
+        if (!batchSource && libraryStatusFilter.value) params.set("status", libraryStatusFilter.value);
         if (!reset && libraryState.nextCursor) {
-          params.set("before_created_at", libraryState.nextCursor.created_at);
-          params.set("before_id", libraryState.nextCursor.id);
+          if (batchSource) {
+            params.set("before_finished_at", libraryState.nextCursor.finished_at);
+            params.set("before_job_id", libraryState.nextCursor.job_id);
+          } else {
+            params.set("before_created_at", libraryState.nextCursor.created_at);
+            params.set("before_id", libraryState.nextCursor.id);
+          }
         }
 
         try {
-          const response = await fetch(`/api/library?${params.toString()}`, {
-            method: "GET",
-            credentials: "same-origin",
-            headers: { Accept: "application/json" }
-          });
+          const response = batchSource
+            ? await fetch(`/api/batch-review?${params.toString()}`, {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            })
+            : await fetch(`/api/library?${params.toString()}`, {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            });
           const payload = await response.json().catch(() => ({}));
           if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.listRequest) return;
           if (handleStudioAccessResponse(response, payload)) return;
           if (!response.ok) throw new Error("library_load_failed");
-          const nextItems = (Array.isArray(payload.items) ? payload.items : []).map(normalizeLibraryItem).filter(Boolean);
+          const normalizeItem = batchSource ? normalizeBatchReviewItem : normalizeLibraryItem;
+          const nextItems = (Array.isArray(payload.items) ? payload.items : []).map(normalizeItem).filter(Boolean);
           const seen = new Set(libraryState.items.map(item => item.content_item_id));
           libraryState.items = reset ? nextItems : libraryState.items.concat(nextItems.filter(item => !seen.has(item.content_item_id)));
           const nextCursor = plainObject(payload.next_cursor);
-          libraryState.nextCursor = typeof nextCursor.created_at === "string" && typeof nextCursor.id === "string"
-            ? { created_at: nextCursor.created_at, id: nextCursor.id }
-            : null;
+          libraryState.nextCursor = batchSource
+            ? typeof nextCursor.finished_at === "string" && typeof nextCursor.job_id === "string"
+              ? { finished_at: nextCursor.finished_at, job_id: nextCursor.job_id }
+              : null
+            : typeof nextCursor.created_at === "string" && typeof nextCursor.id === "string"
+              ? { created_at: nextCursor.created_at, id: nextCursor.id }
+              : null;
           libraryState.loaded = true;
           libraryState.stale = false;
           renderLibraryList();
         } catch {
           if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.listRequest) return;
-          libraryListState.innerHTML = `<strong>보관함을 불러오지 못했습니다</strong>네트워크를 확인한 뒤 다시 시도해주세요.<br><button class="library-retry" type="button" data-library-retry="list">다시 시도</button>`;
+          const failureTitle = batchSource
+            ? "Batch 검토함을 불러오지 못했습니다"
+            : "보관함을 불러오지 못했습니다";
+          libraryListState.innerHTML = `<strong>${failureTitle}</strong>네트워크를 확인한 뒤 다시 시도해주세요.<br><button class="library-retry" type="button" data-library-retry="list">다시 시도</button>`;
           libraryListState.className = "library-state error";
           libraryListState.hidden = false;
           if (!libraryState.items.length) libraryList.hidden = true;
@@ -1581,9 +1684,68 @@
         libraryDetail.hidden = false;
       }
 
+      function renderBatchReviewDetail(payload) {
+        const detail = plainObject(payload);
+        const jobId = typeof detail.job_id === "string" ? detail.job_id.toLowerCase() : "";
+        const ref = typeof detail.ref === "string" ? detail.ref.toLowerCase() : "";
+        const rawResultPayload = plainObject(detail.result_payload);
+        const resultFieldLimits = {
+          headline_ko: 120,
+          body_ko: 1800,
+          x_copy_ko: 500,
+          telegram_copy_ko: 1800
+        };
+        const resultKeys = Object.keys(rawResultPayload);
+        const exactResultPayload = resultKeys.length === Object.keys(resultFieldLimits).length
+          && resultKeys.every(key => Object.hasOwn(resultFieldLimits, key))
+          && Object.entries(resultFieldLimits).every(([key, maximum]) =>
+            typeof rawResultPayload[key] === "string"
+            && rawResultPayload[key].trim().length >= 1
+            && rawResultPayload[key].length <= maximum
+          );
+        if (!exactResultPayload) throw new Error("invalid_batch_review_detail");
+        const resultPayload = {
+          headline_ko: rawResultPayload.headline_ko,
+          body_ko: rawResultPayload.body_ko,
+          x_copy_ko: rawResultPayload.x_copy_ko,
+          telegram_copy_ko: rawResultPayload.telegram_copy_ko
+        };
+        const resultText = JSON.stringify(resultPayload, null, 2);
+        if (
+          ref !== `batch:${jobId}`
+          || batchJobIdFromRef(ref) !== jobId
+          || detail.client_id !== "squid"
+          || detail.workflow_kind !== "official_source_nonurgent_pack"
+          || detail.stage !== "generate"
+          || detail.status !== "completed"
+          || detail.result_code !== "needs_review"
+          || typeof resultText !== "string"
+          || resultText.length > 32768
+        ) throw new Error("invalid_batch_review_detail");
+        const sourceUrl = safeWebUrl(detail.source_url);
+        const costMicrousd = Number(detail.actual_cost_microusd);
+        const costText = Number.isSafeInteger(costMicrousd) && costMicrousd >= 0
+          ? `$${(costMicrousd / 1000000).toFixed(4)}`
+          : "확인 불가";
+        const inputTokens = Number.isSafeInteger(detail.actual_input_tokens) && detail.actual_input_tokens >= 0
+          ? detail.actual_input_tokens.toLocaleString("ko-KR")
+          : "확인 불가";
+        const outputTokens = Number.isSafeInteger(detail.actual_output_tokens) && detail.actual_output_tokens >= 0
+          ? detail.actual_output_tokens.toLocaleString("ko-KR")
+          : "확인 불가";
+        const sourceMarkup = sourceUrl
+          ? `<section class="library-source-evidence"><h3>공식 원문</h3><div class="library-source-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 링크 열기</a></div></section>`
+          : "";
+        libraryState.activeDetail = { ...detail, source: "batch" };
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">Squid</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">검토 필요</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div><section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>이 화면은 첫 실험의 결과 확인 전용입니다. 상태 변경이나 외부 실행 기능은 제공하지 않습니다.</p><dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl><pre class="batch-review-result">${escapeHtml(resultText)}</pre></section>${sourceMarkup}`;
+        libraryDetailState.hidden = true;
+        libraryDetail.hidden = false;
+      }
+
       async function loadLibraryDetail(contentId) {
         const requestId = ++libraryState.detailRequest;
         const requestSessionEpoch = state.sessionEpoch;
+        const batchJobId = batchJobIdFromRef(contentId);
         libraryState.activeId = contentId;
         libraryState.activeDetail = null;
         libraryState.exportRequest += 1;
@@ -1596,16 +1758,23 @@
         libraryDetailState.className = "library-state";
         libraryDetailState.hidden = false;
         try {
-          const response = await fetch(`/api/library/${encodeURIComponent(contentId)}`, {
-            method: "GET",
-            credentials: "same-origin",
-            headers: { Accept: "application/json" }
-          });
+          const response = batchJobId
+            ? await fetch(`/api/batch-review/${encodeURIComponent(batchJobId)}`, {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            })
+            : await fetch(`/api/library/${encodeURIComponent(contentId)}`, {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            });
           const payload = await response.json().catch(() => ({}));
           if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.detailRequest) return;
           if (handleStudioAccessResponse(response, payload)) return;
           if (!response.ok) throw new Error("library_detail_failed");
-          renderLibraryDetail(payload.item || payload);
+          if (batchJobId) renderBatchReviewDetail(payload.item || payload);
+          else renderLibraryDetail(payload.item || payload);
         } catch {
           if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.detailRequest) return;
           libraryDetailState.innerHTML = `<strong>작업을 열지 못했습니다</strong>잠시 후 다시 시도해주세요.<br><button class="library-retry" type="button" data-library-retry="detail" data-content-id="${escapeHtml(contentId)}">다시 시도</button>`;
@@ -2688,6 +2857,12 @@
         const button = event.target.closest("[data-studio-view]");
         if (!button || button.dataset.studioView === state.studioView) return;
         selectStudioView(button.dataset.studioView);
+      });
+
+      librarySourceSwitcher.addEventListener("click", event => {
+        const button = event.target.closest("[data-library-source]");
+        if (!button) return;
+        selectLibrarySource(button.dataset.librarySource);
       });
 
       libraryFilters.addEventListener("change", () => loadLibrary({ reset: true }));
