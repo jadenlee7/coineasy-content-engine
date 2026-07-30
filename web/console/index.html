@@ -950,6 +950,12 @@
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", articleBannerPngUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
       const libraryState = { items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, performanceRequest: { x: 0, telegram: 0 } };
+      const reviewNotificationVersions = new Set();
+      const initialQuery = new URLSearchParams(window.location.search);
+      const initialReviewContentId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initialQuery.get("content") || "")
+        ? initialQuery.get("content").toLowerCase()
+        : "";
+      let initialReviewLinkOpened = false;
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
       const accessCode = document.getElementById("access-code");
@@ -1934,6 +1940,14 @@
         if (showingLibrary && load && (!libraryState.loaded || libraryState.stale)) loadLibrary({ reset: true });
       }
 
+      function openInitialReviewLink() {
+        if (!initialReviewContentId || initialReviewLinkOpened) return;
+        initialReviewLinkOpened = true;
+        selectStudioView("library", false);
+        loadLibrary({ reset: true });
+        loadLibraryDetail(initialReviewContentId);
+      }
+
       function showStudioAccess(message = "팀 접근 코드를 입력해주세요.", configured = true) {
         accessGate.hidden = false;
         document.body.classList.add("access-locked");
@@ -1960,6 +1974,8 @@
         mockMode.checked = false;
         state.generationRequest = null;
         state.hasResult = false;
+        reviewNotificationVersions.clear();
+        initialReviewLinkOpened = false;
         loading.hidden = true;
         spec.textContent = "";
         download.removeAttribute("href");
@@ -2000,6 +2016,7 @@
           const payload = await response.json().catch(() => ({}));
           if (response.ok && payload.authenticated === true) {
             hideStudioAccess();
+            openInitialReviewLink();
             return;
           }
           if (!handleStudioAccessResponse(response, payload)) {
@@ -2266,10 +2283,56 @@
           downloadSvg.download = articleVisualFilename(requestContext.client, "hero", "svg");
           downloadSvg.textContent = "Figma 배너 SVG";
           downloadSvg.hidden = false;
-          return true;
+          return pngBlob;
         } catch {
           if (localSvgUrl) URL.revokeObjectURL(localSvgUrl);
           return false;
+        }
+      }
+
+      async function notifyTelegramReview(payload, bannerBlob, requestSessionEpoch, requestContext) {
+        const contentId = typeof payload.content_item_id === "string" ? payload.content_item_id.toLowerCase() : "";
+        const versionId = typeof payload.content_version_id === "string" ? payload.content_version_id.toLowerCase() : "";
+        if (
+          payload.mock_mode === true
+          || !contentId
+          || !versionId
+          || reviewNotificationVersions.has(versionId)
+          || requestSessionEpoch !== state.sessionEpoch
+          || !generationContextIsCurrent(requestContext)
+        ) return;
+        const formData = new FormData();
+        formData.set("content_version_id", versionId);
+        if (bannerBlob instanceof Blob && bannerBlob.size > 0) {
+          formData.set("banner", bannerBlob, `${requestContext.client}-${requestContext.mode}-review.png`);
+        }
+        try {
+          const response = await fetch(`/api/library/${encodeURIComponent(contentId)}/review-notification`, {
+            method: "POST",
+            credentials: "same-origin",
+            body: formData
+          });
+          const result = await response.json().catch(() => ({}));
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || !generationContextIsCurrent(requestContext)
+          ) return;
+          if (!response.ok || result.sent !== true) {
+            const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+            setStatus(`${original} 텔레그램 DM은 보내지 못했습니다. 보관함 검토는 정상적으로 사용할 수 있습니다.`, "review");
+            return;
+          }
+          reviewNotificationVersions.add(versionId);
+          const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+          const photoNote = result.photo_sent === true ? "배너와 내용을" : "내용을";
+          setStatus(`${original} 텔레그램 DM으로 ${photoNote} 보냈습니다.`, formStatus.classList.contains("review") ? "review" : "success");
+        } catch {
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || !generationContextIsCurrent(requestContext)
+          ) return;
+          const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+          setStatus(`${original} 텔레그램 DM은 보내지 못했습니다. 보관함 검토는 정상적으로 사용할 수 있습니다.`, "review");
         }
       }
 
@@ -2588,6 +2651,7 @@
           if (response.ok && payload.authenticated === true) {
             hideStudioAccess();
             setStatus("팀 접근 인증이 완료되었습니다. 작업을 시작하세요.", "success");
+            openInitialReviewLink();
             return;
           }
           if (response.status === 503 && payload?.error === "studio_access_not_configured") {
@@ -2878,13 +2942,13 @@
             if (!articleResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: articlePayload, status: articleResponse.status });
             renderArticleResult(articlePayload, requestContext);
             state.generationRequest = null;
-            const bannerReady = await prepareArticleBanner(articlePayload, requestSessionEpoch, requestContext);
+            const articleBannerBlob = await prepareArticleBanner(articlePayload, requestSessionEpoch, requestContext);
             if (
-              bannerReady === null
+              articleBannerBlob === null
               || requestSessionEpoch !== state.sessionEpoch
               || !generationContextIsCurrent(requestContext)
             ) return;
-            if (bannerReady) {
+            if (articleBannerBlob) {
               resultKind.textContent = `· 실제 Railway 원고 · ${articlePayload.sections.length}개 섹션 · 비주얼 3장`;
               resultNote.textContent = `${BRAND[requestContext.client].name} 원문에 근거한 아티클 초안, 대표 배너, 본문 이미지 2장입니다. 게시 전 사실·용어·링크를 검토해주세요. ${(articlePayload.duration_ms / 1000).toFixed(1)}초`;
               setStatus("아티클 초안·Markdown·게시 문구와 대표 배너·본문 이미지 2장이 완성되었습니다. 각 이미지는 PNG 또는 Figma SVG로 저장할 수 있습니다.", "success");
@@ -2894,6 +2958,7 @@
               resultNote.textContent = `${BRAND[requestContext.client].name} 아티클 초안은 완성됐지만 발행 배너를 준비하지 못했습니다. 원고와 게시 문구는 그대로 사용할 수 있습니다.`;
               setStatus("아티클 원고는 완성됐지만 배너를 준비하지 못했습니다. 원고는 사용할 수 있으며, 배너만 다시 준비하려면 같은 내용으로 다시 생성해주세요.", "review");
             }
+            await notifyTelegramReview(articlePayload, articleBannerBlob || null, requestSessionEpoch, requestContext);
             document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
             return;
           }
@@ -2920,6 +2985,7 @@
             if (!tutorialResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: tutorialPayload, status: tutorialResponse.status });
             renderTutorialResult(tutorialPayload);
             state.generationRequest = null;
+            await notifyTelegramReview(tutorialPayload, null, requestSessionEpoch, requestContext);
             document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
             return;
           }
@@ -3017,6 +3083,7 @@
               ? "PNG와 Figma 편집본이 완성되었습니다. SVG를 Figma 캔버스로 드래그하면 레이어별로 수정할 수 있습니다."
               : "PNG는 완성됐지만 Figma 편집본을 준비하지 못했습니다. 잠시 후 다시 생성해주세요.",
           isMockNews ? "review" : needsReview ? editableReady ? "review" : "error" : editableReady ? "success" : "error");
+          await notifyTelegramReview(payload, null, requestSessionEpoch, requestContext);
           document.getElementById("connection").lastChild.textContent = "Railway API 연결됨";
         } catch (error) {
           if (requestSessionEpoch !== state.sessionEpoch || !generationContextIsCurrent(requestContext)) return;

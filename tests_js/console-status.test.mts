@@ -83,6 +83,21 @@ test("preserves the existing news-card, editable SVG, and channel-copy flow", ()
   assert.match(consoleHtml, /payload\.channel_copy\?\.x/);
 });
 
+test("sends stored results to the private Telegram review flow and opens DM deep links", () => {
+  assert.match(consoleHtml, /function notifyTelegramReview\(payload, bannerBlob, requestSessionEpoch, requestContext\)/);
+  assert.match(consoleHtml, /\/review-notification`/);
+  assert.match(consoleHtml, /formData\.set\("content_version_id", versionId\)/);
+  assert.match(consoleHtml, /payload\.mock_mode === true/);
+  assert.match(consoleHtml, /reviewNotificationVersions\.has\(versionId\)/);
+  assert.match(consoleHtml, /await notifyTelegramReview\(articlePayload, articleBannerBlob \|\| null/);
+  assert.match(consoleHtml, /await notifyTelegramReview\(tutorialPayload, null/);
+  assert.match(consoleHtml, /await notifyTelegramReview\(payload, null/);
+  assert.match(consoleHtml, /initialQuery\.get\("content"\)/);
+  assert.match(consoleHtml, /function openInitialReviewLink\(\)/);
+  assert.match(consoleHtml, /selectStudioView\("library", false\)/);
+  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewContentId\)/);
+});
+
 test("binds generation responses and editable SVG follow-ups to the submitted client and mode", () => {
   assert.match(consoleHtml, /const requestContext = Object\.freeze\(\{[\s\S]*mode: state\.mode,[\s\S]*client: state\.client,[\s\S]*template: state\.template/);
   assert.match(consoleHtml, /function generationContextIsCurrent\(requestContext\)/);
