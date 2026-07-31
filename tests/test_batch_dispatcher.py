@@ -520,7 +520,10 @@ def _success_line(custom_id):
                 }],
                 "usage": {
                     "input_tokens": 100,
-                    "input_tokens_details": {"cached_tokens": 10},
+                    "input_tokens_details": {
+                        "cached_tokens": 10,
+                        "cache_write_tokens": 0,
+                    },
                     "output_tokens": 50,
                 },
             },

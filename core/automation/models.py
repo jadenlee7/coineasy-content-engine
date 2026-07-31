@@ -87,3 +87,5 @@ class ClaimedJob:
     attempts: int
     max_attempts: int
     locked_by: str
+    origintrail_batch_eligible: bool = False
+    batch_handoff_recovery_only: bool = False

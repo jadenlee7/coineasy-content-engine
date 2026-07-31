@@ -27,8 +27,52 @@ test("loads paginated Batch reviews only through authenticated GET routes", () =
   assert.match(consoleHtml, /credentials: "same-origin"/);
   assert.match(consoleHtml, /normalizeBatchReviewItem/);
   assert.match(consoleHtml, /ref !== `batch:\$\{jobId\}`/);
+  assert.match(consoleHtml, /item\.client_id !== "origintrail"/);
+  assert.match(consoleHtml, /item\.agent_id !== "origintrail_client_agent"/);
   assert.match(consoleHtml, /workflow_kind !== "official_source_nonurgent_pack"/);
   assert.match(consoleHtml, /result_code !== "needs_review"/);
+});
+
+test("Batch list normalization accepts only the OriginTrail canary identity", () => {
+  const functionSource = consoleHtml.match(
+    /function normalizeBatchReviewItem\(value\) \{[\s\S]*?\n      \}(?=\n\n      function libraryCardMarkup)/,
+  )?.[0];
+  assert.ok(functionSource, "normalizeBatchReviewItem must be present");
+
+  const normalizeBatchReviewItem = Function(
+    "plainObject",
+    "batchJobIdFromRef",
+    "safeWebUrl",
+    `"use strict"; ${functionSource}; return normalizeBatchReviewItem;`,
+  )(
+    (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    (value: unknown) => typeof value === "string" && value === `batch:${JOB_ID}` ? JOB_ID : "",
+    (value: unknown) => typeof value === "string" && value.startsWith("https://") ? value : "",
+  ) as (payload: unknown) => Record<string, unknown> | null;
+
+  const validItem = {
+    ref: `batch:${JOB_ID}`,
+    job_id: JOB_ID,
+    client_id: "origintrail",
+    agent_id: "origintrail_client_agent",
+    workflow_kind: "official_source_nonurgent_pack",
+    stage: "generate",
+    status: "completed",
+    result_code: "needs_review",
+    title: "OriginTrail 검토 초안",
+    finished_at: "2026-07-31T12:00:00.000Z",
+    source_url: "https://x.com/origin_trail/status/123",
+  };
+
+  assert.equal(normalizeBatchReviewItem(validItem)?.client_id, "origintrail");
+  assert.equal(normalizeBatchReviewItem({
+    ...validItem,
+    client_id: "squid",
+  }), null);
+  assert.equal(normalizeBatchReviewItem({
+    ...validItem,
+    agent_id: "squid_client_agent",
+  }), null);
 });
 
 test("Batch detail renders escaped plain text and offers no mutation controls", () => {
@@ -78,7 +122,8 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   const validDetail = {
     ref: `batch:${JOB_ID}`,
     job_id: JOB_ID,
-    client_id: "squid",
+    client_id: "origintrail",
+    agent_id: "origintrail_client_agent",
     workflow_kind: "official_source_nonurgent_pack",
     stage: "generate",
     status: "completed",
@@ -91,7 +136,7 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     actual_output_tokens: 220,
     input_sha256: "a".repeat(64),
     finished_at: "2026-07-31T12:00:00.000Z",
-    source_url: "https://x.com/SquidRouter/status/123",
+    source_url: "https://x.com/origin_trail/status/123",
     result_payload: {
       headline_ko: "<img src=x onerror=alert(1)>",
       body_ko: "검토용 plain text",
@@ -106,6 +151,8 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.equal(libraryDetail.hidden, false);
   assert.equal(libraryDetailState.hidden, true);
   assert.match(libraryDetail.innerHTML, new RegExp(`batch:${JOB_ID}`));
+  assert.match(libraryDetail.innerHTML, /OriginTrail/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /Squid/);
   assert.match(libraryDetail.innerHTML, /&lt;script&gt;alert\(&#039;title&#039;\)&lt;\/script&gt;/);
   assert.match(libraryDetail.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(libraryDetail.innerHTML, /<script|<img|<button|<textarea/i);
@@ -113,6 +160,15 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     libraryDetail.innerHTML,
     /data-library-review|data-library-editable|data-library-publication|data-library-promotion/i,
   );
+
+  assert.throws(() => renderBatchReviewDetail({
+    ...validDetail,
+    client_id: "squid",
+  }), /invalid_batch_review_detail/);
+  assert.throws(() => renderBatchReviewDetail({
+    ...validDetail,
+    agent_id: "squid_client_agent",
+  }), /invalid_batch_review_detail/);
 
   assert.throws(() => renderBatchReviewDetail({
     ...validDetail,

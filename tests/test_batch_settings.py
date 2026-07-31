@@ -14,7 +14,7 @@ from scripts.run_batch_dispatcher import _experiment_phase
 def _live_env(**overrides):
     values = {
         "BATCH_EXPERIMENT_MODE": "live",
-        "BATCH_ALLOWED_CLIENTS": "squid",
+        "BATCH_ALLOWED_CLIENTS": "origintrail",
         "BATCH_DAILY_CAP_USD": "6.00",
         "BATCH_EXPERIMENT_START_AT": "2026-08-01T00:00:00+09:00",
         "BATCH_EXPERIMENT_END_AT": "2026-08-15T00:00:00+09:00",
@@ -29,11 +29,11 @@ def _live_env(**overrides):
     return values
 
 
-def test_first_experiment_is_squid_dry_run_by_default():
+def test_first_experiment_is_origintrail_dry_run_by_default():
     settings = BatchSettings.from_env({})
 
     assert settings.mode == "dry_run"
-    assert settings.allowed_clients == frozenset({"squid"})
+    assert settings.allowed_clients == frozenset({"origintrail"})
     assert settings.daily_cap_usd == Decimal("0.50")
     assert settings.max_claims == 1
     assert settings.max_requests_per_batch == 1
@@ -119,7 +119,7 @@ async def test_expired_worker_polls_and_cleans_without_new_submission(
     now = datetime.now(timezone.utc)
     settings = BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("0.50"),
         max_claims=1,
         max_requests_per_batch=1,
@@ -179,7 +179,7 @@ def test_cli_dry_run_override_never_loads_live_secrets():
     "override, message",
     [
         ({"BATCH_EXPERIMENT_MODE": "auto"}, "off, dry_run, or live"),
-        ({"BATCH_ALLOWED_CLIENTS": "squid,unknown"}, "unsupported"),
+        ({"BATCH_ALLOWED_CLIENTS": "origintrail,unknown"}, "unsupported"),
         ({"BATCH_DAILY_CAP_USD": "0.09"}, "between"),
         ({"BATCH_DAILY_CAP_USD": "6.01"}, "between"),
         ({"BATCH_DAILY_CAP_USD": "nan"}, "between"),

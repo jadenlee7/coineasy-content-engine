@@ -397,6 +397,11 @@ class OpenAIBatchClient:
             if isinstance(input_details, Mapping)
             else None
         )
+        cache_write_tokens = (
+            input_details.get("cache_write_tokens")
+            if isinstance(input_details, Mapping)
+            else None
+        )
         if (
             model not in {"gpt-5.6-luna", "gpt-5.6-terra"}
             or not isinstance(input_tokens, int)
@@ -406,6 +411,9 @@ class OpenAIBatchClient:
             or not isinstance(cached_tokens, int)
             or cached_tokens < 0
             or cached_tokens > input_tokens
+            or not isinstance(cache_write_tokens, int)
+            or isinstance(cache_write_tokens, bool)
+            or cache_write_tokens != 0
         ):
             return {
                 "model": None,

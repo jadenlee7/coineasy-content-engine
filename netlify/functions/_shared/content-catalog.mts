@@ -194,8 +194,14 @@ function isAllowedSupabaseUrl(value: string): boolean {
   try {
     const url = new URL(value);
     const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    return (url.protocol === "https:" || (url.protocol === "http:" && local))
-      && (url.pathname === "/" || url.pathname === "");
+    const hosted = url.hostname.endsWith(".supabase.co");
+    return !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && (url.pathname === "/" || url.pathname === "")
+      && ((hosted && url.protocol === "https:" && !url.port)
+        || (local && (url.protocol === "http:" || url.protocol === "https:")));
   } catch {
     return false;
   }

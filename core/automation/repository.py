@@ -483,9 +483,15 @@ class SupabaseAutomationRepository:
     ) -> AutomationState:
         if len(source_items) > 200:
             raise ValueError("source_items exceeds the bounded poll size")
-        raw = await self._rpc("record_official_x_sources", {
+        normalized_client = self._client(client_id)
+        rpc_name = (
+            "record_origintrail_nonquote_sources"
+            if normalized_client == "origintrail"
+            else "record_official_x_sources"
+        )
+        raw = await self._rpc(rpc_name, {
             "target_workspace_id": _uuid(workspace_id, "workspace_id"),
-            "target_client_id": self._client(client_id),
+            "target_client_id": normalized_client,
             "target_handle": XClient._normalize_username(handle),
             "target_poll_request_id": _uuid(poll_request_id, "poll_request_id"),
             "target_expected_cursor": _cursor(expected_cursor),
@@ -587,6 +593,12 @@ class SupabaseAutomationRepository:
         job_input = raw["input"]
         attempts = raw.get("attempts")
         max_attempts = raw.get("max_attempts")
+        batch_handoff_recovery_only = raw.get(
+            "batch_handoff_recovery_only"
+        )
+        origintrail_batch_eligible = raw.get(
+            "origintrail_batch_eligible"
+        )
         client_id = raw.get("client_id")
         content_kind = job_input.get("content_kind")
         raw_source_item_ids = job_input.get("source_item_ids")
@@ -596,6 +608,16 @@ class SupabaseAutomationRepository:
             or not isinstance(max_attempts, int)
             or attempts < 1
             or max_attempts < attempts
+            or not isinstance(batch_handoff_recovery_only, bool)
+            or not isinstance(origintrail_batch_eligible, bool)
+            or (
+                origintrail_batch_eligible
+                and client_id != "origintrail"
+            )
+            or (
+                batch_handoff_recovery_only
+                and attempts != max_attempts
+            )
             or content_kind not in {"daily_news", "article", "tutorial"}
             or not isinstance(raw_source_item_ids, list)
             or len(raw_source_item_ids) != 1
@@ -623,6 +645,10 @@ class SupabaseAutomationRepository:
             attempts=attempts,
             max_attempts=max_attempts,
             locked_by=worker_id,
+            origintrail_batch_eligible=origintrail_batch_eligible,
+            batch_handoff_recovery_only=(
+                batch_handoff_recovery_only
+            ),
         )
 
     async def bind_execution_plane(
@@ -725,6 +751,42 @@ class SupabaseAutomationRepository:
                 "invalid_batch_handoff_response",
                 retryable=False,
             )
+
+    async def recover_batch_handoff(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+    ) -> bool:
+        normalized_job_id = _uuid(job_id, "job_id")
+        raw = await self._rpc("recover_review_draft_batch_handoff", {
+            "target_job_id": normalized_job_id,
+            "target_worker_id": self._worker(worker_id),
+        })
+        if raw is None:
+            return False
+        try:
+            valid = (
+                isinstance(raw, Mapping)
+                and _uuid(raw.get("job_id"), "job_id") == normalized_job_id
+                and raw.get("status") == "succeeded"
+                and _uuid(raw.get("batch_job_id"), "batch_job_id")
+                    == normalized_job_id
+                and isinstance(raw.get("input_sha256"), str)
+                and _SHA256_RE.fullmatch(raw["input_sha256"]) is not None
+                and isinstance(raw.get("reused"), bool)
+            )
+        except AutomationRepositoryError as exc:
+            raise AutomationRepositoryError(
+                "invalid_batch_handoff_recovery_response",
+                retryable=False,
+            ) from exc
+        if not valid:
+            raise AutomationRepositoryError(
+                "invalid_batch_handoff_recovery_response",
+                retryable=False,
+            )
+        return True
 
     async def fail_job(
         self,

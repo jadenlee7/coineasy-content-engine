@@ -64,6 +64,19 @@ test("catalog config and immutable storage paths are workspace/client scoped", (
     SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
     CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
   })[name]), null);
+  for (const unsafeUrl of [
+    "https://attacker.example",
+    "https://project.supabase.co.attacker.example",
+    "https://user:password@project.supabase.co",
+    "https://project.supabase.co:8443",
+    "https://project.supabase.co?redirect=https://attacker.example",
+  ]) {
+    assert.equal(contentCatalogConfig((name) => ({
+      SUPABASE_URL: unsafeUrl,
+      SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
+      CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+    })[name]), null);
+  }
   assert.equal(
     contentStoragePath(WORKSPACE_ID, "squid", ASSET_ID, "news-card.png"),
     `${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png`,

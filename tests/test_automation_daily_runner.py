@@ -60,6 +60,7 @@ def pending(
     text: str = "Our official mainnet product update is now live.",
     note: bool = False,
     source_image_url: str = "",
+    media: tuple[dict[str, object], ...] = (),
 ) -> PendingSource:
     source_id = str(uuid.uuid5(uuid.UUID(WORKSPACE_ID), f"source:{client_id}"))
     handle = {
@@ -76,6 +77,7 @@ def pending(
         source_url=f"https://x.com/{handle}/status/{post_id}",
         source_image_url=source_image_url,
         published_at="2026-07-22T00:00:00Z",
+        media=media,
         metrics={},
         is_note_tweet=note,
     )
@@ -116,6 +118,9 @@ class FakeRepository:
         self.claims = []
         self.completed = []
         self.batch_handoffs = []
+        self.batch_recoveries = []
+        self.batch_recovery_result = False
+        self.batch_recovery_error = None
         self.execution_planes = {}
         self.failed = []
         self.complete_error = False
@@ -196,6 +201,11 @@ class FakeRepository:
             attempts=1,
             max_attempts=3,
             locked_by="placeholder",
+            origintrail_batch_eligible=(
+                kwargs["client_id"] == "origintrail"
+                and kwargs["content_kind"] == "daily_news"
+                and not kwargs["source_image_url"]
+            ),
         ))
         return QueueResult(job_id=job_id, status="queued")
 
@@ -249,6 +259,12 @@ class FakeRepository:
         if self.batch_handoff_error:
             raise self.batch_handoff_error
         self.batch_handoffs.append(kwargs)
+
+    async def recover_batch_handoff(self, **kwargs):
+        self.batch_recoveries.append(kwargs)
+        if self.batch_recovery_error:
+            raise self.batch_recovery_error
+        return self.batch_recovery_result
 
     async def fail_job(self, **kwargs):
         self.failed.append(kwargs)
@@ -672,7 +688,7 @@ class FakeBatchQueueRepository:
 def active_batch_settings(*, start_offset_days=-1, end_offset_days=4):
     return BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("6.00"),
         max_claims=100,
         max_requests_per_batch=1,
@@ -684,20 +700,165 @@ def active_batch_settings(*, start_offset_days=-1, end_offset_days=4):
 def batch_bridge(repository):
     return BatchQueueBridge(
         repository=repository,
-        policy=BatchPolicy(allowed_clients=frozenset({"squid"})),
+        policy=BatchPolicy(allowed_clients=frozenset({"origintrail"})),
     )
 
 
 @pytest.mark.asyncio
-async def test_active_squid_job_hands_immutable_copy_only_work_to_batch():
+@pytest.mark.parametrize(
+    ("client_id", "expected_generated"),
+    [("origintrail", 0), ("yellow", 1)],
+)
+async def test_quoted_source_is_skipped_only_for_origintrail_canary(
+    client_id,
+    expected_generated,
+):
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        item: AutomationState(None, item != client_id, ())
+        for item in AUTOMATION_CLIENTS
+    }
+    handle = "origin_trail" if client_id == "origintrail" else "Yellow"
+    quote_id = "2082883998829752783"
+    quote = {
+        "id": quote_id,
+        "text": "Our official mainnet product update is now live.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/{handle}/status/{quote_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": True,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[quote]),
+        generation,
+    ).run()
+
+    target_record = next(
+        record for record in repo.records
+        if record["client_id"] == client_id
+    )
+    assert target_record["next_cursor"] == (
+        None if client_id == "origintrail" else quote_id
+    )
+    assert len(target_record["source_items"]) == expected_generated
+    assert summary.generated == expected_generated
+    if client_id == "origintrail":
+        assert repo.queues == []
+        assert generation.calls == []
+    else:
+        assert repo.queues[0]["client_id"] == "yellow"
+        assert generation.calls[0]["client_id"] == "yellow"
+
+
+@pytest.mark.asyncio
+async def test_latest_origintrail_quote_does_not_advance_past_committed_post():
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    latest_quote = {
+        "id": "2082883998829752783",
+        "text": "Quoted evidence is deliberately incomplete.",
+        "created_at": "2026-07-22T00:01:00Z",
+        "url": "https://x.com/origin_trail/status/2082883998829752783",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": True,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    committed = {
+        **latest_quote,
+        "id": "2082883998829752782",
+        "text": "A complete standalone OriginTrail product update.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": "https://x.com/origin_trail/status/2082883998829752782",
+        "is_quote": False,
+    }
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[latest_quote, committed]),
+        FakeGenerationClient(),
+    ).run()
+
+    record = next(
+        item for item in repo.records
+        if item["client_id"] == "origintrail"
+    )
+    assert record["next_cursor"] == committed["id"]
+    assert [item["external_id"] for item in record["source_items"]] == [
+        committed["id"]
+    ]
+    assert record["source_items"][0]["is_quote"] is False
+    assert record["source_items"][0]["is_retweet"] is False
+    assert record["source_items"][0]["is_reply"] is False
+    assert summary.generated == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_flag", ["is_retweet", "is_reply"])
+async def test_origintrail_references_other_than_quotes_are_not_allowlisted(
+    blocked_flag,
+):
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    post_id = "2082883998829752783"
+    post = {
+        "id": post_id,
+        "text": "Referenced evidence is not a standalone source.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/origin_trail/status/{post_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": False,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    post[blocked_flag] = True
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[post]),
+        FakeGenerationClient(),
+    ).run()
+
+    record = next(
+        item for item in repo.records
+        if item["client_id"] == "origintrail"
+    )
+    assert record["next_cursor"] is None
+    assert record["source_items"] == []
+    assert repo.queues == []
+    assert summary.generated == 0
+
+
+@pytest.mark.asyncio
+async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -743,7 +904,8 @@ async def test_active_squid_job_hands_immutable_copy_only_work_to_batch():
     queued = batch_repository.calls[0]
     item = queued["item"]
     assert item.job_id == repo.batch_handoffs[0]["batch_job_id"]
-    assert item.client_id == "squid"
+    assert item.client_id == "origintrail"
+    assert item.agent_id == "origintrail_client_agent"
     assert item.model_tier == "S"
     assert item.model == "gpt-5.6-luna"
     assert item.priority == "P2"
@@ -775,12 +937,216 @@ async def test_active_squid_job_hands_immutable_copy_only_work_to_batch():
     assert summary.generated == 0
     assert any(
         outcome == {
-            "client_id": "squid",
+            "client_id": "origintrail",
             "status": "batch_queued",
             "detail": "daily_news",
         }
         for outcome in summary.outcomes
     )
+
+
+@pytest.mark.asyncio
+async def test_image_backed_origintrail_source_stays_on_the_sync_plane():
+    image_url = "https://pbs.twimg.com/media/origintrail-official.jpg"
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["origintrail"] = AutomationState(
+        None,
+        False,
+        (pending("origintrail", source_image_url=image_url),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_image_url"] == image_url
+    assert generation.calls[0]["client_id"] == "origintrail"
+    assert generation.calls[0]["source_image_url"] == image_url
+    assert set(repo.execution_planes.values()) == {"studio_sync"}
+    assert batch_repository.calls == []
+    assert batch_repository.budget_calls == []
+
+
+@pytest.mark.asyncio
+async def test_origintrail_article_stays_on_the_sync_plane():
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["origintrail"] = AutomationState(
+        None,
+        False,
+        (pending("origintrail", text="A" * 320, note=True),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["content_kind"] == "article"
+    assert set(repo.execution_planes.values()) == {"studio_sync"}
+    assert batch_repository.calls == []
+    assert batch_repository.budget_calls == []
+
+
+@pytest.mark.asyncio
+async def test_pre_cutover_origintrail_source_stays_on_the_sync_plane():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="A pre-cutover source with unknown quote status.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+        origintrail_batch_eligible=False,
+    ))
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert len(generation.calls) == 1
+    assert set(repo.execution_planes.values()) == {"studio_sync"}
+    assert batch_repository.calls == []
+    assert batch_repository.budget_calls == []
+
+
+def test_origintrail_batch_item_rejects_article_work():
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="article",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="A" * 320,
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="official-x:test",
+    )
+    reference_pack = StyleReferencePack(
+        request_id=job.request_id,
+        primary_source_item_id=job.primary_source_item_id,
+        reference_pack_hash="a" * 32,
+        references=(),
+    )
+
+    with pytest.raises(ValueError, match="unsupported evidence"):
+        OfficialXDailyRunner._origintrail_batch_item(
+            job=job,
+            reference_pack=reference_pack,
+            experiment_end_at=None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", ["video", "animated_gif"])
+async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
+    media_type,
+):
+    preview_url = f"https://pbs.twimg.com/media/origintrail-{media_type}.jpg"
+    states = {
+        client_id: AutomationState(None, client_id != "origintrail", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["origintrail"] = AutomationState(
+        None,
+        False,
+        (
+            pending(
+                "origintrail",
+                media=({"type": media_type, "url": preview_url},),
+            ),
+        ),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_image_url"] == preview_url
+    assert generation.calls[0]["source_image_url"] == preview_url
+    assert set(repo.execution_planes.values()) == {"studio_sync"}
+    assert batch_repository.calls == []
+    assert batch_repository.budget_calls == []
+
+
+@pytest.mark.asyncio
+async def test_visual_media_fallback_is_limited_to_origintrail_canary():
+    preview_url = "https://pbs.twimg.com/media/yellow-video.jpg"
+    states = {
+        client_id: AutomationState(None, client_id != "yellow", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["yellow"] = AutomationState(
+        None,
+        False,
+        (
+            pending(
+                "yellow",
+                media=({"type": "video", "url": preview_url},),
+            ),
+        ),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_image_url"] == ""
+    assert generation.calls[0]["source_image_url"] == ""
 
 
 @pytest.mark.asyncio
@@ -792,20 +1158,21 @@ async def test_active_backlog_uses_the_queue_attempt_kst_budget():
     repo = FakeRepository(states)
     repo.claims.append(ClaimedJob(
         job_id="77777777-7777-4777-8777-777777777777",
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 21),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid backlog update.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail backlog update.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=1,
         max_attempts=3,
         locked_by="placeholder",
+        origintrail_batch_eligible=True,
     ))
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
@@ -836,20 +1203,20 @@ async def test_active_backlog_uses_the_queue_attempt_kst_budget():
 @pytest.mark.asyncio
 async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
     ending_soon = BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("6.00"),
         max_claims=100,
         max_requests_per_batch=1,
@@ -878,20 +1245,20 @@ async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
 @pytest.mark.asyncio
 async def test_batch_deadline_is_clamped_to_the_experiment_end():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     batch_repository = FakeBatchQueueRepository()
     experiment_end = NOW + timedelta(hours=30)
     clamped = BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("6.00"),
         max_claims=100,
         max_requests_per_batch=1,
@@ -919,25 +1286,26 @@ async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
     repo = FakeRepository(states)
     repo.claims.append(ClaimedJob(
         job_id="77777777-7777-4777-8777-777777777777",
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 22),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid retry.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail retry.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=2,
         max_attempts=3,
         locked_by="placeholder",
+        origintrail_batch_eligible=True,
     ))
     batch_repository = FakeBatchQueueRepository()
     ending_soon = BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("6.00"),
         max_claims=100,
         max_requests_per_batch=1,
@@ -970,15 +1338,15 @@ async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
     job_id = "77777777-7777-4777-8777-777777777777"
     repo.claims.append(ClaimedJob(
         job_id=job_id,
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 22),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid retry.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail retry.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=2,
@@ -986,10 +1354,11 @@ async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
         locked_by="placeholder",
     ))
     repo.execution_planes[job_id] = "openai_batch"
+    repo.batch_recovery_result = True
     batch_repository = FakeBatchQueueRepository()
     expired = BatchSettings(
         mode="live",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("6.00"),
         max_claims=100,
         max_requests_per_batch=1,
@@ -1007,8 +1376,118 @@ async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
 
     assert summary.errors == 0
     assert batch_repository.budget_calls == []
-    assert batch_repository.calls[0]["replay_only"] is True
-    assert len(repo.batch_handoffs) == 1
+    assert batch_repository.calls == []
+    assert repo.style_packs == []
+    assert len(repo.batch_recoveries) == 1
+    assert repo.batch_recoveries[0]["job_id"] == job_id
+    assert repo.batch_recoveries[0]["worker_id"].startswith("official-x:")
+    assert repo.batch_handoffs == []
+
+
+@pytest.mark.asyncio
+async def test_max_attempt_claim_uses_stored_receipt_without_admission():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job_id = "77777777-7777-4777-8777-777777777777"
+    repo.claims.append(ClaimedJob(
+        job_id=job_id,
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable final OriginTrail Batch recovery.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=3,
+        max_attempts=3,
+        locked_by="placeholder",
+        batch_handoff_recovery_only=True,
+    ))
+    repo.execution_planes[job_id] = "openai_batch"
+    repo.batch_recovery_result = True
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+    expired = BatchSettings(
+        mode="live",
+        allowed_clients=frozenset({"origintrail"}),
+        daily_cap_usd=Decimal("6.00"),
+        max_claims=100,
+        max_requests_per_batch=1,
+        experiment_start_at=NOW - timedelta(days=2),
+        experiment_end_at=NOW - timedelta(hours=1),
+    )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=expired,
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 0
+    assert generation.calls == []
+    assert repo.style_packs == []
+    assert batch_repository.budget_calls == []
+    assert batch_repository.calls == []
+    assert len(repo.batch_recoveries) == 1
+    assert repo.batch_handoffs == []
+    assert repo.failed == []
+
+
+@pytest.mark.asyncio
+async def test_max_attempt_missing_receipt_never_falls_back_to_admission():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job_id = "77777777-7777-4777-8777-777777777777"
+    repo.claims.append(ClaimedJob(
+        job_id=job_id,
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="An immutable final OriginTrail Batch recovery.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=3,
+        max_attempts=3,
+        locked_by="placeholder",
+        batch_handoff_recovery_only=True,
+    ))
+    repo.execution_planes[job_id] = "openai_batch"
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 1
+    assert generation.calls == []
+    assert repo.style_packs == []
+    assert len(repo.batch_recoveries) == 1
+    assert batch_repository.calls == []
+    assert batch_repository.budget_calls == []
+    assert repo.batch_handoffs == []
+    assert repo.failed == []
 
 
 @pytest.mark.asyncio
@@ -1021,15 +1500,15 @@ async def test_sync_plane_binding_survives_experiment_start():
     job_id = "77777777-7777-4777-8777-777777777777"
     repo.claims.append(ClaimedJob(
         job_id=job_id,
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 22),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid sync retry.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail sync retry.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=2,
@@ -1063,15 +1542,15 @@ async def test_batch_plane_binding_never_falls_back_to_sync_when_disabled():
     job_id = "77777777-7777-4777-8777-777777777777"
     repo.claims.append(ClaimedJob(
         job_id=job_id,
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 22),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid Batch retry.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail Batch retry.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=2,
@@ -1082,7 +1561,7 @@ async def test_batch_plane_binding_never_falls_back_to_sync_when_disabled():
     generation = FakeGenerationClient()
     disabled = BatchSettings(
         mode="off",
-        allowed_clients=frozenset({"squid"}),
+        allowed_clients=frozenset({"origintrail"}),
         daily_cap_usd=Decimal("0.50"),
         max_claims=1,
         max_requests_per_batch=1,
@@ -1104,13 +1583,13 @@ async def test_batch_plane_binding_never_falls_back_to_sync_when_disabled():
 @pytest.mark.asyncio
 async def test_batch_queue_failure_never_falls_through_to_sync_generation():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1138,13 +1617,13 @@ async def test_batch_queue_failure_never_falls_through_to_sync_generation():
 @pytest.mark.parametrize("retryable", [True, False])
 async def test_producer_first_budget_failure_never_queues_or_syncs(retryable):
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1181,20 +1660,21 @@ async def test_batch_policy_rejection_never_falls_through_to_sync_generation():
     repo = FakeRepository(states)
     repo.claims.append(ClaimedJob(
         job_id="77777777-7777-4777-8777-777777777777",
-        client_id="squid",
+        client_id="origintrail",
         kst_date=date(2026, 7, 20),
         content_kind="daily_news",
         request_id="66666666-6666-4666-8666-666666666666",
         primary_source_item_id=(
             "55555555-5555-4555-8555-555555555555"
         ),
-        source_content="An immutable official Squid update.",
-        source_url="https://x.com/SquidRouter/status/456",
+        source_content="An immutable official OriginTrail update.",
+        source_url="https://x.com/origin_trail/status/456",
         source_image_url="",
         manual_only=False,
         attempts=1,
         max_attempts=3,
         locked_by="placeholder",
+        origintrail_batch_eligible=True,
     ))
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
@@ -1217,13 +1697,13 @@ async def test_batch_policy_rejection_never_falls_through_to_sync_generation():
 @pytest.mark.asyncio
 async def test_batch_handoff_completion_failure_leaves_durable_queue_for_replay():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     repo.batch_handoff_error = AutomationRepositoryError(
@@ -1252,15 +1732,18 @@ async def test_batch_handoff_completion_failure_leaves_durable_queue_for_replay(
 
 
 @pytest.mark.asyncio
-async def test_batch_experiment_does_not_change_non_squid_generation():
+@pytest.mark.parametrize("client_id", ["yellow", "squid", "babylon"])
+async def test_batch_experiment_does_not_change_non_origintrail_generation(
+    client_id,
+):
     states = {
-        client_id: AutomationState(None, client_id != "yellow", ())
-        for client_id in AUTOMATION_CLIENTS
+        candidate: AutomationState(None, candidate != client_id, ())
+        for candidate in AUTOMATION_CLIENTS
     }
-    states["yellow"] = AutomationState(
+    states[client_id] = AutomationState(
         None,
         False,
-        (pending("yellow"),),
+        (pending(client_id),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1275,20 +1758,20 @@ async def test_batch_experiment_does_not_change_non_squid_generation():
     ).run()
 
     assert summary.generated == 1
-    assert generation.calls[0]["client_id"] == "yellow"
+    assert generation.calls[0]["client_id"] == client_id
     assert batch_repository.calls == []
 
 
 @pytest.mark.asyncio
-async def test_squid_uses_existing_sync_path_outside_experiment_window():
+async def test_origintrail_uses_existing_sync_path_outside_experiment_window():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1306,20 +1789,20 @@ async def test_squid_uses_existing_sync_path_outside_experiment_window():
     ).run()
 
     assert summary.generated == 1
-    assert generation.calls[0]["client_id"] == "squid"
+    assert generation.calls[0]["client_id"] == "origintrail"
     assert batch_repository.calls == []
 
 
 @pytest.mark.asyncio
-async def test_new_squid_job_resumes_sync_after_experiment_expiry():
+async def test_new_origintrail_job_resumes_sync_after_experiment_expiry():
     states = {
-        client_id: AutomationState(None, client_id != "squid", ())
+        client_id: AutomationState(None, client_id != "origintrail", ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["squid"] = AutomationState(
+    states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("squid"),),
+        (pending("origintrail"),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1337,7 +1820,7 @@ async def test_new_squid_job_resumes_sync_after_experiment_expiry():
     ).run()
 
     assert summary.generated == 1
-    assert generation.calls[0]["client_id"] == "squid"
+    assert generation.calls[0]["client_id"] == "origintrail"
     assert batch_repository.calls == []
 
 
@@ -1354,6 +1837,7 @@ async def test_reserved_clients_still_poll_and_record_without_queueing():
         "url": "https://x.com/Yellow/status/999",
         "is_retweet": False,
         "is_reply": False,
+        "is_quote": False,
         "is_note_tweet": False,
         "metrics": {},
         "media": [],

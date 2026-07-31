@@ -6,7 +6,8 @@ import {
 
 export const MAX_BATCH_REVIEW_LIMIT = 50;
 
-const BATCH_REVIEW_CLIENT = "squid";
+const BATCH_REVIEW_CLIENT = "origintrail";
+const BATCH_REVIEW_AGENT = "origintrail_client_agent";
 const BATCH_REVIEW_WORKFLOW = "official_source_nonurgent_pack";
 const BATCH_REVIEW_STATUS = "completed";
 const BATCH_REVIEW_RESULT_CODE = "needs_review";
@@ -30,8 +31,8 @@ export type BatchReviewConfig = ContentCatalogConfig;
 export type BatchReviewListItem = {
   ref: string;
   job_id: string;
-  client_id: "squid";
-  agent_id: string;
+  client_id: "origintrail";
+  agent_id: "origintrail_client_agent";
   workflow_kind: "official_source_nonurgent_pack";
   stage: "generate";
   status: "completed";
@@ -54,7 +55,7 @@ export type BatchReviewPage = {
   next_cursor: BatchReviewCursor | null;
 };
 
-export type SquidBatchReviewPayload = {
+export type BatchReviewPayload = {
   headline_ko: string;
   body_ko: string;
   x_copy_ko: string;
@@ -62,7 +63,7 @@ export type SquidBatchReviewPayload = {
 };
 
 export type BatchReviewDetail = BatchReviewListItem & {
-  result_payload: SquidBatchReviewPayload;
+  result_payload: BatchReviewPayload;
   input_sha256: string;
   actual_input_tokens: number;
   actual_output_tokens: number;
@@ -114,7 +115,7 @@ function safeSourceUrl(value: unknown): string | null | undefined {
   }
 }
 
-function exactSquidResultPayload(value: unknown): SquidBatchReviewPayload | null {
+function exactBatchResultPayload(value: unknown): BatchReviewPayload | null {
   let byteLength = Number.POSITIVE_INFINITY;
   try {
     byteLength = Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -151,7 +152,7 @@ function parseListItem(value: unknown): BatchReviewListItem | null {
   if (
     !isCatalogUuid(value.job_id)
     || value.client_id !== BATCH_REVIEW_CLIENT
-    || typeof value.agent_id !== "string"
+    || value.agent_id !== BATCH_REVIEW_AGENT
     || !AGENT_ID_PATTERN.test(value.agent_id)
     || value.workflow_kind !== BATCH_REVIEW_WORKFLOW
     || value.stage !== "generate"
@@ -307,7 +308,7 @@ export async function getBatchReviewItem(
   if (result === null) return null;
   const listFields = parseListItem(result);
   const resultPayload = isRecord(result)
-    ? exactSquidResultPayload(result.result_payload)
+    ? exactBatchResultPayload(result.result_payload)
     : null;
   if (
     !listFields

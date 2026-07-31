@@ -10,6 +10,27 @@ create schema if not exists agent_runtime;
 revoke all on schema agent_runtime
 from public, anon, authenticated, service_role;
 
+-- Only source rows observed by the post-deployment OriginTrail intake as an
+-- explicit non-quote may enter the first Batch canary. Missing membership is
+-- the durable quarantine for every pre-cutover pending row.
+create table private.origintrail_standalone_sources (
+    workspace_id uuid not null,
+    client_id text not null check (client_id = 'origintrail'),
+    source_item_id uuid primary key,
+    is_quote boolean not null check (is_quote is false),
+    first_poll_request_id uuid not null,
+    verified_at timestamptz not null default now(),
+    foreign key (workspace_id, client_id, source_item_id)
+        references public.source_items(workspace_id, client_id, id)
+        on delete restrict
+);
+
+create index origintrail_standalone_sources_workspace_idx
+    on private.origintrail_standalone_sources (workspace_id, source_item_id);
+
+revoke all on table private.origintrail_standalone_sources
+from public, anon, authenticated, service_role;
+
 create table agent_runtime.batch_budgets (
     workspace_id uuid not null references public.workspaces(id) on delete restrict,
     budget_key text not null check (
@@ -258,7 +279,7 @@ create index agent_batch_members_job_idx
     on agent_runtime.batch_members (workspace_id, job_id, attempt desc);
 create index agent_batch_review_inbox_idx
     on agent_runtime.batch_jobs (workspace_id, finished_at desc, job_id desc)
-    where client_id = 'squid'
+    where client_id = 'origintrail'
       and workflow_kind = 'official_source_nonurgent_pack'
       and status = 'completed'
       and result_code = 'needs_review';
@@ -278,6 +299,115 @@ revoke all on table
     agent_runtime.batch_jobs,
     agent_runtime.batch_members
 from public, anon, authenticated, service_role;
+
+-- The generic intake remains unchanged for the other clients. OriginTrail
+-- uses this narrow wrapper, which requires an exact false quote signal and
+-- atomically allowlists only the source rows committed by that same receipt.
+create or replace function public.record_origintrail_nonquote_sources(
+    target_workspace_id uuid,
+    target_client_id text,
+    target_handle text,
+    target_poll_request_id uuid,
+    target_expected_cursor text,
+    target_next_cursor text,
+    target_items jsonb,
+    target_polled_at timestamptz default now()
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    receipt jsonb;
+    source_id uuid;
+begin
+    if target_client_id is distinct from 'origintrail'
+       or jsonb_typeof(target_items) is distinct from 'array'
+       or exists (
+           select 1
+           from jsonb_array_elements(target_items) as entry(item)
+           where jsonb_typeof(item) is distinct from 'object'
+              or item -> 'is_quote' is distinct from 'false'::jsonb
+              or item -> 'is_retweet' is distinct from 'false'::jsonb
+              or item -> 'is_reply' is distinct from 'false'::jsonb
+       ) then
+        raise exception 'OriginTrail intake requires explicit standalone signals'
+            using errcode = '22023';
+    end if;
+
+    receipt := public.record_official_x_sources(
+        target_workspace_id,
+        target_client_id,
+        target_handle,
+        target_poll_request_id,
+        target_expected_cursor,
+        target_next_cursor,
+        target_items,
+        target_polled_at
+    );
+    if jsonb_typeof(receipt) is distinct from 'object'
+       or jsonb_typeof(receipt -> 'source_item_ids') is distinct from 'array'
+       or jsonb_array_length(receipt -> 'source_item_ids')
+            <> jsonb_array_length(target_items) then
+        raise exception 'OriginTrail intake receipt is invalid'
+            using errcode = '23514';
+    end if;
+
+    begin
+        for source_id in
+            select value::uuid
+            from jsonb_array_elements_text(
+                receipt -> 'source_item_ids'
+            ) as committed(value)
+        loop
+            insert into private.origintrail_standalone_sources (
+                workspace_id,
+                client_id,
+                source_item_id,
+                is_quote,
+                first_poll_request_id,
+                verified_at
+            )
+            select
+                source.workspace_id,
+                source.client_id,
+                source.id,
+                false,
+                target_poll_request_id,
+                statement_timestamp()
+            from public.source_items as source
+            where source.id = source_id
+              and source.workspace_id = target_workspace_id
+              and source.client_id = 'origintrail'
+            on conflict (source_item_id) do nothing;
+        end loop;
+    exception when others then
+        raise exception 'OriginTrail intake receipt source identity is invalid'
+            using errcode = '23514';
+    end;
+
+    if exists (
+        select 1
+        from jsonb_array_elements_text(
+            receipt -> 'source_item_ids'
+        ) as committed(value)
+        where not exists (
+            select 1
+            from private.origintrail_standalone_sources as standalone
+            where standalone.source_item_id = committed.value::uuid
+              and standalone.workspace_id = target_workspace_id
+              and standalone.client_id = 'origintrail'
+              and standalone.is_quote is false
+        )
+    ) then
+        raise exception 'OriginTrail source was not durably verified as standalone'
+            using errcode = '23514';
+    end if;
+
+    return receipt;
+end;
+$$;
 
 create or replace function public.configure_agent_batch_budget(
     target_workspace_id uuid,
@@ -441,6 +571,31 @@ begin
         raise exception 'batch workflow routing is invalid'
             using errcode = '22023';
     end if;
+    if target_client_id = 'origintrail'
+       and (
+           target_agent_id <> 'origintrail_client_agent'
+           or target_workflow_kind <> 'official_source_nonurgent_pack'
+           or target_stage <> 'generate'
+       ) then
+        raise exception 'OriginTrail canary routing identity is invalid'
+            using errcode = '22023';
+    end if;
+    if target_client_id = 'origintrail'
+       and not exists (
+           select 1
+           from public.jobs as review_job
+           where review_job.id = target_job_id
+             and review_job.workspace_id = target_workspace_id
+             and review_job.client_id = 'origintrail'
+             and review_job.job_kind = 'generate'
+             and review_job.input ->> 'workflow'
+                    = 'official_x_review_draft_v1'
+             and review_job.input ->> 'content_kind' = 'daily_news'
+             and review_job.input -> 'manual_only' = 'false'::jsonb
+       ) then
+        raise exception 'OriginTrail canary accepts daily news only'
+            using errcode = '23514';
+    end if;
     expected_first_custom_id := target_job_id::text || ':' || target_stage || ':1';
     if target_custom_id is null
        or target_custom_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
@@ -548,6 +703,20 @@ begin
     -- budget reservation, and insertion.
     if target_replay_only then
         raise exception 'replay-only batch job was not previously committed'
+            using errcode = '23514';
+    end if;
+
+    -- A max-attempt public recovery claim may only read the exact durable row
+    -- selected by the recovery lease. It must never create replacement work.
+    if exists (
+        select 1
+        from public.jobs as review_job
+        where review_job.id = target_job_id
+          and review_job.workspace_id = target_workspace_id
+          and review_job.output -> 'batch_handoff_recovery_only'
+                = 'true'::jsonb
+    ) then
+        raise exception 'Batch handoff recovery cannot admit new work'
             using errcode = '23514';
     end if;
 
@@ -810,6 +979,14 @@ begin
         from agent_runtime.batch_jobs as job
         where job.workspace_id = target_workspace_id
           and job.client_id = any(target_client_ids)
+          and (
+              job.client_id <> 'origintrail'
+              or (
+                  job.agent_id = 'origintrail_client_agent'
+                  and job.workflow_kind = 'official_source_nonurgent_pack'
+                  and job.stage = 'generate'
+              )
+          )
           and job.reservation_state = 'held'
           and job.deadline_at > statement_timestamp()
           and (
@@ -1248,7 +1425,7 @@ begin
         raise exception 'batch job was not found'
             using errcode = 'P0002';
     end if;
-    if job.client_id = 'squid'
+    if job.client_id = 'origintrail'
        and job.workflow_kind = 'official_source_nonurgent_pack'
        and (
            target_result_code is distinct from 'needs_review'
@@ -1783,6 +1960,364 @@ begin
 end;
 $$;
 
+-- The first canary carries text evidence only. Treat the public job and every
+-- pinned source row as one fail-closed evidence boundary so video/GIF media
+-- cannot masquerade as a text-only post merely because source_image_url is
+-- empty.
+create or replace function agent_runtime.origintrail_review_is_text_only(
+    target_job_id uuid
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+    review_job public.jobs%rowtype;
+    source_ids uuid[];
+    source_count integer;
+    distinct_source_count integer;
+    text_only_source_count integer;
+begin
+    select job.* into review_job
+    from public.jobs as job
+    where job.id = target_job_id;
+    if not found
+       or review_job.client_id <> 'origintrail'
+       or review_job.job_kind <> 'generate'
+       or review_job.input ->> 'workflow'
+            is distinct from 'official_x_review_draft_v1'
+       or review_job.input ->> 'content_kind'
+            is distinct from 'daily_news'
+       or review_job.input -> 'manual_only' is distinct from 'false'::jsonb
+       or coalesce(btrim(review_job.input ->> 'source_image_url'), '') <> ''
+       or jsonb_typeof(review_job.input -> 'source_item_ids')
+            is distinct from 'array'
+       or jsonb_array_length(review_job.input -> 'source_item_ids')
+            not between 1 and 20 then
+        return false;
+    end if;
+
+    begin
+        select
+            array_agg(value::uuid order by ordinal),
+            count(*),
+            count(distinct value)
+        into source_ids, source_count, distinct_source_count
+        from jsonb_array_elements_text(
+                 review_job.input -> 'source_item_ids'
+             ) with ordinality as source_id(value, ordinal);
+    exception when others then
+        return false;
+    end;
+    if source_ids is null
+       or source_count <> distinct_source_count then
+        return false;
+    end if;
+
+    select count(*) into text_only_source_count
+    from public.source_items as source
+    where source.id = any(source_ids)
+      and source.workspace_id = review_job.workspace_id
+      and source.client_id = 'origintrail'
+      and jsonb_typeof(source.media) = 'array'
+      and jsonb_array_length(source.media) = 0
+      and exists (
+          select 1
+          from private.origintrail_standalone_sources as standalone
+          where standalone.workspace_id = source.workspace_id
+            and standalone.client_id = source.client_id
+            and standalone.source_item_id = source.id
+            and standalone.is_quote is false
+      );
+    return text_only_source_count = source_count;
+end;
+$$;
+
+revoke all on function agent_runtime.origintrail_review_is_text_only(uuid)
+    from public, anon, authenticated, service_role;
+
+-- A public max-attempt retry is recoverable only when an exact, safe private
+-- OriginTrail row already exists. This predicate never creates or mutates
+-- provider work.
+create or replace function agent_runtime.has_recoverable_origintrail_handoff(
+    target_job_id uuid
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+    review_job public.jobs%rowtype;
+    batch_job agent_runtime.batch_jobs%rowtype;
+    evidence jsonb;
+begin
+    select job.* into review_job
+    from public.jobs as job
+    where job.id = target_job_id;
+    select queued.* into batch_job
+    from agent_runtime.batch_jobs as queued
+    where queued.job_id = target_job_id;
+    if review_job.id is null
+       or batch_job.job_id is null
+       or review_job.workspace_id <> batch_job.workspace_id
+       or review_job.client_id <> 'origintrail'
+       or batch_job.client_id <> 'origintrail'
+       or batch_job.agent_id <> 'origintrail_client_agent'
+       or batch_job.workflow_kind <> 'official_source_nonurgent_pack'
+       or batch_job.stage <> 'generate'
+       or batch_job.latency_class <> 'batch_24h'
+       or batch_job.model <> 'gpt-5.6-luna'
+       or batch_job.model_tier <> 'S'
+       or review_job.output ->> 'execution_plane'
+            is distinct from 'openai_batch'
+       or not agent_runtime.origintrail_review_is_text_only(target_job_id)
+       or batch_job.input_payload -> 'approval_required'
+            is distinct from 'true'::jsonb
+       or batch_job.input_payload -> 'interactive'
+            is distinct from 'false'::jsonb
+       or batch_job.input_payload -> 'incident_or_release_blocker'
+            is distinct from 'false'::jsonb
+       or batch_job.input_payload -> 'live_tools_required'
+            is distinct from 'false'::jsonb
+       or batch_job.input_payload -> 'source_snapshot_complete'
+            is distinct from 'true'::jsonb
+       or batch_job.input_payload -> 'input_immutable'
+            is distinct from 'true'::jsonb
+       or batch_job.input_payload -> 'retry_idempotent'
+            is distinct from 'true'::jsonb
+       or not (
+           (
+               batch_job.status in (
+                   'queued', 'claimed', 'submitted', 'in_progress',
+                   'retry_wait'
+               )
+               and batch_job.reservation_state = 'held'
+               and batch_job.result_code is null
+           )
+           or (
+               batch_job.status = 'completed'
+               and batch_job.reservation_state = 'settled'
+               and batch_job.result_code = 'needs_review'
+           )
+       ) then
+        return false;
+    end if;
+
+    begin
+        evidence := (batch_job.input_payload ->> 'input')::jsonb;
+    exception when others then
+        return false;
+    end;
+    return jsonb_typeof(evidence) = 'object'
+       and evidence ->> 'client_id' = 'origintrail'
+       and evidence ->> 'content_kind'
+            is not distinct from review_job.input ->> 'content_kind'
+       and evidence ->> 'request_id'
+            is not distinct from review_job.input ->> 'request_id'
+       and evidence -> 'source' ->> 'content'
+            is not distinct from review_job.input ->> 'source_content'
+       and evidence -> 'source' ->> 'url'
+            is not distinct from review_job.input ->> 'source_url';
+end;
+$$;
+
+revoke all on function agent_runtime.has_recoverable_origintrail_handoff(uuid)
+    from public, anon, authenticated, service_role;
+
+-- Override the existing public worker claim with one narrow recovery lane.
+-- Normal claims still increment attempts. A max-attempt recovery keeps the
+-- counter unchanged and is possible only for the exact durable row above.
+create or replace function public.claim_review_draft_job(
+    target_workspace_id uuid,
+    target_worker_id text,
+    target_lease_seconds integer default 900
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    candidate public.jobs%rowtype;
+    recovery_only boolean := false;
+begin
+    if target_worker_id is null
+       or target_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+       or target_lease_seconds not between 60 and 3600 then
+        raise exception 'review draft worker lease request is invalid'
+            using errcode = '22023';
+    end if;
+    if not exists (
+        select 1 from public.workspaces where id = target_workspace_id
+    ) then
+        raise exception 'review draft workspace does not exist'
+            using errcode = '23514';
+    end if;
+
+    update public.jobs as job
+    set status = case
+            when job.attempts = job.max_attempts
+             and agent_runtime.has_recoverable_origintrail_handoff(job.id)
+                then 'retrying'
+            when job.attempts >= job.max_attempts then 'failed'
+            else 'retrying'
+        end,
+        available_at = statement_timestamp(),
+        locked_by = null,
+        locked_at = null,
+        lease_expires_at = null,
+        last_error_code = 'lease_expired',
+        last_error_message =
+            'The previous review-draft worker lease expired.',
+        finished_at = case
+            when job.attempts >= job.max_attempts
+                then statement_timestamp()
+            else null
+        end
+    where job.workspace_id = target_workspace_id
+      and job.job_kind = 'generate'
+      and job.input ->> 'workflow' = 'official_x_review_draft_v1'
+      and job.input -> 'manual_only' = 'false'::jsonb
+      and job.status = 'running'
+      and job.lease_expires_at <= statement_timestamp();
+
+    select job.* into candidate
+    from public.jobs as job
+    where job.workspace_id = target_workspace_id
+      and job.job_kind = 'generate'
+      and job.input ->> 'workflow' = 'official_x_review_draft_v1'
+      and job.input -> 'manual_only' = 'false'::jsonb
+      and job.available_at <= statement_timestamp()
+      and (
+          (
+              job.status in ('queued', 'retrying')
+              and job.attempts < job.max_attempts
+          )
+          or (
+              job.status in ('retrying', 'failed')
+              and job.attempts = job.max_attempts
+              and job.finished_at <= statement_timestamp()
+                    - interval '1 minute'
+              and agent_runtime.has_recoverable_origintrail_handoff(job.id)
+          )
+      )
+    order by
+        (
+            job.attempts = job.max_attempts
+            and agent_runtime.has_recoverable_origintrail_handoff(job.id)
+        ) desc,
+        job.priority desc,
+        job.available_at,
+        job.created_at,
+        job.id
+    for update skip locked
+    limit 1;
+    if not found then
+        return null;
+    end if;
+    recovery_only := candidate.attempts = candidate.max_attempts;
+
+    update public.jobs
+    set status = 'running',
+        attempts = case when recovery_only then attempts else attempts + 1 end,
+        output = case
+            when recovery_only then output
+                || '{"batch_handoff_recovery_only":true}'::jsonb
+            else output
+        end,
+        locked_by = target_worker_id,
+        locked_at = statement_timestamp(),
+        lease_expires_at = statement_timestamp()
+            + make_interval(secs => target_lease_seconds),
+        started_at = coalesce(started_at, statement_timestamp()),
+        finished_at = null,
+        last_error_code = null,
+        last_error_message = null
+    where id = candidate.id
+    returning * into candidate;
+
+    if recovery_only then
+        insert into public.event_log (
+            workspace_id, entity_type, entity_id, event_type, data
+        ) values (
+            candidate.workspace_id,
+            'job',
+            candidate.id,
+            'official_x_review_draft_batch_handoff_recovery_claimed',
+            jsonb_build_object(
+                'job_id', candidate.id,
+                'attempts', candidate.attempts,
+                'max_attempts', candidate.max_attempts
+            )
+        );
+    end if;
+
+    return jsonb_build_object(
+        'job_id', candidate.id,
+        'workspace_id', candidate.workspace_id,
+        'client_id', candidate.client_id,
+        'status', candidate.status,
+        'attempts', candidate.attempts,
+        'max_attempts', candidate.max_attempts,
+        'origintrail_batch_eligible',
+            candidate.client_id = 'origintrail'
+            and agent_runtime.origintrail_review_is_text_only(candidate.id),
+        'batch_handoff_recovery_only', recovery_only,
+        'locked_by', candidate.locked_by,
+        'lease_expires_at', candidate.lease_expires_at,
+        'input', candidate.input
+    );
+end;
+$$;
+
+-- Enforce both sides of the durable route at the table boundary. The legacy
+-- Studio completion RPC may only finish a studio_sync job, while the Batch
+-- handoff may only finish an openai_batch job.
+create or replace function agent_runtime.enforce_review_execution_plane()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+    if old.input ->> 'workflow' = 'official_x_review_draft_v1'
+       and old.status <> 'succeeded'
+       and new.status = 'succeeded' then
+        if new.output ->> 'handoff' = 'openai_batch' then
+            if old.output ->> 'execution_plane'
+                    is distinct from 'openai_batch' then
+                raise exception 'Batch completion requires its bound execution plane'
+                    using errcode = '23514';
+            end if;
+        elsif new.output ? 'content_item_id'
+              and new.output ? 'content_version_id' then
+            if old.output ->> 'execution_plane'
+                    is distinct from 'studio_sync' then
+                raise exception 'Studio completion requires its bound execution plane'
+                    using errcode = '23514';
+            end if;
+        else
+            raise exception 'review draft completion receipt is invalid'
+                using errcode = '23514';
+        end if;
+    end if;
+    return new;
+end;
+$$;
+
+revoke all on function agent_runtime.enforce_review_execution_plane()
+    from public, anon, authenticated, service_role;
+
+drop trigger if exists enforce_review_execution_plane
+    on public.jobs;
+create trigger enforce_review_execution_plane
+before update on public.jobs
+for each row execute function agent_runtime.enforce_review_execution_plane();
+
 -- Bind an official-X review job to one execution plane for its entire retry
 -- lifecycle. The first live lease holder chooses the plane; later lease
 -- holders can recover that decision, but can never switch it.
@@ -1843,7 +2378,18 @@ begin
     else
         bound_plane := target_requested_plane;
         reused := false;
+    end if;
 
+    if bound_plane = 'openai_batch'
+       and (
+           review_job.client_id <> 'origintrail'
+           or not agent_runtime.origintrail_review_is_text_only(review_job.id)
+       ) then
+        raise exception 'Batch execution plane requires text-only OriginTrail evidence'
+            using errcode = '23514';
+    end if;
+
+    if not reused then
         update public.jobs
         set output = jsonb_set(
                 review_job.output,
@@ -1912,12 +2458,15 @@ begin
     where queued_job.id = target_job_id
     for update;
     if not found
-       or review_job.client_id <> 'squid'
+       or review_job.client_id <> 'origintrail'
        or review_job.job_kind <> 'generate'
        or review_job.content_item_id is not null
        or review_job.input ->> 'workflow'
             is distinct from 'official_x_review_draft_v1'
-       or review_job.input -> 'manual_only' is distinct from 'false'::jsonb then
+       or review_job.input ->> 'content_kind'
+            is distinct from 'daily_news'
+       or review_job.input -> 'manual_only' is distinct from 'false'::jsonb
+       or not agent_runtime.origintrail_review_is_text_only(review_job.id) then
         raise exception 'review draft Batch handoff job does not exist'
             using errcode = '23514';
     end if;
@@ -1929,7 +2478,8 @@ begin
     for key share;
     if not found
        or batch_job.job_id is distinct from review_job.id
-       or batch_job.client_id <> 'squid'
+       or batch_job.client_id <> 'origintrail'
+       or batch_job.agent_id <> 'origintrail_client_agent'
        or batch_job.workflow_kind
             <> 'official_source_nonurgent_pack'
        or batch_job.stage <> 'generate'
@@ -2047,6 +2597,113 @@ begin
 end;
 $$;
 
+-- A retry first tries to commit the already admitted private receipt. No
+-- current prompt, schema, deadline, idempotency key, budget, or provider call
+-- participates in this path. A miss is nullable for ordinary retries, while a
+-- max-attempt recovery lease is fail-closed and can never become new work.
+create or replace function public.recover_review_draft_batch_handoff(
+    target_job_id uuid,
+    target_worker_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    review_job public.jobs%rowtype;
+    batch_job agent_runtime.batch_jobs%rowtype;
+    recovery_only boolean;
+begin
+    if target_job_id is null
+       or target_worker_id is null
+       or target_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' then
+        raise exception 'review draft Batch recovery request is invalid'
+            using errcode = '22023';
+    end if;
+
+    select queued_job.* into review_job
+    from public.jobs as queued_job
+    where queued_job.id = target_job_id
+    for update;
+    if not found
+       or review_job.client_id <> 'origintrail'
+       or review_job.job_kind <> 'generate'
+       or review_job.content_item_id is not null
+       or review_job.input ->> 'workflow'
+            is distinct from 'official_x_review_draft_v1'
+       or review_job.input ->> 'content_kind'
+            is distinct from 'daily_news'
+       or review_job.input -> 'manual_only' is distinct from 'false'::jsonb then
+        raise exception 'review draft Batch recovery job does not exist'
+            using errcode = '23514';
+    end if;
+    if review_job.status <> 'running'
+       or review_job.locked_by is distinct from target_worker_id
+       or review_job.locked_at is null
+       or review_job.lease_expires_at is null
+       or review_job.lease_expires_at <= statement_timestamp() then
+        raise exception 'review draft recovery lease is not owned by this worker'
+            using errcode = '55000';
+    end if;
+    if review_job.attempts <= 1
+       or review_job.attempts > review_job.max_attempts then
+        raise exception 'review draft Batch recovery requires a bounded retry'
+            using errcode = '23514';
+    end if;
+    if review_job.output ? 'batch_handoff_recovery_only'
+       and jsonb_typeof(
+               review_job.output -> 'batch_handoff_recovery_only'
+           ) <> 'boolean' then
+        raise exception 'review draft Batch recovery marker is invalid'
+            using errcode = '23514';
+    end if;
+    recovery_only := review_job.output -> 'batch_handoff_recovery_only'
+        = 'true'::jsonb;
+    if recovery_only
+       and review_job.attempts <> review_job.max_attempts then
+        raise exception 'review draft Batch recovery marker is out of bounds'
+            using errcode = '23514';
+    end if;
+    if jsonb_typeof(review_job.output -> 'execution_plane') <> 'string'
+       or review_job.output ->> 'execution_plane'
+            is distinct from 'openai_batch' then
+        raise exception 'review draft recovery is not bound to the Batch plane'
+            using errcode = '23514';
+    end if;
+
+    if not agent_runtime.has_recoverable_origintrail_handoff(
+        review_job.id
+    ) then
+        if recovery_only then
+            raise exception 'max-attempt Batch recovery receipt is unavailable'
+                using errcode = '23514';
+        end if;
+        return null;
+    end if;
+
+    select queued_batch_job.* into batch_job
+    from agent_runtime.batch_jobs as queued_batch_job
+    where queued_batch_job.workspace_id = review_job.workspace_id
+      and queued_batch_job.job_id = review_job.id
+    for key share;
+    if not found then
+        if recovery_only then
+            raise exception 'max-attempt Batch recovery receipt is unavailable'
+                using errcode = '23514';
+        end if;
+        return null;
+    end if;
+
+    return public.complete_review_draft_batch_handoff(
+        review_job.id,
+        target_worker_id,
+        batch_job.job_id,
+        batch_job.input_sha256
+    );
+end;
+$$;
+
 create or replace function public.list_agent_batch_review_inbox(
     target_workspace_id uuid,
     target_limit integer,
@@ -2096,7 +2753,7 @@ begin
                      )
                      between 1 and 120
                     then btrim(batch_job.result_payload ->> 'headline_ko')
-                else 'Squid Batch review draft'
+                else 'OriginTrail Batch review draft'
             end as title,
             batch_job.result_code,
             batch_job.actual_cost_microusd,
@@ -2108,7 +2765,8 @@ begin
          and review_job.workspace_id = batch_job.workspace_id
          and review_job.client_id = batch_job.client_id
         where batch_job.workspace_id = target_workspace_id
-          and batch_job.client_id = 'squid'
+          and batch_job.client_id = 'origintrail'
+          and batch_job.agent_id = 'origintrail_client_agent'
           and batch_job.workflow_kind = 'official_source_nonurgent_pack'
           and batch_job.stage = 'generate'
           and batch_job.status = 'completed'
@@ -2155,6 +2813,7 @@ begin
           and review_job.content_item_id is null
           and review_job.input ->> 'workflow'
                 = 'official_x_review_draft_v1'
+          and review_job.input ->> 'content_kind' = 'daily_news'
           and review_job.input -> 'manual_only' = 'false'::jsonb
           and review_job.output = jsonb_build_object(
               'workflow', 'agent_batch_review_handoff_v1',
@@ -2263,7 +2922,7 @@ begin
                      )
                      between 1 and 120
                     then btrim(batch_job.result_payload ->> 'headline_ko')
-                else 'Squid Batch review draft'
+                else 'OriginTrail Batch review draft'
             end,
         'result_code', batch_job.result_code,
         'actual_cost_microusd', batch_job.actual_cost_microusd,
@@ -2282,7 +2941,8 @@ begin
      and review_job.client_id = batch_job.client_id
     where batch_job.workspace_id = target_workspace_id
       and batch_job.job_id = target_job_id
-      and batch_job.client_id = 'squid'
+      and batch_job.client_id = 'origintrail'
+      and batch_job.agent_id = 'origintrail_client_agent'
       and batch_job.workflow_kind = 'official_source_nonurgent_pack'
       and batch_job.stage = 'generate'
       and batch_job.status = 'completed'
@@ -2322,6 +2982,7 @@ begin
       and review_job.status = 'succeeded'
       and review_job.content_item_id is null
       and review_job.input ->> 'workflow' = 'official_x_review_draft_v1'
+      and review_job.input ->> 'content_kind' = 'daily_news'
       and review_job.input -> 'manual_only' = 'false'::jsonb
       and review_job.output = jsonb_build_object(
           'workflow', 'agent_batch_review_handoff_v1',
@@ -2337,6 +2998,9 @@ $$;
 
 revoke all on function public.configure_agent_batch_budget(
     uuid, text, timestamptz, timestamptz, bigint
+) from public, anon, authenticated, service_role;
+revoke all on function public.record_origintrail_nonquote_sources(
+    uuid, text, text, uuid, text, text, jsonb, timestamptz
 ) from public, anon, authenticated, service_role;
 revoke all on function public.queue_agent_batch_job(
     uuid, text, uuid, text, text, text, text, smallint, text, text,
@@ -2374,6 +3038,9 @@ revoke all on function public.bind_review_draft_execution_plane(
 revoke all on function public.complete_review_draft_batch_handoff(
     uuid, text, uuid, text
 ) from public, anon, authenticated, service_role;
+revoke all on function public.recover_review_draft_batch_handoff(
+    uuid, text
+) from public, anon, authenticated, service_role;
 revoke all on function public.list_agent_batch_review_inbox(
     uuid, integer, timestamptz, uuid
 ) from public, anon, authenticated, service_role;
@@ -2383,6 +3050,9 @@ revoke all on function public.get_agent_batch_review_item(
 
 grant execute on function public.configure_agent_batch_budget(
     uuid, text, timestamptz, timestamptz, bigint
+) to service_role;
+grant execute on function public.record_origintrail_nonquote_sources(
+    uuid, text, text, uuid, text, text, jsonb, timestamptz
 ) to service_role;
 grant execute on function public.queue_agent_batch_job(
     uuid, text, uuid, text, text, text, text, smallint, text, text,
@@ -2419,6 +3089,9 @@ grant execute on function public.bind_review_draft_execution_plane(
 ) to service_role;
 grant execute on function public.complete_review_draft_batch_handoff(
     uuid, text, uuid, text
+) to service_role;
+grant execute on function public.recover_review_draft_batch_handoff(
+    uuid, text
 ) to service_role;
 grant execute on function public.list_agent_batch_review_inbox(
     uuid, integer, timestamptz, uuid

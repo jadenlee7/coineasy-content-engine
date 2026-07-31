@@ -10,6 +10,7 @@ declare
     ledger_table text;
 begin
     foreach signature in array array[
+        'public.record_origintrail_nonquote_sources(uuid,text,text,uuid,text,text,jsonb,timestamp with time zone)',
         'public.configure_agent_batch_budget(uuid,text,timestamp with time zone,timestamp with time zone,bigint)',
         'public.queue_agent_batch_job(uuid,text,uuid,text,text,text,text,smallint,text,text,text,timestamp with time zone,jsonb,text,bigint,integer,bigint,text,text,boolean)',
         'public.expire_agent_batch_jobs(uuid,text[])',
@@ -22,6 +23,7 @@ begin
         'public.finalize_agent_batch(uuid,text)',
         'public.bind_review_draft_execution_plane(uuid,text,text)',
         'public.complete_review_draft_batch_handoff(uuid,text,uuid,text)',
+        'public.recover_review_draft_batch_handoff(uuid,text)',
         'public.list_agent_batch_review_inbox(uuid,integer,timestamp with time zone,uuid)',
         'public.get_agent_batch_review_item(uuid,uuid)'
     ]
@@ -37,6 +39,17 @@ begin
 
     if has_schema_privilege('service_role', 'agent_runtime', 'usage') then
         raise exception 'service_role has direct agent_runtime schema access';
+    end if;
+    if has_table_privilege(
+        'service_role',
+        'private.origintrail_standalone_sources',
+        'select'
+    ) or has_table_privilege(
+        'anon',
+        'private.origintrail_standalone_sources',
+        'select'
+    ) then
+        raise exception 'OriginTrail standalone allowlist leaked direct access';
     end if;
     foreach ledger_table in array array[
         'agent_runtime.batch_budgets',
@@ -100,11 +113,181 @@ values
     ),
     (
         'c0000000-0000-4000-8000-000000000001',
+        'origintrail',
+        'OriginTrail',
+        true,
+        null
+    ),
+    (
+        'c0000000-0000-4000-8000-000000000001',
         'rogue',
         'Unsupported active client',
         true,
         null
     );
+
+insert into public.source_feeds (
+    id, workspace_id, client_id, provider, name, source_url, handle,
+    poll_interval_minutes, active, created_by
+)
+values (
+    'c2000000-0000-4000-8000-000000000001',
+    'c0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'x',
+    'OriginTrail Batch security source',
+    'https://x.com/origin_trail',
+    '@origin_trail',
+    15,
+    true,
+    null
+);
+
+do $test$
+declare
+    test_workspace_id constant uuid :=
+        'c0000000-0000-4000-8000-000000000001';
+    poll_request_id constant uuid :=
+        'c3000000-0000-4000-8000-000000000001';
+    committed_source_id uuid;
+    receipt jsonb;
+    replay jsonb;
+    invalid_quote jsonb;
+    invalid_index integer := 0;
+    first_verified_at timestamptz;
+    item jsonb := jsonb_build_object(
+        'external_id', '1888888888888888888',
+        'source_content', 'A verified standalone OriginTrail source.',
+        'source_url',
+            'https://x.com/origin_trail/status/1888888888888888888',
+        'published_at', statement_timestamp() - interval '30 minutes',
+        'media', '[]'::jsonb,
+        'metrics', '{}'::jsonb,
+        'is_note_tweet', false,
+        'is_quote', false,
+        'is_retweet', false,
+        'is_reply', false
+    );
+begin
+    begin
+        perform public.record_origintrail_nonquote_sources(
+            test_workspace_id,
+            'origintrail',
+            '@origin_trail',
+            'c3000000-0000-4000-8000-000000000002',
+            null,
+            '1888888888888888888',
+            jsonb_build_array(item - 'is_quote'),
+            statement_timestamp()
+        );
+        raise exception 'OriginTrail intake accepted a missing quote signal';
+    exception when invalid_parameter_value then null;
+    end;
+
+    for invalid_quote in
+        select value
+        from jsonb_array_elements('[true,null,"false"]'::jsonb)
+    loop
+        invalid_index := invalid_index + 1;
+        begin
+            perform public.record_origintrail_nonquote_sources(
+                test_workspace_id,
+                'origintrail',
+                '@origin_trail',
+                ('c3000000-0000-4000-8000-00000000000'
+                    || (invalid_index + 2)::text)::uuid,
+                null,
+                '1888888888888888888',
+                jsonb_build_array(
+                    jsonb_set(item, '{is_quote}', invalid_quote, true)
+                ),
+                statement_timestamp()
+            );
+            raise exception 'OriginTrail intake accepted a non-false quote signal';
+        exception when invalid_parameter_value then null;
+        end;
+    end loop;
+
+    begin
+        perform public.record_origintrail_nonquote_sources(
+            test_workspace_id,
+            'origintrail',
+            '@origin_trail',
+            'c3000000-0000-4000-8000-000000000006',
+            null,
+            '1888888888888888888',
+            jsonb_build_array(item - 'is_retweet'),
+            statement_timestamp()
+        );
+        raise exception 'OriginTrail intake accepted a missing standalone signal';
+    exception when invalid_parameter_value then null;
+    end;
+
+    begin
+        perform public.record_origintrail_nonquote_sources(
+            test_workspace_id,
+            'origintrail',
+            '@origin_trail',
+            'c3000000-0000-4000-8000-000000000007',
+            null,
+            '1888888888888888888',
+            jsonb_build_array(
+                jsonb_set(item, '{is_reply}', 'true'::jsonb, true)
+            ),
+            statement_timestamp()
+        );
+        raise exception 'OriginTrail intake accepted a referenced standalone signal';
+    exception when invalid_parameter_value then null;
+    end;
+
+    receipt := public.record_origintrail_nonquote_sources(
+        test_workspace_id,
+        'origintrail',
+        '@origin_trail',
+        poll_request_id,
+        null,
+        '1888888888888888888',
+        jsonb_build_array(item),
+        statement_timestamp()
+    );
+    committed_source_id := (receipt -> 'source_item_ids' ->> 0)::uuid;
+    if receipt ->> 'last_cursor' <> '1888888888888888888'
+       or not exists (
+           select 1
+           from private.origintrail_standalone_sources as standalone
+           where standalone.workspace_id = test_workspace_id
+             and standalone.client_id = 'origintrail'
+             and standalone.source_item_id = committed_source_id
+             and standalone.is_quote is false
+             and standalone.first_poll_request_id = poll_request_id
+       ) then
+        raise exception 'standalone OriginTrail source was not durably allowlisted';
+    end if;
+    select standalone.verified_at into first_verified_at
+    from private.origintrail_standalone_sources as standalone
+    where standalone.source_item_id = committed_source_id;
+    replay := public.record_origintrail_nonquote_sources(
+        test_workspace_id,
+        'origintrail',
+        '@origin_trail',
+        poll_request_id,
+        null,
+        '1888888888888888888',
+        jsonb_build_array(item),
+        statement_timestamp()
+    );
+    if replay ->> 'reused' <> 'true'
+       or not exists (
+           select 1
+           from private.origintrail_standalone_sources as standalone
+           where standalone.source_item_id = committed_source_id
+             and standalone.first_poll_request_id = poll_request_id
+             and standalone.verified_at = first_verified_at
+       ) then
+        raise exception 'OriginTrail standalone allowlist replay was mutable';
+    end if;
+end
+$test$;
 
 do $test$
 declare
@@ -203,6 +386,33 @@ begin
     begin
         perform public.queue_agent_batch_job(
             test_workspace_id,
+            'origintrail',
+            'c1000000-0000-4000-8000-000000000097',
+            repeat('a', 62) || '97',
+            'data_analyst',
+            'daily_digest',
+            'summarize',
+            0::smallint,
+            'batch_24h',
+            'gpt-5.6-luna',
+            'S',
+            deadline,
+            '{"topic":"wrong OriginTrail canary route"}'::jsonb,
+            repeat('f', 62) || '97',
+            100::bigint,
+            100,
+            1000::bigint,
+            'openai:pilot-next',
+            'c1000000-0000-4000-8000-000000000097:summarize:1',
+            false
+        );
+        raise exception 'wrong OriginTrail canary identity was admitted';
+    exception when invalid_parameter_value then null;
+    end;
+
+    begin
+        perform public.queue_agent_batch_job(
+            test_workspace_id,
             'squid',
             replay_only_miss_job_id,
             repeat('a', 62) || '98',
@@ -280,7 +490,7 @@ begin
     begin
         perform public.expire_agent_batch_jobs(
             test_workspace_id,
-            array['origintrail']::text[]
+            array['babylon']::text[]
         );
         raise exception 'unconfigured client entered the expiration scope';
     exception when invalid_parameter_value then null;
@@ -1428,6 +1638,14 @@ declare
         'd0000000-0000-4000-8000-000000000001';
     batch_route_job_id constant uuid :=
         'd0000000-0000-4000-8000-000000000002';
+    no_receipt_retry_job_id constant uuid :=
+        'd0000000-0000-4000-8000-000000000005';
+    batch_route_source_id constant uuid :=
+        'e0000000-0000-4000-8000-000000000001';
+    legacy_source_id constant uuid :=
+        'e0000000-0000-4000-8000-000000000002';
+    legacy_route_job_id constant uuid :=
+        'd0000000-0000-4000-8000-000000000099';
     input_hashes constant text[] := array[
         repeat('b', 63) || '1',
         repeat('b', 63) || '2',
@@ -1438,6 +1656,7 @@ declare
     input_hash text;
     expected_output jsonb;
     handoff jsonb;
+    replay jsonb;
     route_receipt jsonb;
     failure_receipt jsonb;
     claimed jsonb;
@@ -1448,12 +1667,103 @@ declare
     next_page jsonb;
     detail jsonb;
     candidate jsonb;
+    batch_input_payload jsonb;
     item_index integer;
     content_item_count_before bigint;
     content_version_count_before bigint;
     approval_count_before bigint;
     publication_count_before bigint;
+    batch_run_count_before bigint;
 begin
+    insert into public.source_items (
+        id, workspace_id, client_id, source_feed_id, external_id,
+        source_type, canonical_url, author_handle, published_at, body,
+        media, raw_payload, source_hash, ingested_by
+    ) values (
+        batch_route_source_id,
+        test_workspace_id,
+        'origintrail',
+        'c2000000-0000-4000-8000-000000000001',
+        '2000000000000000000',
+        'tweet',
+        'https://x.com/origin_trail/status/2000000000000000000',
+        '@origin_trail',
+        statement_timestamp() - interval '1 hour',
+        'Pinned text-only OriginTrail canary route evidence.',
+        '[]'::jsonb,
+        '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+        pg_catalog.md5('origintrail-batch-route-source'),
+        null
+    );
+    insert into public.source_items (
+        id, workspace_id, client_id, source_feed_id, external_id,
+        source_type, canonical_url, author_handle, published_at, body,
+        media, raw_payload, source_hash, ingested_by
+    ) values (
+        legacy_source_id,
+        test_workspace_id,
+        'origintrail',
+        'c2000000-0000-4000-8000-000000000001',
+        '1999999999999999999',
+        'tweet',
+        'https://x.com/origin_trail/status/1999999999999999999',
+        '@origin_trail',
+        statement_timestamp() - interval '2 hours',
+        'A pre-cutover source with no durable quote classification.',
+        '[]'::jsonb,
+        '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+        pg_catalog.md5('origintrail-pre-cutover-source'),
+        null
+    );
+    insert into private.official_x_source_state (
+        workspace_id, client_id, source_item_id
+    ) values (
+        test_workspace_id, 'origintrail', legacy_source_id
+    );
+    insert into public.source_items (
+        id, workspace_id, client_id, source_feed_id, external_id,
+        source_type, canonical_url, author_handle, published_at, body,
+        media, raw_payload, source_hash, ingested_by
+    )
+    select
+        ('e1000000-0000-4000-8000-00000000000'
+            || source_index::text)::uuid,
+        test_workspace_id,
+        'origintrail',
+        'c2000000-0000-4000-8000-000000000001'::uuid,
+        (2000000000000000000 + source_index)::text,
+        'tweet',
+        'https://x.com/origin_trail/status/'
+            || (2000000000000000000 + source_index)::text,
+        '@origin_trail',
+        statement_timestamp() - make_interval(mins => source_index),
+        'Pinned official OriginTrail source evidence.',
+        '[]'::jsonb,
+        '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+        pg_catalog.md5('origintrail-review-source:' || source_index::text),
+        null
+    from generate_series(1, 4) as source_index;
+
+    insert into private.origintrail_standalone_sources (
+        workspace_id, client_id, source_item_id, is_quote,
+        first_poll_request_id, verified_at
+    )
+    select
+        test_workspace_id,
+        'origintrail',
+        source.id,
+        false,
+        'e3000000-0000-4000-8000-000000000001'::uuid,
+        statement_timestamp()
+    from public.source_items as source
+    where source.id = batch_route_source_id
+       or source.id = any(array[
+           'e1000000-0000-4000-8000-000000000001'::uuid,
+           'e1000000-0000-4000-8000-000000000002'::uuid,
+           'e1000000-0000-4000-8000-000000000003'::uuid,
+           'e1000000-0000-4000-8000-000000000004'::uuid
+       ]);
+
     select count(*) into content_item_count_before
     from public.content_items
     where workspace_id = test_workspace_id;
@@ -1466,6 +1776,66 @@ begin
     select count(*) into publication_count_before
     from public.publications
     where workspace_id = test_workspace_id;
+
+    insert into public.jobs (
+        id, workspace_id, client_id, job_kind, status, priority,
+        input, output, idempotency_key, attempts, max_attempts,
+        available_at
+    ) values (
+        legacy_route_job_id,
+        test_workspace_id,
+        'origintrail',
+        'generate',
+        'queued',
+        0,
+        jsonb_build_object(
+            'workflow', 'official_x_review_draft_v1',
+            'kst_date',
+                pg_catalog.timezone(
+                    'Asia/Seoul', statement_timestamp()
+                )::date,
+            'source_item_ids', jsonb_build_array(legacy_source_id),
+            'content_kind', 'daily_news',
+            'request_id',
+                'e2000000-0000-4000-8000-000000000099'::uuid,
+            'source_content',
+                'A pre-cutover source with no durable quote classification.',
+            'source_url',
+                'https://x.com/origin_trail/status/1999999999999999999',
+            'source_image_url', '',
+            'manual_only', false
+        ),
+        '{}'::jsonb,
+        'origintrail-pre-cutover-studio-route',
+        0,
+        3,
+        statement_timestamp()
+    );
+    claimed := public.claim_review_draft_job(
+        test_workspace_id,
+        'official-x:legacy-route',
+        900
+    );
+    if claimed ->> 'job_id' <> legacy_route_job_id::text
+       or claimed ->> 'origintrail_batch_eligible' <> 'false' then
+        raise exception 'pre-cutover OriginTrail source was Batch eligible';
+    end if;
+    route_receipt := public.bind_review_draft_execution_plane(
+        legacy_route_job_id,
+        'official-x:legacy-route',
+        'studio_sync'
+    );
+    if route_receipt ->> 'execution_plane' <> 'studio_sync' then
+        raise exception 'pre-cutover OriginTrail source did not route Studio';
+    end if;
+    perform public.fail_review_draft_job(
+        legacy_route_job_id,
+        'official-x:legacy-route',
+        'legacy_route_canary_done',
+        'Close the pre-cutover source route canary.',
+        false,
+        null
+    );
 
     insert into public.jobs (
         id, workspace_id, client_id, job_kind, status, priority,
@@ -1558,12 +1928,15 @@ begin
     ) values (
         batch_route_job_id,
         test_workspace_id,
-        'squid',
+        'origintrail',
         'generate',
         'running',
         0,
         jsonb_build_object(
             'workflow', 'official_x_review_draft_v1',
+            'source_item_ids', jsonb_build_array(batch_route_source_id),
+            'content_kind', 'daily_news',
+            'source_image_url', '',
             'manual_only', false
         ),
         '{}'::jsonb,
@@ -1600,6 +1973,21 @@ begin
     update public.jobs
     set lease_expires_at = statement_timestamp() + interval '15 minutes'
     where id = batch_route_job_id;
+    update public.source_items
+    set media = '[{"type":"video","url":"https://pbs.twimg.com/media/canary.jpg"}]'::jsonb
+    where id = batch_route_source_id;
+    begin
+        perform public.bind_review_draft_execution_plane(
+            batch_route_job_id,
+            'official-x:batch-route',
+            'openai_batch'
+        );
+        raise exception 'media-backed OriginTrail job entered the Batch plane';
+    exception when check_violation then null;
+    end;
+    update public.source_items
+    set media = '[]'::jsonb
+    where id = batch_route_source_id;
     route_receipt := public.bind_review_draft_execution_plane(
         batch_route_job_id,
         'official-x:batch-route',
@@ -1695,7 +2083,7 @@ begin
         ) values (
             review_job_id,
             test_workspace_id,
-            'squid',
+            'origintrail',
             'generate',
             'running',
             0,
@@ -1710,13 +2098,13 @@ begin
                         ('e1000000-0000-4000-8000-00000000000'
                             || item_index::text)::uuid
                     ),
-                'content_kind', 'article',
+                'content_kind', 'daily_news',
                 'request_id',
                     ('e2000000-0000-4000-8000-00000000000'
                         || item_index::text)::uuid,
-                'source_content', 'Pinned official Squid source evidence.',
+                'source_content', 'Pinned official OriginTrail source evidence.',
                 'source_url',
-                    'https://x.com/SquidRouter/status/'
+                    'https://x.com/origin_trail/status/'
                         || (2000000000000000000 + item_index)::text,
                 'source_image_url', '',
                 'manual_only', false
@@ -1732,12 +2120,62 @@ begin
             statement_timestamp()
         );
 
+        batch_input_payload := jsonb_build_object(
+            'instructions', 'Return a review-only Korean draft.',
+            'input', jsonb_build_object(
+                'client_id', 'origintrail',
+                'content_kind', 'daily_news',
+                'request_id',
+                    ('e2000000-0000-4000-8000-00000000000'
+                        || item_index::text)::uuid,
+                'source', jsonb_build_object(
+                    'content',
+                        'Pinned official OriginTrail source evidence.',
+                    'url',
+                        'https://x.com/origin_trail/status/'
+                            || (2000000000000000000 + item_index)::text
+                )
+            )::text,
+            'output_schema', jsonb_build_object(
+                'type', 'object',
+                'properties', jsonb_build_object(
+                    'headline_ko', jsonb_build_object(
+                        'type', 'string', 'maxLength', 120
+                    ),
+                    'body_ko', jsonb_build_object(
+                        'type', 'string', 'maxLength', 1800
+                    ),
+                    'x_copy_ko', jsonb_build_object(
+                        'type', 'string', 'maxLength', 500
+                    ),
+                    'telegram_copy_ko', jsonb_build_object(
+                        'type', 'string', 'maxLength', 1800
+                    )
+                ),
+                'required', jsonb_build_array(
+                    'headline_ko', 'body_ko', 'x_copy_ko',
+                    'telegram_copy_ko'
+                ),
+                'additionalProperties', false
+            ),
+            'estimated_output_tokens', 200,
+            'risk_tier', 'T1',
+            'approval_required', true,
+            'interactive', false,
+            'incident_or_release_blocker', false,
+            'live_tools_required', false,
+            'source_snapshot_complete', true,
+            'input_immutable', true,
+            'retry_idempotent', true,
+            'remaining_batch_stages', 1
+        );
+
         perform public.queue_agent_batch_job(
             test_workspace_id,
-            'squid',
+            'origintrail',
             review_job_id,
             repeat('a', 63) || item_index::text,
-            'squid_client_agent',
+            'origintrail_client_agent',
             'official_source_nonurgent_pack',
             'generate',
             3::smallint,
@@ -1745,42 +2183,7 @@ begin
             'gpt-5.6-luna',
             'S',
             statement_timestamp() + interval '30 hours',
-            jsonb_build_object(
-                'instructions', 'Return a review-only Korean draft.',
-                'input', 'Pinned official Squid source evidence.',
-                'output_schema', jsonb_build_object(
-                    'type', 'object',
-                    'properties', jsonb_build_object(
-                        'headline_ko', jsonb_build_object(
-                            'type', 'string', 'maxLength', 120
-                        ),
-                        'body_ko', jsonb_build_object(
-                            'type', 'string', 'maxLength', 1800
-                        ),
-                        'x_copy_ko', jsonb_build_object(
-                            'type', 'string', 'maxLength', 500
-                        ),
-                        'telegram_copy_ko', jsonb_build_object(
-                            'type', 'string', 'maxLength', 1800
-                        )
-                    ),
-                    'required', jsonb_build_array(
-                        'headline_ko', 'body_ko', 'x_copy_ko',
-                        'telegram_copy_ko'
-                    ),
-                    'additionalProperties', false
-                ),
-                'estimated_output_tokens', 200,
-                'risk_tier', 'T1',
-                'approval_required', true,
-                'interactive', false,
-                'incident_or_release_blocker', false,
-                'live_tools_required', false,
-                'source_snapshot_complete', true,
-                'input_immutable', true,
-                'retry_idempotent', true,
-                'remaining_batch_stages', 1
-            ),
+            batch_input_payload,
             input_hash,
             500::bigint,
             500,
@@ -1793,6 +2196,168 @@ begin
     update agent_runtime.batch_jobs
     set deadline_at = statement_timestamp() - interval '1 minute'
     where job_id = review_job_ids[4];
+    select count(*) into batch_run_count_before
+    from agent_runtime.batch_runs
+    where workspace_id = test_workspace_id;
+
+    route_receipt := public.bind_review_draft_execution_plane(
+        review_job_ids[4],
+        'official-x:handoff-worker',
+        'openai_batch'
+    );
+    if route_receipt ->> 'execution_plane' <> 'openai_batch'
+       or route_receipt ->> 'reused' <> 'false' then
+        raise exception 'recovery canary did not bind the Batch plane';
+    end if;
+    update public.jobs
+    set status = 'failed',
+        attempts = max_attempts,
+        locked_by = null,
+        locked_at = null,
+        lease_expires_at = null,
+        finished_at = statement_timestamp()
+    where id = review_job_ids[4];
+    claimed := public.claim_review_draft_job(
+        test_workspace_id,
+        'official-x:handoff-recovery',
+        900
+    );
+    if claimed is not null then
+        raise exception 'max-attempt Batch recovery bypassed its cooldown';
+    end if;
+    update public.jobs
+    set finished_at = statement_timestamp() - interval '2 minutes'
+    where id = review_job_ids[4];
+    claimed := public.claim_review_draft_job(
+        test_workspace_id,
+        'official-x:handoff-recovery',
+        900
+    );
+    if claimed ->> 'job_id' <> review_job_ids[4]::text
+       or claimed ->> 'attempts' <> '3'
+       or claimed ->> 'max_attempts' <> '3'
+       or claimed ->> 'batch_handoff_recovery_only' <> 'true'
+       or not exists (
+           select 1
+           from public.jobs
+           where id = review_job_ids[4]
+             and attempts = max_attempts
+             and output -> 'batch_handoff_recovery_only' = 'true'::jsonb
+       ) then
+        raise exception 'max-attempt Batch handoff recovery claim is invalid';
+    end if;
+    begin
+        perform public.recover_review_draft_batch_handoff(
+            review_job_ids[4],
+            'official-x:wrong-recovery-worker'
+        );
+        raise exception 'another worker consumed the stored recovery receipt';
+    exception when object_not_in_prerequisite_state then null;
+    end;
+    handoff := public.recover_review_draft_batch_handoff(
+        review_job_ids[4],
+        'official-x:handoff-recovery'
+    );
+    if handoff ->> 'status' <> 'succeeded'
+       or handoff ->> 'batch_job_id' <> review_job_ids[4]::text
+       or handoff ->> 'input_sha256' <> input_hashes[4]
+       or handoff ->> 'reused' <> 'false' then
+        raise exception 'stored Batch handoff receipt was not completed';
+    end if;
+    if not exists (
+        select 1
+        from agent_runtime.batch_budgets
+        where workspace_id = test_workspace_id
+          and budget_key = 'openai:review-handoff'
+          and reserved_microusd = 40000
+          and spent_microusd = 0
+    ) or (
+        select count(*)
+        from agent_runtime.batch_runs
+        where workspace_id = test_workspace_id
+    ) <> batch_run_count_before then
+        raise exception 'stored receipt recovery created Batch work or cost';
+    end if;
+    if (
+        select count(*)
+        from public.event_log
+        where workspace_id = test_workspace_id
+          and entity_type = 'job'
+          and entity_id = review_job_ids[4]
+          and event_type =
+                'official_x_review_draft_batch_handoff_recovery_claimed'
+    ) <> 1 then
+        raise exception 'Batch handoff recovery claim event is invalid';
+    end if;
+
+    -- A normal retry also consumes the old durable receipt before any current
+    -- application prompt, schema, deadline, or idempotency key is rebuilt.
+    route_receipt := public.bind_review_draft_execution_plane(
+        review_job_ids[3],
+        'official-x:handoff-worker',
+        'openai_batch'
+    );
+    perform public.fail_review_draft_job(
+        review_job_ids[3],
+        'official-x:handoff-worker',
+        'stored_receipt_retry_canary',
+        'Retry the already admitted stored receipt.',
+        true,
+        statement_timestamp()
+    );
+    claimed := public.claim_review_draft_job(
+        test_workspace_id,
+        'official-x:stored-receipt-retry',
+        900
+    );
+    if claimed ->> 'job_id' <> review_job_ids[3]::text
+       or claimed ->> 'attempts' <> '2'
+       or claimed ->> 'batch_handoff_recovery_only' <> 'false' then
+        raise exception 'ordinary stored-receipt retry claim is invalid';
+    end if;
+    handoff := public.recover_review_draft_batch_handoff(
+        review_job_ids[3],
+        'official-x:stored-receipt-retry'
+    );
+    if handoff ->> 'status' <> 'succeeded'
+       or handoff ->> 'batch_job_id' <> review_job_ids[3]::text
+       or handoff ->> 'input_sha256' <> input_hashes[3] then
+        raise exception 'ordinary retry did not consume its stored receipt';
+    end if;
+
+    insert into public.jobs (
+        id, workspace_id, client_id, job_kind, status, priority,
+        input, output, idempotency_key, attempts, max_attempts,
+        available_at, locked_by, locked_at, lease_expires_at, started_at
+    ) values (
+        no_receipt_retry_job_id,
+        test_workspace_id,
+        'origintrail',
+        'generate',
+        'running',
+        0,
+        jsonb_build_object(
+            'workflow', 'official_x_review_draft_v1',
+            'content_kind', 'daily_news',
+            'manual_only', false
+        ),
+        '{"execution_plane":"openai_batch"}'::jsonb,
+        'stored-receipt-miss-canary',
+        2,
+        3,
+        statement_timestamp(),
+        'official-x:stored-receipt-miss',
+        statement_timestamp(),
+        statement_timestamp() + interval '15 minutes',
+        statement_timestamp()
+    );
+    handoff := public.recover_review_draft_batch_handoff(
+        no_receipt_retry_job_id,
+        'official-x:stored-receipt-miss'
+    );
+    if handoff is not null then
+        raise exception 'ordinary retry receipt miss was not nullable';
+    end if;
 
     begin
         perform public.complete_review_draft_batch_handoff(
@@ -1836,7 +2401,7 @@ begin
     exception when check_violation then null;
     end;
 
-    for item_index in 1..4
+    for item_index in 1..2
     loop
         route_receipt := public.bind_review_draft_execution_plane(
             review_job_ids[item_index],
@@ -1847,6 +2412,27 @@ begin
            or route_receipt ->> 'reused' <> 'false' then
             raise exception 'Batch handoff execution plane was not bound';
         end if;
+    end loop;
+
+    update public.source_items
+    set media = '[{"type":"video","url":"https://pbs.twimg.com/media/handoff.jpg"}]'::jsonb
+    where id = 'e1000000-0000-4000-8000-000000000001';
+    begin
+        perform public.complete_review_draft_batch_handoff(
+            review_job_ids[1],
+            'official-x:handoff-worker',
+            review_job_ids[1],
+            input_hashes[1]
+        );
+        raise exception 'media mutation bypassed Batch handoff revalidation';
+    exception when check_violation then null;
+    end;
+    update public.source_items
+    set media = '[]'::jsonb
+    where id = 'e1000000-0000-4000-8000-000000000001';
+
+    for item_index in 1..2
+    loop
         handoff := public.complete_review_draft_batch_handoff(
             review_job_ids[item_index],
             'official-x:handoff-worker',
@@ -1937,7 +2523,7 @@ begin
     claimed := public.claim_agent_batch_jobs(
         test_workspace_id,
         'batch:review-worker',
-        array['squid']::text[],
+        array['origintrail']::text[],
         3,
         900
     );
@@ -1972,7 +2558,7 @@ begin
     );
 
     review_payload := jsonb_build_object(
-        'headline_ko', 'Squid 첫 리뷰',
+        'headline_ko', 'OriginTrail 첫 리뷰',
         'body_ko', '첫 본문 초안',
         'x_copy_ko', '첫 X 초안',
         'telegram_copy_ko', '첫 텔레그램 초안'
@@ -2052,19 +2638,19 @@ begin
     loop
         review_payload := case item_index
             when 1 then jsonb_build_object(
-                'headline_ko', 'Squid 첫 리뷰',
+                'headline_ko', 'OriginTrail 첫 리뷰',
                 'body_ko', '첫 본문 초안',
                 'x_copy_ko', '첫 X 초안',
                 'telegram_copy_ko', '첫 텔레그램 초안'
             )
             when 2 then jsonb_build_object(
-                'headline_ko', 'Squid 두 번째 리뷰',
+                'headline_ko', 'OriginTrail 두 번째 리뷰',
                 'body_ko', '두 번째 본문 초안',
                 'x_copy_ko', '두 번째 X 초안',
                 'telegram_copy_ko', '두 번째 텔레그램 초안'
             )
             else jsonb_build_object(
-                'headline_ko', 'Squid 세 번째 리뷰',
+                'headline_ko', 'OriginTrail 세 번째 리뷰',
                 'body_ko', '세 번째 본문 초안',
                 'x_copy_ko', '세 번째 X 초안',
                 'telegram_copy_ko', '세 번째 텔레그램 초안'
@@ -2120,6 +2706,8 @@ begin
            or candidate ? 'input_file_id'
            or candidate ? 'output_file_id'
            or candidate ? 'error_file_id'
+           or candidate ->> 'client_id' <> 'origintrail'
+           or candidate ->> 'agent_id' <> 'origintrail_client_agent'
            or not (candidate ?& array[
                'job_id', 'client_id', 'agent_id', 'workflow_kind',
                'stage', 'status', 'model', 'model_tier', 'title',
@@ -2161,10 +2749,10 @@ begin
     detail := public.get_agent_batch_review_item(
         test_workspace_id, review_job_ids[1]
     );
-    if detail ->> 'title' <> 'Squid 첫 리뷰'
+    if detail ->> 'title' <> 'OriginTrail 첫 리뷰'
        or detail -> 'result_payload'
             <> jsonb_build_object(
-                'headline_ko', 'Squid 첫 리뷰',
+                'headline_ko', 'OriginTrail 첫 리뷰',
                 'body_ko', '첫 본문 초안',
                 'x_copy_ko', '첫 X 초안',
                 'telegram_copy_ko', '첫 텔레그램 초안'
@@ -2183,7 +2771,7 @@ begin
     detail := public.get_agent_batch_review_item(
         test_workspace_id, review_job_ids[2]
     );
-    if detail ->> 'title' <> 'Squid 두 번째 리뷰' then
+    if detail ->> 'title' <> 'OriginTrail 두 번째 리뷰' then
         raise exception 'Batch review headline_ko title is invalid';
     end if;
 
@@ -2236,10 +2824,23 @@ begin
         test_workspace_id, 100, null::timestamptz, null::uuid
     );
     if jsonb_array_length(inbox -> 'items') <> 2 then
-        raise exception 'non-Squid Batch output entered the review inbox';
+        raise exception 'non-OriginTrail Batch output entered the review inbox';
     end if;
     update agent_runtime.batch_jobs
-    set client_id = 'squid'
+    set client_id = 'origintrail'
+    where job_id = review_job_ids[1];
+
+    update agent_runtime.batch_jobs
+    set agent_id = 'squid_client_agent'
+    where job_id = review_job_ids[1];
+    inbox := public.list_agent_batch_review_inbox(
+        test_workspace_id, 100, null::timestamptz, null::uuid
+    );
+    if jsonb_array_length(inbox -> 'items') <> 2 then
+        raise exception 'wrong Batch agent entered the review inbox';
+    end if;
+    update agent_runtime.batch_jobs
+    set agent_id = 'origintrail_client_agent'
     where job_id = review_job_ids[1];
 
     update public.jobs

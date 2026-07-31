@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -206,7 +207,7 @@ def test_prompt_hash_and_model_tier_are_fail_closed():
         _item(max_cost_usd=Decimal("0.051"))
 
 
-def test_batch_request_is_responses_structured_output_without_tools_or_storage():
+def test_batch_request_disables_cache_writes_tools_and_storage():
     request = _item().batch_request()
     body = request["body"]
 
@@ -215,5 +216,7 @@ def test_batch_request_is_responses_structured_output_without_tools_or_storage()
     assert body["model"] == "gpt-5.6-luna"
     assert body["store"] is False
     assert body["reasoning"] == {"effort": "low"}
+    assert body["prompt_cache_options"] == {"mode": "explicit"}
+    assert "prompt_cache_breakpoint" not in json.dumps(body, sort_keys=True)
     assert body["text"]["format"]["strict"] is True
     assert "tools" not in body

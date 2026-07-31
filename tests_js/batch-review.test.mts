@@ -29,18 +29,18 @@ function reviewConfig() {
 function listItem(overrides: Record<string, unknown> = {}) {
   return {
     job_id: JOB_ID,
-    client_id: "squid",
-    agent_id: "squid_client_agent",
+    client_id: "origintrail",
+    agent_id: "origintrail_client_agent",
     workflow_kind: "official_source_nonurgent_pack",
     stage: "generate",
     status: "completed",
     model: "gpt-5.6-luna",
     model_tier: "S",
-    title: "Squid 공식 원문 비긴급 팩",
+    title: "OriginTrail 공식 원문 비긴급 팩",
     result_code: "needs_review",
     actual_cost_microusd: 2_200,
     finished_at: FINISHED_AT,
-    source_url: "https://x.com/SquidRouter/status/123",
+    source_url: "https://x.com/origin_trail/status/123",
     ...overrides,
   };
 }
@@ -58,10 +58,10 @@ function detailItem(overrides: Record<string, unknown> = {}) {
 
 function resultPayload(overrides: Record<string, unknown> = {}) {
   return {
-    headline_ko: "Squid 업데이트",
+    headline_ko: "OriginTrail 업데이트",
     body_ko: "공식 원문을 기반으로 만든 검토용 초안입니다.",
-    x_copy_ko: "Squid 공식 업데이트",
-    telegram_copy_ko: "Squid 공식 업데이트를 확인해보세요.",
+    x_copy_ko: "OriginTrail 공식 업데이트",
+    telegram_copy_ko: "OriginTrail 공식 업데이트를 확인해보세요.",
     ...overrides,
   };
 }
@@ -105,7 +105,7 @@ test("Batch review list uses the fixed workspace RPC and returns batch-prefixed 
   });
 
   assert.equal(page.items[0].ref, `batch:${JOB_ID}`);
-  assert.equal(page.items[0].client_id, "squid");
+  assert.equal(page.items[0].client_id, "origintrail");
   assert.deepEqual(page.next_cursor, { finished_at: FINISHED_AT, job_id: JOB_ID });
   assert.deepEqual(requestBody, {
     target_workspace_id: WORKSPACE_ID,
@@ -115,7 +115,26 @@ test("Batch review list uses the fixed workspace RPC and returns batch-prefixed 
   });
 });
 
-test("Batch review detail accepts only bounded, review-only Squid results", async () => {
+test("Batch review list rejects another client or agent identity", async () => {
+  for (const invalid of [
+    listItem({ client_id: "squid" }),
+    listItem({ agent_id: "squid_client_agent" }),
+  ]) {
+    await assert.rejects(
+      () => listBatchReviewInbox(
+        reviewConfig(),
+        {},
+        async () => Response.json({ items: [invalid], next_cursor: null }),
+      ),
+      (error: unknown) => (
+        error instanceof BatchReviewError
+        && error.code === "batch_review_invalid_response"
+      ),
+    );
+  }
+});
+
+test("Batch review detail accepts only bounded OriginTrail review results", async () => {
   const item = await getBatchReviewItem(reviewConfig(), JOB_ID, async (input, init) => {
     const request = new Request(input, init);
     assert.equal(
@@ -129,11 +148,13 @@ test("Batch review detail accepts only bounded, review-only Squid results", asyn
     return Response.json(detailItem());
   });
   assert.equal(item?.ref, `batch:${JOB_ID}`);
-  assert.equal(item?.result_payload.headline_ko, "Squid 업데이트");
+  assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
   assert.equal(item?.actual_output_tokens, 220);
 
   for (const invalid of [
     detailItem({ client_id: "yellow" }),
+    detailItem({ client_id: "squid" }),
+    detailItem({ agent_id: "squid_client_agent" }),
     detailItem({ workflow_kind: "naver_seo_article" }),
     detailItem({ stage: "review" }),
     detailItem({ status: "failed" }),
@@ -263,7 +284,7 @@ test("authenticated Batch review endpoints are GET-only, no-store, and validate 
       assert.equal(detail.status, 200);
       assert.equal(detail.headers.get("cache-control"), "no-store");
       const detailPayload = await detail.json() as Record<string, any>;
-      assert.equal(detailPayload.result_payload.headline_ko, "Squid 업데이트");
+      assert.equal(detailPayload.result_payload.headline_ko, "OriginTrail 업데이트");
 
       const invalidId = await batchReviewItemHandler(new Request(
         "https://console.example/api/batch-review/not-a-uuid",

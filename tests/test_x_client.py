@@ -53,7 +53,7 @@ async def test_recent_tweets_include_only_allowlisted_x_media(monkeypatch):
                     "created_at": "2026-07-22T08:00:00Z",
                     "referenced_tweets": [],
                     "public_metrics": {"like_count": 12},
-                    "attachments": {"media_keys": ["good", "bad"]},
+                    "attachments": {"media_keys": ["good"]},
                 }],
                 "includes": {"media": [
                     {
@@ -67,6 +67,13 @@ async def test_recent_tweets_include_only_allowlisted_x_media(monkeypatch):
                         "media_key": "bad",
                         "type": "photo",
                         "url": "https://example.com/untrusted.jpg",
+                    },
+                    {
+                        "media_key": "valid-but-unreferenced",
+                        "type": "video",
+                        "preview_image_url": (
+                            "https://pbs.twimg.com/media/unreferenced.jpg"
+                        ),
                     },
                 ]},
             })
@@ -91,6 +98,227 @@ async def test_recent_tweets_include_only_allowlisted_x_media(monkeypatch):
     assert timeline_params is not None
     assert timeline_params["expansions"] == "attachments.media_keys"
     assert "note_tweet" in timeline_params["tweet.fields"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "media_records",
+    [
+        [],
+        [{
+            "media_key": "referenced",
+            "type": "audio",
+            "url": "https://pbs.twimg.com/media/invalid-type.jpg",
+        }],
+        [{
+            "media_key": "referenced",
+            "type": "video",
+        }],
+        [{
+            "media_key": "referenced",
+            "type": "video",
+            "preview_image_url": "https://attacker.example/preview.jpg",
+        }],
+    ],
+    ids=[
+        "unresolved-key",
+        "invalid-type",
+        "missing-preview",
+        "hostile-preview",
+    ],
+)
+async def test_recent_tweets_fail_closed_on_incomplete_referenced_media(
+    monkeypatch,
+    media_records,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Official update with referenced media.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "attachments": {"media_keys": ["referenced"]},
+                }],
+                "includes": {"media": media_records},
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="incomplete media evidence"):
+        await XClient("x-token").get_recent_tweets("origin_trail")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attachment_keys", "media_records"),
+    [
+        (
+            ["referenced", "referenced"],
+            [{
+                "media_key": "referenced",
+                "type": "photo",
+                "url": "https://pbs.twimg.com/media/duplicate-attachment.jpg",
+            }],
+        ),
+        (
+            ["referenced"],
+            [
+                {
+                    "media_key": "referenced",
+                    "type": "photo",
+                    "url": "https://pbs.twimg.com/media/first-record.jpg",
+                },
+                {
+                    "media_key": "referenced",
+                    "type": "photo",
+                    "url": "https://pbs.twimg.com/media/second-record.jpg",
+                },
+            ],
+        ),
+    ],
+    ids=["duplicate-attachment-key", "duplicate-include-record"],
+)
+async def test_recent_tweets_fail_closed_on_duplicate_referenced_media(
+    monkeypatch,
+    attachment_keys,
+    media_records,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Official update with duplicated media evidence.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "attachments": {"media_keys": attachment_keys},
+                }],
+                "includes": {"media": media_records},
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="incomplete media evidence"):
+        await XClient("x-token").get_recent_tweets("origin_trail")
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_marks_quoted_sources(monkeypatch):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "We are excited to announce a major partnership.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": "2082000000000000000",
+                    }],
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("origin_trail")
+
+    assert len(tweets) == 1
+    assert tweets[0]["is_quote"] is True
+    assert tweets[0]["is_reply"] is False
+    assert tweets[0]["is_retweet"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "references",
+    [
+        {"type": "quoted", "id": "2082000000000000000"},
+        [None],
+        [{"id": "2082000000000000000"}],
+        [{"type": "unknown", "id": "2082000000000000000"}],
+        [{"type": "quoted", "id": "not-a-post-id"}],
+    ],
+    ids=[
+        "non-list",
+        "non-object-entry",
+        "missing-type",
+        "unknown-type",
+        "invalid-id",
+    ],
+)
+async def test_recent_tweets_fail_closed_on_invalid_reference_evidence(
+    monkeypatch,
+    references,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Official update with invalid references.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": references,
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="invalid reference evidence"):
+        await XClient("x-token").get_recent_tweets("origin_trail")
 
 
 def test_x_media_allowlist_rejects_lookalike_and_credentials():

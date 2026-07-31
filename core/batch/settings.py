@@ -89,7 +89,7 @@ class BatchSettings:
             raise ValueError("BATCH_EXPERIMENT_MODE must be off, dry_run, or live")
         mode = "dry_run" if force_dry_run else configured_mode
 
-        raw_clients = env.get("BATCH_ALLOWED_CLIENTS", "squid")
+        raw_clients = env.get("BATCH_ALLOWED_CLIENTS", "origintrail")
         allowed_clients = frozenset(
             value.strip().lower()
             for value in raw_clients.split(",")

@@ -17,8 +17,12 @@ SECURITY_SMOKE = (
 
 
 RPC_SIGNATURES = {
+    "record_origintrail_nonquote_sources": (
+        "uuid, text, text, uuid, text, text, jsonb, timestamptz"
+    ),
     "bind_review_draft_execution_plane": "uuid, text, text",
     "complete_review_draft_batch_handoff": "uuid, text, uuid, text",
+    "recover_review_draft_batch_handoff": "uuid, text",
     "list_agent_batch_review_inbox": (
         "uuid, integer, timestamptz, uuid"
     ),
@@ -33,6 +37,16 @@ def _function(name: str) -> str:
         re.DOTALL,
     )
     assert match is not None, f"missing {name}"
+    return match.group(0)
+
+
+def _runtime_function(name: str) -> str:
+    match = re.search(
+        rf"create or replace function agent_runtime\.{name}\(.*?\n\$\$;",
+        MIGRATION,
+        re.DOTALL,
+    )
+    assert match is not None, f"missing agent_runtime.{name}"
     return match.group(0)
 
 
@@ -65,7 +79,8 @@ def test_batch_handoff_is_same_uuid_lease_fenced_and_side_effect_free() -> None:
     assert "review_job.lease_expires_at <= statement_timestamp()" in handoff
     assert "batch_job.deadline_at <= statement_timestamp()" not in handoff
     assert "Deadline is admission-time policy" in handoff
-    assert "batch_job.client_id <> 'squid'" in handoff
+    assert "batch_job.client_id <> 'origintrail'" in handoff
+    assert "batch_job.agent_id <> 'origintrail_client_agent'" in handoff
     assert (
         "batch_job.workflow_kind\n"
         "            <> 'official_source_nonurgent_pack'"
@@ -145,6 +160,97 @@ def test_queue_replay_uses_the_durable_stored_budget_binding() -> None:
     )
 
 
+def test_origintrail_canary_queue_and_claim_use_the_exact_route() -> None:
+    queue = _function("queue_agent_batch_job")
+    claim = _function("claim_agent_batch_jobs")
+
+    for identity in (
+        "target_agent_id <> 'origintrail_client_agent'",
+        "target_workflow_kind <> 'official_source_nonurgent_pack'",
+        "target_stage <> 'generate'",
+    ):
+        assert identity in queue
+    assert "review_job.input ->> 'content_kind' = 'daily_news'" in queue
+    assert "OriginTrail canary accepts daily news only" in queue
+    assert "job.agent_id = 'origintrail_client_agent'" in claim
+    assert "job.workflow_kind = 'official_source_nonurgent_pack'" in claim
+    assert "job.stage = 'generate'" in claim
+
+
+def test_origintrail_batch_evidence_is_daily_news_text_only_and_revalidated() -> None:
+    evidence = _runtime_function("origintrail_review_is_text_only")
+    binding = _function("bind_review_draft_execution_plane")
+    handoff = _function("complete_review_draft_batch_handoff")
+
+    assert "is distinct from 'daily_news'" in evidence
+    assert "source_image_url" in evidence
+    assert "jsonb_array_length(source.media) = 0" in evidence
+    assert "text_only_source_count = source_count" in evidence
+    assert "private.origintrail_standalone_sources" in evidence
+    assert "standalone.is_quote is false" in evidence
+    assert "origintrail_review_is_text_only(review_job.id)" in binding
+    assert "origintrail_review_is_text_only(review_job.id)" in handoff
+    assert "is distinct from 'daily_news'" in handoff
+
+
+def test_origintrail_nonquote_intake_is_durable_and_legacy_rows_fail_closed() -> None:
+    intake = _function("record_origintrail_nonquote_sources")
+    claim = _function("claim_review_draft_job")
+
+    assert "create table private.origintrail_standalone_sources" in MIGRATION
+    assert "item -> 'is_quote' is distinct from 'false'::jsonb" in intake
+    assert "public.record_official_x_sources(" in intake
+    assert "insert into private.origintrail_standalone_sources" in intake
+    assert "on conflict (source_item_id) do nothing" in intake
+    assert "OriginTrail source was not durably verified as standalone" in intake
+    assert "'origintrail_batch_eligible'" in claim
+    assert "origintrail_review_is_text_only(candidate.id)" in claim
+
+
+def test_handoff_recovery_uses_only_the_stored_safe_receipt() -> None:
+    claim = _function("claim_review_draft_job")
+    queue = _function("queue_agent_batch_job")
+    recovery = _function("recover_review_draft_batch_handoff")
+    recoverable = _runtime_function("has_recoverable_origintrail_handoff")
+
+    assert "job.finished_at <= statement_timestamp()" in claim
+    assert "- interval '1 minute'" in claim
+    assert "when recovery_only then attempts else attempts + 1" in claim
+    assert "batch_handoff_recovery_only" in claim
+    assert "'batch_handoff_recovery_only', recovery_only" in claim
+    assert "Batch handoff recovery cannot admit new work" in queue
+    assert "review_job.output -> 'batch_handoff_recovery_only'" in queue
+    assert "review_job.attempts <= 1" in recovery
+    assert "review_job.attempts > review_job.max_attempts" in recovery
+    assert "review_job.locked_by is distinct from target_worker_id" in recovery
+    assert "max-attempt Batch recovery receipt is unavailable" in recovery
+    assert "agent_runtime.has_recoverable_origintrail_handoff(" in recovery
+    assert "batch_job.input_sha256" in recovery
+    assert "return public.complete_review_draft_batch_handoff(" in recovery
+    for forbidden in (
+        "queue_agent_batch_job",
+        "configure_agent_batch_budget",
+        "register_agent_batch",
+        "input_payload =",
+        "insert into agent_runtime.batch_jobs",
+    ):
+        assert forbidden not in recovery
+    assert "batch_job.status = 'completed'" in recoverable
+    assert "batch_job.result_code = 'needs_review'" in recoverable
+    assert "origintrail_review_is_text_only(target_job_id)" in recoverable
+
+
+def test_review_completion_enforces_both_execution_planes_at_table_boundary() -> None:
+    trigger = _runtime_function("enforce_review_execution_plane")
+
+    assert "new.output ->> 'handoff' = 'openai_batch'" in trigger
+    assert "is distinct from 'openai_batch'" in trigger
+    assert "new.output ? 'content_item_id'" in trigger
+    assert "is distinct from 'studio_sync'" in trigger
+    assert "before update on public.jobs" in MIGRATION
+    assert "execute function agent_runtime.enforce_review_execution_plane()" in MIGRATION
+
+
 def test_expiration_rpc_only_releases_known_pre_provider_work() -> None:
     expiration = _function("expire_agent_batch_jobs")
     claim = _function("claim_agent_batch_jobs")
@@ -210,7 +316,8 @@ def test_review_reads_are_stable_keyset_paginated_and_fail_closed() -> None:
     for function in (listing, detail):
         lowered = function.lower()
         assert "\nstable\nsecurity definer" in lowered
-        assert "batch_job.client_id = 'squid'" in function
+        assert "batch_job.client_id = 'origintrail'" in function
+        assert "batch_job.agent_id = 'origintrail_client_agent'" in function
         assert (
             "batch_job.workflow_kind = 'official_source_nonurgent_pack'"
             in function
@@ -253,7 +360,7 @@ def test_review_reads_are_stable_keyset_paginated_and_fail_closed() -> None:
 def test_official_source_completion_revalidates_the_strict_result_schema() -> None:
     completion = _function("complete_agent_batch_job")
 
-    assert "job.client_id = 'squid'" in completion
+    assert "job.client_id = 'origintrail'" in completion
     assert "job.workflow_kind = 'official_source_nonurgent_pack'" in completion
     assert "target_result_code is distinct from 'needs_review'" in completion
     assert "from jsonb_object_keys(target_result_payload)" in completion
@@ -304,7 +411,23 @@ def test_security_smoke_covers_review_auth_replay_pagination_and_no_side_effects
         "sync-bound retry under Batch phase changed planes",
         "Batch-bound retry after phase changed planes",
         "review draft failure erased the execution plane marker",
+        "wrong OriginTrail canary identity was admitted",
+        "OriginTrail intake accepted a missing quote signal",
+        "OriginTrail intake accepted a non-false quote signal",
+        "OriginTrail intake accepted a missing standalone signal",
+        "OriginTrail intake accepted a referenced standalone signal",
+        "standalone OriginTrail source was not durably allowlisted",
+        "OriginTrail standalone allowlist replay was mutable",
+        "pre-cutover OriginTrail source was Batch eligible",
+        "pre-cutover OriginTrail source did not route Studio",
+        "media-backed OriginTrail job entered the Batch plane",
         "unbound review job entered the Batch handoff",
+        "max-attempt Batch recovery bypassed its cooldown",
+        "stored Batch handoff receipt was not completed",
+        "stored receipt recovery created Batch work or cost",
+        "ordinary retry did not consume its stored receipt",
+        "ordinary retry receipt miss was not nullable",
+        "media mutation bypassed Batch handoff revalidation",
         "expired queued Batch handoff receipt was not recovered",
         "expired handoff entered the review inbox",
         "Batch handoff or review reads created Studio side effects",

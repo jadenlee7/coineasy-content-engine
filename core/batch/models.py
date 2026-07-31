@@ -188,6 +188,7 @@ class BatchWorkItem:
             "input": self.input_text.strip(),
             "max_output_tokens": self.max_output_tokens,
             "reasoning": {"effort": effort},
+            "prompt_cache_options": {"mode": "explicit"},
             "store": False,
             "text": {
                 "format": {

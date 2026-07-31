@@ -1189,7 +1189,8 @@
         if (
           ref !== `batch:${jobId}`
           || batchJobIdFromRef(ref) !== jobId
-          || item.client_id !== "squid"
+          || item.client_id !== "origintrail"
+          || item.agent_id !== "origintrail_client_agent"
           || item.workflow_kind !== "official_source_nonurgent_pack"
           || item.stage !== "generate"
           || item.status !== "completed"
@@ -1201,7 +1202,7 @@
         return {
           content_item_id: ref,
           batch_job_id: jobId,
-          client_id: "squid",
+          client_id: "origintrail",
           content_kind: "daily_news",
           title: item.title.trim(),
           status: "needs_review",
@@ -1232,7 +1233,7 @@
           libraryList.hidden = true;
           libraryMoreWrap.hidden = true;
           libraryListState.innerHTML = libraryState.source === "batch"
-            ? "<strong>검토할 Batch 결과가 없습니다</strong>현재는 완료된 Squid 공식 원문 비긴급 팩 중 검토 대기 결과만 표시합니다."
+            ? "<strong>검토할 Batch 결과가 없습니다</strong>현재는 완료된 OriginTrail 공식 원문 비긴급 팩 중 검토 대기 결과만 표시합니다."
             : "<strong>아직 저장된 작업이 없습니다</strong>필터를 바꾸거나 만들기 화면에서 첫 콘텐츠를 생성해보세요.";
           libraryListState.className = "library-state";
           libraryListState.hidden = false;
@@ -1265,7 +1266,7 @@
         const showingBatch = libraryState.source === "batch";
         libraryFilters.hidden = showingBatch;
         libraryDescription.textContent = showingBatch
-          ? "완료된 Squid 공식 원문 비긴급 팩의 검토 대기 결과를 읽기 전용으로 확인합니다."
+          ? "완료된 OriginTrail 공식 원문 비긴급 팩의 검토 대기 결과를 읽기 전용으로 확인합니다."
           : "최근에 만든 뉴스·아티클·튜토리얼을 최신순으로 확인합니다. 모든 결과는 게시 전 검토가 필요합니다.";
         librarySourceSwitcher.querySelectorAll("[data-library-source]").forEach(button => {
           const active = button.dataset.librarySource === libraryState.source;
@@ -1714,7 +1715,8 @@
         if (
           ref !== `batch:${jobId}`
           || batchJobIdFromRef(ref) !== jobId
-          || detail.client_id !== "squid"
+          || detail.client_id !== "origintrail"
+          || detail.agent_id !== "origintrail_client_agent"
           || detail.workflow_kind !== "official_source_nonurgent_pack"
           || detail.stage !== "generate"
           || detail.status !== "completed"
@@ -1737,7 +1739,7 @@
           ? `<section class="library-source-evidence"><h3>공식 원문</h3><div class="library-source-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 링크 열기</a></div></section>`
           : "";
         libraryState.activeDetail = { ...detail, source: "batch" };
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">Squid</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">검토 필요</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div><section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>이 화면은 첫 실험의 결과 확인 전용입니다. 상태 변경이나 외부 실행 기능은 제공하지 않습니다.</p><dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl><pre class="batch-review-result">${escapeHtml(resultText)}</pre></section>${sourceMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">OriginTrail</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">검토 필요</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div><section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>이 화면은 첫 실험의 결과 확인 전용입니다. 상태 변경이나 외부 실행 기능은 제공하지 않습니다.</p><dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl><pre class="batch-review-result">${escapeHtml(resultText)}</pre></section>${sourceMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }

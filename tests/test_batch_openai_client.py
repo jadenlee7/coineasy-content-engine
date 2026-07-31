@@ -285,7 +285,10 @@ def _response_line(custom_id: str, draft: str, *, input_tokens=10, output_tokens
                 }],
                 "usage": {
                     "input_tokens": input_tokens,
-                    "input_tokens_details": {"cached_tokens": 0},
+                    "input_tokens_details": {
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 0,
+                    },
                     "output_tokens": output_tokens,
                 },
             },
@@ -362,6 +365,29 @@ def test_missing_usage_charges_reservation_instead_of_zero():
     custom_id = _item().custom_id
     line = _response_line(custom_id, "valid output")
     del line["response"]["body"]["usage"]
+
+    outcome = OpenAIBatchClient.parse_result_file(
+        (json.dumps(line) + "\n").encode()
+    )[0]
+
+    assert outcome.ok is False
+    assert outcome.error_code == "openai_invalid_response_usage"
+    assert outcome.cost_basis == "reservation"
+    assert outcome.input_tokens == 0
+    assert outcome.output_tokens == 0
+
+
+@pytest.mark.parametrize("cache_write_tokens", [None, 1, True])
+def test_unverifiable_cache_write_usage_charges_full_reservation(
+    cache_write_tokens,
+):
+    custom_id = _item().custom_id
+    line = _response_line(custom_id, "valid output")
+    input_details = line["response"]["body"]["usage"]["input_tokens_details"]
+    if cache_write_tokens is None:
+        del input_details["cache_write_tokens"]
+    else:
+        input_details["cache_write_tokens"] = cache_write_tokens
 
     outcome = OpenAIBatchClient.parse_result_file(
         (json.dumps(line) + "\n").encode()

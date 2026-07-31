@@ -94,7 +94,7 @@ def test_staged_batch_image_context_imports_and_runs_dry_run(tmp_path):
         "PYTHONPATH": str(stage),
         "PYTHONUNBUFFERED": "1",
         "BATCH_EXPERIMENT_MODE": "dry_run",
-        "BATCH_ALLOWED_CLIENTS": "squid",
+        "BATCH_ALLOWED_CLIENTS": "origintrail",
         "BATCH_DAILY_CAP_USD": "6.00",
         "BATCH_MAX_CLAIMS": "100",
         "BATCH_MAX_REQUESTS_PER_BATCH": "1",
