@@ -171,3 +171,13 @@ test("explains durable tutorial storage setup and failures to team members", () 
   assert.match(consoleHtml, /payload\.error\.endsWith\("_idempotency_conflict"\)\) state\.generationRequest = null/);
   assert.match(consoleHtml, /confirmResultReset\(\)/);
 });
+
+test("recovers an article from durable storage after an empty gateway timeout", () => {
+  assert.match(consoleHtml, /function articleResultUrl\(clientId, requestId\)/);
+  assert.match(consoleHtml, /async function recoverStoredArticle\(/);
+  assert.match(consoleHtml, /\/api\/article-result\//);
+  assert.match(consoleHtml, /\[502, 504\]\.includes\(articleResponse\.status\)/);
+  assert.match(consoleHtml, /!articlePayload\?\.error/);
+  assert.match(consoleHtml, /팀 보관함에 저장된 결과를 확인하고 있습니다/);
+  assert.match(consoleHtml, /payload: \{ error: "durable_catalog_result_unknown" \}/);
+});
