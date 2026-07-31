@@ -102,6 +102,9 @@ test("binds generation responses and editable SVG follow-ups to the submitted cl
   assert.match(consoleHtml, /const requestContext = Object\.freeze\(\{[\s\S]*mode: state\.mode,[\s\S]*client: state\.client,[\s\S]*template: state\.template/);
   assert.match(consoleHtml, /function generationContextIsCurrent\(requestContext\)/);
   assert.match(consoleHtml, /if \(requestSessionEpoch !== state\.sessionEpoch \|\| !generationContextIsCurrent\(requestContext\)\) return;/);
+  assert.match(consoleHtml, /sourceContent\.value\.trim\(\) === requestContext\.sourceContent/);
+  assert.match(consoleHtml, /normalizeUserUrl\(sourceUrl\.value\) === requestContext\.sourceUrl/);
+  assert.match(consoleHtml, /sourceType\.value === requestContext\.sourceType/);
   assert.match(consoleHtml, /function prepareEditableDownload\(payload, sessionEpoch, requestContext\)/);
   assert.match(consoleHtml, /encodeURIComponent\(requestContext\.client\)/);
   assert.match(consoleHtml, /downloadSvg\.download = `\$\{requestContext\.client\}-\$\{templateStyle\}-figma-editable\.svg`/);
@@ -180,4 +183,5 @@ test("recovers an article from durable storage after an empty gateway timeout", 
   assert.match(consoleHtml, /!articlePayload\?\.error/);
   assert.match(consoleHtml, /팀 보관함에 저장된 결과를 확인하고 있습니다/);
   assert.match(consoleHtml, /payload: \{ error: "durable_catalog_result_unknown" \}/);
+  assert.match(consoleHtml, /const deadline = Date\.now\(\) \+ 40_000/);
 });

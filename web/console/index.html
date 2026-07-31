@@ -2131,7 +2131,10 @@
         return Boolean(requestContext)
           && state.mode === requestContext.mode
           && state.client === requestContext.client
-          && (requestContext.mode !== "news" || state.template === requestContext.template);
+          && (requestContext.mode !== "news" || state.template === requestContext.template)
+          && sourceContent.value.trim() === requestContext.sourceContent
+          && normalizeUserUrl(sourceUrl.value) === requestContext.sourceUrl
+          && sourceType.value === requestContext.sourceType;
       }
 
       async function prepareEditableDownload(payload, sessionEpoch, requestContext) {
@@ -2177,7 +2180,7 @@
       }
 
       async function recoverStoredArticle(requestId, requestSessionEpoch, requestContext) {
-        const deadline = Date.now() + 25_000;
+        const deadline = Date.now() + 40_000;
         while (Date.now() < deadline) {
           if (
             requestSessionEpoch !== state.sessionEpoch
@@ -2911,7 +2914,9 @@
           mode: state.mode,
           client: state.client,
           template: state.template,
+          sourceContent: content,
           sourceType: sourceType.value,
+          sourceUrl: normalizedUrl,
           mockMode: state.mode === "article" ? false : mockMode.checked
         });
 
