@@ -6,6 +6,7 @@ import json
 
 from core.automation.daily_runner import build_daily_runner
 from core.automation.settings import AutomationSettings
+from core.batch.settings import BatchSettings
 
 
 def main() -> int:
@@ -21,7 +22,16 @@ def main() -> int:
 
     try:
         settings = AutomationSettings.from_env()
-        summary = asyncio.run(build_daily_runner(settings).run(dry_run=args.dry_run))
+        batch_settings = BatchSettings.from_env(
+            force_dry_run=args.dry_run,
+            require_openai_api_key=False,
+        )
+        summary = asyncio.run(
+            build_daily_runner(
+                settings,
+                batch_settings=batch_settings,
+            ).run(dry_run=args.dry_run)
+        )
     except (RuntimeError, ValueError):
         print(json.dumps({
             "ok": False,

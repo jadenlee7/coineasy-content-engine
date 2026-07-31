@@ -183,11 +183,16 @@ class XClient:
 
         data = data[:total_limit]
 
-        media_by_key = {
-            item.get("media_key"): item
-            for item in media_records
-            if isinstance(item, dict) and isinstance(item.get("media_key"), str)
-        }
+        media_by_key: dict[str, dict] = {}
+        duplicate_media_keys: set[str] = set()
+        for item in media_records:
+            media_key = item.get("media_key")
+            if not isinstance(media_key, str):
+                continue
+            if media_key in media_by_key:
+                duplicate_media_keys.add(media_key)
+                continue
+            media_by_key[media_key] = item
 
         results = []
         for t in data:
@@ -204,13 +209,32 @@ class XClient:
             ):
                 raise XTransientError("X API timeline contains an invalid post")
             refs = t.get("referenced_tweets", [])
-            refs = refs if isinstance(refs, list) else []
+            if not isinstance(refs, list):
+                raise XTransientError(
+                    "X API timeline contains invalid reference evidence"
+                )
+            for reference in refs:
+                if (
+                    not isinstance(reference, dict)
+                    or reference.get("type")
+                        not in {"retweeted", "replied_to", "quoted"}
+                    or not isinstance(reference.get("id"), str)
+                    or not reference["id"].isdigit()
+                    or len(reference["id"]) > 19
+                ):
+                    raise XTransientError(
+                        "X API timeline contains invalid reference evidence"
+                    )
             is_retweet = any(
-                isinstance(reference, dict) and reference.get("type") == "retweeted"
+                reference["type"] == "retweeted"
                 for reference in refs
             )
             is_reply = any(
-                isinstance(reference, dict) and reference.get("type") == "replied_to"
+                reference["type"] == "replied_to"
+                for reference in refs
+            )
+            is_quote = any(
+                reference["type"] == "quoted"
                 for reference in refs
             )
             media = []
@@ -222,18 +246,46 @@ class XClient:
             )
             if not isinstance(raw_media_keys, list):
                 raise XTransientError("X API timeline contains invalid media references")
+            seen_media_keys: set[str] = set()
             for media_key in raw_media_keys:
-                if not isinstance(media_key, str):
-                    continue
+                if (
+                    not isinstance(media_key, str)
+                    or not media_key
+                    or media_key in seen_media_keys
+                    or media_key in duplicate_media_keys
+                ):
+                    raise XTransientError(
+                        "X API timeline contains incomplete media evidence"
+                    )
+                seen_media_keys.add(media_key)
                 item = media_by_key.get(media_key)
-                if not item:
-                    continue
-                media_url = item.get("url") or item.get("preview_image_url")
-                if not self._allowed_media_url(media_url):
-                    continue
+                if item is None:
+                    raise XTransientError(
+                        "X API timeline contains incomplete media evidence"
+                    )
+                media_type = item.get("type")
+                if media_type not in {"photo", "video", "animated_gif"}:
+                    raise XTransientError(
+                        "X API timeline contains incomplete media evidence"
+                    )
+                media_url = next(
+                    (
+                        candidate
+                        for candidate in (
+                            item.get("url"),
+                            item.get("preview_image_url"),
+                        )
+                        if self._allowed_media_url(candidate)
+                    ),
+                    None,
+                )
+                if media_url is None:
+                    raise XTransientError(
+                        "X API timeline contains incomplete media evidence"
+                    )
                 media.append({
                     "media_key": media_key,
-                    "type": item.get("type"),
+                    "type": media_type,
                     "url": media_url,
                     "width": item.get("width"),
                     "height": item.get("height"),
@@ -255,6 +307,7 @@ class XClient:
                 "url": f"https://x.com/{username}/status/{post_id}",
                 "is_retweet": is_retweet,
                 "is_reply": is_reply,
+                "is_quote": is_quote,
                 "metrics": t.get("public_metrics", {}),
                 "media": media,
                 "source_image_url": photo["url"] if photo else "",

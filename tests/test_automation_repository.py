@@ -158,6 +158,8 @@ async def test_claim_requires_the_exact_worker_lease_owner():
             "client_id": "yellow",
             "attempts": 1,
             "max_attempts": 3,
+            "origintrail_batch_eligible": False,
+            "batch_handoff_recovery_only": False,
             "locked_by": "another-worker",
             "input": {
                 "content_kind": "daily_news",
@@ -373,6 +375,12 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
             })
         if name == "claim_review_draft_job":
             return httpx.Response(200, content=b"null", headers={"content-type": "application/json"})
+        if name == "bind_review_draft_execution_plane":
+            return httpx.Response(200, json={
+                "job_id": JOB_ID,
+                "execution_plane": "studio_sync",
+                "reused": False,
+            })
         return httpx.Response(200, json={"job_id": JOB_ID, "status": "succeeded"})
 
     repo = _repo(handler)
@@ -405,6 +413,11 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
     await repo.claim_job(
         workspace_id=WORKSPACE_ID,
         worker_id="official-x:test-worker",
+    )
+    await repo.bind_execution_plane(
+        job_id=JOB_ID,
+        worker_id="official-x:test-worker",
+        requested_plane="studio_sync",
     )
     await repo.complete_job(
         job_id=JOB_ID,
@@ -440,6 +453,9 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
     assert set(requests["claim_review_draft_job"]) == {
         "target_workspace_id", "target_worker_id", "target_lease_seconds",
     }
+    assert set(requests["bind_review_draft_execution_plane"]) == {
+        "target_job_id", "target_worker_id", "target_requested_plane",
+    }
     assert set(requests["complete_review_draft_job"]) == {
         "target_job_id", "target_worker_id", "target_content_item_id",
         "target_content_version_id",
@@ -448,3 +464,217 @@ async def test_repository_payload_names_match_the_database_rpc_contract():
         "target_job_id", "target_worker_id", "target_error_code",
         "target_error_message", "target_retryable", "target_retry_at",
     }
+
+
+@pytest.mark.asyncio
+async def test_origintrail_intake_uses_the_nonquote_wrapper_rpc():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == (
+            "/rest/v1/rpc/record_origintrail_nonquote_sources"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "last_cursor": "456",
+            "draft_reserved_today": False,
+            "pending_sources": [],
+        })
+
+    await _repo(handler).record_sources(
+        workspace_id=WORKSPACE_ID,
+        client_id="origintrail",
+        handle="@origin_trail",
+        poll_request_id=REQUEST_ID,
+        expected_cursor=None,
+        next_cursor="456",
+        source_items=[{
+            "external_id": "456",
+            "source_content": "A standalone OriginTrail update.",
+            "source_url": "https://x.com/origin_trail/status/456",
+            "published_at": "2026-07-22T00:00:00+00:00",
+            "media": [],
+            "metrics": {},
+            "is_note_tweet": False,
+            "is_quote": False,
+        }],
+        polled_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
+
+    assert captured["target_client_id"] == "origintrail"
+    assert captured["target_items"][0]["is_quote"] is False
+
+
+@pytest.mark.asyncio
+async def test_execution_plane_binding_returns_the_existing_plane():
+    def handler(_request):
+        return httpx.Response(200, json={
+            "job_id": JOB_ID,
+            "execution_plane": "studio_sync",
+            "reused": True,
+        })
+
+    plane = await _repo(handler).bind_execution_plane(
+        job_id=JOB_ID,
+        worker_id="official-x:test-worker",
+        requested_plane="openai_batch",
+    )
+
+    assert plane == "studio_sync"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_execution_plane_receipt_is_retryable():
+    repository = _repo(
+        lambda _request: httpx.Response(200, text="not-json")
+    )
+
+    with pytest.raises(AutomationRepositoryError) as caught:
+        await repository.bind_execution_plane(
+            job_id=JOB_ID,
+            worker_id="official-x:test-worker",
+            requested_plane="openai_batch",
+        )
+
+    assert caught.value.code == "invalid_execution_plane_response"
+    assert caught.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_first_execution_plane_receipt_must_match_the_request():
+    repository = _repo(
+        lambda _request: httpx.Response(200, json={
+            "job_id": JOB_ID,
+            "execution_plane": "studio_sync",
+            "reused": False,
+        })
+    )
+
+    with pytest.raises(AutomationRepositoryError) as caught:
+        await repository.bind_execution_plane(
+            job_id=JOB_ID,
+            worker_id="official-x:test-worker",
+            requested_plane="openai_batch",
+        )
+
+    assert caught.value.code == "invalid_execution_plane_response"
+    assert caught.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_claim_parses_kst_date_and_completes_exact_batch_handoff():
+    requests = {}
+    worker_id = "official-x:test-worker"
+    input_sha256 = "a" * 64
+
+    def handler(request):
+        name = request.url.path.rsplit("/", 1)[-1]
+        requests[name] = json.loads(request.content)
+        if name == "claim_review_draft_job":
+            return httpx.Response(200, json={
+                "job_id": JOB_ID,
+                "workspace_id": WORKSPACE_ID,
+                "client_id": "origintrail",
+                "status": "running",
+                "attempts": 1,
+                "max_attempts": 3,
+                "origintrail_batch_eligible": True,
+                "batch_handoff_recovery_only": False,
+                "locked_by": worker_id,
+                "input": {
+                    "kst_date": "2026-07-22",
+                    "content_kind": "daily_news",
+                    "request_id": REQUEST_ID,
+                    "source_item_ids": [SOURCE_ID],
+                    "source_content": (
+                        "A sufficiently long official OriginTrail update."
+                    ),
+                    "source_url": (
+                        "https://x.com/origin_trail/status/456"
+                    ),
+                    "source_image_url": "",
+                    "manual_only": False,
+                },
+            })
+        if name == "complete_review_draft_batch_handoff":
+            return httpx.Response(200, json={
+                "job_id": JOB_ID,
+                "status": "succeeded",
+                "batch_job_id": JOB_ID,
+                "reused": False,
+            })
+        raise AssertionError(f"unexpected RPC: {name}")
+
+    repository = _repo(handler)
+    claimed = await repository.claim_job(
+        workspace_id=WORKSPACE_ID,
+        worker_id=worker_id,
+    )
+    assert claimed is not None
+    assert claimed.kst_date == date(2026, 7, 22)
+    assert claimed.origintrail_batch_eligible is True
+    assert claimed.batch_handoff_recovery_only is False
+
+    await repository.complete_batch_handoff(
+        job_id=claimed.job_id,
+        worker_id=worker_id,
+        batch_job_id=claimed.job_id,
+        input_sha256=input_sha256,
+    )
+
+    assert requests["complete_review_draft_batch_handoff"] == {
+        "target_job_id": JOB_ID,
+        "target_worker_id": worker_id,
+        "target_batch_job_id": JOB_ID,
+        "target_input_sha256": input_sha256,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recover_batch_handoff_reads_only_the_stored_receipt():
+    requests = {}
+    worker_id = "official-x:recovery-worker"
+
+    def handler(request):
+        name = request.url.path.rsplit("/", 1)[-1]
+        requests[name] = json.loads(request.content)
+        assert name == "recover_review_draft_batch_handoff"
+        return httpx.Response(200, json={
+            "job_id": JOB_ID,
+            "status": "succeeded",
+            "batch_job_id": JOB_ID,
+            "input_sha256": "b" * 64,
+            "review_state": "pending",
+            "reused": False,
+        })
+
+    recovered = await _repo(handler).recover_batch_handoff(
+        job_id=JOB_ID,
+        worker_id=worker_id,
+    )
+
+    assert recovered is True
+    assert requests["recover_review_draft_batch_handoff"] == {
+        "target_job_id": JOB_ID,
+        "target_worker_id": worker_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recover_batch_handoff_allows_an_exact_receipt_miss():
+    def handler(request):
+        assert request.url.path.endswith(
+            "/rpc/recover_review_draft_batch_handoff"
+        )
+        return httpx.Response(
+            200,
+            content=b"null",
+            headers={"content-type": "application/json"},
+        )
+
+    recovered = await _repo(handler).recover_batch_handoff(
+        job_id=JOB_ID,
+        worker_id="official-x:recovery-worker",
+    )
+
+    assert recovered is False

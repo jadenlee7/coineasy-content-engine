@@ -405,6 +405,11 @@ declare
 begin
     select id into job_id from public.jobs
     where input ->> 'request_id' = 'b2000000-0000-4000-8000-000000000001';
+    perform public.bind_review_draft_execution_plane(
+        job_id,
+        'official-x:test-worker',
+        'studio_sync'
+    );
     completed := public.complete_review_draft_job(
         job_id, 'official-x:test-worker',
         'b2000000-0000-4000-8000-000000000001',

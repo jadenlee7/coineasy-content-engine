@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-automation.txt .
+RUN pip install --no-cache-dir -r requirements-automation.txt
+
+COPY core/__init__.py ./core/__init__.py
+COPY core/automation/__init__.py ./core/automation/__init__.py
+COPY core/automation/content_signals.py ./core/automation/content_signals.py
+COPY core/automation/settings.py ./core/automation/settings.py
+COPY core/batch ./core/batch
+COPY scripts/run_batch_dispatcher.py ./scripts/run_batch_dispatcher.py
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "scripts.run_batch_dispatcher"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Mapping
 
 
@@ -75,6 +76,7 @@ class StyleReferencePack:
 class ClaimedJob:
     job_id: str
     client_id: str
+    kst_date: date
     content_kind: str
     request_id: str
     primary_source_item_id: str
@@ -85,3 +87,5 @@ class ClaimedJob:
     attempts: int
     max_attempts: int
     locked_by: str
+    origintrail_batch_eligible: bool = False
+    batch_handoff_recovery_only: bool = False
