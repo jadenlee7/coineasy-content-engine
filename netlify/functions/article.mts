@@ -120,7 +120,7 @@ function catalogRequestHash(existing: ContentCatalogLookup): string | null {
     : null;
 }
 
-function articleRetryResponse(
+export function articleRetryResponse(
   existing: ContentCatalogLookup,
   clientId: ContentCatalogClient,
 ): RailwayArticleResponse & Record<string, unknown> {

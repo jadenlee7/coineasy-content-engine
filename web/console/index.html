@@ -2131,7 +2131,10 @@
         return Boolean(requestContext)
           && state.mode === requestContext.mode
           && state.client === requestContext.client
-          && (requestContext.mode !== "news" || state.template === requestContext.template);
+          && (requestContext.mode !== "news" || state.template === requestContext.template)
+          && sourceContent.value.trim() === requestContext.sourceContent
+          && normalizeUserUrl(sourceUrl.value) === requestContext.sourceUrl
+          && sourceType.value === requestContext.sourceType;
       }
 
       async function prepareEditableDownload(payload, sessionEpoch, requestContext) {
@@ -2170,6 +2173,43 @@
 
       function articleVisualUrl(contentId, visualId) {
         return `/api/article-visual/${encodeURIComponent(contentId)}/${encodeURIComponent(visualId)}`;
+      }
+
+      function articleResultUrl(clientId, requestId) {
+        return `/api/article-result/${encodeURIComponent(clientId)}/${encodeURIComponent(requestId)}`;
+      }
+
+      async function recoverStoredArticle(requestId, requestSessionEpoch, requestContext) {
+        const deadline = Date.now() + 40_000;
+        while (Date.now() < deadline) {
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || !generationContextIsCurrent(requestContext)
+          ) return null;
+          let response;
+          let payload;
+          try {
+            response = await fetch(articleResultUrl(requestContext.client, requestId), {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            });
+            payload = await response.json().catch(() => ({}));
+          } catch {
+            await new Promise(resolve => setTimeout(resolve, 1_250));
+            continue;
+          }
+          if (
+            requestSessionEpoch !== state.sessionEpoch
+            || !generationContextIsCurrent(requestContext)
+          ) return null;
+          handleStudioAccessResponse(response, payload);
+          if (response.status === 200) return payload;
+          if (response.status === 401 || response.status === 403) return null;
+          if (![202, 404, 502, 503].includes(response.status)) return null;
+          await new Promise(resolve => setTimeout(resolve, 1_250));
+        }
+        return null;
       }
 
       function articleVisualFilename(clientId, visualId, extension) {
@@ -2874,7 +2914,9 @@
           mode: state.mode,
           client: state.client,
           template: state.template,
+          sourceContent: content,
           sourceType: sourceType.value,
+          sourceUrl: normalizedUrl,
           mockMode: state.mode === "article" ? false : mockMode.checked
         });
 
@@ -2935,11 +2977,32 @@
                 source_url: normalizedUrl
               })
             });
-            const articlePayload = await articleResponse.json().catch(() => ({}));
+            let articlePayload = await articleResponse.json().catch(() => ({}));
             if (requestSessionEpoch !== state.sessionEpoch) return;
             handleStudioAccessResponse(articleResponse, articlePayload);
             if (!generationContextIsCurrent(requestContext)) return;
-            if (!articleResponse.ok) throw Object.assign(new Error("generation_failed"), { payload: articlePayload, status: articleResponse.status });
+            if (!articleResponse.ok) {
+              const recoverableGatewayTimeout = [502, 504].includes(articleResponse.status)
+                && !articlePayload?.error;
+              if (recoverableGatewayTimeout) {
+                setStatus("생성은 계속 진행 중입니다. 팀 보관함에 저장된 결과를 확인하고 있습니다…");
+                const recoveredArticle = await recoverStoredArticle(
+                  generationRequestId,
+                  requestSessionEpoch,
+                  requestContext
+                );
+                if (recoveredArticle) articlePayload = recoveredArticle;
+                else throw Object.assign(new Error("generation_failed"), {
+                  payload: { error: "durable_catalog_result_unknown" },
+                  status: articleResponse.status
+                });
+              } else {
+                throw Object.assign(new Error("generation_failed"), {
+                  payload: articlePayload,
+                  status: articleResponse.status
+                });
+              }
+            }
             renderArticleResult(articlePayload, requestContext);
             state.generationRequest = null;
             const articleBannerBlob = await prepareArticleBanner(articlePayload, requestSessionEpoch, requestContext);
