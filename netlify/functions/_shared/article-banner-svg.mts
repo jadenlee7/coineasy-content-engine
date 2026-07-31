@@ -7,7 +7,10 @@ import type {
   ArticleVisualBrief,
   ArticleVisualMotif,
 } from "./article-visual-plan.mts";
-import { OFFICIAL_BRAND_ASSETS } from "./official-brand-assets.mts";
+import {
+  OFFICIAL_BRAND_ASSETS,
+  type ArticleHeroBrandAssets,
+} from "./official-brand-assets.mts";
 
 export type ArticleBannerInput = {
   title: string;
@@ -49,10 +52,10 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
   },
   origintrail: {
     name: "OriginTrail Korea",
-    primary: "#A993FF",
-    accent: "#6D4AFF",
-    background: "#071A39",
-    surface: "#102957",
+    primary: "#6344DF",
+    accent: "#A993FF",
+    background: "#0C2246",
+    surface: "#173665",
     displayFont: "Gmarket Sans",
     bodyFont: "Pretendard",
     editorialLabel: "ORIGINTRAIL / TRUST BRIEF",
@@ -61,9 +64,9 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
   squid: {
     name: "Squid",
     primary: "#E6FA36",
-    accent: "#C59AEA",
-    background: "#160A27",
-    surface: "#2A1744",
+    accent: "#BC8EE4",
+    background: "#1A0E2E",
+    surface: "#2E1B48",
     displayFont: "Bagoss Condensed",
     bodyFont: "Pretendard",
     editorialLabel: "SQUID / PRODUCT NOTE",
@@ -71,10 +74,10 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
   },
   babylon: {
     name: "Babylon Korea",
-    primary: "#F28A52",
-    accent: "#FFB375",
-    background: "#082E3D",
-    surface: "#124C60",
+    primary: "#CE6533",
+    accent: "#F7931A",
+    background: "#12495E",
+    surface: "#1A5C73",
     displayFont: "Inter",
     bodyFont: "Pretendard",
     editorialLabel: "BABYLON / BITCOIN BRIEF",
@@ -222,6 +225,17 @@ function sharedDefinitions(brand: ArticleBannerBrand, width: number, height: num
   <pattern id="Editorial-Grid" width="38" height="38" patternUnits="userSpaceOnUse">
     <path d="M38 0H0V38" stroke="#FFFFFF" stroke-opacity=".042"/>
   </pattern>
+  <linearGradient id="OriginTrail-Network-Glow" x1="730" y1="110" x2="1132" y2="536" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#A993FF" stop-opacity=".34"/>
+    <stop offset=".55" stop-color="#6344DF" stop-opacity=".12"/>
+    <stop offset="1" stop-color="#0C2246" stop-opacity="0"/>
+  </linearGradient>
+  <filter id="Editorial-Shadow" x="-20%" y="-20%" width="140%" height="160%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity=".14"/>
+  </filter>
+  <filter id="Orb-Shadow" x="-40%" y="-40%" width="180%" height="190%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="20" stdDeviation="18" flood-color="#65408F" flood-opacity=".28"/>
+  </filter>
   <clipPath id="Canvas-Clip"><rect width="${width}" height="${height}"/></clipPath>
 </defs>`;
 }
@@ -265,75 +279,316 @@ function brandAtmosphereMarkup(
 </g>`;
 }
 
+type ArticleHeroCopy = {
+  title: string;
+  lead: string;
+  date: string;
+  motif: ArticleVisualMotif;
+  titleLines: string[];
+  leadLines: string[];
+  titleFontSize: number;
+  titleLineHeight: number;
+  leadY: number;
+};
+
+function articleHeroCopy(
+  input: ArticleBannerInput,
+  titleMaxUnits: number,
+  leadMaxUnits: number,
+  titleY: number,
+): ArticleHeroCopy {
+  const title = cleanText(input.title, 200) || "새로운 소식을 전합니다";
+  const lead = cleanText(input.lead, 800);
+  const titleLines = wrapSvgText(title, titleMaxUnits, 3);
+  const leadLines = wrapSvgText(lead, leadMaxUnits, 2);
+  const titleFontSize = titleLines.length === 3 ? 43 : titleLines.length === 2 ? 49 : 54;
+  const titleLineHeight = titleLines.length === 3 ? 51 : titleLines.length === 2 ? 58 : 64;
+  return {
+    title,
+    lead,
+    date: cleanText(input.date, 40),
+    motif: input.motif || "signal",
+    titleLines,
+    leadLines,
+    titleFontSize,
+    titleLineHeight,
+    leadY: Math.min(466, titleY + (titleLines.length - 1) * titleLineHeight + 92),
+  };
+}
+
+function yellowArticleHero(
+  input: ArticleBannerInput,
+  logoDataUrl: string,
+): string {
+  const brand = ARTICLE_BANNER_BRANDS.yellow;
+  const copy = articleHeroCopy(input, 19.5, 37, 230);
+  const motifBrand = {
+    ...brand,
+    primary: "#FDDA16",
+    accent: "#19191C",
+    background: "#19191C",
+    surface: "#FFFFFF",
+  };
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(copy.title)}">
+  ${sharedDefinitions(brand, 1200, 630)}
+  <g id="Editorial-Hero-v2" clip-path="url(#Canvas-Clip)">
+    <rect id="Background" width="1200" height="630" fill="#FDDA16"/>
+    <circle cx="1168" cy="20" r="190" fill="#FFE95B" fill-opacity=".72"/>
+    <path d="M28 155H1172M28 475H1172" stroke="#19191C" stroke-opacity=".06"/>
+    <rect id="Hero-Yellow-Studio" x="28" y="26" width="1144" height="578" rx="34" fill="#FFFFFF" stroke="#19191C" stroke-opacity=".08" filter="url(#Editorial-Shadow)"/>
+    <path d="M28 60C28 41.2223 43.2223 26 62 26H395L351 40H28V60Z" fill="#FDDA16"/>
+  </g>
+  <g id="Header">
+    <g id="Editorial-Label">
+      <rect x="76" y="58" width="186" height="38" rx="7" fill="#19191C"/>
+      <text x="169" y="83" text-anchor="middle" fill="#FDDA16" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="900" letter-spacing="1.5">YELLOW / ARTICLE 01</text>
+    </g>
+    ${logoMarkup("yellow", brand, logoDataUrl, 914)}
+    <line x1="76" y1="124" x2="1124" y2="124" stroke="#19191C" stroke-opacity=".12"/>
+  </g>
+  <g id="Article-Copy">
+    <text id="Story-Index" x="76" y="174" fill="#64646B" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="800" letter-spacing="1.9">KOREA MARKET INTELLIGENCE</text>
+    ${textLayers(
+      "Article-Title",
+      copy.titleLines,
+      76,
+      230,
+      copy.titleLineHeight,
+      `fill="#19191C" font-family="Pretendard, sans-serif" font-size="${copy.titleFontSize}" font-weight="900" letter-spacing="-1.7"`,
+    )}
+    ${textLayers(
+      "Article-Lead",
+      copy.leadLines,
+      76,
+      copy.leadY,
+      29,
+      `fill="#555555" font-family="Pretendard, sans-serif" font-size="17" font-weight="550" letter-spacing="-.15"`,
+    )}
+  </g>
+  <g id="Visual-Panel">
+    <rect x="790" y="154" width="334" height="348" rx="26" fill="#F0F0F5"/>
+    <text x="820" y="192" fill="#77777E" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.7">${escapeXml(brand.signalLabel)}</text>
+    <circle cx="1090" cy="184" r="8" fill="#FDDA16" stroke="#19191C" stroke-width="2"/>
+    <g transform="translate(802 222) scale(.7)">
+      ${motifMarkup(copy.motif, motifBrand, "Hero", 0, 0)}
+    </g>
+    <g id="Visual-Metadata">
+      <rect x="816" y="448" width="128" height="32" rx="16" fill="#FFFFFF"/>
+      <circle cx="834" cy="464" r="5" fill="#FDDA16"/>
+      <text x="847" y="469" fill="#19191C" font-family="Inter, Pretendard, sans-serif" font-size="9.8" font-weight="850" letter-spacing=".6">SOURCE LOCKED</text>
+      <rect x="956" y="448" width="144" height="32" rx="16" fill="#19191C"/>
+      <text x="1028" y="469" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="9.8" font-weight="850" letter-spacing=".7">COINEASY / KOREA</text>
+    </g>
+  </g>
+  <g id="Footer">
+    <line x1="76" y1="544" x2="1124" y2="544" stroke="#19191C" stroke-opacity=".12"/>
+    <text x="76" y="577" fill="#64646B" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750" letter-spacing=".5">${escapeXml(sourceLabel(input.sourceUrl))}</text>
+    <text x="1124" y="577" text-anchor="end" fill="#64646B" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750">${escapeXml(copy.date)}</text>
+  </g>
+</svg>`;
+}
+
+function squidArticleHero(
+  input: ArticleBannerInput,
+  logoDataUrl: string,
+  heroAssets: ArticleHeroBrandAssets | null | undefined,
+): string {
+  if (!heroAssets?.formLanguage || !heroAssets.squib || !heroAssets.bubbles) {
+    throw new Error("official_squid_hero_assets_required");
+  }
+  const brand = ARTICLE_BANNER_BRANDS.squid;
+  const copy = articleHeroCopy(input, 18.5, 35, 242);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(copy.title)}">
+  ${sharedDefinitions(brand, 1200, 630)}
+  <g id="Editorial-Hero-v2" clip-path="url(#Canvas-Clip)">
+    <rect id="Background" width="1200" height="630" fill="#E8E6EA"/>
+    <circle cx="1174" cy="14" r="122" fill="#E6FA36" fill-opacity=".24"/>
+    <path d="M0 540C198 506 368 579 560 548C760 516 918 565 1200 516V630H0V540Z" fill="#BC8EE4" fill-opacity=".28"/>
+    <image id="Squid-Official-Form-Language" x="640" y="-28" width="650" height="650" href="${escapeXml(heroAssets.formLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".62" transform="rotate(-7 965 297)"/>
+    <ellipse id="Squid-Portal" cx="981" cy="326" rx="292" ry="160" fill="#FFFFFF" fill-opacity=".92"/>
+  </g>
+  <g id="Header">
+    ${logoMarkup("squid", brand, logoDataUrl, 68)}
+    <g id="Editorial-Label">
+      <rect x="894" y="50" width="238" height="42" rx="21" fill="#000000"/>
+      <circle cx="918" cy="71" r="6" fill="#E6FA36"/>
+      <text x="1021" y="76" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.25">SQUID KOREA / NOTE 01</text>
+    </g>
+  </g>
+  <g id="Article-Copy">
+    <text id="Story-Index" x="68" y="182" fill="#5D5664" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="850" letter-spacing="2">CROSS-CHAIN, MADE HUMAN</text>
+    ${textLayers(
+      "Article-Title",
+      copy.titleLines,
+      68,
+      242,
+      copy.titleLineHeight,
+      `fill="#000000" font-family="Bagoss Condensed, Pretendard, sans-serif" font-size="${copy.titleFontSize + 1}" font-weight="900" letter-spacing="-1.8"`,
+    )}
+    ${textLayers(
+      "Article-Lead",
+      copy.leadLines,
+      68,
+      copy.leadY,
+      29,
+      `fill="#4A4A4A" font-family="Pretendard, sans-serif" font-size="17" font-weight="550"`,
+    )}
+  </g>
+  <g id="Hero-Squid-Official-World">
+    <image id="Squid-Official-Bubbles" x="786" y="205" width="362" height="362" href="${escapeXml(heroAssets.bubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".48"/>
+    <image id="Squid-Official-SQUIB" x="770" y="112" width="452" height="452" href="${escapeXml(heroAssets.squib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Orb-Shadow)"/>
+  </g>
+  <g id="Footer">
+    <rect x="48" y="552" width="1104" height="46" rx="23" fill="#000000"/>
+    <circle cx="76" cy="575" r="7" fill="#E6FA36"/>
+    <text x="94" y="580" fill="#FFFFFF" fill-opacity=".78" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750" letter-spacing=".45">${escapeXml(sourceLabel(input.sourceUrl))}</text>
+    <text x="1120" y="580" text-anchor="end" fill="#FFFFFF" fill-opacity=".78" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750">${escapeXml(copy.date)}</text>
+  </g>
+</svg>`;
+}
+
+function originTrailArticleHero(
+  input: ArticleBannerInput,
+  logoDataUrl: string,
+): string {
+  const brand = ARTICLE_BANNER_BRANDS.origintrail;
+  const copy = articleHeroCopy(input, 19.5, 37, 234);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(copy.title)}">
+  ${sharedDefinitions(brand, 1200, 630)}
+  <g id="Editorial-Hero-v2" clip-path="url(#Canvas-Clip)">
+    <rect id="Background" width="1200" height="630" fill="#0C2246"/>
+    <rect width="1200" height="630" fill="url(#Editorial-Grid)"/>
+    <ellipse cx="1005" cy="292" rx="424" ry="370" fill="url(#OriginTrail-Network-Glow)"/>
+    <path d="M0 0H18V630H0Z" fill="#6344DF"/>
+    <path d="M18 0H390L338 16H18V0Z" fill="#6344DF"/>
+  </g>
+  <g id="Header">
+    ${logoMarkup("origintrail", brand, logoDataUrl, 72)}
+    <g id="Editorial-Label">
+      <rect x="874" y="48" width="254" height="42" rx="21" fill="#6344DF"/>
+      <text x="1001" y="75" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.25">TRUSTED KNOWLEDGE / 01</text>
+    </g>
+    <line x1="72" y1="126" x2="1128" y2="126" stroke="#FFFFFF" stroke-opacity=".15"/>
+  </g>
+  <g id="Article-Copy">
+    <text id="Story-Index" x="72" y="178" fill="#A993FF" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="850" letter-spacing="2">ORIGINTRAIL KOREA / TRUST BRIEF</text>
+    ${textLayers(
+      "Article-Title",
+      copy.titleLines,
+      72,
+      234,
+      copy.titleLineHeight,
+      `fill="#FFFFFF" font-family="Gmarket Sans, Pretendard, sans-serif" font-size="${copy.titleFontSize}" font-weight="850" letter-spacing="-1.7"`,
+    )}
+    ${textLayers(
+      "Article-Lead",
+      copy.leadLines,
+      72,
+      copy.leadY,
+      29,
+      `fill="#FFFFFF" fill-opacity=".68" font-family="Gmarket Sans, Pretendard, sans-serif" font-size="17" font-weight="500"`,
+    )}
+  </g>
+  <g id="Hero-OriginTrail-Knowledge-Graph">
+    <path d="M787 215L884 146L976 202L1082 129M884 146L917 294L1082 129M976 202L1119 295M917 294L1045 416M787 215L829 390L917 294M829 390L1045 416L1119 295" stroke="#A993FF" stroke-opacity=".52" stroke-width="3"/>
+    <path d="M787 215L976 202L1045 416" stroke="#6344DF" stroke-width="9" stroke-linecap="round" stroke-opacity=".62"/>
+    <circle cx="787" cy="215" r="22" fill="#173665" stroke="#A993FF" stroke-width="4"/>
+    <circle cx="884" cy="146" r="30" fill="#6344DF"/>
+    <circle cx="976" cy="202" r="18" fill="#A993FF"/>
+    <circle cx="1082" cy="129" r="14" fill="#FFFFFF"/>
+    <circle cx="917" cy="294" r="27" fill="#173665" stroke="#FFFFFF" stroke-opacity=".72" stroke-width="4"/>
+    <circle cx="829" cy="390" r="16" fill="#A993FF"/>
+    <circle cx="1045" cy="416" r="31" fill="#6344DF" stroke="#A993FF" stroke-width="4"/>
+    <circle cx="1119" cy="295" r="12" fill="#FFFFFF"/>
+    <circle cx="884" cy="146" r="44" stroke="#A993FF" stroke-opacity=".2" stroke-width="2"/>
+    <text x="917" y="300" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="900">DKG</text>
+  </g>
+  <g id="Footer">
+    <line x1="72" y1="548" x2="1128" y2="548" stroke="#FFFFFF" stroke-opacity=".15"/>
+    <circle cx="80" cy="584" r="7" fill="#6344DF"/>
+    <text x="99" y="590" fill="#FFFFFF" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750" letter-spacing=".45">${escapeXml(sourceLabel(input.sourceUrl))}</text>
+    <text x="1128" y="590" text-anchor="end" fill="#FFFFFF" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750">${escapeXml(copy.date)}</text>
+  </g>
+</svg>`;
+}
+
+function babylonArticleHero(
+  input: ArticleBannerInput,
+  logoDataUrl: string,
+): string {
+  const brand = ARTICLE_BANNER_BRANDS.babylon;
+  const copy = articleHeroCopy(input, 19.5, 37, 234);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(copy.title)}">
+  ${sharedDefinitions(brand, 1200, 630)}
+  <g id="Editorial-Hero-v2" clip-path="url(#Canvas-Clip)">
+    <rect id="Background" width="1200" height="630" fill="#12495E"/>
+    <circle cx="1098" cy="86" r="266" fill="#CE6533" fill-opacity=".11"/>
+    <path d="M0 538C214 493 373 603 586 548C812 489 970 566 1200 506V630H0V538Z" fill="#0B3B4D"/>
+    <image id="Hero-Babylon-Symbol" x="815" y="-96" width="470" height="470" href="${escapeXml(logoDataUrl)}" preserveAspectRatio="xMidYMid meet" opacity=".28"/>
+    <path d="M26 0H424L376 16H26V0Z" fill="#CE6533"/>
+  </g>
+  <g id="Header">
+    ${logoMarkup("babylon", brand, logoDataUrl, 72)}
+    <g id="Editorial-Label">
+      <rect x="904" y="48" width="224" height="42" rx="21" fill="#CE6533"/>
+      <text x="1016" y="75" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.2">BITCOIN NATIVE / 01</text>
+    </g>
+    <line x1="72" y1="126" x2="1128" y2="126" stroke="#FFFFFF" stroke-opacity=".16"/>
+  </g>
+  <g id="Article-Copy">
+    <g id="Story-Index">
+      <rect x="72" y="153" width="126" height="36" rx="18" fill="#FFFFFF" fill-opacity=".1"/>
+      <text x="135" y="177" text-anchor="middle" fill="#F7B58F" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="850" letter-spacing="1.1">BTCfi · BRIEF</text>
+    </g>
+    ${textLayers(
+      "Article-Title",
+      copy.titleLines,
+      72,
+      234,
+      copy.titleLineHeight,
+      `fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="${copy.titleFontSize}" font-weight="850" letter-spacing="-1.8"`,
+    )}
+    ${textLayers(
+      "Article-Lead",
+      copy.leadLines,
+      72,
+      copy.leadY,
+      29,
+      `fill="#FFFFFF" fill-opacity=".68" font-family="Inter, Pretendard, sans-serif" font-size="17" font-weight="520"`,
+    )}
+  </g>
+  <g id="Hero-Babylon-Proof-Panel">
+    <rect x="818" y="360" width="310" height="142" rx="18" fill="#F5E0D6" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="2" filter="url(#Editorial-Shadow)"/>
+    <text x="846" y="400" fill="#CE6533" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.5">${escapeXml(brand.signalLabel)}</text>
+    <path d="M846 426H1100" stroke="#CE6533" stroke-opacity=".32"/>
+    <circle cx="857" cy="460" r="9" fill="#CE6533"/>
+    <text x="880" y="466" fill="#12495E" font-family="Inter, Pretendard, sans-serif" font-size="13.5" font-weight="800">NATIVE BTC</text>
+    <circle cx="992" cy="460" r="9" fill="#F7931A"/>
+    <text x="1015" y="466" fill="#12495E" font-family="Inter, Pretendard, sans-serif" font-size="13.5" font-weight="800">LOCKED</text>
+  </g>
+  <g id="Footer">
+    <line x1="72" y1="548" x2="1128" y2="548" stroke="#FFFFFF" stroke-opacity=".16"/>
+    <circle cx="80" cy="584" r="7" fill="#CE6533"/>
+    <text x="99" y="590" fill="#FFFFFF" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750" letter-spacing=".45">${escapeXml(sourceLabel(input.sourceUrl))}</text>
+    <text x="1128" y="590" text-anchor="end" fill="#FFFFFF" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750">${escapeXml(copy.date)}</text>
+  </g>
+</svg>`;
+}
+
 export function buildArticleBannerSvg(
   clientId: EditableClientId,
   input: ArticleBannerInput,
   logoDataUrl: string,
+  heroAssets?: ArticleHeroBrandAssets | null,
 ): string {
-  const brand = ARTICLE_BANNER_BRANDS[clientId];
-  const title = cleanText(input.title, 200) || "새로운 소식을 전합니다";
-  const lead = cleanText(input.lead, 800);
-  const date = cleanText(input.date, 40);
-  const motif = input.motif || "signal";
-  const titleLines = wrapSvgText(title, 17, 3);
-  const leadLines = wrapSvgText(lead, 44, 2);
-  const titleFontSize = titleLines.length === 3 ? 49 : 54;
-  const titleLineHeight = titleLines.length === 3 ? 59 : 65;
-  const leadY = Math.min(475, 220 + titleLines.length * titleLineHeight + 34);
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(title)}">
-  ${sharedDefinitions(brand, 1200, 630)}
-  <g id="Canvas" clip-path="url(#Canvas-Clip)">
-    <rect id="Background" width="1200" height="630" fill="${brand.background}"/>
-    <rect id="Grid" width="1200" height="630" fill="url(#Editorial-Grid)"/>
-    <rect id="Glow" width="1200" height="630" fill="url(#Background-Glow)"/>
-    ${brandAtmosphereMarkup(clientId, brand, 630)}
-    <path id="Accent-Rail" d="M0 0H14V630H0Z" fill="${brand.primary}"/>
-    <path id="Top-Accent" d="M14 0H340L294 14H14V0Z" fill="${brand.primary}"/>
-    <circle id="Ambient-Ring" cx="1116" cy="42" r="188" stroke="${brand.primary}" stroke-opacity=".11" stroke-width="2"/>
-  </g>
-  <g id="Header">
-    ${logoMarkup(clientId, brand, logoDataUrl)}
-    <g id="Editorial-Label">
-      <rect x="866" y="48" width="262" height="44" rx="22" fill="${brand.primary}"/>
-      <text x="997" y="77" text-anchor="middle" fill="${brand.background}" font-family="Inter, Pretendard, sans-serif" font-size="12.5" font-weight="900" letter-spacing="1.45">${escapeXml(brand.editorialLabel)}</text>
-    </g>
-    <line x1="72" y1="125" x2="1128" y2="125" stroke="#FFFFFF" stroke-opacity=".16"/>
-  </g>
-  <g id="Article-Copy">
-    <text id="Story-Index" x="72" y="179" fill="${brand.primary}" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="850" letter-spacing="2.2">KOREA EDITION / 01</text>
-    ${textLayers(
-      "Article-Title",
-      titleLines,
-      72,
-      231,
-      titleLineHeight,
-      `fill="#FFFFFF" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="${titleFontSize}" font-weight="850" letter-spacing="-1.9"`,
-    )}
-    ${textLayers(
-      "Article-Lead",
-      leadLines,
-      72,
-      leadY,
-      29,
-      `fill="#FFFFFF" fill-opacity=".67" font-family="${escapeXml(brand.bodyFont)}, Pretendard, sans-serif" font-size="19" font-weight="500"`,
-    )}
-  </g>
-  <g id="Visual-Panel">
-    <rect x="756" y="150" width="372" height="334" rx="34" fill="${brand.surface}" stroke="#FFFFFF" stroke-opacity=".14" stroke-width="2"/>
-    <rect x="756" y="150" width="372" height="334" rx="34" fill="url(#Panel-Sheen)"/>
-    <text x="790" y="190" fill="#FFFFFF" fill-opacity=".48" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="800" letter-spacing="1.8">${escapeXml(brand.signalLabel)}</text>
-    <circle cx="1092" cy="185" r="7" fill="${brand.primary}"/>
-    ${motifMarkup(motif, brand, "Hero", 734, 215)}
-  </g>
-  <g id="Footer">
-    <line x1="72" y1="548" x2="1128" y2="548" stroke="#FFFFFF" stroke-opacity=".16"/>
-    <circle cx="80" cy="584" r="7" fill="${brand.primary}"/>
-    <text x="99" y="590" fill="#FFFFFF" fill-opacity=".58" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="700" letter-spacing=".5">${escapeXml(sourceLabel(input.sourceUrl))}</text>
-    <text x="1128" y="590" text-anchor="end" fill="#FFFFFF" fill-opacity=".58" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="700">${escapeXml(date)}</text>
-  </g>
-</svg>`;
+  if (clientId === "yellow") return yellowArticleHero(input, logoDataUrl);
+  if (clientId === "squid") return squidArticleHero(input, logoDataUrl, heroAssets);
+  if (clientId === "origintrail") return originTrailArticleHero(input, logoDataUrl);
+  return babylonArticleHero(input, logoDataUrl);
 }
 
 export function buildArticleInlineVisualSvg(

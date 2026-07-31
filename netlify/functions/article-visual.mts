@@ -14,8 +14,11 @@ import {
 } from "./_shared/content-catalog.mts";
 import type { EditableClientId } from "./_shared/editable-svg.mts";
 import {
+  articleHeroLogoVariant,
+  fetchOfficialArticleHeroAssetDataUrls,
   fetchOfficialBrandLogoDataUrl,
   OFFICIAL_BRAND_ASSETS,
+  type ArticleHeroBrandAssets,
 } from "./_shared/official-brand-assets.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
@@ -103,9 +106,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const siteOrigin = new URL(context.site.url).origin;
   let logoDataUrl: string;
   try {
-    logoDataUrl = await fetchOfficialBrandLogoDataUrl(clientId, "dark", siteOrigin);
+    logoDataUrl = await fetchOfficialBrandLogoDataUrl(
+      clientId,
+      visualId === "hero" ? articleHeroLogoVariant(clientId) : "dark",
+      siteOrigin,
+    );
   } catch {
     return jsonError("official_logo_unavailable", 503);
+  }
+  let heroAssets: ArticleHeroBrandAssets | null = null;
+  if (visualId === "hero") {
+    try {
+      heroAssets = await fetchOfficialArticleHeroAssetDataUrls(clientId, siteOrigin);
+    } catch {
+      return jsonError("official_article_hero_assets_unavailable", 503);
+    }
   }
 
   let svg: string;
@@ -116,7 +131,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       sourceUrl,
       date,
       motif: visuals[0].motif,
-    }, logoDataUrl);
+    }, logoDataUrl, heroAssets);
   } else {
     const visual = visuals.find(item => item.id === visualId);
     if (!visual) return jsonError("article_visual_not_found", 404);

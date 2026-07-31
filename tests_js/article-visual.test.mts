@@ -110,8 +110,8 @@ test("renders stored article hero and inline visuals without a new model call", 
     assert.equal(hero.status, 200);
     assert.equal(hero.headers.get("content-type"), "image/svg+xml; charset=utf-8");
     const heroSvg = await hero.text();
-    assert.match(heroSvg, /ORIGINTRAIL \/ TRUST BRIEF/);
-    assert.match(heroSvg, /id="Brand-Atmosphere-OriginTrail"/);
+    assert.match(heroSvg, /ORIGINTRAIL KOREA \/ TRUST BRIEF/);
+    assert.match(heroSvg, /id="Hero-OriginTrail-Knowledge-Graph"/);
     assert.match(heroSvg, /결제 레일의 역할/);
     assert.doesNotMatch(heroSvg, /AI 에이전트에 필요한 검증 가능한 메모리/);
 

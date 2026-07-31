@@ -9,10 +9,23 @@ type ArticleLogoLayout = {
   localMarketName?: string;
 };
 
+type ArticleHeroAssetPaths = {
+  formLanguage: string;
+  squib: string;
+  bubbles: string;
+};
+
+export type ArticleHeroBrandAssets = {
+  formLanguage: string;
+  squib: string;
+  bubbles: string;
+};
+
 type OfficialBrandAsset = {
   dark: string;
   light: string;
   article: ArticleLogoLayout;
+  articleHero?: ArticleHeroAssetPaths;
 };
 
 export const OFFICIAL_BRAND_ASSETS: Record<EditableClientId, OfficialBrandAsset> = {
@@ -33,6 +46,11 @@ export const OFFICIAL_BRAND_ASSETS: Record<EditableClientId, OfficialBrandAsset>
     dark: "/assets/brands/squid-dark.png",
     light: "/assets/brands/squid-light.png",
     article: { width: 146, height: 82, y: 22 },
+    articleHero: {
+      formLanguage: "/assets/brands/squid-form-language-purple.png",
+      squib: "/assets/brands/squid-squib-token-juggle.png",
+      bubbles: "/assets/brands/squid-squib-bubbles.png",
+    },
   },
   babylon: {
     dark: "/assets/brands/babylon-dark.png",
@@ -55,29 +73,65 @@ export function officialBrandLogoPath(
   return OFFICIAL_BRAND_ASSETS[clientId][variant];
 }
 
+export function articleHeroLogoVariant(
+  clientId: EditableClientId,
+): OfficialLogoVariant {
+  return clientId === "yellow" || clientId === "squid" ? "light" : "dark";
+}
+
+async function fetchOfficialImageDataUrl(
+  assetPath: string,
+  siteOrigin: string,
+  maximumBytes: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const assetUrl = new URL(assetPath, siteOrigin).toString();
+  const response = await fetchImpl(assetUrl, {
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error("official_brand_asset_fetch_failed");
+
+  const contentType = (response.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .toLowerCase();
+  if (!/^image\/(?:png|svg\+xml)$/.test(contentType)) {
+    throw new Error("unsupported_official_brand_asset_type");
+  }
+
+  const declaredSize = Number(response.headers.get("content-length") || 0);
+  if (declaredSize > maximumBytes) throw new Error("official_brand_asset_too_large");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error("official_brand_asset_empty");
+  if (bytes.length > maximumBytes) throw new Error("official_brand_asset_too_large");
+  return `data:${contentType};base64,${bytes.toString("base64")}`;
+}
+
 export async function fetchOfficialBrandLogoDataUrl(
   clientId: EditableClientId,
   variant: OfficialLogoVariant,
   siteOrigin: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
-  const logoUrl = new URL(officialBrandLogoPath(clientId, variant), siteOrigin).toString();
-  const response = await fetchImpl(logoUrl, {
-    signal: AbortSignal.timeout(8_000),
-  });
-  if (!response.ok) throw new Error("official_logo_fetch_failed");
+  return fetchOfficialImageDataUrl(
+    officialBrandLogoPath(clientId, variant),
+    siteOrigin,
+    512_000,
+    fetchImpl,
+  );
+}
 
-  const contentType = (response.headers.get("content-type") || "")
-    .split(";", 1)[0]
-    .toLowerCase();
-  if (!/^image\/(?:png|svg\+xml)$/.test(contentType)) {
-    throw new Error("unsupported_official_logo_type");
-  }
+export async function fetchOfficialArticleHeroAssetDataUrls(
+  clientId: EditableClientId,
+  siteOrigin: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ArticleHeroBrandAssets | null> {
+  const paths = OFFICIAL_BRAND_ASSETS[clientId].articleHero;
+  if (!paths) return null;
 
-  const declaredSize = Number(response.headers.get("content-length") || 0);
-  if (declaredSize > 512_000) throw new Error("official_logo_too_large");
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length) throw new Error("official_logo_empty");
-  if (bytes.length > 512_000) throw new Error("official_logo_too_large");
-  return `data:${contentType};base64,${bytes.toString("base64")}`;
+  const [formLanguage, squib, bubbles] = await Promise.all([
+    fetchOfficialImageDataUrl(paths.formLanguage, siteOrigin, 512_000, fetchImpl),
+    fetchOfficialImageDataUrl(paths.squib, siteOrigin, 512_000, fetchImpl),
+    fetchOfficialImageDataUrl(paths.bubbles, siteOrigin, 512_000, fetchImpl),
+  ]);
+  return { formLanguage, squib, bubbles };
 }

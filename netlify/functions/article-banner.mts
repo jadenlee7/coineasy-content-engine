@@ -9,8 +9,11 @@ import {
 } from "./_shared/article-visual-plan.mts";
 import type { EditableClientId } from "./_shared/editable-svg.mts";
 import {
+  articleHeroLogoVariant,
+  fetchOfficialArticleHeroAssetDataUrls,
   fetchOfficialBrandLogoDataUrl,
   OFFICIAL_BRAND_ASSETS,
+  type ArticleHeroBrandAssets,
 } from "./_shared/official-brand-assets.mts";
 import { requireStudioSession } from "./_shared/studio-session.mts";
 
@@ -88,9 +91,19 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const siteOrigin = new URL(context.site.url).origin;
   let logoDataUrl: string;
   try {
-    logoDataUrl = await fetchOfficialBrandLogoDataUrl(clientId, "dark", siteOrigin);
+    logoDataUrl = await fetchOfficialBrandLogoDataUrl(
+      clientId,
+      articleHeroLogoVariant(clientId),
+      siteOrigin,
+    );
   } catch {
     return jsonError("official_logo_unavailable", 503);
+  }
+  let heroAssets: ArticleHeroBrandAssets | null;
+  try {
+    heroAssets = await fetchOfficialArticleHeroAssetDataUrls(clientId, siteOrigin);
+  } catch {
+    return jsonError("official_article_hero_assets_unavailable", 503);
   }
   const input: ArticleBannerInput = {
     title,
@@ -99,7 +112,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     date,
     motif: motif as ArticleVisualMotif || undefined,
   };
-  const svg = buildArticleBannerSvg(clientId, input, logoDataUrl);
+  const svg = buildArticleBannerSvg(clientId, input, logoDataUrl, heroAssets);
 
   return new Response(svg, {
     status: 200,
