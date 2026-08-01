@@ -271,13 +271,20 @@ test("library detail accepts generic SVG and document assets with nullable metad
 test("library HTTP endpoints require the HttpOnly studio session and never cache", async () => {
   const cookie = createStudioSessionValue(ACCESS_TOKEN);
   const originalFetch = globalThis.fetch;
+  let detailClientId = "squid";
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     if (request.url.endsWith("/rest/v1/rpc/list_content_library")) {
       return Response.json(listRpcResult());
     }
     if (request.url.endsWith("/rest/v1/rpc/get_content_library_item")) {
-      return Response.json(detailRpcResult());
+      const result = detailRpcResult();
+      result.client_id = detailClientId;
+      result.assets[0].storage_path = `${WORKSPACE_ID}/${detailClientId}/${ASSET_ID}/news-card.png`;
+      return Response.json(result);
+    }
+    if (request.url.endsWith("/rest/v1/rpc/get_studio_telegram_publication")) {
+      return Response.json(null);
     }
     if (request.url.endsWith("/rest/v1/rpc/list_content_promotion_recommendations")) {
       assert.deepEqual(JSON.parse(String(init?.body)), {
@@ -289,7 +296,7 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
     }
     if (request.url.includes("/storage/v1/object/sign/content-studio/")) {
       return Response.json({
-        signedURL: `/object/sign/content-studio/${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png?token=endpoint-signed`,
+        signedURL: `/object/sign/content-studio/${WORKSPACE_ID}/${detailClientId}/${ASSET_ID}/news-card.png?token=endpoint-signed`,
       });
     }
     throw new Error(`unexpected request ${request.url}`);
@@ -297,6 +304,8 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
   try {
     await withNetlifyEnvironment({
       STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+      STUDIO_TELEGRAM_PUBLISH_ENABLED: "true",
+      STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS: "squid",
       SUPABASE_URL: "https://project.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
       CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
@@ -341,7 +350,23 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
       assert.deepEqual(detailPayload.promotion_recommendations, []);
       assert.deepEqual(detailPayload.manual_publications, []);
       assert.equal(detailPayload.promotions_available, true);
+      assert.deepEqual(detailPayload.publication_capabilities, {
+        telegram: true,
+        telegram_client_allowed: true,
+      });
       assert.doesNotMatch(JSON.stringify(detailPayload), /storage_path/);
+
+      detailClientId = "yellow";
+      const yellowDetail = await libraryItemHandler(new Request(
+        `https://console.example/api/library/${ITEM_ID}`,
+        { headers: { cookie: `${STUDIO_SESSION_COOKIE}=${cookie}` } },
+      ), { params: { contentId: ITEM_ID } } as never);
+      assert.equal(yellowDetail.status, 200);
+      const yellowPayload = await yellowDetail.json() as Record<string, any>;
+      assert.deepEqual(yellowPayload.publication_capabilities, {
+        telegram: false,
+        telegram_client_allowed: false,
+      });
     });
   } finally {
     globalThis.fetch = originalFetch;

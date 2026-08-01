@@ -53,6 +53,38 @@ jobs:
             python -m scripts.run_batch_dispatcher --dry-run \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result["ok"] is True; assert result["mode"] == "dry_run"; assert result["provider_calls"] is False'
 
+  publication-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the exact Telegram publication worker image
+        run: >-
+          docker build
+          --file Dockerfile.publication
+          --tag coineasy-publication-ci
+          .
+      - name: Validate the built worker without provider or database calls
+        run: |
+          docker run --rm --network none \
+            --env TELEGRAM_PUBLICATION_ENABLED=false \
+            --env TELEGRAM_PUBLICATION_ALLOWED_CLIENTS=squid \
+            --env TELEGRAM_PUBLICATION_LEASE_SECONDS=180 \
+            --env TELEGRAM_PUBLICATION_MAX_CLAIMS=1 \
+            --env SUPABASE_URL=https://ci.supabase.co \
+            --env SUPABASE_SERVICE_ROLE_KEY=ssssssssssssssssssssssssssssssssssssssss \
+            --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
+            --env TELEGRAM_BOT_TOKEN_SQUID=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345 \
+            --env TELEGRAM_CHANNEL_SQUID=@squid_kor_update \
+            coineasy-publication-ci \
+            python -m scripts.run_telegram_publications --validate-only \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "squid", "public_username": "squid_kor_update", "provider_calls": False, "database_calls": False}'
+      - name: Run the built image with publication disabled
+        run: |
+          docker run --rm --network none \
+            --env TELEGRAM_PUBLICATION_ENABLED=false \
+            coineasy-publication-ci \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "processed": 0, "failures": 0, "results": []}'
+
   studio:
     runs-on: ubuntu-latest
     steps:
