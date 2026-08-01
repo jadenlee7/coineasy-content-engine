@@ -83,6 +83,17 @@ test("preserves the existing news-card, editable SVG, and channel-copy flow", ()
   assert.match(consoleHtml, /payload\.channel_copy\?\.x/);
 });
 
+test("keeps Squid news creation on the reviewed remix or classic visual family", () => {
+  assert.match(consoleHtml, /const SQUID_NEWS_TEMPLATES = new Set\(\["remix", "classic"\]\)/);
+  assert.match(consoleHtml, /state\.client === "squid" && !SQUID_NEWS_TEMPLATES\.has\(state\.template\)[\s\S]*state\.template = "classic"/);
+  assert.match(consoleHtml, /item\.disabled = disabled/);
+  assert.match(consoleHtml, /if \(!button \|\| button\.disabled\) return/);
+  assert.match(consoleHtml, /data-client="squid"\]\[data-template="classic"\][\s\S]*squid-squib-token-juggle\.png/);
+  assert.match(consoleHtml, /--brand-primary:#efff5a; --brand-secondary:#e6ccfc; --brand-bg:#e6ccfc/);
+  assert.match(consoleHtml, /state\.client === "squid" && state\.template === "classic"[\s\S]*squid-light\.png/);
+  assert.match(consoleHtml, /detail\.client_id === "squid" && \["editorial", "signal"\]\.includes\(storedTemplateStyle\)[\s\S]*\? "classic"/);
+});
+
 test("sends stored results to the private Telegram review flow and opens DM deep links", () => {
   assert.match(consoleHtml, /function notifyTelegramReview\(payload, bannerBlob, requestSessionEpoch, requestContext\)/);
   assert.match(consoleHtml, /\/review-notification`/);

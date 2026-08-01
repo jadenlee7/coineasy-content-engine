@@ -39,6 +39,153 @@ test("builds the X syndication token and accepts only pbs.twimg.com media", () =
   );
 });
 
+test("inherits photo media from a same-account official Squid quote", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "SquidRouter" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/quoted-banner.jpg" }],
+      },
+    }),
+    "https://pbs.twimg.com/media/quoted-banner.jpg?name=orig",
+  );
+});
+
+test("inherits a safe video poster from a same-account official Squid quote", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "@squidrouter" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "SquidRouter" },
+        video: {
+          poster: "https://pbs.twimg.com/amplify_video_thumb/123/img/poster.jpg?format=jpg&name=small",
+        },
+      },
+    }),
+    "https://pbs.twimg.com/amplify_video_thumb/123/img/poster.jpg?format=jpg&name=orig",
+  );
+});
+
+test("treats null outer syndication media as absent for the real Canton quote shape", () => {
+  assert.equal(
+    extractXMediaUrl({
+      photos: null,
+      mediaDetails: null,
+      video: null,
+      user: { id_str: "1547672532660105216", screen_name: "SquidRouter" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        video: {
+          poster: "https://pbs.twimg.com/amplify_video_thumb/2079266440268464128/img/canton.jpg",
+        },
+      },
+    }),
+    "https://pbs.twimg.com/amplify_video_thumb/2079266440268464128/img/canton.jpg?name=orig",
+  );
+});
+
+test("inherits a safe video thumbnail when the poster field is absent", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        mediaDetails: [{
+          type: "video",
+          media_url_https: "https://pbs.twimg.com/amplify_video_thumb/123/img/fallback.jpg",
+        }],
+      },
+    }),
+    "https://pbs.twimg.com/amplify_video_thumb/123/img/fallback.jpg?name=orig",
+  );
+});
+
+test("uses direct media before a same-account official Squid quote", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      photos: [{ url: "https://pbs.twimg.com/media/direct-banner.jpg" }],
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/quoted-banner.jpg" }],
+      },
+    }),
+    "https://pbs.twimg.com/media/direct-banner.jpg?name=orig",
+  );
+});
+
+test("does not inherit quote media when direct media is present but unsafe", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      photos: [{ url: "https://example.com/invalid-direct.jpg" }],
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/quoted-banner.jpg" }],
+      },
+    }),
+    "",
+  );
+});
+
+test("does not inherit quote media when direct media evidence is malformed", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      photos: { url: "https://pbs.twimg.com/media/not-an-array.jpg" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/quoted-banner.jpg" }],
+      },
+    }),
+    "",
+  );
+});
+
+test("does not inherit quote media across accounts or from an unsafe host", () => {
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      quoted_tweet: {
+        user: { id_str: "1635419045058031617", screen_name: "CantonNetwork" },
+        photos: [{ url: "https://pbs.twimg.com/media/canton-banner.jpg" }],
+      },
+    }),
+    "",
+  );
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1635419045058031617", screen_name: "CantonNetwork" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/squid-banner.jpg" }],
+      },
+    }),
+    "",
+  );
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      quoted_tweet: {
+        user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+        video: { poster: "https://example.com/spoofed-poster.jpg" },
+      },
+    }),
+    "",
+  );
+  assert.equal(
+    extractXMediaUrl({
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      quoted_tweet: {
+        user: { id_str: "999999999999999999", screen_name: "squidrouter" },
+        photos: [{ url: "https://pbs.twimg.com/media/spoofed-account.jpg" }],
+      },
+    }),
+    "",
+  );
+});
+
 test("uses provided content without fetching the linked source", async () => {
   const fetchImpl = async () => {
     throw new Error("fetch should not run");
@@ -101,6 +248,32 @@ test("imports media for remix while preserving manually provided source text", a
   assert.equal(result.mode, "provided");
   assert.equal(result.content, "Use this manually provided Korean GTM source context.");
   assert.equal(result.imageUrl, "https://pbs.twimg.com/media/remix.png?name=orig");
+});
+
+test("imports same-account quoted Squid media for a manual remix", async () => {
+  const fetchImpl = async () => Response.json({
+    text: "Have you explored Canton yet? With Squid, it is easy.",
+    user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+    quoted_tweet: {
+      text: "Canton Network is live on Squid Intents.",
+      user: { id_str: "1547672532660105216", screen_name: "squidrouter" },
+      video: {
+        poster: "https://pbs.twimg.com/amplify_video_thumb/2079266440268464128/img/canton.jpg",
+      },
+    },
+  });
+  const result = await resolveSourceInput(
+    "Squid Canton 소식을 한국 사용자에게 설명합니다.",
+    "https://x.com/squidrouter/status/2081031728622178334",
+    fetchImpl as typeof fetch,
+    true,
+  );
+  assert.equal(result.mode, "provided");
+  assert.equal(result.content, "Squid Canton 소식을 한국 사용자에게 설명합니다.");
+  assert.equal(
+    result.imageUrl,
+    "https://pbs.twimg.com/amplify_video_thumb/2079266440268464128/img/canton.jpg?name=orig",
+  );
 });
 
 test("rejects non-X URL-only input", async () => {

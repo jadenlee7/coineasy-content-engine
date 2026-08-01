@@ -9,12 +9,21 @@ export type ResolvedSource = {
 
 type SyndicationPhoto = { url?: unknown };
 type SyndicationMedia = { type?: unknown; media_url_https?: unknown; url?: unknown };
+type SyndicationUser = { id_str?: unknown; screen_name?: unknown };
 type SyndicationTweet = {
   text?: unknown;
   photos?: unknown;
   mediaDetails?: unknown;
   video?: { poster?: unknown } | null;
+  user?: SyndicationUser | null;
+  quoted_tweet?: SyndicationTweet | null;
 };
+type DirectXMediaResult =
+  | { state: "absent"; url: "" }
+  | { state: "invalid"; url: "" }
+  | { state: "valid"; url: string };
+
+const OFFICIAL_SQUID_X_HANDLE = "squidrouter";
 
 export class SourceInputError extends Error {
   code: string;
@@ -89,23 +98,88 @@ function normalizeXImageUrl(value: unknown): string {
   }
 }
 
-export function extractXMediaUrl(payload: SyndicationTweet): string {
-  if (Array.isArray(payload.photos)) {
+function extractDirectXMedia(payload: SyndicationTweet): DirectXMediaResult {
+  let directMediaPresent = false;
+
+  if (payload.photos !== undefined && payload.photos !== null) {
+    if (!Array.isArray(payload.photos)) return { state: "invalid", url: "" };
     for (const photo of payload.photos as SyndicationPhoto[]) {
+      directMediaPresent = true;
       const imageUrl = normalizeXImageUrl(photo?.url);
-      if (imageUrl) return imageUrl;
+      if (imageUrl) return { state: "valid", url: imageUrl };
     }
+  }
+
+  if (
+    payload.mediaDetails !== undefined
+    && payload.mediaDetails !== null
+    && !Array.isArray(payload.mediaDetails)
+  ) {
+    return { state: "invalid", url: "" };
+  }
+  if (Array.isArray(payload.mediaDetails)) {
+    for (const media of payload.mediaDetails as SyndicationMedia[]) {
+      if (media?.type !== "photo") continue;
+      directMediaPresent = true;
+      const imageUrl = normalizeXImageUrl(media.media_url_https);
+      if (imageUrl) return { state: "valid", url: imageUrl };
+    }
+  }
+
+  if (payload.video !== undefined && payload.video !== null) {
+    directMediaPresent = true;
+    const videoPoster = normalizeXImageUrl(payload.video?.poster);
+    if (videoPoster) return { state: "valid", url: videoPoster };
   }
 
   if (Array.isArray(payload.mediaDetails)) {
     for (const media of payload.mediaDetails as SyndicationMedia[]) {
-      if (media?.type !== "photo") continue;
+      if (media?.type !== "video") continue;
+      directMediaPresent = true;
       const imageUrl = normalizeXImageUrl(media.media_url_https);
-      if (imageUrl) return imageUrl;
+      if (imageUrl) return { state: "valid", url: imageUrl };
     }
+    if (payload.mediaDetails.length > 0) directMediaPresent = true;
   }
 
-  return normalizeXImageUrl(payload.video?.poster);
+  return directMediaPresent
+    ? { state: "invalid", url: "" }
+    : { state: "absent", url: "" };
+}
+
+function syndicationHandle(payload: SyndicationTweet): string {
+  const handle = payload.user?.screen_name;
+  return typeof handle === "string"
+    ? handle.trim().replace(/^@/, "").toLowerCase()
+    : "";
+}
+
+function syndicationUserId(payload: SyndicationTweet): string {
+  const userId = payload.user?.id_str;
+  return typeof userId === "string" && /^\d{1,20}$/.test(userId)
+    ? userId
+    : "";
+}
+
+export function extractXMediaUrl(payload: SyndicationTweet): string {
+  const directMedia = extractDirectXMedia(payload);
+  if (directMedia.state === "valid") return directMedia.url;
+  if (directMedia.state === "invalid") return "";
+
+  const quotedTweet = payload.quoted_tweet;
+  const sourceUserId = syndicationUserId(payload);
+  if (
+    !quotedTweet
+    || syndicationHandle(payload) !== OFFICIAL_SQUID_X_HANDLE
+    || syndicationHandle(quotedTweet) !== OFFICIAL_SQUID_X_HANDLE
+    || !sourceUserId
+    || syndicationUserId(quotedTweet) !== sourceUserId
+  ) {
+    return "";
+  }
+
+  const quotedMedia = extractDirectXMedia(quotedTweet);
+  return quotedMedia.state === "valid" ? quotedMedia.url : "";
 }
 
 function decodeHtmlEntities(value: string): string {

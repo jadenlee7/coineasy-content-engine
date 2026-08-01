@@ -393,7 +393,7 @@ class OfficialXDailyRunner:
         source_url = selected.get("url")
         source_image_url = (
             _pinned_source_image_url(selected)
-            if client_id == "origintrail"
+            if client_id in {"origintrail", "squid"}
             else selected.get("source_image_url", "")
         )
         if (

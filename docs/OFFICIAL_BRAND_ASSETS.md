@@ -41,6 +41,9 @@ without cropping, recoloring, redrawing, or changing opacity data.
 The Squid hero renderer fails closed when any of these three files is
 unavailable. Generic character substitutes are not permitted.
 
+Composition, source-routing, Korean copy-density, and release rules are defined
+in [SQUID_KOREAN_GTM_VISUALS.md](./SQUID_KOREAN_GTM_VISUALS.md).
+
 ## Licensed type
 
 `clients/squid/assets/BagossCondensed.woff2` is activated automatically only

@@ -68,16 +68,21 @@ test("builds a distinct 1200 by 630 Squid editorial world", () => {
   assert.match(svg, /id="Article-Lead-Line-1"/);
   assert.match(svg, /id="Brand-Official-Logo"/);
   assert.match(svg, /SQUIDROUTER\.COM/);
-  assert.match(svg, /#E6FA36/);
-  assert.match(svg, /#BC8EE4/);
+  assert.match(svg, /#EFFF5A/);
+  assert.match(svg, /fill="#E6CCFC"/);
   assert.match(svg, /Bagoss Condensed/);
   assert.match(svg, /id="Editorial-Hero-v2"/);
-  assert.match(svg, /id="Hero-Squid-Official-World"/);
-  assert.match(svg, /id="Squid-Official-Form-Language"/);
-  assert.match(svg, /id="Squid-Official-Bubbles"/);
-  assert.match(svg, /id="Squid-Official-SQUIB"/);
-  assert.match(svg, /SQUID KOREA \/ NOTE 01/);
-  assert.match(svg, /CROSS-CHAIN, MADE HUMAN/);
+  assert.match(svg, /id="Squid-Hero-Composition-flow"/);
+  assert.match(svg, /id="Squid-Official-Form-Language-Hero"/);
+  assert.match(svg, /id="Squid-Official-Bubbles-Hero"/);
+  assert.match(svg, /id="Squid-Official-SQUIB-Hero"/);
+  assert.match(svg, /CROSS-CHAIN × SQUID/);
+  assert.match(svg, /id="Squid-Lime-Divider"/);
+  assert.doesNotMatch(svg, /SQUID KOREA \/ NOTE 01/);
+  assert.doesNotMatch(svg, /CROSS-CHAIN, MADE HUMAN/);
+  assert.doesNotMatch(svg, /id="Editorial-Grid"/);
+  assert.doesNotMatch(svg, /id="Diagram-Panel"/);
+  assert.doesNotMatch(svg, /x="48" y="552" width="1104"/);
   assert.doesNotMatch(svg, /id="Visual-Panel"/);
   assert.doesNotMatch(svg, /foreignObject/);
 });
@@ -87,6 +92,22 @@ test("fails closed instead of drawing a generic Squid character", () => {
     title: "공식 애셋이 필요한 Squid 배너",
     lead: "필수 애셋이 없으면 생성하지 않습니다.",
   }, "data:image/png;base64,AQ=="), /official_squid_hero_assets_required/);
+});
+
+test("shrinks and wraps a long unbroken Korean Squid hero before the SQUIB safe area", () => {
+  const title = "한국사용자에게정확하고자연스럽게전달하는업데이트입니다";
+  const svg = buildArticleBannerSvg("squid", {
+    title,
+    lead: "공식 원문의 핵심만 짧고 자연스럽게 전합니다.",
+    motif: "flow",
+  }, "data:image/png;base64,AQ==", SQUID_HERO_ASSETS);
+
+  const lines = [...svg.matchAll(/id="Article-Title-Line-[0-9]+"[^>]*>([^<]*)<\/text>/g)]
+    .map(match => match[1]);
+  assert.deepEqual(lines, ["한국사용자에게정확하고자연스", "럽게전달하는업데이트입니다"]);
+  assert.doesNotMatch(lines.join(""), /…/);
+  assert.match(svg, /font-size="56"/);
+  assert.match(svg, /id="Squid-Official-SQUIB-Hero" x="810"/);
 });
 
 test("uses client-specific hero structures and exact reviewed brand tokens", () => {
@@ -104,9 +125,9 @@ test("uses client-specific hero structures and exact reviewed brand tokens", () 
   assert.match(yellow, /KOREA MARKET INTELLIGENCE/);
 
   const squid = buildArticleBannerSvg("squid", input, logo, SQUID_HERO_ASSETS);
-  assert.match(squid, /id="Hero-Squid-Official-World"/);
-  assert.match(squid, /fill="#E8E6EA"/);
-  assert.match(squid, /#BC8EE4/);
+  assert.match(squid, /id="Squid-Hero-Composition-signal"/);
+  assert.match(squid, /fill="#E6CCFC"/);
+  assert.match(squid, /SQUID × KOREA/);
 
   const originTrail = buildArticleBannerSvg("origintrail", input, logo);
   assert.match(originTrail, /id="Hero-OriginTrail-Knowledge-Graph"/);
@@ -160,6 +181,72 @@ test("derives two source-locked inline visuals and renders an editable 16:9 figu
   assert.match(svg, /공식 원문 기반 에디토리얼 비주얼/);
   assert.match(svg, /id="Brand-Atmosphere-OriginTrail"/);
   assert.doesNotMatch(svg, /foreignObject/);
+});
+
+test("renders Squid inline visuals as sparse official worlds, not generic diagram panels", () => {
+  const input = {
+    visual: {
+      id: "visual-1" as const,
+      after_section_id: "section-1",
+      role: "overview" as const,
+      motif: "flow" as const,
+      eyebrow: "핵심 맥락",
+      headline: "Canton으로 가는 길, Squid로 더 쉽게",
+      caption: "지원 생태계를 이동하는 흐름을 한국 이용자 관점에서 짚습니다.",
+      points: [
+        "Canton Network가 Squid 지원 생태계에 포함됩니다.",
+        "공식 경로에서 지원 상태를 먼저 확인하세요.",
+        "세 번째 문장은 카드로 쌓이지 않아야 합니다.",
+      ],
+    },
+    sourceUrl: "https://www.squidrouter.com/blog/canton",
+    date: "2026.08.01",
+  };
+  const flow = buildArticleInlineVisualSvg(
+    "squid",
+    input,
+    "data:image/png;base64,AQ==",
+    SQUID_HERO_ASSETS,
+  );
+  const network = buildArticleInlineVisualSvg(
+    "squid",
+    { ...input, visual: { ...input.visual, motif: "network" } },
+    "data:image/png;base64,AQ==",
+    SQUID_HERO_ASSETS,
+  );
+
+  assert.match(flow, /width="1200" height="675"/);
+  assert.match(flow, /id="Squid-Inline-Canvas"/);
+  assert.match(flow, /id="Squid-Inline-Composition-flow"/);
+  assert.match(network, /id="Squid-Inline-Composition-network"/);
+  assert.notEqual(flow, network);
+  assert.match(flow, /id="Squid-Official-Form-Language-Inline"/);
+  assert.match(flow, /id="Squid-Official-Bubbles-Inline"/);
+  assert.match(flow, /id="Squid-Official-SQUIB-Inline"/);
+  assert.match(flow, /CANTON × SQUID/);
+  assert.match(flow, /id="Squid-Evidence-1"/);
+  assert.match(flow, /id="Squid-Evidence-2"/);
+  assert.doesNotMatch(flow, /id="Squid-Evidence-3"/);
+  assert.doesNotMatch(flow, /id="Grid"/);
+  assert.doesNotMatch(flow, /id="Accent-Rail"/);
+  assert.doesNotMatch(flow, /id="Diagram-Panel"/);
+  assert.doesNotMatch(flow, /id="Visual-Point-1"/);
+  assert.doesNotMatch(flow, /foreignObject/);
+});
+
+test("fails closed when a Squid inline visual is missing official assets", () => {
+  assert.throws(() => buildArticleInlineVisualSvg("squid", {
+    visual: {
+      id: "visual-1",
+      after_section_id: "section-1",
+      role: "overview",
+      motif: "flow",
+      eyebrow: "핵심 맥락",
+      headline: "Canton으로 가는 경로",
+      caption: "공식 애셋이 없으면 생성하지 않습니다.",
+      points: ["공식 소스에 고정합니다."],
+    },
+  }, "data:image/png;base64,AQ=="), /official_squid_inline_assets_required/);
 });
 
 test("escapes banner copy and truncates long headlines to three editable lines", () => {
@@ -334,9 +421,10 @@ test("Squid article banner embeds every required official hero asset", async () 
         "https://console.example/assets/brands/squid-squib-token-juggle.png",
       ].sort());
       const svg = await response.text();
-      assert.match(svg, /id="Squid-Official-Form-Language"/);
-      assert.match(svg, /id="Squid-Official-Bubbles"/);
-      assert.match(svg, /id="Squid-Official-SQUIB"/);
+      assert.match(svg, /id="Squid-Official-Form-Language-Hero"/);
+      assert.match(svg, /id="Squid-Official-Bubbles-Hero"/);
+      assert.match(svg, /id="Squid-Official-SQUIB-Hero"/);
+      assert.match(svg, /CANTON × SQUID/);
       assert.equal((svg.match(/data:image\/png;base64,AQID/g) || []).length, 4);
     });
   } finally {

@@ -528,6 +528,11 @@ async def generate_news_card(
 
     requested_template_style = template_style
     actual_template_style = template_style
+    if client_id == "squid" and requested_template_style in {"editorial", "signal"}:
+        # Squid's generated family has one reviewed source-free composition.
+        # Keep legacy/API selections readable, but never route them into the
+        # shared publisher-looking editorial or signal templates.
+        actual_template_style = "classic"
     source_image = None
     if requested_template_style == "remix":
         if source_image_url:

@@ -1,10 +1,22 @@
 export type EditableClientId = "yellow" | "origintrail" | "squid" | "babylon";
 export type EditableTemplateStyle = "remix" | "classic" | "editorial" | "signal";
 
+export function effectiveEditableTemplateStyle(
+  clientId: EditableClientId,
+  templateStyle: EditableTemplateStyle,
+): EditableTemplateStyle {
+  return clientId === "squid" && (templateStyle === "editorial" || templateStyle === "signal")
+    ? "classic"
+    : templateStyle;
+}
+
 export type EditableCardAssets = {
   logoDark?: string;
   logoLight?: string;
   sourceImage?: string;
+  squidFormLanguage?: string;
+  squidSquib?: string;
+  squidBubbles?: string;
 };
 
 type EditableSpec = {
@@ -249,7 +261,12 @@ function characterUnits(character: string): number {
   return 0.92;
 }
 
-export function wrapSvgText(value: string, maxUnits: number, maxLines: number): string[] {
+type WrappedSvgText = {
+  lines: string[];
+  truncated: boolean;
+};
+
+function wrapSvgTextDetailed(value: string, maxUnits: number, maxLines: number): WrappedSvgText {
   const lines: string[] = [];
   let current = "";
   let units = 0;
@@ -297,7 +314,54 @@ export function wrapSvgText(value: string, maxUnits: number, maxLines: number): 
     const last = lines.length - 1;
     lines[last] = `${lines[last].replace(/[.…]+$/, "")}…`;
   }
-  return lines;
+  return { lines, truncated };
+}
+
+export function wrapSvgText(value: string, maxUnits: number, maxLines: number): string[] {
+  return wrapSvgTextDetailed(value, maxUnits, maxLines).lines;
+}
+
+type FittedSvgText = {
+  lines: string[];
+  fontSize: number;
+  lineHeight: number;
+  truncated: boolean;
+};
+
+export function fitSvgText(
+  value: string,
+  options: {
+    maxWidth: number;
+    maxLines: number;
+    maxFontSize: number;
+    minFontSize: number;
+    lineHeightRatio: number;
+  },
+): FittedSvgText {
+  const maximum = Math.max(options.maxFontSize, options.minFontSize);
+  const minimum = Math.min(options.maxFontSize, options.minFontSize);
+  let fallback: FittedSvgText | null = null;
+  for (let fontSize = maximum; fontSize >= minimum; fontSize -= 2) {
+    // characterUnits() models a Hangul glyph as 1.85 units. Reserving a small
+    // safety margin here maps those units back to real SVG em width without
+    // letting negative tracking or a trailing ellipsis touch the canvas edge.
+    const maxUnits = options.maxWidth * 1.75 / fontSize;
+    const wrapped = wrapSvgTextDetailed(value, maxUnits, options.maxLines);
+    const candidate = {
+      lines: wrapped.lines,
+      fontSize,
+      lineHeight: Math.round(fontSize * options.lineHeightRatio),
+      truncated: wrapped.truncated,
+    };
+    fallback = candidate;
+    if (!wrapped.truncated) return candidate;
+  }
+  return fallback || {
+    lines: [value.slice(0, 1)],
+    fontSize: minimum,
+    lineHeight: Math.round(minimum * options.lineHeightRatio),
+    truncated: value.length > 1,
+  };
 }
 
 function textLayers(
@@ -414,6 +478,74 @@ function classicSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsse
     <g id="Headline">${textLayers("Headline", headlineLines, 96, 278, 62, `fill="${brand.ink}" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="52" font-weight="800"`)}</g>
     <g id="Body">${body}</g>
     ${footer(spec, 986, "#70747B")}
+  </g>`;
+}
+
+function compactSourceLabel(value: string): string {
+  try {
+    const url = new URL(value);
+    const account = url.pathname.split("/").filter(Boolean)[0];
+    return `${url.hostname.replace(/^www\./, "").toUpperCase()}${account ? ` / ${account.toUpperCase()}` : ""}`;
+  } catch {
+    return "OFFICIAL SOURCE";
+  }
+}
+
+function squidClassicSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: EditableCardAssets,
+): string {
+  if (
+    !assets.logoLight
+    || !assets.squidFormLanguage
+    || !assets.squidSquib
+    || !assets.squidBubbles
+  ) {
+    throw new Error("official_squid_classic_assets_required");
+  }
+  const headlineLayout = fitSvgText(spec.headline, {
+    maxWidth: 960,
+    maxLines: 2,
+    maxFontSize: 94,
+    minFontSize: 64,
+    lineHeightRatio: 1.04,
+  });
+  const headlineLines = headlineLayout.lines;
+  const bodyLines = spec.bodyLines.slice(0, 2).flatMap((line) => (
+    wrapSvgText(line, 43, 1)
+  ));
+  const body = bodyLines.map((line, index) => (
+    `<text id="Body-Line-${index + 1}" x="60" y="${834 + index * 42}" fill="#1C0F3D" font-family="Pretendard, sans-serif" font-size="32" font-weight="560" letter-spacing="-1">${escapeXml(line)}</text>`
+  )).join("\n");
+  return `<defs>
+    <radialGradient id="Squid-Background-Glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(390 1015) rotate(-88) scale(500 560)">
+      <stop stop-color="#FFFFFF" stop-opacity=".76"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity=".24"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g id="Squid-Figma-Daily-News">
+    <rect id="Canvas-Background" width="1080" height="1080" fill="#E6CCFC"/>
+    <rect id="Canvas-Glow" width="1080" height="1080" fill="url(#Squid-Background-Glow)"/>
+    <image id="Squid-Official-Bubbles" x="652" y="8" width="420" height="420" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".46"/>
+    <image id="Squid-Official-SQUIB" x="430" y="-116" width="720" height="720" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet"/>
+  </g>
+  <g id="Header">
+    <image id="Brand-Logo" x="60" y="44" width="148" height="59" href="${escapeXml(assets.logoLight)}" preserveAspectRatio="xMinYMid meet"/>
+  </g>
+  <g id="Story">
+    <text id="Eyebrow" x="60" y="464" fill="#1C0F3D" fill-opacity=".74" font-family="Inter, Pretendard, sans-serif" font-size="22" font-weight="800" letter-spacing="1.8">${escapeXml(spec.label.toUpperCase())}</text>
+    ${textLayers("Headline", headlineLines, 60, 565, headlineLayout.lineHeight, `fill="#000000" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headlineLayout.fontSize}" font-weight="900" letter-spacing="-3.2"`)}
+  </g>
+  <g id="Support">
+    <rect id="Lime-Divider" x="60" y="770" width="320" height="8" rx="4" fill="#EFFF5A"/>
+    ${body}
+  </g>
+  <g id="Footer">
+    <text id="CoinEasy" x="60" y="1038" fill="#1C0F3D" fill-opacity=".56" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="750" letter-spacing="1.2">COINEASY / KOREA</text>
+    <text id="Source-URL" x="260" y="1038" fill="#1C0F3D" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="650">${escapeXml(compactSourceLabel(spec.sourceUrl))}</text>
+    <text id="Date" x="1020" y="1038" text-anchor="end" fill="#1C0F3D" fill-opacity=".56" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="650">${escapeXml(spec.date)}</text>
   </g>`;
 }
 
@@ -572,20 +704,23 @@ export function buildEditableSvg(
 ): string {
   const brand = BRANDS[clientId];
   const spec = normalizeSpec(rawSpec);
-  const content = templateStyle === "editorial"
+  const effectiveTemplateStyle = effectiveEditableTemplateStyle(clientId, templateStyle);
+  const content = effectiveTemplateStyle === "editorial"
     ? editorialSvg(brand, spec, assets)
-    : templateStyle === "signal"
+    : effectiveTemplateStyle === "signal"
       ? signalSvg(brand, spec, assets)
-      : templateStyle === "remix"
+      : effectiveTemplateStyle === "remix"
         ? clientId === "squid"
           ? squidTranslationSvg(brand, spec, assets)
           : remixSvg(brand, spec, assets)
-        : classicSvg(brand, spec, assets);
+        : clientId === "squid"
+          ? squidClassicSvg(brand, spec, assets)
+          : classicSvg(brand, spec, assets);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-labelledby="Title Description">
   <title id="Title">${escapeXml(brand.name)} editable Korean news card</title>
   <desc id="Description">Figma-editable localized news card. Text, shapes, official logo, and source image are separate named layers.</desc>
-  <metadata>Localized News Card · Figma Editable · ${templateStyle}</metadata>
+  <metadata>Localized News Card · Figma Editable · ${effectiveTemplateStyle}</metadata>
   ${content}
 </svg>`;
 }

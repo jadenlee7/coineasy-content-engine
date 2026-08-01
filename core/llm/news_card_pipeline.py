@@ -195,6 +195,8 @@ Rules:
 
 {brand_voice_block}
 
+{client_card_guidance}
+
 - em dash(—) 사용 금지. 쉼표(,)나 마침표(.)로 대체. (label/headline/body_lines 전체 적용)
 
 - Length budgets (Korean chars):
@@ -304,6 +306,20 @@ def _build_user_prompt(
         if config.client_id == "squid" and has_source_image
         else "This client does not use visual-copy replacement. Set source_text_visible=false and translation_regions=[]."
     )
+    client_card_guidance = (
+        """## Squid Korean GTM Card Rules (OVERRIDES the generic card rules above)
+
+- Keep the official Squid rhythm: a short question or human one-line hook, then one product answer and at most one verified supporting fact.
+- Natural 해요체 is allowed for the banner hook. Do not force 합니다/됩니다 when it makes a short official post sound corporate.
+- label: 2-18 characters. Prefer a topic-specific lockup such as "CANTON × SQUID", "XRP × SQUID", or "$QUID" instead of generic labels like "공식 업데이트".
+- headline: 14-28 Korean characters where possible, maximum two visual lines. Preserve the source's question, wit, and brevity.
+- body_lines: 1-2 concise lines, 10-23 characters each where possible. Include only source-verified facts; do not repeat the headline.
+- Avoid "간편하게 탐색할 수 있습니다", "소식을 전합니다", "소개합니다", "핵심 변화", "최신 소식", and "전체 맥락".
+- Use display name "Squid" and the correct Korean particles: Squid가/는/를/와/로.
+- If an official source image is attached, the official-creative translation rules remain authoritative. Do not add this classic card hierarchy on top of that image."""
+        if config.client_id == "squid"
+        else "## Client Card Rules\nFollow the generic news-card hierarchy and the client brand voice lock above."
+    )
 
     return BASE_USER_PROMPT.format(
         preserve_terms_block=preserve_block,
@@ -322,6 +338,7 @@ def _build_user_prompt(
         source_content=source_content.strip(),
         visual_guidance=visual_guidance,
         visual_localization_rules=visual_localization_rules,
+        client_card_guidance=client_card_guidance,
         today_date=_today_kst_date(),
     )
 
