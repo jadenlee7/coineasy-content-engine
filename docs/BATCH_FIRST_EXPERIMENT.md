@@ -96,6 +96,16 @@ The Netlify adapter accepts exactly `headline_ko`, `body_ko`, `x_copy_ko`, and
 `1..maximum` bounds; missing, empty, whitespace-only, additional,
 nested, or secret-like fields fail closed before rendering.
 
+A second GET-only projection at `/api/buzz-shadow/origintrail/batch` exposes
+only status metadata for the future Buzz bridge. It uses a dedicated
+`BUZZ_SHADOW_ACCESS_TOKEN`, while the Supabase service-role key remains inside
+Netlify. The projection deliberately omits the generated headline and body,
+channel copy, prompts, token counts, provider identifiers, and all mutation
+capabilities. Its deterministic event ID is stable across repeated polls, and
+its relative `/?batch=<job_id>` path opens the signed-session, read-only Batch
+detail. This endpoint does not call the Buzz relay; outbound delivery and its
+durable receipt remain **HOLD** until a separate staging gate.
+
 ## Route contract
 
 A work item is sent to Batch only when all of these are true:
@@ -150,6 +160,7 @@ immutable evidence packet
   -> structured output validation
   -> needs_review result
   -> signed-session Batch review inbox (read-only)
+  -> metadata-only Buzz shadow projection (GET-only; no relay write)
   -> human review handoff
 ```
 
@@ -293,9 +304,13 @@ The staging gate is:
      and state.queued_job_id is null
      and standalone.source_item_id is null;
    ```
-4. Deploy the signed-session, GET-only review adapter and console. Confirm the
-   detail view accepts only `origintrail` plus `origintrail_client_agent` and
-   exposes no approve, reject, publish, or export control.
+4. Deploy the signed-session, GET-only review adapter, metadata-only Buzz
+   shadow endpoint, and console. Set a new `BUZZ_SHADOW_ACCESS_TOKEN` only in
+   Netlify and the isolated future bridge; never reuse a Studio, Supabase,
+   provider, publish, or deploy credential. Confirm the detail view accepts
+   only `origintrail` plus `origintrail_client_agent` and exposes no approve,
+   reject, publish, or export control. Confirm the Buzz endpoint itself makes
+   no relay call.
 5. Deploy the dispatcher as an isolated short-lived service, but keep both
    producer and dispatcher at `dry_run`. Confirm dry-run reports
    `allowed_clients: ["origintrail"]` and `provider_calls: false`.

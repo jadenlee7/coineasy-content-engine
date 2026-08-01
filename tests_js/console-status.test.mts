@@ -95,7 +95,8 @@ test("sends stored results to the private Telegram review flow and opens DM deep
   assert.match(consoleHtml, /initialQuery\.get\("content"\)/);
   assert.match(consoleHtml, /function openInitialReviewLink\(\)/);
   assert.match(consoleHtml, /selectStudioView\("library", false\)/);
-  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewContentId\)/);
+  assert.match(consoleHtml, /initialReviewRef = initialBatchReviewRef \|\| initialReviewContentId/);
+  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewRef\)/);
 });
 
 test("binds generation responses and editable SVG follow-ups to the submitted client and mode", () => {
