@@ -67,9 +67,75 @@ test("records explicit approve or change-request decisions without auto publishi
   assert.match(consoleHtml, /이 작업은 게시를 실행하지 않지만/);
   assert.match(consoleHtml, /선택한 사유 코드만 다음 생성의 주의점에 반영됩니다/);
   const reviewFunction = consoleHtml.match(
-    /async function submitStoredReview\(button\) \{[\s\S]*?\n      \}(?=\n\n      async function downloadStoredEditable)/,
+    /async function submitStoredReview\(button\) \{[\s\S]*?\n      \}(?=\n\n      function publicationContextIsCurrent)/,
   )?.[0] || "";
   assert.doesNotMatch(reviewFunction, /publication|publish/);
+});
+
+test("publishes only the exact server-allowed approved Telegram version", () => {
+  assert.match(consoleHtml, /function renderTelegramPublishMarkup\(rawDetail, isMock, assets, channelCopyValue\)/);
+  assert.match(consoleHtml, /capabilities\.telegram !== true\s*\|\| capabilities\.telegram_client_allowed !== true/);
+  assert.match(consoleHtml, /detail\.content_kind !== "daily_news"/);
+  assert.match(consoleHtml, /latestReview\.content_version_id === contentVersionId/);
+  assert.match(consoleHtml, /generationMeta\.mock_mode === true/);
+  assert.match(consoleHtml, /asset\.asset_kind === "png" && asset\.mime_type === "image\/png"/);
+  assert.match(consoleHtml, /data-library-publish-channel="telegram"/);
+  assert.match(consoleHtml, /window\.confirm\(`\$\{brandName\} · v\$\{versionNumber\} 승인본을 Telegram 공개 채널에 실제 게시할까요\?/);
+  assert.match(consoleHtml, /fetch\(`\/api\/library\/\$\{encodeURIComponent\(context\.contentItemId\)\}\/publish`, \{/);
+  assert.match(consoleHtml, /"Idempotency-Key": intent\.id/);
+  assert.match(consoleHtml, /body: JSON\.stringify\(\{\s*content_version_id: context\.contentVersionId,\s*channel: "telegram"\s*\}\)/);
+  assert.match(consoleHtml, /TELEGRAM_PUBLICATION_POLL_TIMEOUT_MS = 30_000/);
+  assert.match(consoleHtml, /delivery_unknown: "전송 결과 확인 필요"/);
+  assert.match(consoleHtml, /function formatTelegramDeliveryTime\(value\)/);
+  assert.match(consoleHtml, /if \(typeof value !== "string" \|\| !value\) return "";/);
+  assert.match(consoleHtml, /timeZone: "Asia\/Seoul"/);
+  assert.match(consoleHtml, /Telegram 전송 시도 시각/);
+  assert.match(consoleHtml, /delivery_started_at: deliveryStartedAt/);
+  assert.match(consoleHtml, /중복 게시를 막기 위해 자동 재시도하지 않습니다/);
+  assert.match(consoleHtml, /telegram_publication_client_not_allowed/);
+  assert.doesNotMatch(consoleHtml, /PUBLICATION_WORKER_TOKEN|X-Publication-Worker-Key/);
+});
+
+test("accepts only canonical delivery timestamps in the browser publication DTO", () => {
+  const functionSource = consoleHtml.match(
+    /function normalizedTelegramPublication\(rawPublication, expectedContentId, expectedVersionId\) \{[\s\S]*?\n      \}(?=\n\n      function renderTelegramPublishMarkup)/,
+  )?.[0];
+  assert.ok(functionSource, "normalizedTelegramPublication must be present");
+  const normalizedTelegramPublication = Function(
+    "plainObject",
+    "safeWebUrl",
+    `"use strict"; ${functionSource}; return normalizedTelegramPublication;`,
+  )(
+    (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    (value: unknown) => typeof value === "string" && value.startsWith("https://") ? value : "",
+  ) as (value: unknown, contentId: string, versionId: string) => Record<string, any> | null;
+  const contentId = "22222222-2222-4222-8222-222222222222";
+  const versionId = "33333333-3333-4333-8333-333333333333";
+  const base = {
+    publication_id: "44444444-4444-4444-8444-444444444444",
+    content_item_id: contentId,
+    content_version_id: versionId,
+    channel: "telegram",
+    status: "publishing",
+    delivery_started_at: "2026-08-01T12:34:56.123Z",
+    external_url: null,
+    error_code: null,
+  };
+  assert.equal(
+    normalizedTelegramPublication(base, contentId, versionId)?.delivery_started_at,
+    "2026-08-01T12:34:56.123Z",
+  );
+  for (const deliveryStartedAt of [
+    "not-an-iso-timestamp",
+    "2026-02-30T12:00:00.000Z",
+    "2026-08-01T99:00:00.000Z",
+    "2026-08-01T12:34:56+00:00",
+  ]) {
+    assert.equal(normalizedTelegramPublication({
+      ...base,
+      delivery_started_at: deliveryStartedAt,
+    }, contentId, versionId), null);
+  }
 });
 
 test("renders deduplicated and escaped source evidence from every stored content shape", () => {
@@ -369,6 +435,107 @@ test("links only already-public posts and explains the observation window", () =
   assert.match(consoleHtml, /manual_publications/);
   assert.match(consoleHtml, /성과 추천 정보를 지금 불러오지 못했습니다/);
   assert.doesNotMatch(consoleHtml, /공식 원문 300자 이상 보강 후 생성 가능/);
+});
+
+test("hides manual Telegram observation only while exact automation owns delivery", () => {
+  const functionSource = consoleHtml.match(
+    /function renderPublicationObservationMarkup\(rawDetail, isMock\) \{[\s\S]*?\n      \}(?=\n\n      function renderContentReviewMarkup)/,
+  )?.[0];
+  assert.ok(functionSource, "renderPublicationObservationMarkup must be present");
+  const renderPublicationObservationMarkup = Function(
+    "plainObject",
+    "safeWebUrl",
+    "escapeHtml",
+    "normalizedTelegramPublication",
+    `"use strict"; ${functionSource}; return renderPublicationObservationMarkup;`,
+  )(
+    (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    (value: unknown) => typeof value === "string" && value.startsWith("https://") ? value : "",
+    (value: unknown) => String(value ?? "").replace(/[&<>\"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;",
+    }[char] || char)),
+    (raw: any, contentItemId: string, contentVersionId: string) => {
+      const statuses = new Set(["queued", "publishing", "published", "failed", "delivery_unknown", "cancelled"]);
+      return raw
+        && raw.content_item_id === contentItemId
+        && raw.content_version_id === contentVersionId
+        && statuses.has(raw.status)
+        ? raw
+        : null;
+    },
+  ) as (detail: unknown, isMock: boolean) => string;
+
+  const contentItemId = "22222222-2222-4222-8222-222222222222";
+  const contentVersionId = "33333333-3333-4333-8333-333333333333";
+  for (const status of ["queued", "publishing", "published"]) {
+    const markup = renderPublicationObservationMarkup({
+      content_item_id: contentItemId,
+      content_kind: "daily_news",
+      current_version_id: contentVersionId,
+      telegram_publication: {
+        content_item_id: contentItemId,
+        content_version_id: contentVersionId,
+        status,
+      },
+      manual_publications: [],
+    }, false);
+    assert.match(markup, /id="library-publication-x"/);
+    assert.doesNotMatch(markup, /id="library-publication-telegram"/);
+    assert.match(markup, /Telegram은 위 자동 발행 상태에서 관리/);
+  }
+
+  const unknownMarkup = renderPublicationObservationMarkup({
+    content_item_id: contentItemId,
+    content_kind: "daily_news",
+    current_version_id: contentVersionId,
+    telegram_publication: {
+      content_item_id: contentItemId,
+      content_version_id: contentVersionId,
+      status: "delivery_unknown",
+    },
+    manual_publications: [],
+  }, false);
+  assert.match(unknownMarkup, /id="library-publication-telegram"/);
+  assert.match(unknownMarkup, /실제로 확인된 기존 메시지 링크만 연결/);
+  assert.match(unknownMarkup, /새 발행을 실행하지 않습니다/);
+
+  for (const status of ["failed", "cancelled"]) {
+    const terminalMarkup = renderPublicationObservationMarkup({
+      content_item_id: contentItemId,
+      content_kind: "daily_news",
+      current_version_id: contentVersionId,
+      telegram_publication: {
+        content_item_id: contentItemId,
+        content_version_id: contentVersionId,
+        status,
+      },
+      manual_publications: [],
+    }, false);
+    assert.match(terminalMarkup, /id="library-publication-telegram"/);
+  }
+
+  const manualMarkup = renderPublicationObservationMarkup({
+    content_item_id: contentItemId,
+    content_kind: "daily_news",
+    current_version_id: contentVersionId,
+    telegram_publication: null,
+    manual_publications: [],
+  }, false);
+  assert.match(manualMarkup, /id="library-publication-x"/);
+  assert.match(manualMarkup, /id="library-publication-telegram"/);
+
+  const staleAutomationMarkup = renderPublicationObservationMarkup({
+    content_item_id: contentItemId,
+    content_kind: "daily_news",
+    current_version_id: contentVersionId,
+    telegram_publication: {
+      content_item_id: contentItemId,
+      content_version_id: "44444444-4444-4444-8444-444444444444",
+      status: "published",
+    },
+    manual_publications: [],
+  }, false);
+  assert.match(staleAutomationMarkup, /id="library-publication-telegram"/);
 });
 
 test("permits only web URLs before rendering signed assets and links", () => {

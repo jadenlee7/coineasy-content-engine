@@ -109,6 +109,20 @@ railway variable set 'TELEGRAM_REVIEW_CHAT_ID=${{coineasytgtracker.TG_NOTIFY_USE
 인증된 검토 패키지만 relay하며 Telegram token이나 chat ID를 저장하지
 않습니다.
 
+### Squid 승인본 공개 발행
+
+공개 검토 DM과 공개 채널 발행은 서로 다른 기능입니다. 승인된 Squid
+Daily News의 저장 PNG와 저장 문구를 최대 한 번 전송 시도하는 경로는 기본
+비활성화 상태로 배포하며, 별도 `PUBLICATION_WORKER_TOKEN`과 두 실행
+플래그를 사용합니다. `API_SECRET`, `STUDIO_ACCESS_TOKEN`, 검토 DM 토큰을
+재사용하지 마세요.
+
+DB 적용, Railway/Netlify 변수, Squid-only allowlist, 활성화 순서,
+`delivery_unknown` 대응은
+[`TELEGRAM_PUBLICATION_RUNBOOK.md`](TELEGRAM_PUBLICATION_RUNBOOK.md)를
+따릅니다. 공식 채널 전송은 그 체크리스트를 마치고 운영자가 명시적으로
+승인하기 전까지 실행하지 않습니다.
+
 ### 3.3 첫 배포
 
 Railway가 `Dockerfile`을 자동 감지해서 빌드 시작합니다.
@@ -258,7 +272,7 @@ railway logs --follow | grep "\[yellow\]"
 
 1. **Telegram 승인 봇** — 생성된 캐러셀을 제이든+Kailey 채널에 보내고 버튼으로 승인/수정/거절
 2. **Typefully MCP 연결** — 승인된 캐러셀을 X에 자동 포스팅
-3. **Content Studio 다음 단계** — 생성 히스토리와 팀 보관함은 적용됨. 다음은 승인/발행 화면과 Supabase Auth 전환
+3. **Content Studio 다음 단계** — 생성 히스토리·팀 보관함·검토/승인은 적용됨. Squid Daily News Telegram 발행은 기본 비활성화 카나리이며, 다음은 다른 클라이언트/콘텐츠 유형과 Supabase Auth 전환
 4. **검토형 자동 트리거** — 공식 X 새 게시물 감지 → 초안 생성 → 사람이 승인한 뒤 게시
 5. **Figma 플러그인** — 승인된 불변 SVG만 가져오고 연결 정보는 서버에서 기록
 

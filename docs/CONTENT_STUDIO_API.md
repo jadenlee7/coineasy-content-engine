@@ -143,6 +143,14 @@ Current incremental Netlify bridge:
   UUID `Idempotency-Key`, appends an immutable approval row, and never publishes.
   Mock generations cannot be approved. Rejections carry at most five allowlisted
   reason codes and an optional bounded team comment.
+- `POST /api/library/{content_item_id}/publish` is the current Squid-only exact
+  Telegram bridge. It accepts only the current `content_version_id`, channel
+  `telegram`, and a UUID `Idempotency-Key`. It is disabled by default and never
+  accepts a caption, asset URL, client, or destination from the browser.
+- `GET /api/library/{content_item_id}/publish?content_version_id=...&channel=telegram`
+  reads the durable exact-publication state even after the queue feature is
+  disabled. Returned states are `queued`, `publishing`, `published`, `failed`,
+  `delivery_unknown`, or `cancelled`.
 - `POST /api/library/{content_item_id}/review-notification` sends the stored
   current version to the configured private Telegram reviewer. The request
   carries the exact `content_version_id` and may attach a generated article
@@ -220,6 +228,39 @@ admin-authenticated Railway API. Railway alone receives
 `TELEGRAM_REVIEW_BOT_TOKEN` and numeric `TELEGRAM_REVIEW_CHAT_ID`; Netlify never
 stores either Telegram secret. Telegram delivery failure never rolls back or
 publishes the stored content.
+
+### Exact Squid Telegram publication
+
+Current signed-session bridge:
+
+`POST /api/library/{content_item_id}/publish`
+
+```json
+{
+  "content_version_id": "version-uuid",
+  "channel": "telegram"
+}
+```
+
+This route is separate from the private review notification. Supabase atomically
+rechecks a current approved, non-mock Squid Daily News version, its approval,
+stored Telegram caption, and its one private PNG. It creates one publication/job
+for the exact version; a different idempotency key still converges on that same
+version/channel job.
+
+Railway claims the durable job, verifies the private PNG bytes and canonical
+`@squid_kor_update` target, commits a delivery fence, and makes one plain-caption
+`sendPhoto` call. It never regenerates or reformats content. Known failures before
+the fence may use the bounded job retry budget. Any uncertain response after the
+fence becomes `delivery_unknown` and cannot be claimed again automatically.
+
+New requests require both `STUDIO_TELEGRAM_PUBLISH_ENABLED=true` on Netlify and
+`TELEGRAM_PUBLICATION_ENABLED=true` on Railway, with both allowlists exactly
+`squid`. Status reads remain available when the Netlify flag is off. The internal
+Railway kick uses a dedicated `PUBLICATION_WORKER_TOKEN`; it does not accept a
+content ID or request body and does not reuse `API_SECRET`,
+`STUDIO_ACCESS_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, or any Telegram bot token.
+See `docs/TELEGRAM_PUBLICATION_RUNBOOK.md`.
 
 `POST /v1/workspaces/{workspace_id}/content/{content_id}/approve`
 
