@@ -10,6 +10,7 @@ Deployment: Railway
 import asyncio
 import os
 import re
+import secrets
 import time
 import traceback
 from datetime import datetime
@@ -18,7 +19,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
 import yaml
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Header
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Request
 from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
@@ -50,6 +51,13 @@ from core.publishers.telegram_review import (
     telegram_review_config,
 )
 from core.publishers.typefully import TypefullyPublisher
+from core.publications.repository import PublicationRepositoryError
+from core.publications.settings import (
+    PublicationSettings,
+    publication_worker_token,
+    telegram_publication_enabled,
+)
+from core.publications.worker import build_exact_telegram_publication_worker
 from api.security import check_any_valid_key, resolve_safe_path, validate_client_scope
 from api.output_retention import (
     cleanup_generated_runs_best_effort,
@@ -523,6 +531,50 @@ async def notify_telegram_review(
     return result
 
 
+@app.post("/internal/publications/telegram/run-once")
+async def run_exact_telegram_publication_once(
+    request: Request,
+    x_publication_worker_key: str = Header(
+        default="",
+        alias="X-Publication-Worker-Key",
+    ),
+):
+    """Claim one due, immutable Telegram publication job.
+
+    The caller cannot select content, a version, a destination, or an asset.
+    Those values are pinned by the approved Supabase queue transaction.
+    """
+    try:
+        expected_token = publication_worker_token()
+    except ValueError:
+        raise HTTPException(503, "telegram_publication_worker_not_configured")
+    if not secrets.compare_digest(
+        x_publication_worker_key.encode("utf-8"),
+        expected_token.encode("ascii"),
+    ):
+        raise HTTPException(401, "invalid_publication_worker_key")
+
+    declared_length = request.headers.get("content-length")
+    if declared_length not in {None, "0"}:
+        raise HTTPException(400, "publication_worker_request_body_not_allowed")
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(400, "publication_worker_request_body_not_allowed")
+
+    try:
+        if not telegram_publication_enabled():
+            raise HTTPException(503, "telegram_publication_worker_disabled")
+        settings = PublicationSettings.from_env()
+        result = await build_exact_telegram_publication_worker(settings).run_once()
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(503, "telegram_publication_worker_not_configured")
+    except PublicationRepositoryError:
+        raise HTTPException(503, "telegram_publication_queue_unavailable")
+    return result.as_dict()
+
+
 @app.post("/clients/{client_id}/generate/edu-carousel", response_model=GenerateResponse)
 async def generate_carousel(
     client_id: str,
@@ -828,6 +880,14 @@ async def publish_daily_news(
     does not block other channels.
     """
     _check_client_auth(x_api_key, client_id)
+
+    # Squid public Telegram delivery is owned exclusively by the durable Studio
+    # exact-version workflow.  The legacy route regenerates copy, sends text
+    # without the approved PNG, and retries provider failures, so allowing a
+    # live call here could duplicate an exact or delivery-unknown publication.
+    # Dry runs and non-Telegram channels remain available for compatibility.
+    if client_id == "squid" and not req.dry_run and "telegram" in req.channels:
+        raise HTTPException(409, "squid_telegram_exact_publication_required")
 
     generation_result = await _run_daily_news_generation(
         client_id=client_id,

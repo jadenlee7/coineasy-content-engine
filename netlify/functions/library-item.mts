@@ -6,6 +6,12 @@ import {
   isCatalogUuid,
 } from "./_shared/content-catalog.mts";
 import { listContentPromotionRecommendations } from "./_shared/content-promotions.mts";
+import {
+  getStudioTelegramPublication,
+  studioTelegramPublishClientAllowed,
+  studioTelegramPublishEnabled,
+  type StudioTelegramPublication,
+} from "./_shared/content-publications.mts";
 import { getContentReviewSummary } from "./_shared/content-reviews.mts";
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
 
@@ -33,6 +39,35 @@ export default async (req: Request, context: Context): Promise<Response> => {
     } catch {
       // Keep the durable item readable during a rolling database migration.
     }
+    const telegramPublishingEnabled = studioTelegramPublishEnabled(
+      (name) => Netlify.env.get(name),
+    );
+    const telegramClientAllowed = studioTelegramPublishClientAllowed(
+      item.client_id,
+      (name) => Netlify.env.get(name),
+    );
+    let telegramPublication: StudioTelegramPublication | null = null;
+    let telegramPublicationAvailable = false;
+    try {
+      telegramPublication = await getStudioTelegramPublication(
+        config,
+        contentItemId,
+        item.current_version_id,
+      );
+      telegramPublicationAvailable = true;
+    } catch {
+      // Status remains readable after a feature rollback, but a rolling
+      // migration or projection outage must fail closed for new requests.
+    }
+    const publicationFields = {
+      publication_capabilities: {
+        telegram: telegramPublishingEnabled
+          && telegramClientAllowed
+          && telegramPublicationAvailable,
+        telegram_client_allowed: telegramClientAllowed,
+      },
+      telegram_publication: telegramPublication,
+    };
     try {
       const promotionSummary = await listContentPromotionRecommendations(
         config,
@@ -42,6 +77,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return studioSessionJson({
         ...item,
         latest_review: latestReview,
+        ...publicationFields,
         promotion_recommendations: promotionSummary.items,
         manual_publications: promotionSummary.publications,
         promotions_available: true,
@@ -52,6 +88,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return studioSessionJson({
         ...item,
         latest_review: latestReview,
+        ...publicationFields,
         promotion_recommendations: [],
         manual_publications: [],
         promotions_available: false,

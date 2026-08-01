@@ -75,6 +75,29 @@ def test_invalid_channel_rejected_by_pydantic(client):
     assert r.status_code == 422
 
 
+def test_live_squid_telegram_is_exclusive_to_exact_studio_publication(
+    client, monkeypatch
+):
+    from api import server
+
+    async def _generation_must_not_run(*_args, **_kwargs):
+        raise AssertionError("legacy generation must not run")
+
+    monkeypatch.setattr(
+        server,
+        "_run_daily_news_generation",
+        _generation_must_not_run,
+    )
+    response = client.post(
+        "/clients/squid/publish/daily-news",
+        json={"hours": 24, "dry_run": False, "channels": ["telegram"]},
+        headers={"x-api-key": ADMIN_KEY},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "squid_telegram_exact_publication_required"
+
+
 def test_empty_news_skips_publishing(client, monkeypatch):
     _patch_generation(monkeypatch, SAMPLE_NEWS_EMPTY)
     r = client.post(
