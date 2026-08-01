@@ -8,6 +8,8 @@ import newsCardHandler, {
   MAX_NEWS_CARD_BYTES,
   newsCardRequestHash,
   normalizedFigmaTemplate,
+  storedNewsTemplatePair,
+  validNewsTemplatePair,
 } from "../netlify/functions/news-card.mts";
 import {
   createStudioSessionValue,
@@ -102,6 +104,36 @@ test("news card request hash binds every submitted generation input", () => {
   assert.equal(newsCardRequestHash({ ...input }), newsCardRequestHash(input));
   assert.notEqual(newsCardRequestHash({ ...input, templateStyle: "remix" }), newsCardRequestHash(input));
   assert.notEqual(newsCardRequestHash({ ...input, sourceUrl: `${SOURCE_URL}1` }), newsCardRequestHash(input));
+});
+
+test("fails closed on inconsistent requested and rendered template families", () => {
+  assert.equal(validNewsTemplatePair("squid", "editorial", "editorial", "classic"), true);
+  assert.equal(validNewsTemplatePair("squid", "signal", "signal", "classic"), true);
+  assert.equal(validNewsTemplatePair("squid", "remix", "remix", "remix"), true);
+  assert.equal(validNewsTemplatePair("squid", "remix", "remix", "classic"), false);
+  assert.equal(validNewsTemplatePair("yellow", "remix", "remix", "classic"), true);
+  assert.equal(validNewsTemplatePair("squid", "editorial", "editorial", "editorial"), false);
+  assert.equal(validNewsTemplatePair("squid", "signal", "classic", "classic"), false);
+  assert.equal(validNewsTemplatePair("yellow", "editorial", "editorial", "classic"), false);
+});
+
+test("stored news card replay requires both explicit compatible template styles", () => {
+  assert.deepEqual(
+    storedNewsTemplatePair("squid", {
+      requested_template_style: "classic",
+      template_style: "classic",
+    }),
+    { requestedTemplateStyle: "classic", actualTemplateStyle: "classic" },
+  );
+  assert.equal(storedNewsTemplatePair("squid", { template_style: "classic" }), null);
+  assert.equal(storedNewsTemplatePair("squid", { requested_template_style: "classic" }), null);
+  assert.equal(
+    storedNewsTemplatePair("squid", {
+      requested_template_style: "remix",
+      template_style: "classic",
+    }),
+    null,
+  );
 });
 
 test("accepts only the explicitly approved Figma template for the rendered client", () => {

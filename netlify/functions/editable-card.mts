@@ -1,11 +1,13 @@
 import type { Config, Context } from "@netlify/functions";
 import {
   buildEditableSvg,
+  effectiveEditableTemplateStyle,
   type EditableCardAssets,
   type EditableClientId,
   type EditableTemplateStyle,
 } from "./_shared/editable-svg.mts";
 import {
+  fetchOfficialArticleHeroAssetDataUrls,
   fetchOfficialBrandLogoDataUrl,
   OFFICIAL_BRAND_ASSETS,
   type OfficialLogoVariant,
@@ -79,6 +81,7 @@ export function requiredOfficialLogoVariant(
     if (clientId === "squid" || spec.source_logo_visible === true) return null;
     return "dark";
   }
+  if (clientId === "squid" && templateStyle === "classic") return "light";
   if (templateStyle === "signal") return "dark";
   return spec.theme === "yellow" ? "light" : "dark";
 }
@@ -119,9 +122,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   const spec = body.spec as Record<string, unknown>;
   const allowedStyles = new Set<EditableTemplateStyle>(["remix", "classic", "editorial", "signal"]);
-  const templateStyle = typeof body.template_style === "string" && allowedStyles.has(body.template_style as EditableTemplateStyle)
+  const requestedTemplateStyle = typeof body.template_style === "string" && allowedStyles.has(body.template_style as EditableTemplateStyle)
     ? body.template_style as EditableTemplateStyle
     : "classic";
+  const templateStyle = effectiveEditableTemplateStyle(clientId, requestedTemplateStyle);
 
   const siteOrigin = new URL(context.site.url).origin;
   const sourceImageUrl = allowlistedSourceImage(body.source_image_url);
@@ -138,6 +142,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   const assets: EditableCardAssets = {};
   let officialLogoUnavailable = false;
+  let officialSquidAssetsUnavailable = false;
   const assetRequests: Array<Promise<void>> = [];
   const logoVariant = requiredOfficialLogoVariant(clientId, templateStyle, spec);
   if (logoVariant) {
@@ -149,6 +154,23 @@ export default async (req: Request, context: Context): Promise<Response> => {
         })
         .catch(() => {
           officialLogoUnavailable = true;
+        }),
+    );
+  }
+  if (clientId === "squid" && templateStyle === "classic") {
+    assetRequests.push(
+      fetchOfficialArticleHeroAssetDataUrls(clientId, siteOrigin)
+        .then((value) => {
+          if (!value) {
+            officialSquidAssetsUnavailable = true;
+            return;
+          }
+          assets.squidFormLanguage = value.formLanguage;
+          assets.squidSquib = value.squib;
+          assets.squidBubbles = value.bubbles;
+        })
+        .catch(() => {
+          officialSquidAssetsUnavailable = true;
         }),
     );
   }
@@ -179,6 +201,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   if (officialLogoUnavailable) {
     return jsonError("official_logo_unavailable", 503);
+  }
+  if (officialSquidAssetsUnavailable) {
+    return jsonError("official_squid_assets_unavailable", 503);
   }
   if (cleanedSourceRequired && !assets.sourceImage) {
     return jsonError("cleaned_source_unavailable", 502);

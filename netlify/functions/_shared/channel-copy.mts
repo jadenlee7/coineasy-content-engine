@@ -71,6 +71,52 @@ function buildXPost(
   return result;
 }
 
+function squidTopicHashtags(
+  label: string,
+  headline: string,
+  bodyLines: string[],
+  sourceContent: string,
+): string[] {
+  const context = [label, headline, ...bodyLines, sourceContent].join(" ").toLowerCase();
+  const topics: Array<[RegExp, string]> = [
+    [/\bcanton(?:network)?\b/i, "#Canton"],
+    [/\bxrp\b/i, "#XRP"],
+    [/\brlusd\b/i, "#RLUSD"],
+    [/(?:\$quid|\bquid\b|tge)/i, "#QUID"],
+    [/\baxelar\b/i, "#Axelar"],
+    [/\bstellar\b/i, "#Stellar"],
+    [/(?:cross[ -]?chain|크로스체인)/i, "#CrossChain"],
+  ];
+  const matched = topics
+    .filter(([pattern]) => pattern.test(context))
+    .map(([, hashtag]) => hashtag)
+    .slice(0, 2);
+  return ["#Squid", ...(matched.length ? matched : ["#SquidKorea"])]
+    .slice(0, 3);
+}
+
+function buildSquidTelegram(
+  label: string,
+  headline: string,
+  bodyLines: string[],
+  sourceContent: string,
+  sourceUrl: string,
+): string {
+  const supportingLines = bodyLines
+    .filter((line) => line !== headline)
+    .slice(0, 2);
+  const sections = [headline];
+  if (supportingLines.length) sections.push(supportingLines.join("\n"));
+  if (sourceUrl) sections.push(`원문 → ${sourceUrl}`);
+  sections.push(squidTopicHashtags(
+    label,
+    headline,
+    supportingLines,
+    sourceContent,
+  ).join(" "));
+  return sections.join("\n\n");
+}
+
 export function buildChannelCopy(
   clientId: keyof typeof CLIENT_COPY,
   spec: NewsCardSpec,
@@ -83,6 +129,19 @@ export function buildChannelCopy(
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines.map(cleanText).filter(Boolean).slice(0, 3)
     : [];
+
+  if (clientId === "squid") {
+    return {
+      telegram: buildSquidTelegram(
+        label,
+        headline,
+        bodyLines,
+        sourceContent,
+        sourceUrl,
+      ),
+      x: buildXPost(client.xStyle, headline, bodyLines, sourceContent),
+    };
+  }
 
   const telegramSections = [
     `📢 ${client.name} Korea | ${label}`,

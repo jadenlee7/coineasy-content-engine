@@ -208,6 +208,22 @@ def _inject_brand_slots(
     enhanced["logo_dark_path"] = _logo_to_data_url(config.logo_dark_path)
     enhanced["logo_light_path"] = _logo_to_data_url(config.logo_light_path)
 
+    if config.client_id == "squid":
+        # Squid's reviewed Figma composition uses the official character and
+        # form-language assets as structural brand elements, not decoration.
+        # Fail closed here just like the official logo so a missing asset can
+        # never silently produce a generic-looking Squid card.
+        asset_dir = config.client_dir / "assets"
+        enhanced["squid_form_language_path"] = _logo_to_data_url(
+            asset_dir / "form-language-purple.png",
+        )
+        enhanced["squid_squib_path"] = _logo_to_data_url(
+            asset_dir / "squib-token-juggle.png",
+        )
+        enhanced["squid_bubbles_path"] = _logo_to_data_url(
+            asset_dir / "squib-bubbles.png",
+        )
+
     enhanced["brand_primary_color"] = config.brand.primary_color
     enhanced["brand_bg_dark"] = config.brand.bg_dark
     enhanced["brand_bg_yellow"] = config.brand.bg_yellow

@@ -9,15 +9,18 @@ const clients: BrandQaClient[] = ["yellow", "origintrail", "squid", "babylon"];
 
 test("passes source-grounded daily news for all four client brands", () => {
   for (const clientId of clients) {
+    const squid = clientId === "squid";
     const report = evaluateBrandQuality({
       clientId,
       contentKind: "daily_news",
       sourceText: "공식 업데이트에서 새로운 검증 흐름과 사용자 안내를 공개했습니다.",
-      headline: "공식 업데이트의 핵심 변화",
-      bodyLines: ["검증 흐름을 더 명확하게 정리", "사용자가 확인할 기준을 안내"],
+      headline: squid ? "어디서 시작할까요?" : "공식 업데이트의 핵심 변화",
+      bodyLines: squid
+        ? ["Squid로는 쉬워요", "공식 안내에서 확인한 흐름이에요"]
+        : ["검증 흐름을 더 명확하게 정리", "사용자가 확인할 기준을 안내"],
       channelCopy: {
-        telegram: "공식 업데이트의 핵심 변화를 정리했습니다.",
-        x: "공식 업데이트의 핵심 변화를 확인하세요.",
+        telegram: squid ? "어디서 시작할까요?\nSquid로는 쉬워요." : "공식 업데이트의 핵심 변화를 정리했습니다.",
+        x: squid ? "어디서 시작할까요?\nSquid로는 쉬워요." : "공식 업데이트의 핵심 변화를 확인하세요.",
       },
       templateStyle: "classic",
     });
@@ -47,6 +50,43 @@ test("passes a properly structured source-grounded article", () => {
   });
   assert.equal(report.status, "pass");
   assert.equal(report.score, 100);
+});
+
+test("requires Squid article visual copy to fit the sparse inline geometry", () => {
+  const article = {
+    clientId: "squid" as const,
+    contentKind: "article" as const,
+    sourceText: "Squid 공식 문서는 지원 네트워크와 확인 경로를 설명합니다.",
+    title: "Squid 지원 경로 확인하기",
+    lead: "공식 자료에서 확인할 흐름을 짧게 정리합니다.",
+    sections: [
+      { heading: "무엇이 달라졌나", body: "공식 지원 범위가 업데이트됐습니다." },
+      { heading: "어떻게 작동하나", body: "Squid의 공식 경로를 사용합니다." },
+      { heading: "무엇을 확인하나", body: "지원 상태를 먼저 확인합니다." },
+    ],
+    keyTakeaways: ["지원 범위", "공식 경로", "상태 확인"],
+    channelCopy: { telegram: "Squid 지원 경로", x: "Squid 지원 경로" },
+  };
+  const safeVisual = {
+    eyebrow: "CANTON × SQUID",
+    headline: "Canton으로 가는 길",
+    caption: "지원 흐름을 한국 이용자 관점에서 짚습니다.",
+    points: ["지원 생태계에 포함됩니다.", "공식 경로를 확인하세요."],
+  };
+  const safe = evaluateBrandQuality({
+    ...article,
+    visuals: [safeVisual, { ...safeVisual, headline: "공식 경로 확인하기" }],
+  });
+  assert.equal(safe.checks.find((item) => item.id === "visual_density")?.status, "pass");
+
+  const dense = evaluateBrandQuality({
+    ...article,
+    visuals: [
+      { ...safeVisual, headline: "가".repeat(21) },
+      { ...safeVisual, points: ["나".repeat(27), "공식 경로를 확인하세요."] },
+    ],
+  });
+  assert.equal(dense.checks.find((item) => item.id === "visual_density")?.status, "review");
 });
 
 test("passes a three-to-five slide tutorial structure", () => {
@@ -79,6 +119,52 @@ test("flags internal branding, wrong Squid naming, and hype language", () => {
   assert.equal(check?.severity, "critical");
   assert.match(check?.detail || "", /CoinEasy/);
   assert.match(check?.detail || "", /Squid Router/);
+});
+
+test("flags generic publisher copy and over-dense Squid cards", () => {
+  const report = evaluateBrandQuality({
+    clientId: "squid",
+    contentKind: "daily_news",
+    sourceText: "Have you explored Canton yet? With Squid, it's easy.",
+    headline: "Squid로 Canton Network를 간편하게 탐색할 수 있습니다",
+    bodyLines: [
+      "Squid가 지원하는 생태계에 Canton도 있습니다",
+      "자세한 내용과 전체 맥락은 원문에서 확인해 주세요",
+      "최신 소식을 한국 사용자 관점에서 소개합니다",
+    ],
+    channelCopy: { telegram: "Squid 소식", x: "Squid 소식" },
+    templateStyle: "classic",
+  });
+
+  assert.equal(report.checks.find((item) => item.id === "text_density")?.status, "review");
+  const terms = report.checks.find((item) => item.id === "brand_terms");
+  assert.equal(terms?.status, "review");
+  assert.match(terms?.detail || "", /간편하게 탐색할 수 있습니다/);
+  assert.match(terms?.detail || "", /전체 맥락/);
+});
+
+test("aligns Squid QA density with the classic PNG and editable SVG geometry", () => {
+  const base = {
+    clientId: "squid" as const,
+    contentKind: "daily_news" as const,
+    sourceText: "Squid 공식 원문에 근거한 충분한 길이의 업데이트입니다.",
+    channelCopy: { telegram: "Squid 업데이트", x: "Squid 업데이트" },
+    templateStyle: "classic",
+  };
+  const safe = evaluateBrandQuality({
+    ...base,
+    headline: "가".repeat(28),
+    bodyLines: ["나".repeat(21), "다".repeat(21)],
+  });
+  assert.equal(safe.checks.find((item) => item.id === "text_density")?.status, "pass");
+
+  for (const input of [
+    { headline: "가".repeat(29), bodyLines: ["짧은본문"] },
+    { headline: "짧은제목", bodyLines: ["나".repeat(24)] },
+  ]) {
+    const report = evaluateBrandQuality({ ...base, ...input });
+    assert.equal(report.checks.find((item) => item.id === "text_density")?.status, "review");
+  }
 });
 
 test("does not treat official handles or source URLs as public brand prose", () => {

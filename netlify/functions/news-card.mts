@@ -216,10 +216,63 @@ function isRailwayNewsCardResponse(
     && !Array.isArray(result.spec)
     && typeof result.png_path === "string"
     && typeof result.template_style === "string"
+    && (
+      result.requested_template_style === undefined
+      || typeof result.requested_template_style === "string"
+    )
     && typeof result.manifest_path === "string"
     && typeof result.duration_ms === "number"
     && Number.isFinite(result.duration_ms)
     && result.duration_ms >= 0;
+}
+
+export function validNewsTemplatePair(
+  clientId: string,
+  submittedTemplateStyle: string,
+  reportedRequestedTemplateStyle: string,
+  reportedActualTemplateStyle: string,
+): boolean {
+  const allowed = new Set(["remix", "classic", "editorial", "signal"]);
+  if (
+    !allowed.has(submittedTemplateStyle)
+    || !allowed.has(reportedRequestedTemplateStyle)
+    || !allowed.has(reportedActualTemplateStyle)
+    || reportedRequestedTemplateStyle !== submittedTemplateStyle
+  ) {
+    return false;
+  }
+  if (submittedTemplateStyle === "remix") {
+    return reportedActualTemplateStyle === "remix"
+      || (clientId !== "squid" && reportedActualTemplateStyle === "classic");
+  }
+  if (
+    clientId === "squid"
+    && (submittedTemplateStyle === "editorial" || submittedTemplateStyle === "signal")
+  ) {
+    return reportedActualTemplateStyle === "classic";
+  }
+  return reportedActualTemplateStyle === submittedTemplateStyle;
+}
+
+export function storedNewsTemplatePair(
+  clientId: string,
+  render: Record<string, unknown>,
+): { requestedTemplateStyle: string; actualTemplateStyle: string } | null {
+  const requestedTemplateStyle = render.requested_template_style;
+  const actualTemplateStyle = render.template_style;
+  if (
+    typeof requestedTemplateStyle !== "string"
+    || typeof actualTemplateStyle !== "string"
+    || !validNewsTemplatePair(
+      clientId,
+      requestedTemplateStyle,
+      requestedTemplateStyle,
+      actualTemplateStyle,
+    )
+  ) {
+    return null;
+  }
+  return { requestedTemplateStyle, actualTemplateStyle };
 }
 
 async function catalogRetryResponse(
@@ -245,15 +298,11 @@ async function catalogRetryResponse(
   const render = objectValue(existing.content.render);
   const source = objectValue(existing.content.source);
   const spec = objectValue(existing.content.spec);
-  const actualTemplateStyle = typeof render.template_style === "string"
-    ? render.template_style
-    : "classic";
-  const requestedTemplateStyle = typeof render.requested_template_style === "string"
-    ? render.requested_template_style
-    : actualTemplateStyle;
-  if (!["remix", "classic", "editorial", "signal"].includes(actualTemplateStyle)) {
+  const templatePair = storedNewsTemplatePair(clientId, render);
+  if (!templatePair) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
+  const { actualTemplateStyle, requestedTemplateStyle } = templatePair;
   const figmaTemplate = normalizedFigmaTemplate(
     render.figma_template,
     clientId,
@@ -562,7 +611,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generated_file_path" }, 502);
     }
     const actualTemplateStyle = result.template_style || templateStyle;
-    if (!allowedTemplateStyles.has(actualTemplateStyle)) {
+    const reportedRequestedTemplateStyle = result.requested_template_style ?? templateStyle;
+    if (
+      !allowedTemplateStyles.has(actualTemplateStyle)
+      || !validNewsTemplatePair(
+        clientId,
+        templateStyle,
+        reportedRequestedTemplateStyle,
+        actualTemplateStyle,
+      )
+    ) {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const sourceVisualFile = normalizedSourceVisualFile(result.source_visual_path, clientId);
@@ -663,7 +721,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
             image_url: resolvedSource.imageUrl,
           },
           render: {
-            requested_template_style: result.requested_template_style || templateStyle,
+            requested_template_style: reportedRequestedTemplateStyle,
             template_style: actualTemplateStyle,
             source_image_used: result.source_image_used === true,
             source_visual_file: sourceVisualFile,
@@ -695,7 +753,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         source_visual_file: sourceVisualFile,
         source_image_detected: Boolean(resolvedSource.imageUrl),
         source_image_used: result.source_image_used === true,
-        requested_template_style: result.requested_template_style || templateStyle,
+        requested_template_style: reportedRequestedTemplateStyle,
         template_style: actualTemplateStyle,
         figma_template: figmaTemplate,
         duration_ms: result.duration_ms,

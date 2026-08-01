@@ -147,6 +147,69 @@ test("keeps a base64-embedded cleaned Squid visual below Netlify's 6 MB response
   assert.ok(remainingSvgHeadroomBytes >= 2_000_000);
 });
 
+test("embeds the official Squid world in a classic editable card", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
+  const requested: string[] = [];
+  globalThis.fetch = async input => {
+    requested.push(String(input));
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "content-type": "image/png", "content-length": "3" },
+    });
+  };
+  Object.defineProperty(globalThis, "Netlify", {
+    configurable: true,
+    value: {
+      env: {
+        get(name: string): string | undefined {
+          return name === "STUDIO_ACCESS_TOKEN" ? "editable-studio-access-token" : undefined;
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await editableCardHandler(new Request(
+      "https://console.example/api/editable-card/squid",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("editable-studio-access-token")}`,
+        },
+        body: JSON.stringify({
+          template_style: "classic",
+          spec: {
+            label: "CANTON × SQUID",
+            headline: "Canton, 아직 안 가봤나요?",
+            body_lines: ["Squid로는 쉬워요"],
+          },
+        }),
+      },
+    ), {
+      params: { clientId: "squid" },
+      site: { url: "https://console.example" },
+    } as never);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(requested.sort(), [
+      "https://console.example/assets/brands/squid-form-language-purple.png",
+      "https://console.example/assets/brands/squid-light.png",
+      "https://console.example/assets/brands/squid-squib-bubbles.png",
+      "https://console.example/assets/brands/squid-squib-token-juggle.png",
+    ]);
+    const svg = await response.text();
+    assert.match(svg, /id="Squid-Figma-Daily-News"/);
+    assert.match(svg, /id="Squid-Official-SQUIB"/);
+    assert.match(svg, /data:image\/png;base64,AQID/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNetlify) Object.defineProperty(globalThis, "Netlify", originalNetlify);
+    else Reflect.deleteProperty(globalThis, "Netlify");
+  }
+});
+
 test("rejects a cleaned Squid JPEG whose declared size exceeds the SVG-safe cap", async () => {
   const response = await requestEditableCard(() => new Response(new Uint8Array(), {
     status: 200,

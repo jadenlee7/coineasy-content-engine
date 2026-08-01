@@ -52,7 +52,30 @@ test("omits the original-link line when no source URL is available", () => {
 
   assert.doesNotMatch(copy.telegram, /🔗 원문:/);
   assert.doesNotMatch(copy.x, /🔗 원문 확인:/);
-  assert.match(copy.telegram, /#SquidRouter/);
+  assert.match(copy.telegram, /#Squid #SquidKorea/);
+  assert.doesNotMatch(copy.telegram, /Squid Korea \||자세한 내용과 전체 맥락|▪️/);
+});
+
+test("keeps Squid Telegram copy sparse and topic-specific", () => {
+  const sourceUrl = "https://x.com/squidrouter/status/123";
+  const copy = buildChannelCopy(
+    "squid",
+    {
+      label: "CANTON × SQUID",
+      headline: "Canton, 아직 안 가봤나요?",
+      body_lines: ["Squid로는 쉬워요", "Squid가 지원하는 생태계에 Canton도 있어요"],
+    },
+    "Have you explored @CantonNetwork yet? With Squid, it's easy.",
+    sourceUrl,
+  );
+
+  assert.equal(copy.telegram, [
+    "Canton, 아직 안 가봤나요?",
+    "Squid로는 쉬워요\nSquid가 지원하는 생태계에 Canton도 있어요",
+    `원문 → ${sourceUrl}`,
+    "#Squid #Canton",
+  ].join("\n\n"));
+  assert.doesNotMatch(copy.telegram, /📢|👉|🔗|#Web3|#SquidRouter|#CrossChain/);
 });
 
 test("keeps Squid X copy minimal when the official source is a one-liner", () => {

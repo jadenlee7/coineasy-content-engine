@@ -10,7 +10,7 @@ from core.orchestrator import (
     generate_news_card,
 )
 from core.client_config import get_client_config
-from core.renderers.playwright_renderer import _build_font_head
+from core.renderers.playwright_renderer import _build_font_head, _inject_brand_slots
 from core.sources.source_image import PreparedSourceImage, SourceImageError
 from core.sources.source_text_cleanup import SourceTextCleanupError
 
@@ -76,6 +76,17 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert ".28em" not in override_html
     assert "cdn.jsdelivr.net" not in override_html
 
+    squid_classic = Path("clients/squid/overrides/news/news_title_card.html")
+    assert squid_classic.is_file()
+    classic_html = squid_classic.read_text()
+    assert "#E6CCFC" in classic_html
+    assert "squid_squib_path" in classic_html
+    assert "squid_bubbles_path" in classic_html
+    assert "width: 320px" in classic_html
+    assert "main-card" not in classic_html
+    assert "body-item" not in classic_html
+    assert "size > 64" in classic_html
+
 
 def test_squid_renderer_embeds_local_pretendard_without_a_network_dependency():
     config = get_client_config("squid")
@@ -89,6 +100,18 @@ def test_squid_renderer_embeds_local_pretendard_without_a_network_dependency():
         if "pretendardvariable.css" in template:
             assert "{% if client_id != 'squid' %}" in template
             assert "brand_font_links" in template
+
+
+def test_squid_renderer_injects_reviewed_official_world_assets():
+    slots = _inject_brand_slots({}, get_client_config("squid"), "dark")
+
+    for key in (
+        "logo_light_path",
+        "squid_form_language_path",
+        "squid_squib_path",
+        "squid_bubbles_path",
+    ):
+        assert slots[key].startswith("data:image/png;base64,")
 
 
 def test_detected_source_glyphs_recenter_the_transparent_korean_caption():
@@ -228,6 +251,37 @@ async def test_selected_template_is_used(monkeypatch, tmp_path):
     assert captured["template_path"] == "news/news_signal_card.html"
     assert result.template_style == "signal"
     assert result.png_path.endswith("news_card_signal.png")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_style", ["editorial", "signal"])
+async def test_squid_generic_template_requests_use_the_official_classic(
+    monkeypatch,
+    tmp_path,
+    requested_style,
+):
+    captured = {}
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+        return kwargs["output_path"]
+
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="A long enough official Squid source for a template routing test.",
+        output_dir=tmp_path,
+        mock_mode=True,
+        mock_response=MOCK_SPEC,
+        template_style=requested_style,
+    )
+
+    assert captured["template_path"] == "news/news_title_card.html"
+    assert result.requested_template_style == requested_style
+    assert result.template_style == "classic"
+    assert result.png_path.endswith("news_card_classic.png")
 
 
 @pytest.mark.asyncio

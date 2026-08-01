@@ -71,6 +71,15 @@ const FINANCIAL_PROMISE_TERMS = [
   "확정 수익",
 ];
 
+const SQUID_GENERIC_EDITORIAL_TERMS = [
+  "간편하게 탐색할 수 있습니다",
+  "소식을 전합니다",
+  "소개합니다",
+  "핵심 변화",
+  "최신 소식",
+  "전체 맥락",
+];
+
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -227,13 +236,14 @@ function densityCheck(input: BrandQualityInput): BrandQaCheck {
     const headline = text(input.headline);
     const lines = stringArray(input.bodyLines);
     const totalLength = headline.length + lines.reduce((total, line) => total + line.length, 0);
-    const headlineLimit = input.clientId === "squid" ? 60 : 72;
-    const totalLimit = input.clientId === "squid" ? 170 : 240;
+    const squid = input.clientId === "squid";
+    const headlineLimit = squid ? 28 : 72;
+    const totalLimit = squid ? 70 : 240;
     const valid = Boolean(headline)
       && headline.length <= headlineLimit
       && lines.length >= 1
-      && lines.length <= 3
-      && lines.every((line) => line.length <= 70)
+      && lines.length <= (squid ? 2 : 3)
+      && lines.every((line) => line.length <= (squid ? 23 : 70))
       && totalLength <= totalLimit;
     return valid
       ? pass(
@@ -302,6 +312,32 @@ function densityCheck(input: BrandQualityInput): BrandQaCheck {
     );
 }
 
+function squidArticleVisualDensityCheck(input: BrandQualityInput): BrandQaCheck {
+  const visuals = Array.isArray(input.visuals)
+    ? input.visuals.map(objectValue)
+    : [];
+  const valid = visuals.length === 2 && visuals.every((visual) => {
+    const points = stringArray(visual.points);
+    return text(visual.headline).length >= 1
+      && text(visual.headline).length <= 20
+      && text(visual.caption).length >= 1
+      && text(visual.caption).length <= 50
+      && points.length === 2
+      && points.every((point) => point.length <= 26);
+  });
+  return valid
+    ? pass(
+      "visual_density",
+      "Squid 본문 비주얼 밀도",
+      "본문 비주얼 2개의 제목·설명·근거 문구가 Squid 안전영역 안입니다.",
+    )
+    : review(
+      "visual_density",
+      "Squid 본문 비주얼 밀도",
+      "각 비주얼은 제목 20자, 설명 50자, 26자 이하 포인트 2개로 줄여야 잘림 없이 표시됩니다.",
+    );
+}
+
 function channelLimitCheck(input: BrandQualityInput): BrandQaCheck {
   const channelCopy = objectValue(input.channelCopy);
   const telegram = text(channelCopy.telegram);
@@ -344,6 +380,11 @@ function brandTermsCheck(input: BrandQualityInput, output: string): BrandQaCheck
   if (/\bCoinEasy\b/i.test(proseOutput)) findings.push("공개 문구에 CoinEasy 내부 브랜드명 포함");
   if (input.clientId === "squid" && /\bSquid\s+Router\b/i.test(proseOutput)) {
     findings.push("Squid 공식 표기 대신 Squid Router 사용");
+  }
+  if (input.clientId === "squid") {
+    for (const term of SQUID_GENERIC_EDITORIAL_TERMS) {
+      if (proseOutput.includes(term)) findings.push(`Squid 비권장 표현 '${term}'`);
+    }
   }
   for (const term of GENERIC_HYPE_TERMS) {
     if (proseOutput.includes(term)) findings.push(`과장 표현 '${term}'`);
@@ -420,6 +461,9 @@ export function evaluateBrandQuality(input: BrandQualityInput): BrandQaReport {
     ...logoChecks(input),
     visualIntegrityCheck(input),
     densityCheck(input),
+    ...(input.clientId === "squid" && input.contentKind === "article"
+      ? [squidArticleVisualDensityCheck(input)]
+      : []),
     channelLimitCheck(input),
     brandTermsCheck(input, output),
     sourceMetricsCheck(sourceText, output),

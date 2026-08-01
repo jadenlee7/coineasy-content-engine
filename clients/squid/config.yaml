@@ -111,8 +111,10 @@ llm:
   news_card:
     temperature: 0.2
     tone_guidance: >
-      Approachable and builder-focused. 경어체.
-      Emphasize cross-chain UX and developer simplicity.
+      Approachable, playful, and product-sharp. 짧은 배너 훅은 자연스러운
+      해요체를 허용하고, 원문이 one-liner면 설명문으로 늘리지 않습니다.
+      Emphasize concrete cross-chain actions and developer simplicity without
+      generic publisher language.
     preserve_terms:
       - "Squid"
       - "Axelar"

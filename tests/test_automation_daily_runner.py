@@ -601,6 +601,100 @@ async def test_squid_photo_daily_news_reaches_generation_as_remix():
 
 
 @pytest.mark.asyncio
+async def test_fresh_squid_quote_photo_reaches_daily_news_render_path():
+    image_url = "https://pbs.twimg.com/media/squid-quoted.jpg"
+    post_id = "2082883998829752783"
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    quote = {
+        "id": post_id,
+        "text": "Canton support is now live and easy to explore with Squid.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/SquidRouter/status/{post_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": True,
+        "metrics": {},
+        "media": [{
+            "media_key": "quoted-photo",
+            "type": "photo",
+            "url": image_url,
+            "width": 1080,
+            "height": 1080,
+        }],
+        "source_image_url": image_url,
+        "is_note_tweet": False,
+    }
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[quote]),
+        generation,
+    ).run()
+
+    squid_record = next(
+        item for item in repo.records
+        if item["client_id"] == "squid"
+    )
+    assert squid_record["source_items"][0]["media"] == quote["media"]
+    assert repo.queues[0]["source_image_url"] == image_url
+    assert summary.generated == 1
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["source_image_url"] == image_url
+
+
+@pytest.mark.asyncio
+async def test_fresh_squid_quote_video_preview_reaches_remix_render_path():
+    image_url = (
+        "https://pbs.twimg.com/amplify_video_thumb/"
+        "2079266440268464128/img/qxIE-WTD9Fd60z4C.jpg"
+    )
+    post_id = "2081031728622178334"
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    quote = {
+        "id": post_id,
+        "text": "Have you explored Canton yet? With Squid, it is easy.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/SquidRouter/status/{post_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": True,
+        "metrics": {},
+        "media": [{
+            "media_key": "13_2079266440268464128",
+            "type": "video",
+            "url": image_url,
+            "width": 1080,
+            "height": 1080,
+        }],
+        # XClient preserves video previews in media; source_image_url remains
+        # photo-only for backwards compatibility.
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[quote]),
+        generation,
+    ).run()
+
+    assert repo.queues[0]["source_image_url"] == image_url
+    assert summary.generated == 1
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["source_image_url"] == image_url
+
+
+@pytest.mark.asyncio
 async def test_local_daily_limit_bounds_new_queue_reservations():
     states = {
         client_id: AutomationState(None, False, (pending(client_id),))

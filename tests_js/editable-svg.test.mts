@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEditableSvg, escapeXml, wrapSvgText } from "../netlify/functions/_shared/editable-svg.mts";
+import {
+  buildEditableSvg,
+  effectiveEditableTemplateStyle,
+  escapeXml,
+  wrapSvgText,
+} from "../netlify/functions/_shared/editable-svg.mts";
 import {
   clientScopedSourceVisualFile,
   needsCleanedSquidVisual,
@@ -84,6 +89,75 @@ test("creates a native-layer classic SVG for Figma without foreignObject", () =>
   assert.match(svg, /id="Source-URL"/);
   assert.match(svg, /x=1&amp;y=2/);
   assert.doesNotMatch(svg, /foreignObject|<style/);
+});
+
+test("creates the Figma-aligned Squid classic with official layered assets", () => {
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    label: "CANTON × SQUID",
+    headline: "Canton, 아직 안 가봤나요?",
+    body_lines: ["Squid로는 쉬워요", "Squid가 지원하는 생태계에 Canton도 있어요"],
+  }, {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  });
+
+  assert.match(svg, /id="Squid-Figma-Daily-News"/);
+  assert.match(svg, /fill="#E6CCFC"/);
+  assert.match(svg, /id="Squid-Official-Bubbles"/);
+  assert.match(svg, /id="Squid-Official-SQUIB"/);
+  assert.match(svg, /id="Lime-Divider"[^>]+width="320"[^>]+height="8"/);
+  assert.match(svg, />Canton, 아직 안<\/text>/);
+  assert.match(svg, />가봤나요\?<\/text>/);
+  assert.match(svg, /Squid로는 쉬워요/);
+  assert.match(svg, /COINEASY \/ KOREA/);
+  assert.doesNotMatch(svg, /Main-Card-Background|Body-Item-1-Background|Bullet/);
+});
+
+test("fails closed when Squid classic official assets are incomplete", () => {
+  assert.throws(
+    () => buildEditableSvg("squid", "classic", SPEC, { logoLight: "data:image/png;base64,bG9nbw==" }),
+    /official_squid_classic_assets_required/,
+  );
+});
+
+test("fits an unbroken Korean Squid headline inside the classic editable safe width", () => {
+  const headline = "한국사용자에게정확하고자연스럽게전달하는업데이트입니다";
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    headline,
+    body_lines: ["공식 원문에서 확인한 내용이에요"],
+  }, {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  });
+
+  const lines = [...svg.matchAll(/id="Headline-Line-[0-9]+"[^>]*>([^<]*)<\/text>/g)]
+    .map(match => match[1]);
+  assert.deepEqual(lines, ["한국사용자에게정확하고자연스", "럽게전달하는업데이트입니다"]);
+  assert.doesNotMatch(lines.join(""), /…/);
+  assert.match(svg, /font-size="64"/);
+});
+
+test("canonicalizes generic Squid editorial and signal requests to the official classic", () => {
+  const assets = {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  };
+  for (const style of ["editorial", "signal"] as const) {
+    assert.equal(effectiveEditableTemplateStyle("squid", style), "classic");
+    const svg = buildEditableSvg("squid", style, SPEC, assets);
+    assert.match(svg, /Localized News Card · Figma Editable · classic/);
+    assert.match(svg, /id="Squid-Figma-Daily-News"/);
+    assert.doesNotMatch(svg, /Main-Card-Background|Editorial-Grid|Brand-Rail|Body-Item-1-Background/);
+  }
+  assert.equal(effectiveEditableTemplateStyle("yellow", "editorial"), "editorial");
 });
 
 test("creates a Squid official-creative translation layer without extra card chrome", () => {

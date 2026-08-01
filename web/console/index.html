@@ -176,12 +176,13 @@
     }
     .template-option:hover { border-color: var(--outline); transform: translate(-1px, -1px); }
     .template-option.active { border-color: var(--outline); background: var(--surface-soft); box-shadow: inset 0 -4px 0 var(--accent), 3px 3px 0 rgba(35,35,35,.14); }
+    .template-option:disabled { cursor: not-allowed; opacity: .42; transform: none; box-shadow: none; }
     .template-option strong { display: block; font-size: 11px; }
     .template-option small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.35; }
     .template-swatch { display: flex; gap: 3px; height: 12px; margin-bottom: 8px; }
     .template-swatch i { display: block; border-radius: 3px; background: #20232a; }
     .template-option[data-template="remix"] .template-swatch i:first-child { width: 64%; background: linear-gradient(135deg, #152832, #5b3c7d 52%, #d3d8dc); }
-    .template-option[data-template="remix"] .template-swatch i:last-child { flex: 1; background: #e6fa36; }
+    .template-option[data-template="remix"] .template-swatch i:last-child { flex: 1; background: #efff5a; }
     .template-option[data-template="classic"] .template-swatch i:first-child { width: 26%; background: #f1f2f4; }
     .template-option[data-template="classic"] .template-swatch i:last-child { flex: 1; }
     .template-option[data-template="editorial"] .template-swatch i:first-child { flex: 1; }
@@ -271,7 +272,7 @@
       box-shadow: 0 18px 50px rgba(20,30,45,.18);
     }
     .preview-shell[data-client="origintrail"] { --brand-primary:#6344df; --brand-secondary:#6344df; --brand-bg:#0c2246; --brand-ink:#17171a; --brand-font:"Gmarket Sans", "Pretendard Variable", sans-serif; }
-    .preview-shell[data-client="squid"] { --brand-primary:#e6fa36; --brand-secondary:#bc8ee4; --brand-bg:#1a0e2e; --brand-ink:#000; --brand-font:"Bagoss Condensed", "Pretendard Variable", sans-serif; }
+    .preview-shell[data-client="squid"] { --brand-primary:#efff5a; --brand-secondary:#e6ccfc; --brand-bg:#e6ccfc; --brand-ink:#000; --brand-font:"Bagoss Condensed", "Pretendard Variable", sans-serif; }
     .preview-shell[data-client="babylon"] { --brand-primary:#ce6533; --brand-secondary:#f7931a; --brand-bg:#12495e; --brand-ink:#12495e; --brand-font:Inter, "Pretendard Variable", sans-serif; }
     .preview-shell[data-output="article-banner"] {
       width: min(100%, 1000px);
@@ -291,6 +292,17 @@
     .mock-line { display: flex; align-items: flex-start; gap: 11px; padding: 2.1% 2.5%; border-radius: 11px; color: var(--brand-ink); background: #f2f2f2; font-size: clamp(9px, 1.5vw, 17px); line-height: 1.45; font-weight: 650; }
     .mock-line::before { content: ""; flex: 0 0 auto; width: 7px; height: 7px; margin-top: .55em; border-radius: 50%; background: var(--brand-secondary); }
     .mock-foot { display: flex; justify-content: space-between; gap: 20px; margin-top: 4%; padding-top: 2.8%; border-top: 1px solid #e5e5e5; color: #858b94; font-size: clamp(8px, 1.2vw, 14px); }
+
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-card { padding: 4.5%; background: url("assets/brands/squid-squib-token-juggle.png") right -8% top -10% / 68% no-repeat, radial-gradient(circle at 36% 94%, rgba(255,255,255,.76), rgba(255,255,255,0) 48%), #e6ccfc; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-top { min-height: 8%; justify-content: flex-start; margin: 0; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-logo { width: 14%; object-position: left center; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-inner { padding: 31% 1% 0; background: transparent; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-label { margin-bottom: 3%; padding: 0; color: #1c0f3d; background: transparent; letter-spacing: 1.2px; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-headline { max-width: 94%; margin-bottom: 8%; font-size: clamp(30px, 6.8vw, 82px); line-height: 1.04; font-weight: 900; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-lines { gap: 6px; padding-top: 3%; border-top: 6px solid #efff5a; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-line { padding: 0; color: #1c0f3d; background: transparent; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-line::before { display: none; }
+    .preview-shell[data-client="squid"][data-template="classic"] .mock-foot { color: rgba(28,15,61,.62); border-top: 0; }
 
     .preview-shell[data-template="editorial"] .mock-card { background: var(--brand-bg); padding: 5.8%; }
     .preview-shell[data-template="editorial"] .mock-top { margin-bottom: 6%; padding-bottom: 3%; border-bottom: 1px solid rgba(255,255,255,.24); }
@@ -686,7 +698,7 @@
               <img class="client-logo" src="assets/brands/origintrail-dark.png" alt="OriginTrail">
               <span><strong>OriginTrail</strong><small>Gmarket Sans · #6344DF</small></span>
             </button>
-            <button class="client" type="button" data-client="squid" style="--client-color:#e6fa36;--client-bg:#1a0e2e">
+            <button class="client" type="button" data-client="squid" style="--client-color:#efff5a;--client-bg:#1a0e2e">
               <img class="client-logo" src="assets/brands/squid-dark.png" alt="Squid">
               <span><strong>Squid</strong><small>Lime + Lavender</small></span>
             </button>
@@ -895,9 +907,9 @@
         squid: {
           name: "Squid",
           logo: "assets/brands/squid-dark.png",
-          label: "마일스톤",
-          headline: "스퀴드, 크로스체인 토큰 전환 거래량 30억 달러 돌파",
-          lines: ["Axelar 기반 크로스체인 스왑으로 60개 이상 체인 지원", "브릿지·스왑·스테이킹을 단일 트랜잭션으로 처리", "DEX 어그리게이터 연동으로 최적 경로 자동 선택"],
+          label: "CANTON × SQUID",
+          headline: "Canton, 아직 안 가봤나요?",
+          lines: ["Squid로는 쉬워요", "Squid가 지원하는 생태계에 Canton도 있어요"],
           source: "x.com/squidrouter",
           sample: "Squid has surpassed $3 billion in cross-chain transaction volume while expanding one-click swaps, staking and liquidity routing across more than 60 chains."
         },
@@ -945,6 +957,7 @@
         }
       };
       const TUTORIAL_CLIENTS = new Set(["yellow", "squid"]);
+      const SQUID_NEWS_TEMPLATES = new Set(["remix", "classic"]);
 
       const CONTENT_KIND_LABEL = { daily_news: "데일리 뉴스", article: "아티클", tutorial: "튜토리얼" };
       const CONTENT_KIND_MARK = { daily_news: "N", article: "A", tutorial: "T" };
@@ -1520,9 +1533,12 @@
         // not durable yet, so only source-independent templates are rebuildable
         // from the library. Remix remains available immediately after generation.
         const durableStyles = new Set(["classic", "editorial", "signal"]);
-        const templateStyle = typeof render.template_style === "string" && durableStyles.has(render.template_style)
+        const storedTemplateStyle = typeof render.template_style === "string" && durableStyles.has(render.template_style)
           ? render.template_style
           : "";
+        const templateStyle = detail.client_id === "squid" && ["editorial", "signal"].includes(storedTemplateStyle)
+          ? "classic"
+          : storedTemplateStyle;
         if (!templateStyle || !Object.keys(spec).length) return null;
         return {
           clientId: detail.client_id,
@@ -2982,6 +2998,22 @@
         clients.querySelectorAll(".client").forEach(item => item.classList.toggle("active", item.dataset.client === clientId));
       }
 
+      function syncTemplateOptions() {
+        if (state.client === "squid" && !SQUID_NEWS_TEMPLATES.has(state.template)) {
+          state.template = "classic";
+        }
+        templates.querySelectorAll(".template-option").forEach(item => {
+          const disabled = state.client === "squid" && !SQUID_NEWS_TEMPLATES.has(item.dataset.template);
+          item.disabled = disabled;
+          item.setAttribute("aria-disabled", String(disabled));
+          item.classList.toggle("active", item.dataset.template === state.template);
+          if (disabled) item.title = "Squid는 공식 브랜드 비주얼 또는 클래식 구도만 사용합니다.";
+          else item.removeAttribute("title");
+        });
+        const templateHint = templateField.querySelector(".field-label .optional");
+        if (templateHint) templateHint.textContent = state.client === "squid" ? "브랜드 비주얼·클래식" : "4가지";
+      }
+
       function renderMode() {
         const mode = MODE[state.mode];
         panelTitle.textContent = mode.title;
@@ -3030,10 +3062,13 @@
       }
 
       function renderBrand() {
+        syncTemplateOptions();
         const brand = BRAND[state.client];
         shell.dataset.client = state.client;
         shell.dataset.template = state.template;
-        previewLogo.src = brand.logo;
+        previewLogo.src = state.client === "squid" && state.template === "classic"
+          ? "assets/brands/squid-light.png"
+          : brand.logo;
         previewLogo.alt = `${brand.name} logo`;
         previewLabel.textContent = brand.label;
         previewHeadline.textContent = brand.headline;
@@ -3392,11 +3427,11 @@
       templates.addEventListener("click", event => {
         if (generate.disabled) return;
         const button = event.target.closest(".template-option");
-        if (!button) return;
+        if (!button || button.disabled) return;
         if (button.dataset.template === state.template) return;
         if (!confirmResultReset()) return;
         state.template = button.dataset.template;
-        templates.querySelectorAll(".template-option").forEach(item => item.classList.toggle("active", item === button));
+        syncTemplateOptions();
         renderBrand();
         setStatus(`${TEMPLATE[state.template]} 배너 템플릿이 선택되었습니다.`);
       });

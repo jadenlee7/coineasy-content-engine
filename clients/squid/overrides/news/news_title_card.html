@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Squid Korea · Daily News</title>
+{{ brand_font_links | default('') | safe }}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --squid-lavender: #E6CCFC;
+    --squid-lime: #EFFF5A;
+    --squid-ink: #000000;
+    --squid-purple: #1C0F3D;
+    --squid-muted: rgba(61, 46, 92, .84);
+    --body-font: 'Pretendard Variable', Pretendard, sans-serif;
+    --display-font: {% if font_display %}'{{ font_display }}', {% endif %}var(--body-font);
+  }
+
+  html, body {
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+    font-family: var(--body-font);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .canvas {
+    position: relative;
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+    color: var(--squid-ink);
+    background:
+      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
+      var(--squid-lavender);
+  }
+
+  .bubbles {
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    width: 420px;
+    height: 420px;
+    object-fit: contain;
+    opacity: .46;
+  }
+
+  .squib {
+    position: absolute;
+    right: -70px;
+    top: -116px;
+    width: 720px;
+    height: 720px;
+    object-fit: contain;
+    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+  }
+
+  .brand-logo {
+    position: absolute;
+    left: 60px;
+    top: 44px;
+    width: 148px;
+    height: 59px;
+    object-fit: contain;
+    object-position: left center;
+  }
+
+  .story {
+    position: absolute;
+    left: 60px;
+    right: 40px;
+    top: 438px;
+  }
+
+  .eyebrow {
+    min-height: 29px;
+    color: rgba(28, 15, 61, .74);
+    font-family: Inter, var(--body-font);
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+  }
+
+  .headline {
+    width: 980px;
+    height: 204px;
+    margin-top: 22px;
+    overflow: hidden;
+    color: var(--squid-ink);
+    font-family: var(--display-font);
+    font-size: 96px;
+    font-weight: 900;
+    line-height: 1.02;
+    letter-spacing: -3.2px;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .support {
+    position: absolute;
+    left: 60px;
+    right: 40px;
+    top: 770px;
+  }
+
+  .rule {
+    width: 320px;
+    height: 8px;
+    margin-bottom: 24px;
+    border-radius: 4px;
+    background: var(--squid-lime);
+  }
+
+  .body-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    width: 930px;
+    max-height: 96px;
+    overflow: hidden;
+  }
+
+  .body-line {
+    color: var(--squid-purple);
+    font-size: 32px;
+    font-weight: 560;
+    line-height: 1.36;
+    letter-spacing: -1px;
+    word-break: keep-all;
+  }
+
+  .footer {
+    position: absolute;
+    left: 60px;
+    right: 40px;
+    bottom: 38px;
+    display: flex;
+    align-items: center;
+    gap: 34px;
+    min-width: 0;
+  }
+
+  .coineasy {
+    flex: 0 0 auto;
+    color: rgba(28, 15, 61, .56);
+    font-family: Inter, var(--body-font);
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: 1.2px;
+  }
+
+  .source {
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(28, 15, 61, .62);
+    font-family: Inter, var(--body-font);
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: .2px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .date-credit { margin-left: auto; }
+</style>
+</head>
+<body>
+<main class="canvas" data-client="squid">
+  <img src="{{ squid_bubbles_path }}" class="bubbles" alt=""/>
+  <img src="{{ squid_squib_path }}" class="squib" alt=""/>
+  <img src="{{ logo_light_path }}" class="brand-logo" alt="Squid"/>
+
+  <section class="story">
+    {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if headline %}<h1 class="headline">{{ headline | safe }}</h1>{% endif %}
+  </section>
+
+  <section class="support">
+    <div class="rule"></div>
+    {% if body_lines %}
+    <div class="body-lines">
+      {% for line in body_lines[:2] %}<div class="body-line">{{ line | safe }}</div>{% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <footer class="footer">
+    <div class="coineasy">COINEASY / KOREA</div>
+    <div class="source" data-source-url>{{ source_url | default('') }}</div>
+    <div class="source date-credit">{{ date | default('') }}</div>
+  </footer>
+</main>
+<script>
+  const headline = document.querySelector('.headline');
+  if (headline) {
+    let size = 96;
+    while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > 64) {
+      size -= 2;
+      headline.style.fontSize = `${size}px`;
+      headline.style.letterSpacing = `${Math.max(-3.2, -size * .034)}px`;
+    }
+  }
+
+  const body = document.querySelector('.body-lines');
+  if (body) {
+    let size = 32;
+    while (body.scrollHeight > body.clientHeight && size > 23) {
+      size -= 1;
+      for (const line of body.children) line.style.fontSize = `${size}px`;
+    }
+  }
+
+  const source = document.querySelector('[data-source-url]');
+  if (source) {
+    try {
+      const url = new URL(source.textContent.trim());
+      const path = url.pathname.split('/').filter(Boolean);
+      const account = path[0] && path[0] !== 'status' ? ` / ${path[0].toUpperCase()}` : '';
+      source.textContent = `${url.hostname.replace(/^www\./, '').toUpperCase()}${account}`;
+    } catch {
+      source.textContent = 'OFFICIAL SOURCE';
+    }
+  }
+</script>
+</body>
+</html>
