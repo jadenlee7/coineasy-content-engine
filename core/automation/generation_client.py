@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from core.automation.models import StyleReference
+from core.sources.x_media_url import normalize_x_media_url
 
 
 _UUID_PATTERN = re.compile(
@@ -15,8 +16,46 @@ _UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,119}$")
+_SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _X_STATUS_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$")
 _ALLOWED_PRODUCTION_HOST = "coineasy-newscard.netlify.app"
+_GENERATION_CONTRACT = "double-fact-check@1"
+_TUTORIAL_CLAIMS_CONTRACT = "lessons@1"
+
+
+def _has_valid_fact_check(value: object, content_kind: str) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    checks = value.get("checks")
+    if not isinstance(checks, list) or len(checks) != 2:
+        return False
+    expected_ids = ("source_evidence", "output_claims")
+    statuses: list[str] = []
+    for check, expected_id in zip(checks, expected_ids):
+        if (
+            not isinstance(check, Mapping)
+            or check.get("id") != expected_id
+            or check.get("status") not in {"pass", "review"}
+            or not isinstance(check.get("label"), str)
+            or not check["label"].strip()
+            or not isinstance(check.get("detail"), str)
+            or not check["detail"].strip()
+            or not isinstance(check.get("metrics"), Mapping)
+        ):
+            return False
+        statuses.append(str(check["status"]))
+    aggregate = "review" if "review" in statuses else "pass"
+    return (
+        value.get("schema_version") == "1.0"
+        and value.get("policy_version") == "double-fact-check@1"
+        and value.get("content_kind") == content_kind
+        and value.get("status") == aggregate
+        and value.get("human_review_required") is True
+        and isinstance(value.get("input_sha256"), str)
+        and _SHA256_PATTERN.fullmatch(value["input_sha256"]) is not None
+        and isinstance(value.get("output_sha256"), str)
+        and _SHA256_PATTERN.fullmatch(value["output_sha256"]) is not None
+    )
 
 
 class GenerationRequestError(RuntimeError):
@@ -91,6 +130,39 @@ class StudioGenerationClient:
         self.timeout_seconds = timeout_seconds
         self.transport = transport
 
+    async def _require_generation_contract(self, client: httpx.AsyncClient) -> None:
+        """Preflight before any mutating request to prevent staggered-deploy poisoning."""
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/studio-capabilities",
+                headers={"X-Studio-Automation-Key": self.automation_token},
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise GenerationRequestError(
+                "studio_generation_contract_unavailable",
+                retryable=True,
+            ) from exc
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise GenerationRequestError(
+                "studio_generation_contract_unavailable",
+                retryable=True,
+            ) from exc
+        if (
+            response.status_code < 200
+            or response.status_code >= 300
+            or not isinstance(body, Mapping)
+            or body.get("schema_version") != "1.0"
+            or body.get("generation_contract") != _GENERATION_CONTRACT
+            or body.get("tutorial_claims_contract") != _TUTORIAL_CLAIMS_CONTRACT
+            or body.get("generated_content_kinds") != ["daily_news", "article", "tutorial"]
+        ):
+            raise GenerationRequestError(
+                "studio_generation_contract_unavailable",
+                retryable=True,
+            )
+
     async def generate(
         self,
         *,
@@ -110,6 +182,10 @@ class StudioGenerationClient:
             raise ValueError("unsupported automation client")
         source_content = source_content.strip()
         source_url = _validated_source_url(source_url)
+        if source_image_url and template_style == "remix":
+            source_image_url = normalize_x_media_url(source_image_url)
+            if not source_image_url:
+                raise ValueError("automation source_image_url is invalid")
         if len(style_references) > 3:
             raise ValueError("style_references must contain at most 3 items")
         if (style_references or style_reference_pack_hash) and not re.fullmatch(
@@ -182,6 +258,7 @@ class StudioGenerationClient:
                 follow_redirects=False,
                 transport=self.transport,
             ) as client:
+                await self._require_generation_contract(client)
                 response = await client.post(
                     f"{self.base_url}{route}",
                     headers={
@@ -223,8 +300,31 @@ class StudioGenerationClient:
             or body.get("storage_backend") != "supabase"
         ):
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
+        if not _has_valid_fact_check(body.get("fact_check"), content_kind):
+            # During a staggered deploy an older Netlify boundary may persist a
+            # version without the mandatory report. Keep the automation job
+            # retryable and never mark that version completed/approvable.
+            raise GenerationRequestError("studio_generation_invalid_response", retryable=True)
         if content_kind == "daily_news" and len(raw_asset_ids) != 1:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
+        if (
+            content_kind == "daily_news"
+            and client_id == "squid"
+            and template_style == "remix"
+            and (
+                not source_image_url
+                or body.get("requested_template_style") != "remix"
+                or body.get("template_style") != "remix"
+                or body.get("source_image_used") is not True
+                or body.get("source_image_url") != source_image_url
+                or body.get("source_media_status") != "present"
+                or not isinstance(body.get("source_image_sha256"), str)
+                or not _SHA256_PATTERN.fullmatch(body["source_image_sha256"])
+            )
+        ):
+            # A staggered Netlify/Railway rollout can briefly omit the proof.
+            # Keep the durable job retryable; never complete it without proof.
+            raise GenerationRequestError("studio_generation_invalid_response", retryable=True)
         if content_kind == "article" and raw_asset_ids:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         if content_kind == "tutorial" and not 1 <= len(raw_asset_ids) <= 12:

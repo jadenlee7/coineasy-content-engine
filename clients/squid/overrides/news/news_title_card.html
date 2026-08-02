@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Squid · Korea GTM</title>
+{{ brand_font_links | default('') | safe }}
+{% set requested_family = creative_family | default('legacy', true) %}
+{% set family = requested_family if requested_family in ['editorial_big_type', 'milestone_metric', 'status_progress', 'product_proof', 'worldbuilding'] else 'legacy' %}
+{% set variant = family %}
+{% set frame_word = 'UPDATE' %}
+{% if family == 'milestone_metric' %}{% set frame_word = 'MILESTONE' %}{% endif %}
+{% if family == 'status_progress' %}{% set frame_word = 'STATUS' %}{% endif %}
+{% if family == 'product_proof' %}{% set frame_word = 'ROUTE' %}{% endif %}
+{% if family == 'worldbuilding' %}{% set frame_word = 'WORLD' %}{% endif %}
+{% if family == 'worldbuilding' %}{{ squid_worldbuilding_requires_official_source_media() }}{% endif %}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --squid-lavender: #BC8EE4;
+    --squid-lavender-soft: #E6CCFC;
+    --squid-lime: #E6FA36;
+    --squid-ink: #000000;
+    --squid-purple: #1C0F3D;
+    --squid-paper: #F8F5FA;
+    --squid-stage-paper: #E8E6EA;
+    --body-font: 'Pretendard Variable', Pretendard, sans-serif;
+    --display-font: {% if font_display %}'{{ font_display }}', {% endif %}var(--body-font);
+  }
+
+  html, body {
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+    font-family: var(--body-font);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .canvas {
+    position: relative;
+    isolation: isolate;
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+    color: var(--squid-ink);
+    background: var(--squid-lavender);
+  }
+
+  .canvas::before,
+  .canvas::after {
+    position: absolute;
+    z-index: -2;
+    display: block;
+    content: '';
+    pointer-events: none;
+  }
+
+  .brand-logo {
+    position: absolute;
+    z-index: 8;
+    left: 64px;
+    top: 52px;
+    width: 132px;
+    height: 74px;
+    object-fit: contain;
+    object-position: left center;
+  }
+
+  .brand-logo--dark { display: none; }
+
+  .bubbles,
+  .squib,
+  .form-language {
+    position: absolute;
+    z-index: -1;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .story,
+  .support,
+  .footer { position: absolute; z-index: 4; }
+
+  .eyebrow {
+    color: rgba(28, 15, 61, .72);
+    font-family: Inter, var(--body-font);
+    font-size: 21px;
+    font-weight: 850;
+    line-height: 1.25;
+    letter-spacing: 1.7px;
+    text-transform: uppercase;
+  }
+
+  .headline {
+    overflow: hidden;
+    color: var(--squid-ink);
+    font-family: var(--display-font);
+    font-weight: 900;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+  }
+
+  .rule {
+    width: 320px;
+    height: 9px;
+    border-radius: 999px;
+    background: var(--squid-lime);
+  }
+
+  .body-lines {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .body-line {
+    color: var(--squid-purple);
+    font-weight: 570;
+    word-break: keep-all;
+  }
+
+  .footer {
+    left: 64px;
+    right: 64px;
+    bottom: 42px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    min-width: 0;
+  }
+
+  .source {
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(28, 15, 61, .58);
+    font-family: Inter, var(--body-font);
+    font-size: 14px;
+    font-weight: 720;
+    letter-spacing: .45px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .date-credit { margin-left: auto; }
+
+  .canvas:not(.canvas--legacy) .date-credit {
+    margin-left: 4px;
+  }
+
+  /* Legacy replay: retained for stored specs that predate creative_family. */
+  .canvas--legacy {
+    background:
+      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
+      var(--squid-lavender-soft);
+  }
+
+  .canvas--legacy .bubbles {
+    right: 8px;
+    top: 8px;
+    width: 420px;
+    height: 420px;
+    opacity: .46;
+  }
+
+  .canvas--legacy .squib {
+    right: -70px;
+    top: -116px;
+    width: 720px;
+    height: 720px;
+    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+  }
+
+  .canvas--legacy .form-language { display: none; }
+
+  .canvas--legacy .story {
+    left: 60px;
+    right: 40px;
+    top: 438px;
+  }
+
+  .canvas--legacy .headline {
+    width: 980px;
+    height: 204px;
+    margin-top: 22px;
+    font-size: 96px;
+    line-height: 1.02;
+    letter-spacing: -3.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas--legacy .support {
+    left: 60px;
+    right: 40px;
+    top: 770px;
+  }
+
+  .canvas--legacy .rule { margin-bottom: 24px; }
+
+  .canvas--legacy .body-lines {
+    gap: 7px;
+    width: 930px;
+    max-height: 96px;
+  }
+
+  .canvas--legacy .body-line {
+    font-size: 32px;
+    line-height: 1.36;
+    letter-spacing: -1px;
+  }
+
+  /*
+   * Generated Korea stage: a square derivative of the reviewed 1920×1080
+   * Squid Korea Figma family (2910:2690 and its information-card variants).
+   * The content-specific warped Figma lettering is never reused. Generic frame
+   * words carry only the render family while the source-grounded Korean copy
+   * stays readable inside the white oval.
+   */
+  .stage-oval,
+  .stage-word { display: none; }
+
+  .canvas:not(.canvas--legacy) {
+    background: var(--squid-stage-paper);
+  }
+
+  .canvas:not(.canvas--legacy)::before {
+    z-index: 1;
+    left: 48px;
+    top: 292px;
+    width: 984px;
+    height: 520px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .97);
+    box-shadow: 0 0 42px 24px rgba(188, 142, 228, .82);
+  }
+
+  .canvas:not(.canvas--legacy)::after {
+    z-index: 0;
+    inset: 0;
+    background:
+      radial-gradient(circle at 50% 43%, rgba(255,255,255,.72) 0 24%, rgba(255,255,255,0) 53%),
+      radial-gradient(circle at 50% 50%, rgba(188,142,228,.68) 0 31%, rgba(188,142,228,0) 67%);
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word {
+    position: absolute;
+    z-index: 1;
+    display: block;
+    overflow: hidden;
+    color: #000;
+    font-family: var(--display-font);
+    font-weight: 900;
+    line-height: .78;
+    letter-spacing: -8px;
+    text-align: center;
+    text-transform: uppercase;
+    white-space: nowrap;
+    filter: drop-shadow(0 10px 9px rgba(188, 142, 228, .48));
+    transform-origin: 50% 50%;
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word--top {
+    left: 206px;
+    top: 66px;
+    width: 920px;
+    height: 210px;
+    font-size: 182px;
+    transform: rotate(-3deg) scaleX(1.48);
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word--bottom {
+    left: -34px;
+    bottom: -82px;
+    width: 1148px;
+    height: 205px;
+    font-size: 176px;
+    transform: rotate(2deg) scaleX(1.68);
+  }
+
+  .canvas--milestone_metric .stage-word--bottom { transform: rotate(2deg) scaleX(1.13); }
+  .canvas--product_proof .stage-word--bottom { transform: rotate(2deg) scaleX(2); }
+
+  .canvas:not(.canvas--legacy) .brand-logo {
+    left: 44px;
+    top: 24px;
+    width: 148px;
+    height: 83px;
+  }
+
+  .canvas:not(.canvas--legacy) .brand-logo--dark { display: none; }
+
+  .canvas:not(.canvas--legacy) .form-language {
+    z-index: 0;
+    left: -352px;
+    top: -314px;
+    width: 1784px;
+    height: 1784px;
+    opacity: .84;
+    transform: rotate(82deg);
+  }
+
+  .canvas:not(.canvas--legacy) .bubbles {
+    z-index: 3;
+    right: -58px;
+    top: 130px;
+    width: 430px;
+    height: 430px;
+    opacity: .72;
+  }
+
+  .canvas:not(.canvas--legacy) .squib {
+    z-index: 3;
+    right: -34px;
+    top: 292px;
+    width: 398px;
+    height: 398px;
+    filter: drop-shadow(0 20px 26px rgba(87, 63, 111, .17));
+    transform: none;
+  }
+
+  .canvas:not(.canvas--legacy) .story {
+    left: 90px;
+    top: 354px;
+    width: 670px;
+    text-align: center;
+  }
+
+  .canvas:not(.canvas--legacy) .eyebrow {
+    color: rgba(0, 0, 0, .62);
+    font-size: 19px;
+    font-weight: 760;
+    letter-spacing: 1.1px;
+  }
+
+  .canvas:not(.canvas--legacy) .headline {
+    width: 670px;
+    height: 190px;
+    margin-top: 18px;
+    color: #000;
+    font-family: var(--body-font);
+    font-size: 80px;
+    font-weight: 650;
+    line-height: 1.08;
+    letter-spacing: -3.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas:not(.canvas--legacy) .support {
+    left: 90px;
+    top: 620px;
+    width: 670px;
+    text-align: center;
+  }
+
+  .canvas:not(.canvas--legacy) .rule {
+    width: 132px;
+    height: 8px;
+    margin: 0 auto 18px;
+    background: var(--squid-lime);
+  }
+
+  .canvas:not(.canvas--legacy) .body-lines {
+    gap: 4px;
+    width: 670px;
+    max-height: 74px;
+  }
+
+  .canvas:not(.canvas--legacy) .body-line {
+    color: rgba(0, 0, 0, .72);
+    font-size: 24px;
+    font-weight: 560;
+    line-height: 1.38;
+    letter-spacing: -.55px;
+  }
+
+  .canvas:not(.canvas--legacy) .footer {
+    left: 96px;
+    right: 324px;
+    bottom: 270px;
+    z-index: 5;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .canvas:not(.canvas--legacy) .source {
+    color: rgba(0, 0, 0, .46);
+    font-size: 12px;
+    font-weight: 680;
+    letter-spacing: .35px;
+  }
+
+  .canvas:not(.canvas--legacy) .date-credit { margin-left: 0; }
+
+  .metric {
+    overflow: hidden;
+    color: #000;
+    font-family: var(--display-font);
+    font-size: 166px;
+    font-weight: 900;
+    line-height: .83;
+    letter-spacing: -7px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .canvas--milestone_metric.has-metric .story { top: 344px; }
+
+  .canvas--milestone_metric.has-metric .headline {
+    height: 74px;
+    margin-top: 18px;
+    font-size: 52px;
+    font-weight: 580;
+    line-height: 1.1;
+    letter-spacing: -2px;
+    -webkit-line-clamp: 1;
+  }
+
+  .canvas--milestone_metric.has-metric .support { top: 633px; }
+
+</style>
+</head>
+<body>
+<main class="canvas canvas--{{ variant }}{% if visual_metric | default('', true) and variant == 'milestone_metric' %} has-metric{% endif %}" data-client="squid" data-creative-family="{{ family }}" data-render-variant="{{ variant }}">
+  <img src="{{ squid_bubbles_path }}" class="bubbles" alt=""/>
+  <img src="{{ squid_squib_path }}" class="squib" alt=""/>
+  <img src="{{ squid_form_language_path }}" class="form-language" alt=""/>
+  <img src="{{ logo_light_path }}" class="brand-logo brand-logo--light" alt="Squid"/>
+  <img src="{{ logo_dark_path }}" class="brand-logo brand-logo--dark" alt="Squid"/>
+  <div class="stage-word stage-word--top" aria-hidden="true">SQUID</div>
+  <div class="stage-word stage-word--bottom" aria-hidden="true">{{ frame_word }}</div>
+
+  <section class="story">
+    {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if visual_metric | default('', true) and variant == 'milestone_metric' %}<div class="metric">{{ visual_metric }}</div>{% endif %}
+    {% if headline %}<h1 class="headline">{{ headline | safe }}</h1>{% endif %}
+  </section>
+
+  <section class="support">
+    <div class="rule"></div>
+    {% if body_lines %}
+    <div class="body-lines">
+      {% for line in body_lines[:2] %}<div class="body-line">{{ line | safe }}</div>{% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <footer class="footer">
+    {% if source_url %}<div class="source" data-source-url>{{ source_url }}</div>{% endif %}
+    {% if date %}<div class="source date-credit">{{ date }}</div>{% endif %}
+  </footer>
+</main>
+<script>
+  const canvas = document.querySelector('.canvas');
+  const variant = canvas?.dataset.renderVariant || 'legacy';
+  const headline = document.querySelector('.headline');
+  if (headline) {
+    const initialSizes = {
+      editorial_big_type: 80,
+      milestone_metric: 80,
+      status_progress: 78,
+      product_proof: 76,
+      legacy: 96,
+    };
+    const minimumSizes = {
+      editorial_big_type: 54,
+      milestone_metric: 50,
+      status_progress: 52,
+      product_proof: 52,
+      legacy: 64,
+    };
+    let size = variant === 'milestone_metric' && canvas?.classList.contains('has-metric')
+      ? 52
+      : (initialSizes[variant] || 80);
+    const minimum = minimumSizes[variant] || 64;
+    while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > minimum) {
+      size -= 2;
+      headline.style.fontSize = `${size}px`;
+      headline.style.letterSpacing = variant === 'legacy'
+        ? `${Math.max(-6.5, -size * .042)}px`
+        : `${Math.max(-4, -size * .04)}px`;
+    }
+  }
+
+  const body = document.querySelector('.body-lines');
+  if (body) {
+    let size = variant === 'legacy' ? 29 : 24;
+    const minimum = variant === 'legacy' ? 22 : 19;
+    while (body.scrollHeight > body.clientHeight && size > minimum) {
+      size -= 1;
+      for (const line of body.children) line.style.fontSize = `${size}px`;
+    }
+  }
+
+  const source = document.querySelector('[data-source-url]');
+  if (source) {
+    try {
+      const url = new URL(source.textContent.trim());
+      const path = url.pathname.split('/').filter(Boolean);
+      const account = path[0] && path[0] !== 'status' ? ` / ${path[0].toUpperCase()}` : '';
+      source.textContent = `${url.hostname.replace(/^www\./, '').toUpperCase()}${account}`;
+    } catch {
+      source.textContent = 'OFFICIAL SOURCE';
+    }
+  }
+</script>
+</body>
+</html>

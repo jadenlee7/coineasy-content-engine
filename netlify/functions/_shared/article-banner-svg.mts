@@ -1,5 +1,6 @@
 import {
   escapeXml,
+  fitSvgText,
   wrapSvgText,
   type EditableClientId,
 } from "./editable-svg.mts";
@@ -64,7 +65,7 @@ const ARTICLE_BANNER_BRANDS: Record<EditableClientId, ArticleBannerBrand> = {
   squid: {
     name: "Squid",
     primary: "#E6FA36",
-    accent: "#BC8EE4",
+    accent: "#E6CCFC",
     background: "#1A0E2E",
     surface: "#2E1B48",
     displayFont: "Bagoss Condensed",
@@ -240,6 +241,18 @@ function sharedDefinitions(brand: ArticleBannerBrand, width: number, height: num
 </defs>`;
 }
 
+function squidDefinitions(width: number, height: number): string {
+  return `<defs>
+  <filter id="Squid-Stage-Shadow" x="-12%" y="-28%" width="124%" height="170%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="13" stdDeviation="18" flood-color="#1C0F3D" flood-opacity=".1"/>
+  </filter>
+  <filter id="Orb-Shadow" x="-40%" y="-40%" width="180%" height="190%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="15" stdDeviation="15" flood-color="#65408F" flood-opacity=".2"/>
+  </filter>
+  <clipPath id="Canvas-Clip"><rect width="${width}" height="${height}"/></clipPath>
+</defs>`;
+}
+
 function brandAtmosphereMarkup(
   clientId: EditableClientId,
   brand: ArticleBannerBrand,
@@ -314,6 +327,87 @@ function articleHeroCopy(
     titleLineHeight,
     leadY: Math.min(466, titleY + (titleLines.length - 1) * titleLineHeight + 92),
   };
+}
+
+function squidTopicEyebrow(...values: Array<string | undefined>): string {
+  const source = cleanText(values.filter(Boolean).join(" "), 800);
+  const topics: Array<[RegExp, string]> = [
+    [/\bcanton\b/i, "CANTON × SQUID"],
+    [/\bxrp\b/i, "XRP × SQUID"],
+    [/\b(?:\$?quid|tge)\b/i, "$QUID"],
+    [/\b(?:bitcoin|btc)\b|비트코인/i, "BITCOIN × SQUID"],
+    [/\bsolana\b/i, "SOLANA × SQUID"],
+    [/\bsui\b/i, "SUI × SQUID"],
+    [/\bethereum\b|이더리움/i, "ETHEREUM × SQUID"],
+    [/cross[ -]?chain|크로스[ -]?체인/i, "CROSS-CHAIN × SQUID"],
+    [/liquidity|유동성/i, "LIQUIDITY × SQUID"],
+    [/routing|라우팅/i, "ROUTING × SQUID"],
+    [/bridge|브리지/i, "BRIDGE × SQUID"],
+    [/swap|스왑/i, "SWAP × SQUID"],
+  ];
+  const topic = topics.find(([pattern]) => pattern.test(source));
+  if (topic) return topic[1];
+  return "SQUID × KOREA";
+}
+
+function squidSourceMetaLabel(value: string | undefined): string {
+  const source = cleanText(value, 2_048);
+  if (!source) return "NOT PROVIDED";
+  try {
+    return new URL(source).hostname.replace(/^www\./, "").toUpperCase();
+  } catch {
+    return "UNVERIFIED";
+  }
+}
+
+/**
+ * Rebuilds the reviewed Squid Korea Figma composition at output scale.
+ *
+ * The source frame is 1920×1080 with a 1621×489 white oval at (149, 308).
+ * At 1200 px wide that becomes a 1014×306 stage. The article hero moves the
+ * stage up by 23 px to preserve the same composition inside its 1200×630 crop;
+ * the 1200×675 inline figure uses the exact proportional placement.
+ *
+ * Only reusable official brand assets are placed here. Content-specific Figma
+ * artwork, dates, metrics, and launch/TGE language are intentionally excluded.
+ */
+function squidFigmaStageWorldMarkup(
+  motif: ArticleVisualMotif,
+  assets: ArticleHeroBrandAssets,
+  mode: "hero" | "inline",
+): string {
+  const prefix = mode === "hero" ? "Hero" : "Inline";
+  const compositionId = `Squid-${prefix}-Composition-${motif}`;
+  const inline = mode === "inline";
+  const stageCy = inline ? 346 : 323;
+  const formY = inline ? 4 : -18;
+  const bubblesY = inline ? 128 : 96;
+  const squibY = inline ? 178 : 148;
+  const frameTopY = inline ? 166 : 143;
+  const frameBottomY = inline ? 718 : 674;
+  const frameBottomWord = inline ? "INSIGHT" : "ARTICLE";
+  const motifRotation: Record<ArticleVisualMotif, number> = {
+    signal: -10,
+    network: -16,
+    layers: 12,
+    flow: 7,
+    event: -4,
+    asset: 15,
+  };
+  const rotation = motifRotation[motif];
+
+  return `<g id="${compositionId}" data-reference-frame="1920x1080" data-reference-stage="149 308 1621 489">
+  <g id="Squid-Frame-Words-${prefix}" aria-hidden="true">
+    <text id="Squid-Frame-Word-Top-${prefix}" x="230" y="${frameTopY}" fill="#000000" font-family="Bagoss Condensed, Pretendard, sans-serif" font-size="172" font-weight="900" letter-spacing="-7">SQUID</text>
+    <text id="Squid-Frame-Word-Bottom-${prefix}" x="510" y="${frameBottomY}" fill="#000000" font-family="Bagoss Condensed, Pretendard, sans-serif" font-size="166" font-weight="900" letter-spacing="-7">${frameBottomWord}</text>
+  </g>
+  <image id="Squid-Official-Form-Language-${prefix}" x="-132" y="${formY}" width="590" height="590" href="${escapeXml(assets.formLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".92" transform="rotate(${rotation} 163 ${formY + 295})"/>
+  <ellipse id="Squid-White-Oval-Stage-${prefix}" cx="600" cy="${stageCy}" rx="507" ry="153" fill="#FFFFFF" filter="url(#Squid-Stage-Shadow)"/>
+  <rect id="Squid-Lime-Divider" x="568" y="${stageCy - 126}" width="64" height="7" rx="3.5" fill="#E6FA36"/>
+  <image id="Squid-Official-Bubbles-${prefix}" x="824" y="${bubblesY}" width="286" height="286" href="${escapeXml(assets.bubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".86"/>
+  <image id="Squid-Official-SQUIB-${prefix}" x="934" y="${squibY}" width="326" height="326" href="${escapeXml(assets.squib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Orb-Shadow)" transform="rotate(${Math.round(rotation / 2)} 1097 ${squibY + 163})"/>
+  <circle id="Squid-Canonical-Lime-${prefix}" cx="1080" cy="${stageCy - 115}" r="12" fill="#E6FA36"/>
+</g>`;
 }
 
 function yellowArticleHero(
@@ -398,53 +492,74 @@ function squidArticleHero(
     throw new Error("official_squid_hero_assets_required");
   }
   const brand = ARTICLE_BANNER_BRANDS.squid;
-  const copy = articleHeroCopy(input, 18.5, 35, 242);
+  const title = cleanText(input.title, 200) || "새로운 소식을 전합니다";
+  const lead = cleanText(input.lead, 800);
+  const motif = input.motif || "signal";
+  const titleLayout = fitSvgText(title, {
+    maxWidth: 720,
+    maxLines: 2,
+    maxFontSize: 60,
+    minFontSize: 46,
+    lineHeightRatio: 1.24,
+  });
+  const titleLines = titleLayout.lines;
+  const leadLayout = lead
+    ? fitSvgText(lead, {
+      maxWidth: 710,
+      maxLines: 2,
+      maxFontSize: 26,
+      minFontSize: 19,
+      lineHeightRatio: 1.25,
+    })
+    : null;
+  const leadLines = leadLayout?.lines || [];
+  const titleFontSize = titleLayout.fontSize;
+  const titleLineHeight = titleLayout.lineHeight;
+  const titleY = titleLines.length === 2 ? 312 : 352;
+  const topicY = titleLines.length === 2 ? 245 : 286;
+  const leadY = titleLines.length === 2 ? 426 : 414;
+  const topicEyebrow = squidTopicEyebrow(title, lead);
+  const date = cleanText(input.date, 40);
+  const dateMarkup = date
+    ? `<text id="Article-Date" x="1156" y="62" text-anchor="end" fill="#000000" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="750" letter-spacing=".6">${escapeXml(date)}</text>`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(copy.title)}">
-  ${sharedDefinitions(brand, 1200, 630)}
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none" role="img" aria-label="${escapeXml(title)}">
+  ${squidDefinitions(1200, 630)}
   <g id="Editorial-Hero-v2" clip-path="url(#Canvas-Clip)">
     <rect id="Background" width="1200" height="630" fill="#E8E6EA"/>
-    <circle cx="1174" cy="14" r="122" fill="#E6FA36" fill-opacity=".24"/>
-    <path d="M0 540C198 506 368 579 560 548C760 516 918 565 1200 516V630H0V540Z" fill="#BC8EE4" fill-opacity=".28"/>
-    <image id="Squid-Official-Form-Language" x="640" y="-28" width="650" height="650" href="${escapeXml(heroAssets.formLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".62" transform="rotate(-7 965 297)"/>
-    <ellipse id="Squid-Portal" cx="981" cy="326" rx="292" ry="160" fill="#FFFFFF" fill-opacity=".92"/>
+    <rect id="Squid-Pale-Field-Hero" width="1200" height="630" fill="#E8E6EA"/>
+    ${squidFigmaStageWorldMarkup(motif, heroAssets, "hero")}
   </g>
   <g id="Header">
-    ${logoMarkup("squid", brand, logoDataUrl, 68)}
-    <g id="Editorial-Label">
-      <rect x="894" y="50" width="238" height="42" rx="21" fill="#000000"/>
-      <circle cx="918" cy="71" r="6" fill="#E6FA36"/>
-      <text x="1021" y="76" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="11.5" font-weight="900" letter-spacing="1.25">SQUID KOREA / NOTE 01</text>
-    </g>
+    ${logoMarkup("squid", brand, logoDataUrl, 50)}
+    ${dateMarkup}
   </g>
   <g id="Article-Copy">
-    <text id="Story-Index" x="68" y="182" fill="#5D5664" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="850" letter-spacing="2">CROSS-CHAIN, MADE HUMAN</text>
+    <text id="Story-Topic" x="600" y="${topicY}" text-anchor="middle" fill="#1C0F3D" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="850" letter-spacing="1.55">${escapeXml(topicEyebrow)}</text>
     ${textLayers(
       "Article-Title",
-      copy.titleLines,
-      68,
-      242,
-      copy.titleLineHeight,
-      `fill="#000000" font-family="Bagoss Condensed, Pretendard, sans-serif" font-size="${copy.titleFontSize + 1}" font-weight="900" letter-spacing="-1.8"`,
+      titleLines,
+      600,
+      titleY,
+      titleLineHeight,
+      `text-anchor="middle" fill="#000000" font-family="Pretendard, sans-serif" font-size="${titleFontSize}" font-weight="850" letter-spacing="-2.1"`,
     )}
     ${textLayers(
       "Article-Lead",
-      copy.leadLines,
-      68,
-      copy.leadY,
-      29,
-      `fill="#4A4A4A" font-family="Pretendard, sans-serif" font-size="17" font-weight="550"`,
+      leadLines,
+      600,
+      leadY,
+      leadLayout?.lineHeight || 39,
+      `text-anchor="middle" fill="#1C0F3D" fill-opacity=".78" font-family="Pretendard, sans-serif" font-size="${leadLayout?.fontSize || 30}" font-weight="560" letter-spacing="-.7"`,
     )}
   </g>
-  <g id="Hero-Squid-Official-World">
-    <image id="Squid-Official-Bubbles" x="786" y="205" width="362" height="362" href="${escapeXml(heroAssets.bubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".48"/>
-    <image id="Squid-Official-SQUIB" x="770" y="112" width="452" height="452" href="${escapeXml(heroAssets.squib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Orb-Shadow)"/>
-  </g>
-  <g id="Footer">
-    <rect x="48" y="552" width="1104" height="46" rx="23" fill="#000000"/>
-    <circle cx="76" cy="575" r="7" fill="#E6FA36"/>
-    <text x="94" y="580" fill="#FFFFFF" fill-opacity=".78" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750" letter-spacing=".45">${escapeXml(sourceLabel(input.sourceUrl))}</text>
-    <text x="1120" y="580" text-anchor="end" fill="#FFFFFF" fill-opacity=".78" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="750">${escapeXml(copy.date)}</text>
+  <g id="Squid-Source-Metadata-Hero">
+    <rect x="34" y="572" width="310" height="38" rx="19" fill="#000000"/>
+    <circle cx="55" cy="591" r="5" fill="#E6FA36"/>
+    <text id="Squid-Source-Label-Hero" x="69" y="596" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="750" letter-spacing=".55">SOURCE · ${escapeXml(squidSourceMetaLabel(input.sourceUrl))}</text>
+    <rect id="Squid-Market-Badge-Hero" x="1016" y="572" width="144" height="38" rx="19" fill="#FFFFFF" fill-opacity=".94" stroke="#BC8EE4" stroke-opacity=".36"/>
+    <text x="1142" y="596" text-anchor="end" fill="#000000" fill-opacity=".72" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="750" letter-spacing=".8">SQUID · KOREA</text>
   </g>
 </svg>`;
 }
@@ -591,11 +706,128 @@ export function buildArticleBannerSvg(
   return babylonArticleHero(input, logoDataUrl);
 }
 
+function squidArticleInlineVisual(
+  input: ArticleInlineVisualInput,
+  logoDataUrl: string,
+  assets: ArticleHeroBrandAssets | null | undefined,
+): string {
+  if (!assets?.formLanguage || !assets.squib || !assets.bubbles) {
+    throw new Error("official_squid_inline_assets_required");
+  }
+  const brand = ARTICLE_BANNER_BRANDS.squid;
+  const visual = input.visual;
+  const headline = cleanText(visual.headline, 70) || "Squid 핵심 업데이트";
+  const caption = cleanText(visual.caption, 200);
+  const headlineLayout = fitSvgText(headline, {
+    maxWidth: 680,
+    maxLines: 2,
+    maxFontSize: 60,
+    minFontSize: 44,
+    lineHeightRatio: 4 / 3,
+  });
+  const captionLayout = caption
+    ? fitSvgText(caption, {
+      maxWidth: 710,
+      maxLines: 2,
+      maxFontSize: 30,
+      minFontSize: 20,
+      lineHeightRatio: 1.3,
+    })
+    : null;
+  const headlineLines = headlineLayout.lines;
+  const captionLines = captionLayout?.lines || [];
+  const points = visual.points
+    .map(point => cleanText(point, 100))
+    .filter(Boolean)
+    .slice(0, 2);
+  const topicEyebrow = squidTopicEyebrow(
+    visual.eyebrow,
+    headline,
+    caption,
+    ...points,
+  );
+  const headlineY = headlineLines.length === 2 ? 316 : 352;
+  const topicY = headlineLines.length === 2 ? 245 : 286;
+  const captionY = headlineLines.length === 2 ? 442 : 414;
+  const evidenceMarkup = points.map((point, index) => {
+    const x = index === 0 ? 272 : 638;
+    const pointLayout = fitSvgText(point, {
+      maxWidth: 300,
+      maxLines: 2,
+      maxFontSize: 13,
+      minFontSize: 11,
+      lineHeightRatio: 1.4,
+    });
+    return `<g id="Squid-Evidence-${index + 1}">
+  <circle cx="${x}" cy="514" r="5" fill="#E6FA36" stroke="#000000" stroke-width="1.5"/>
+  ${textLayers(
+    `Squid-Evidence-${index + 1}`,
+    pointLayout.lines,
+    x + 14,
+    518,
+    pointLayout.lineHeight,
+    `fill="#1C0F3D" fill-opacity=".7" font-family="Pretendard, sans-serif" font-size="${pointLayout.fontSize}" font-weight="650" letter-spacing="-.15"`,
+  )}
+</g>`;
+  }).join("\n");
+  const date = cleanText(input.date, 40);
+  const dateMarkup = date
+    ? `<text id="Visual-Date" x="1156" y="62" text-anchor="end" fill="#000000" font-family="Inter, Pretendard, sans-serif" font-size="15" font-weight="750" letter-spacing=".6">${escapeXml(date)}</text>`
+    : "";
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" fill="none" role="img" aria-label="${escapeXml(headline)}">
+  ${squidDefinitions(1200, 675)}
+  <g id="Squid-Inline-Canvas" clip-path="url(#Canvas-Clip)">
+    <rect id="Background" width="1200" height="675" fill="#EBEBEB"/>
+    <rect id="Squid-Pale-Field-Inline" width="1200" height="675" fill="#EBEBEB"/>
+    ${squidFigmaStageWorldMarkup(visual.motif, assets, "inline")}
+  </g>
+  <g id="Header">
+    ${logoMarkup("squid", brand, logoDataUrl, 50)}
+    ${dateMarkup}
+  </g>
+  <g id="Squid-Editorial-Copy">
+    <text id="Squid-Visual-Topic" x="600" y="${topicY}" text-anchor="middle" fill="#1C0F3D" font-family="Inter, Pretendard, sans-serif" font-size="13" font-weight="850" letter-spacing="1.55">${escapeXml(topicEyebrow)}</text>
+    ${textLayers(
+      "Visual-Headline",
+      headlineLines,
+      600,
+      headlineY,
+      headlineLayout.lineHeight,
+      `text-anchor="middle" fill="#000000" font-family="Pretendard, sans-serif" font-size="${headlineLayout.fontSize}" font-weight="850" letter-spacing="-2.1"`,
+    )}
+    ${textLayers(
+      "Visual-Caption",
+      captionLines,
+      600,
+      captionY,
+      captionLayout?.lineHeight || 39,
+      `text-anchor="middle" fill="#1C0F3D" fill-opacity=".78" font-family="Pretendard, sans-serif" font-size="${captionLayout?.fontSize || 30}" font-weight="560" letter-spacing="-.7"`,
+    )}
+  </g>
+  <g id="Squid-Evidence-Lines">
+    ${evidenceMarkup}
+  </g>
+  <g id="Squid-Source-Metadata-Inline">
+    <rect x="34" y="620" width="310" height="38" rx="19" fill="#000000"/>
+    <circle cx="55" cy="639" r="5" fill="#E6FA36"/>
+    <text id="Squid-Source-Label-Inline" x="69" y="644" fill="#FFFFFF" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="750" letter-spacing=".55">SOURCE · ${escapeXml(squidSourceMetaLabel(input.sourceUrl))}</text>
+    <rect id="Squid-Market-Badge-Inline" x="1016" y="620" width="144" height="38" rx="19" fill="#FFFFFF" fill-opacity=".94" stroke="#BC8EE4" stroke-opacity=".36"/>
+    <text x="1142" y="644" text-anchor="end" fill="#000000" fill-opacity=".72" font-family="Inter, Pretendard, sans-serif" font-size="12" font-weight="750" letter-spacing=".8">SQUID · KOREA</text>
+  </g>
+</svg>`;
+}
+
 export function buildArticleInlineVisualSvg(
   clientId: EditableClientId,
   input: ArticleInlineVisualInput,
   logoDataUrl: string,
+  brandAssets?: ArticleHeroBrandAssets | null,
 ): string {
+  if (clientId === "squid") {
+    return squidArticleInlineVisual(input, logoDataUrl, brandAssets);
+  }
   const brand = ARTICLE_BANNER_BRANDS[clientId];
   const visual = input.visual;
   const headlineLines = wrapSvgText(cleanText(visual.headline, 70), 17, 3);

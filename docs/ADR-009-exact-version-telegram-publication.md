@@ -106,9 +106,9 @@ instead of hiding it behind retries.
   available from the Telegram Bot API.
 - Article and Tutorial remain manual until their complete publishable visual
   packages are immutable assets.
-- The existing legacy route remains for other clients, dry runs, and non-
-  Telegram channels, but live Squid Telegram calls are rejected. This prevents
-  its regenerating, retrying publisher from bypassing the exact-version ledger.
+- The existing legacy route remains only for dry-run previews. All live calls,
+  regardless of client or channel, are rejected because the route regenerates
+  and publishes without an immutable, double-fact-checked Studio version.
 - Netlify keeps only the Studio, database, Railway URL, and internal kick
   credentials. Public Telegram bot and channel credentials stay on Railway.
 

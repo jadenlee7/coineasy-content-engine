@@ -32,6 +32,15 @@ NEWS_CARD_16x9 = (1200, 675)         # 16:9 for X, Telegram (reserved, unused)
 NEWS_CARD_1x1 = (1080, 1080)         # square — primary news card viewport
 
 
+class TranslationLayoutError(RuntimeError):
+    """The browser rejected an in-place translated-text layout.
+
+    This is distinct from a Chromium/runtime failure: callers can safely retry
+    with the untouched source creative instead of publishing a cleaned raster
+    whose replacement text was not rendered.
+    """
+
+
 async def render_png(
     client_id: str,
     template_path: str,
@@ -95,6 +104,27 @@ async def render_png(
                 else:
                     await page.set_content(html, wait_until="networkidle")
                 await page.wait_for_timeout(wait_ms)
+                expects_translation_layout = (
+                    client_id == "squid"
+                    and slots.get("source_text_visible") is True
+                    and isinstance(slots.get("translation_regions"), list)
+                    and bool(slots["translation_regions"])
+                )
+                if expects_translation_layout:
+                    layout_status = await page.evaluate(
+                        "window.__evaluateSquidTranslationLayout "
+                        "? window.__evaluateSquidTranslationLayout() : null"
+                    )
+                    expected_regions = len(slots["translation_regions"])
+                    if (
+                        not isinstance(layout_status, dict)
+                        or layout_status.get("safe") is not True
+                        or layout_status.get("expected") != expected_regions
+                        or layout_status.get("rendered") != expected_regions
+                    ):
+                        raise TranslationLayoutError(
+                            "Squid Korean replacement text did not pass browser layout"
+                        )
                 await page.screenshot(
                     path=str(output_path),
                     clip={"x": 0, "y": 0, "width": width, "height": height},
@@ -207,6 +237,22 @@ def _inject_brand_slots(
 
     enhanced["logo_dark_path"] = _logo_to_data_url(config.logo_dark_path)
     enhanced["logo_light_path"] = _logo_to_data_url(config.logo_light_path)
+
+    if config.client_id == "squid":
+        # Squid's reviewed Figma composition uses the official character and
+        # form-language assets as structural brand elements, not decoration.
+        # Fail closed here just like the official logo so a missing asset can
+        # never silently produce a generic-looking Squid card.
+        asset_dir = config.client_dir / "assets"
+        enhanced["squid_form_language_path"] = _logo_to_data_url(
+            asset_dir / "form-language-purple.png",
+        )
+        enhanced["squid_squib_path"] = _logo_to_data_url(
+            asset_dir / "squib-token-juggle.png",
+        )
+        enhanced["squid_bubbles_path"] = _logo_to_data_url(
+            asset_dir / "squib-bubbles.png",
+        )
 
     enhanced["brand_primary_color"] = config.brand.primary_color
     enhanced["brand_bg_dark"] = config.brand.bg_dark

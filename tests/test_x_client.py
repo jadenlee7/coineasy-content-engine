@@ -96,7 +96,11 @@ async def test_recent_tweets_include_only_allowlisted_x_media(monkeypatch):
     }]
     timeline_params = calls[1][1]
     assert timeline_params is not None
-    assert timeline_params["expansions"] == "attachments.media_keys"
+    assert timeline_params["expansions"] == (
+        "attachments.media_keys,referenced_tweets.id,"
+        "referenced_tweets.id.attachments.media_keys"
+    )
+    assert "author_id" in timeline_params["tweet.fields"]
     assert "note_tweet" in timeline_params["tweet.fields"]
 
 
@@ -270,6 +274,421 @@ async def test_recent_tweets_marks_quoted_sources(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recent_tweets_inherits_same_account_quoted_photo(monkeypatch):
+    quoted_post_id = "2082000000000000000"
+    image_url = "https://pbs.twimg.com/media/squid-quoted.jpg"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Canton is now easy to explore with Squid.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["quoted-photo"]},
+                    }],
+                    "media": [{
+                        "media_key": "quoted-photo",
+                        "type": "photo",
+                        "url": image_url,
+                        "width": 1080,
+                        "height": 1080,
+                    }],
+                },
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert tweets[0]["is_quote"] is True
+    assert tweets[0]["source_image_url"] == image_url
+    assert tweets[0]["media"] == [{
+        "media_key": "quoted-photo",
+        "type": "photo",
+        "url": image_url,
+        "width": 1080,
+        "height": 1080,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_inherits_same_account_quoted_video_preview(monkeypatch):
+    quoted_post_id = "2079266440268464128"
+    image_url = (
+        "https://pbs.twimg.com/amplify_video_thumb/"
+        "2079266440268464128/img/qxIE-WTD9Fd60z4C.jpg"
+    )
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2081031728622178334",
+                    "text": "Have you explored Canton yet? With Squid, it is easy.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["quoted-video"]},
+                    }],
+                    "media": [{
+                        "media_key": "quoted-video",
+                        "type": "video",
+                        "preview_image_url": image_url,
+                        "width": 1080,
+                        "height": 1080,
+                    }],
+                },
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert tweets[0]["source_image_url"] == ""
+    assert tweets[0]["media"] == [{
+        "media_key": "quoted-video",
+        "type": "video",
+        "url": image_url,
+        "width": 1080,
+        "height": 1080,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_prefers_direct_media_over_same_account_quote(
+    monkeypatch,
+):
+    quoted_post_id = "2082000000000000000"
+    direct_url = "https://pbs.twimg.com/media/squid-direct.jpg"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Our own new visual supersedes the quoted one.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                    "attachments": {"media_keys": ["direct-photo"]},
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["quoted-photo"]},
+                    }],
+                    "media": [
+                        {
+                            "media_key": "direct-photo",
+                            "type": "photo",
+                            "url": direct_url,
+                        },
+                        {
+                            "media_key": "quoted-photo",
+                            "type": "photo",
+                            "url": (
+                                "https://pbs.twimg.com/media/squid-quoted.jpg"
+                            ),
+                        },
+                    ],
+                },
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert tweets[0]["source_image_url"] == direct_url
+    assert [item["media_key"] for item in tweets[0]["media"]] == [
+        "direct-photo"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quoted_author_id", ["99", None])
+async def test_recent_tweets_does_not_inherit_unverified_quoted_media(
+    monkeypatch,
+    quoted_author_id,
+):
+    quoted_post_id = "2082000000000000000"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            referenced = {
+                "id": quoted_post_id,
+                "attachments": {"media_keys": ["external-photo"]},
+            }
+            if quoted_author_id is not None:
+                referenced["author_id"] = quoted_author_id
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Read this ecosystem update.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [referenced],
+                    "media": [{
+                        "media_key": "external-photo",
+                        "type": "photo",
+                        "url": "https://pbs.twimg.com/media/external.jpg",
+                    }],
+                },
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert tweets[0]["media"] == []
+    assert tweets[0]["source_image_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_fails_closed_on_incomplete_same_account_quote_media(
+    monkeypatch,
+):
+    quoted_post_id = "2082000000000000000"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Canton is now easy to explore with Squid.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["missing-photo"]},
+                    }],
+                    "media": [],
+                },
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="incomplete media evidence"):
+        await XClient("x-token").get_recent_tweets("SquidRouter")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        "https://api.x.com/2/problems/resource-not-found",
+        "https://api.x.com/2/problems/not-authorized-for-resource",
+    ],
+    ids=["deleted", "protected"],
+)
+async def test_recent_tweets_excludes_explicitly_unavailable_quoted_media(
+    monkeypatch,
+    error_type,
+):
+    quoted_post_id = "2082000000000000000"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "The outer official post remains usable.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "errors": [{
+                    "resource_id": quoted_post_id,
+                    "resource_type": "tweet",
+                    "type": error_type,
+                    "title": "Unavailable quoted post",
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert len(tweets) == 1
+    assert tweets[0]["media"] == []
+    assert tweets[0]["source_image_url"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resource_id", "error_type"),
+    [
+        (
+            "2082883998829752783",
+            "https://api.x.com/2/problems/resource-not-found",
+        ),
+        (
+            "2082000000000000000",
+            "https://api.x.com/2/problems/usage-capped",
+        ),
+        (
+            "2081999999999999999",
+            "https://api.x.com/2/problems/resource-not-found",
+        ),
+    ],
+    ids=["primary-post", "unexpected-type", "unrelated-resource"],
+)
+async def test_recent_tweets_rejects_non_quote_partial_errors(
+    monkeypatch,
+    resource_id,
+    error_type,
+):
+    quoted_post_id = "2082000000000000000"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2082883998829752783",
+                    "text": "Provider errors outside quote availability are unsafe.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "errors": [{
+                    "resource_id": resource_id,
+                    "resource_type": "tweet",
+                    "type": error_type,
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="incomplete response"):
+        await XClient("x-token").get_recent_tweets("SquidRouter")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "references",
     [
@@ -389,6 +808,127 @@ async def test_since_cursor_takes_precedence_and_pagination_is_bounded(monkeypat
     assert timeline_calls[1]["pagination_token"] == "page-1"
     assert tweets[0]["media"][0]["type"] == "video"
     assert tweets[0]["source_image_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_same_quote_across_pages_ignores_mutable_metric_changes(monkeypatch):
+    timeline_calls: list[dict] = []
+    quoted_post_id = "2082000000000000000"
+    image_url = "https://pbs.twimg.com/media/repeated-quote.jpg"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            timeline_calls.append(params)
+            page = len(timeline_calls)
+            return _Response({
+                "data": [{
+                    "id": str(2082883998829752784 - page),
+                    "text": f"Official resurface {page}.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["same-photo"]},
+                        "public_metrics": {"like_count": page},
+                    }],
+                    "media": [{
+                        "media_key": "same-photo",
+                        "type": "photo",
+                        "url": image_url,
+                    }],
+                },
+                "meta": {"next_token": "page-2"} if page == 1 else {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets(
+        "SquidRouter",
+        max_results=6,
+    )
+
+    assert len(tweets) == 2
+    assert [tweet["source_image_url"] for tweet in tweets] == [
+        image_url,
+        image_url,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_conflicting_external_quote_expansions_do_not_abort(monkeypatch):
+    timeline_calls: list[dict] = []
+    quoted_post_id = "2082000000000000000"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            timeline_calls.append(params)
+            page = len(timeline_calls)
+            media_key = f"external-photo-{page}"
+            return _Response({
+                "data": [{
+                    "id": str(2082883998829752784 - page),
+                    "text": f"External ecosystem quote {page}.",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [{
+                        "type": "quoted",
+                        "id": quoted_post_id,
+                    }],
+                }],
+                "includes": {
+                    "tweets": [{
+                        "id": quoted_post_id,
+                        "author_id": "99",
+                        "attachments": {"media_keys": [media_key]},
+                    }],
+                    "media": [{
+                        "media_key": media_key,
+                        "type": "photo",
+                        "url": f"https://pbs.twimg.com/media/{media_key}.jpg",
+                    }],
+                },
+                "meta": {"next_token": "page-2"} if page == 1 else {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets(
+        "SquidRouter",
+        max_results=6,
+    )
+
+    assert len(tweets) == 2
+    assert all(tweet["media"] == [] for tweet in tweets)
+    assert all(tweet["source_image_url"] == "" for tweet in tweets)
 
 
 @pytest.mark.asyncio

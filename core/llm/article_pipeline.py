@@ -103,6 +103,8 @@ Glossary:
 
 {brand_voice_block}
 
+{client_visual_guidance}
+
 ## Input
 
 Source type: {source_type}
@@ -226,6 +228,16 @@ def _build_user_prompt(
         if llm.glossary
         else "- Use standard Korean Web3 terminology without changing technical meaning."
     )
+    client_visual_guidance = (
+        """## Squid inline visual override
+
+- Keep each visual headline at 20 Korean characters or fewer.
+- Keep each caption at 50 characters or fewer.
+- Return exactly 2 points per visual, each 26 characters or fewer.
+- These limits preserve the official sparse Squid composition without clipped or ellipsized copy."""
+        if config.client_id == "squid"
+        else "## Client inline visual guidance\nFollow the shared visual limits above."
+    )
     return BASE_USER_PROMPT.format(
         client_name=config.name,
         client_id=config.client_id,
@@ -238,6 +250,7 @@ def _build_user_prompt(
             style_references,
             brand_review_guidance,
         ),
+        client_visual_guidance=client_visual_guidance,
         source_type=source_type,
         source_url=source_url or "(not provided)",
         source_content=source_content,

@@ -46,7 +46,7 @@ configuration with runtime-provided build metadata; it is not remote
 attestation. Environment write access must therefore remain an operator-only
 boundary.
 
-The forward migration `20260802120000_origintrail_batch_canary_grant.sql`
+The forward migration `20260802130000_origintrail_batch_canary_grant.sql`
 persists the exact config/dispatch approvals, job, input, full request, expiry,
 and internal `$0.05` limit. Its exact claim RPC irreversibly consumes the one
 provider-Batch grant in the same transaction that claims attempt one. Terminal
@@ -57,7 +57,7 @@ it still does not authenticate the unsigned receipts or cap the provider's
 invoice.
 
 The later forward migration
-`20260802130000_batch_cost_overage_incidents.sql` closes the provider-accounting
+`20260802140000_batch_cost_overage_incidents.sql` closes the provider-accounting
 failure case. If observed usage is above the internal reservation, settlement
 does not discard the usage-derived amount or poll forever. It atomically moves
 the reserved cap into budget spend, stores the full calculated cost, token usage,
@@ -247,7 +247,7 @@ table. Direct table access is revoked even from `service_role`; narrow
 security-definer RPCs own all state transitions.
 
 The forward migration
-`supabase/migrations/20260802120000_origintrail_batch_canary_grant.sql` adds the
+`supabase/migrations/20260802130000_origintrail_batch_canary_grant.sql` adds the
 private one-shot grant and replaces the generic claimer so it cannot claim any
 OriginTrail job. OriginTrail is exclusive to the exact grant RPC during this
 profile, closing the queue-to-grant race; other clients retain the generic

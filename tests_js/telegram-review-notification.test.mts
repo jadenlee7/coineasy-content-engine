@@ -105,10 +105,12 @@ test("Telegram review copy is concise, branded, and excludes raw source text", (
   const caption = buildTelegramReviewCaption(item);
   const message = buildTelegramReviewMessage(item);
   assert.match(caption, /검토 요청 · Squid/);
-  assert.match(caption, /아티클 · 게시 전 확인/);
-  assert.match(message, /게시할 Telegram 문구/);
+  assert.match(caption, /미승인 검토용 · 전달\/게시 금지/);
+  assert.match(caption, /아티클 · 승인 전 확인/);
+  assert.match(message, /검토용 Telegram 문구/);
+  assert.match(message, /미승인 검토용 · 전달\/게시 금지/);
   assert.match(message, /한국 사용자가 확인할 핵심 내용/);
-  assert.match(message, /승인 전에는 어디에도 게시되지 않습니다/);
+  assert.match(message, /이중 사실 확인 승인 전에는 전달하거나 게시하지 마세요/);
   assert.doesNotMatch(message, /DM에 노출하면 안 되는 긴 원문/);
   assert.equal(
     telegramReviewUrl("https://console.example/ignored", ITEM_ID),

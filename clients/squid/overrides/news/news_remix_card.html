@@ -6,27 +6,37 @@
 {{ brand_font_links | default('') | safe }}
 {% set source_width = source_image_width | default(1080) | float %}
 {% set source_height = source_image_height | default(1080) | float %}
-{% if source_width >= source_height %}
-  {% set frame_width = 1080.0 %}
-  {% set frame_height = 1080.0 * source_height / source_width %}
+{% set canvas_width = output_width | default(1080) | float %}
+{% set canvas_height = output_height | default(1080) | float %}
+{% set source_ratio = source_width / source_height %}
+{% set canvas_ratio = canvas_width / canvas_height %}
+{% if output_policy | default('') == 'official_source_native_v1' %}
+  {% set frame_width = canvas_width %}
+  {% set frame_height = canvas_height %}
   {% set frame_x = 0.0 %}
-  {% set frame_y = (1080.0 - frame_height) / 2.0 %}
+  {% set frame_y = 0.0 %}
+{% elif source_ratio >= canvas_ratio %}
+  {% set frame_width = canvas_width %}
+  {% set frame_height = canvas_width / source_ratio %}
+  {% set frame_x = 0.0 %}
+  {% set frame_y = (canvas_height - frame_height) / 2.0 %}
 {% else %}
-  {% set frame_height = 1080.0 %}
-  {% set frame_width = 1080.0 * source_width / source_height %}
-  {% set frame_x = (1080.0 - frame_width) / 2.0 %}
+  {% set frame_height = canvas_height %}
+  {% set frame_width = canvas_height * source_ratio %}
+  {% set frame_x = (canvas_width - frame_width) / 2.0 %}
   {% set frame_y = 0.0 %}
 {% endif %}
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
     --squid-dark: {{ brand_bg_dark | default('#1A0E2E') }};
+    --source-bg: {{ source_background_color | default(brand_bg_dark) }};
     --font: '{{ font_family | default('Pretendard Variable') }}', Pretendard, sans-serif;
     --display: {% if font_display %}'{{ font_display }}', {% endif %}var(--font);
   }
-  html, body { width: 1080px; height: 1080px; overflow: hidden; background: var(--squid-dark); }
+  html, body { width: {{ '%.3f' | format(canvas_width) }}px; height: {{ '%.3f' | format(canvas_height) }}px; overflow: hidden; background: var(--source-bg); }
   body { font-family: var(--font); -webkit-font-smoothing: antialiased; }
-  .canvas { position: relative; width: 1080px; height: 1080px; overflow: hidden; background: var(--squid-dark); }
+  .canvas { position: relative; width: {{ '%.3f' | format(canvas_width) }}px; height: {{ '%.3f' | format(canvas_height) }}px; overflow: hidden; background: var(--source-bg); }
   .source-frame {
     position: absolute;
     left: {{ '%.3f' | format(frame_x) }}px;
@@ -99,56 +109,68 @@
   </section>
 </main>
 <script>
-  const translationRegions = [...document.querySelectorAll('.translation-region')];
-  const sourceFrame = document.querySelector('.source-frame');
-  const replacementBounds = [];
-  let anyRegionFailed = false;
-  for (const region of translationRegions) {
-    const text = region.querySelector('span');
-    if (!text) {
-      anyRegionFailed = true;
-      continue;
-    }
-    const allowedLineCount = Math.max(1, Math.min(2, Number(region.dataset.sourceLineCount) || 2));
-    let size = parseFloat(getComputedStyle(region).fontSize);
-    const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
-    const minimum = Math.max(14, {{ '%.3f' | format(frame_width) }} * 0.02);
-    const doesNotFit = () => {
-      const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
-      const renderedLineCount = lineHeight > 0 ? Math.round(text.scrollHeight / lineHeight) : 3;
-      return renderedLineCount > allowedLineCount
-        || text.scrollHeight > region.clientHeight
-        || text.scrollWidth * scaleX > region.clientWidth;
-    };
-    while (doesNotFit() && size > minimum) {
-      size = Math.max(minimum, size * 0.92);
-      region.style.fontSize = `${size}px`;
-    }
-    if (doesNotFit()) anyRegionFailed = true;
+  window.__squidTranslationLayoutStatus = null;
+  window.__evaluateSquidTranslationLayout = async () => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
 
-    const replacementBound = {
-      left: region.offsetLeft,
-      top: region.offsetTop,
-      right: region.offsetLeft + region.offsetWidth,
-      bottom: region.offsetTop + region.offsetHeight,
+    const translationRegions = [...document.querySelectorAll('.translation-region')];
+    const sourceFrame = document.querySelector('.source-frame');
+    const replacementBounds = [];
+    let anyRegionFailed = false;
+    for (const region of translationRegions) {
+      const text = region.querySelector('span');
+      if (!text) {
+        anyRegionFailed = true;
+        continue;
+      }
+      const computedRegion = getComputedStyle(region);
+      const initialSize = computedRegion.getPropertyValue('--region-size').trim();
+      if (initialSize) region.style.fontSize = initialSize;
+      const allowedLineCount = Math.max(1, Math.min(2, Number(region.dataset.sourceLineCount) || 2));
+      let size = parseFloat(getComputedStyle(region).fontSize);
+      const scaleX = parseFloat(getComputedStyle(region).getPropertyValue('--region-scale-x')) || 1;
+      const minimum = Math.max(14, {{ '%.3f' | format(frame_width) }} * 0.02);
+      const doesNotFit = () => {
+        const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+        const renderedLineCount = lineHeight > 0 ? Math.round(text.scrollHeight / lineHeight) : 3;
+        return renderedLineCount > allowedLineCount
+          || text.scrollHeight > region.clientHeight
+          || text.scrollWidth * scaleX > region.clientWidth;
+      };
+      while (doesNotFit() && size > minimum) {
+        size = Math.max(minimum, size * 0.92);
+        region.style.fontSize = `${size}px`;
+      }
+      if (doesNotFit()) anyRegionFailed = true;
+
+      const replacementBound = {
+        left: region.offsetLeft,
+        top: region.offsetTop,
+        right: region.offsetLeft + region.offsetWidth,
+        bottom: region.offsetTop + region.offsetHeight,
+      };
+      const staysInsideSourceFrame = sourceFrame
+        && replacementBound.left >= 0
+        && replacementBound.top >= 0
+        && replacementBound.right <= sourceFrame.clientWidth
+        && replacementBound.bottom <= sourceFrame.clientHeight;
+      const overlapsExistingRegion = replacementBounds.some((existing) => (
+        replacementBound.left < existing.right
+        && replacementBound.right > existing.left
+        && replacementBound.top < existing.bottom
+        && replacementBound.bottom > existing.top
+      ));
+      if (!staysInsideSourceFrame || overlapsExistingRegion) anyRegionFailed = true;
+      replacementBounds.push(replacementBound);
+    }
+    const status = {
+      safe: !anyRegionFailed,
+      expected: translationRegions.length,
+      rendered: anyRegionFailed ? 0 : translationRegions.length,
     };
-    const staysInsideSourceFrame = sourceFrame
-      && replacementBound.left >= 0
-      && replacementBound.top >= 0
-      && replacementBound.right <= sourceFrame.clientWidth
-      && replacementBound.bottom <= sourceFrame.clientHeight;
-    const overlapsExistingRegion = replacementBounds.some((existing) => (
-      replacementBound.left < existing.right
-      && replacementBound.right > existing.left
-      && replacementBound.top < existing.bottom
-      && replacementBound.bottom > existing.top
-    ));
-    if (!staysInsideSourceFrame || overlapsExistingRegion) anyRegionFailed = true;
-    replacementBounds.push(replacementBound);
-  }
-  if (anyRegionFailed) {
-    for (const region of translationRegions) region.hidden = true;
-  }
+    window.__squidTranslationLayoutStatus = status;
+    return status;
+  };
 </script>
 </body>
 </html>

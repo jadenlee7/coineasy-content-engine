@@ -37,6 +37,16 @@ def test_concurrent_tutorial_requests_use_distinct_output_directories(monkeypatc
             client_id="yellow",
             content_type="edu_carousel",
             series_meta={},
+            lessons_data=[{
+                "lesson_number": 1,
+                "layout": "P2_BULLETS",
+                "theme": "dark",
+                "slots": {
+                    "lesson_title_kr": "검토할 제목",
+                    "icon_svg": "<svg>renderer only</svg>",
+                },
+                "_private": "never expose",
+            }],
             png_paths=[str(output_dir / "lesson_01.png")],
             manifest_path=str(output_dir / "manifest.json"),
             duration_ms=1,
@@ -60,3 +70,6 @@ def test_concurrent_tutorial_requests_use_distinct_output_directories(monkeypatc
     assert len(output_dirs) == 2
     assert output_dirs[0] != output_dirs[1]
     assert all(path.name.startswith("edu_") for path in output_dirs)
+    assert all(response.json()["lessons"][0]["slots"] == {
+        "lesson_title_kr": "검토할 제목"
+    } for response in responses)

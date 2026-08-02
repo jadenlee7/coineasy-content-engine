@@ -56,6 +56,11 @@ create table agent_runtime.batch_cost_overage_incidents (
         on delete restrict
 );
 
+create index batch_cost_overage_incidents_provider_batch_job_idx
+on agent_runtime.batch_cost_overage_incidents (
+    workspace_id, provider_batch_id, job_id
+);
+
 alter table agent_runtime.batch_cost_overage_incidents
     enable row level security;
 alter table agent_runtime.batch_cost_overage_incidents
@@ -163,6 +168,11 @@ create table agent_runtime.origintrail_batch_provider_create_intents (
             and registered_at is not null
         )
     )
+);
+
+create index origintrail_batch_provider_create_intents_batch_job_idx
+on agent_runtime.origintrail_batch_provider_create_intents (
+    workspace_id, provider_batch_id, job_id
 );
 
 create unique index origintrail_batch_one_armed_provider_create

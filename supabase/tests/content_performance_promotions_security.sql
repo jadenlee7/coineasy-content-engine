@@ -225,7 +225,7 @@ values
         'ko-KR',
         'Squid daily news',
         '{}'::jsonb,
-        '{"mock_mode":false}'::jsonb,
+        '{"mock_mode":false,"fact_check":{"schema_version":"1.0","policy_version":"double-fact-check@1","content_kind":"daily_news","status":"review","human_review_required":true,"input_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","output_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","checks":[{"id":"source_evidence","status":"review","label":"Source evidence","detail":"Human verification fixture.","metrics":{}},{"id":"output_claims","status":"pass","label":"Output claims","detail":"Output fixture.","metrics":{}}]}}'::jsonb,
         null
     ),
     (
@@ -237,7 +237,7 @@ values
         'ko-KR',
         'Yellow daily news',
         '{}'::jsonb,
-        '{"mock_mode":false}'::jsonb,
+        '{"mock_mode":false,"fact_check":{"schema_version":"1.0","policy_version":"double-fact-check@1","content_kind":"daily_news","status":"review","human_review_required":true,"input_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","output_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checks":[{"id":"source_evidence","status":"review","label":"Source evidence","detail":"Human verification fixture.","metrics":{}},{"id":"output_claims","status":"pass","label":"Output claims","detail":"Output fixture.","metrics":{}}]}}'::jsonb,
         null
     );
 
@@ -247,6 +247,38 @@ set current_version_id = case client_id
         else 'c4000000-0000-4000-8000-000000000002'::uuid
     end
 where workspace_id = 'c0000000-0000-4000-8000-000000000001';
+
+insert into public.approvals (
+    id, workspace_id, client_id, content_item_id, content_version_id,
+    reviewer_id, reviewer_source, decision, fact_check_policy_version,
+    source_facts_verified, output_claims_verified
+) values
+(
+    'c5000000-0000-4000-8000-000000000001',
+    'c0000000-0000-4000-8000-000000000001',
+    'squid',
+    'c3000000-0000-4000-8000-000000000001',
+    'c4000000-0000-4000-8000-000000000001',
+    'c9000000-0000-4000-8000-000000000001',
+    'supabase_auth',
+    'approved',
+    'double-fact-check@1',
+    true,
+    true
+),
+(
+    'c5000000-0000-4000-8000-000000000003',
+    'c0000000-0000-4000-8000-000000000001',
+    'yellow',
+    'c3000000-0000-4000-8000-000000000002',
+    'c4000000-0000-4000-8000-000000000002',
+    'c9000000-0000-4000-8000-000000000001',
+    'supabase_auth',
+    'approved',
+    'double-fact-check@1',
+    true,
+    true
+);
 
 insert into public.content_source_links (
     workspace_id,

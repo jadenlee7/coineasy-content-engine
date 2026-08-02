@@ -9,13 +9,13 @@ MIGRATION = (
     ROOT
     / "supabase"
     / "migrations"
-    / "20260802130000_batch_cost_overage_incidents.sql"
+    / "20260802140000_batch_cost_overage_incidents.sql"
 ).read_text(encoding="utf-8")
 CANARY_MIGRATION = (
     ROOT
     / "supabase"
     / "migrations"
-    / "20260802120000_origintrail_batch_canary_grant.sql"
+    / "20260802130000_origintrail_batch_canary_grant.sql"
 ).read_text(encoding="utf-8")
 
 

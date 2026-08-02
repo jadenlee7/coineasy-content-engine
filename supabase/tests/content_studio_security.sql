@@ -158,7 +158,7 @@ values
         'security-test@1',
         'Squid review v1',
         '{"summary":"one"}'::jsonb,
-        '{}'::jsonb,
+        '{"mock_mode":false,"fact_check":{"schema_version":"1.0","policy_version":"double-fact-check@1","content_kind":"daily_news","status":"review","human_review_required":true,"input_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","output_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","checks":[{"id":"source_evidence","status":"review","label":"Source evidence","detail":"Human verification fixture.","metrics":{}},{"id":"output_claims","status":"pass","label":"Output claims","detail":"Output fixture.","metrics":{}}]}}'::jsonb,
         '10000000-0000-0000-0000-000000000001'
     ),
     (
@@ -484,12 +484,15 @@ begin
         raise exception 'editor looked up a server-only tutorial generation';
     exception when insufficient_privilege then null;
     end;
-    delete from storage.objects
-    where bucket_id = 'content-studio';
-    get diagnostics deleted_count = row_count;
-    if deleted_count <> 0 then
-        raise exception 'editor deleted an immutable storage object';
-    end if;
+    begin
+        delete from storage.objects
+        where bucket_id = 'content-studio';
+        get diagnostics deleted_count = row_count;
+        if deleted_count <> 0 then
+            raise exception 'editor deleted an immutable storage object';
+        end if;
+    exception when insufficient_privilege then null;
+    end;
 end
 $test$;
 
@@ -535,8 +538,6 @@ $test$;
 -- Test/sample generations may be rejected, but they cannot cross either the
 -- approval or publication boundary even if a caller retries the workflow RPCs.
 do $test$
-declare
-    failure_message text;
 begin
     begin
         perform public.review_content_version(
@@ -544,6 +545,30 @@ begin
             '40000000-0000-0000-0000-000000000005',
             'approved',
             'must stay a sample'
+        );
+        raise exception 'legacy authenticated approval RPC remained executable';
+    exception when insufficient_privilege then null;
+    end;
+end
+$test$;
+
+reset role;
+do $test$
+declare
+    failure_message text;
+begin
+    begin
+        perform public.record_studio_content_review_v2(
+            '20000000-0000-0000-0000-000000000001',
+            '30000000-0000-0000-0000-000000000005',
+            '40000000-0000-0000-0000-000000000005',
+            'approved',
+            'double-fact-check@1',
+            true,
+            true,
+            '{}'::text[],
+            'must stay a sample',
+            'security-mock-v2-approval'
         );
         raise exception 'mock tutorial was approved';
     exception when check_violation then
@@ -559,11 +584,17 @@ begin
         raise exception 'mock approval failure changed workflow status';
     end if;
 
-    perform public.review_content_version(
+    perform public.record_studio_content_review_v2(
+        '20000000-0000-0000-0000-000000000001',
         '30000000-0000-0000-0000-000000000005',
         '40000000-0000-0000-0000-000000000005',
         'rejected',
-        'sample rejection remains allowed'
+        'double-fact-check@1',
+        false,
+        false,
+        '{}'::text[],
+        'sample rejection remains allowed',
+        'security-mock-v2-rejection'
     );
     if (select status from public.content_items
         where id = '30000000-0000-0000-0000-000000000005')
@@ -571,6 +602,19 @@ begin
         raise exception 'mock tutorial could not be rejected';
     end if;
 
+end
+$test$;
+
+set local role authenticated;
+select set_config(
+    'request.jwt.claim.sub',
+    '10000000-0000-0000-0000-000000000002',
+    true
+);
+do $test$
+declare
+    failure_message text;
+begin
     begin
         perform public.request_content_publication(
             '30000000-0000-0000-0000-000000000005',
@@ -590,11 +634,24 @@ begin
 end
 $test$;
 
-select public.review_content_version(
+reset role;
+select public.record_studio_content_review_v2(
+    '20000000-0000-0000-0000-000000000001',
     '30000000-0000-0000-0000-000000000001',
     '40000000-0000-0000-0000-000000000001',
     'approved',
-    'security smoke approved'
+    'double-fact-check@1',
+    true,
+    true,
+    '{}'::text[],
+    'security smoke approved',
+    'security-v2-approval'
+);
+set local role authenticated;
+select set_config(
+    'request.jwt.claim.sub',
+    '10000000-0000-0000-0000-000000000002',
+    true
 );
 
 -- Figma links are written only through the validating RPC. Retrying the same
@@ -911,6 +968,7 @@ begin
     exception when check_violation then null;
     end;
     begin
+        perform set_config('storage.allow_delete_query', 'true', true);
         delete from storage.objects
         where bucket_id = 'content-studio'
           and name = '20000000-0000-0000-0000-000000000001/squid/91000000-0000-4000-8000-000000000001/lesson_01.png';
@@ -961,9 +1019,7 @@ begin
     end if;
     delete from public.assets
     where id = '91000000-0000-4000-8000-000000000002';
-    delete from storage.objects
-    where bucket_id = 'content-studio'
-      and name = '20000000-0000-0000-0000-000000000001/squid/91000000-0000-4000-8000-000000000002/lesson_02.png';
+    -- The outer transaction rollback removes the matching Storage fixture.
 end
 $test$;
 

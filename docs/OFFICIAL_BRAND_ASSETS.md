@@ -41,6 +41,24 @@ without cropping, recoloring, redrawing, or changing opacity data.
 The Squid hero renderer fails closed when any of these three files is
 unavailable. Generic character substitutes are not permitted.
 
+Frame `2910:2690` and the reviewed Projects variants `2910:2700`,
+`2918:2587`, `2918:2597`, `2918:2616`, `2918:2624`, `2918:2631`,
+`2918:2638`, and `2918:2645` are visual `reference_only` material. Their
+shared pale field, white oval, lavender halo, cropped black `SQUID` and generic
+family frame words, official SQUIB/bubbles, and centered Pretendard Korean may
+guide composition.
+Their node-specific copy, dates, figures, events, and claims must never be
+reused as facts.
+
+The approved legacy registry node remains `1479:1954`
+(`[KEEP] Banner_Squid_Sample`). Projects nodes `2910:*` and `2918:*` must not
+enter `config/figma_templates.json` or the Netlify Figma allowlist without a
+separate explicit template approval. Korea-stage generated cards use canonical
+lime `#E6FA36`; the pale field may use `#E8E6EA` or `#EBEBEB`.
+
+Composition, source-routing, Korean copy-density, and release rules are defined
+in [SQUID_KOREAN_GTM_VISUALS.md](./SQUID_KOREAN_GTM_VISUALS.md).
+
 ## Licensed type
 
 `clients/squid/assets/BagossCondensed.woff2` is activated automatically only

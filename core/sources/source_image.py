@@ -6,15 +6,16 @@ auto-oriented, and resized before they are sent to the LLM or renderer.
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from io import BytesIO
-from urllib.parse import urlparse
 
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from core.sources.x_media_url import normalize_x_media_url
 
-ALLOWED_IMAGE_HOSTS = {"pbs.twimg.com"}
+
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_PIXELS = 36_000_000
 MAX_RENDER_DIMENSION = 1800
@@ -30,24 +31,41 @@ class PreparedSourceImage:
     base64_data: str
     width: int
     height: int
+    background_color: str = ""
 
     @property
     def data_url(self) -> str:
         return f"data:{self.media_type};base64,{self.base64_data}"
 
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(base64.b64decode(self.base64_data, validate=True)).hexdigest()
+
+
+def _edge_background_color(image: Image.Image) -> str:
+    """Return a stable solid fill sampled only from the creative's outer edge."""
+    sample = image.copy()
+    sample.thumbnail((64, 64), Image.Resampling.LANCZOS)
+    width, height = sample.size
+    border = max(1, min(width, height) // 16)
+    pixels = [
+        sample.getpixel((x, y))
+        for y in range(height)
+        for x in range(width)
+        if x < border or x >= width - border or y < border or y >= height - border
+    ]
+    channels = [sorted(pixel[index] for pixel in pixels) for index in range(3)]
+    middle = len(pixels) // 2
+    red, green, blue = (channel[middle] for channel in channels)
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
 
 def validate_source_image_url(value: str) -> str:
     """Return a validated HTTPS X image URL or raise SourceImageError."""
-    try:
-        parsed = urlparse(value)
-    except ValueError as exc:
-        raise SourceImageError("Invalid source image URL") from exc
-
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ALLOWED_IMAGE_HOSTS:
-        raise SourceImageError("Source image host is not allowed")
-    if parsed.username or parsed.password:
-        raise SourceImageError("Source image URL credentials are not allowed")
-    return value
+    normalized = normalize_x_media_url(value)
+    if not normalized:
+        raise SourceImageError("Source image URL is not allowed")
+    return normalized
 
 
 def prepare_source_image_bytes(raw: bytes) -> PreparedSourceImage:
@@ -79,6 +97,7 @@ def prepare_source_image_bytes(raw: bytes) -> PreparedSourceImage:
         (MAX_RENDER_DIMENSION, MAX_RENDER_DIMENSION),
         Image.Resampling.LANCZOS,
     )
+    background_color = _edge_background_color(image)
 
     output = BytesIO()
     image.save(output, format="JPEG", quality=88, optimize=True, progressive=True)
@@ -88,6 +107,7 @@ def prepare_source_image_bytes(raw: bytes) -> PreparedSourceImage:
         base64_data=encoded,
         width=image.width,
         height=image.height,
+        background_color=background_color,
     )
 
 

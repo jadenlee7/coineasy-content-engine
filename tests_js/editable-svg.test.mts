@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { buildEditableSvg, escapeXml, wrapSvgText } from "../netlify/functions/_shared/editable-svg.mts";
+import {
+  buildEditableSvg,
+  effectiveEditableTemplateStyle,
+  escapeXml,
+  wrapSvgText,
+} from "../netlify/functions/_shared/editable-svg.mts";
 import {
   clientScopedSourceVisualFile,
   needsCleanedSquidVisual,
@@ -15,6 +21,14 @@ const SPEC = {
   body_lines: ["첫 번째 핵심 내용", "두 번째 핵심 내용", "세 번째 핵심 내용"],
   source_url: "https://x.com/Yellow/status/123?x=1&y=2",
   theme: "dark",
+};
+
+const SQUID_ASSETS = {
+  logoDark: "data:image/png;base64,ZGFyay1sb2dv",
+  logoLight: "data:image/png;base64,bG9nbw==",
+  squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+  squidSquib: "data:image/png;base64,c3F1aWI=",
+  squidBubbles: "data:image/png;base64,YnViYmxlcw==",
 };
 
 function assertTransparentSquidCaptions(
@@ -86,6 +100,306 @@ test("creates a native-layer classic SVG for Figma without foreignObject", () =>
   assert.doesNotMatch(svg, /foreignObject|<style/);
 });
 
+test("creates the Figma-aligned Squid classic with official layered assets", () => {
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    label: "CANTON × SQUID",
+    headline: "Canton, 아직 안 가봤나요?",
+    body_lines: ["Squid로는 쉬워요", "Squid가 지원하는 생태계에 Canton도 있어요"],
+  }, {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  });
+
+  assert.match(svg, /id="Squid-Figma-Daily-News"/);
+  assert.match(svg, /fill="#E6CCFC"/);
+  assert.match(svg, /id="Squid-Official-Bubbles"/);
+  assert.match(svg, /id="Squid-Official-SQUIB"/);
+  assert.match(svg, /id="Lime-Divider"[^>]+width="320"[^>]+height="8"/);
+  assert.match(svg, />Canton, 아직 안<\/text>/);
+  assert.match(svg, />가봤나요\?<\/text>/);
+  assert.match(svg, /Squid로는 쉬워요/);
+  assert.match(svg, /COINEASY \/ KOREA/);
+  assert.doesNotMatch(svg, /Main-Card-Background|Body-Item-1-Background|Bullet/);
+});
+
+test("keeps the field-absent Squid classic byte-identical for legacy replay", () => {
+  const spec = {
+    ...SPEC,
+    label: "CANTON × SQUID",
+    headline: "Canton, 아직 안 가봤나요?",
+    body_lines: ["Squid로는 쉬워요", "Squid가 지원하는 생태계에 Canton도 있어요"],
+  };
+  const legacySvg = buildEditableSvg("squid", "classic", spec, SQUID_ASSETS);
+  const generatedStrategyWithoutFamily = buildEditableSvg("squid", "classic", {
+    ...spec,
+    render_strategy: "generated_gtm",
+  }, SQUID_ASSETS);
+
+  assert.equal(generatedStrategyWithoutFamily, legacySvg);
+  assert.equal(
+    createHash("sha256").update(legacySvg).digest("hex"),
+    "d10717e072ea950a9fde3623a25df3242ccea6478965c55dc6871bb6a1961af5",
+  );
+  assert.match(legacySvg, /COINEASY \/ KOREA/);
+});
+
+test("renders the four approved generated Squid creative families without publisher chrome", () => {
+  const familyContracts = {
+    editorial_big_type: {
+      root: "Squid-Generated-Editorial-Big-Type",
+      frameWord: "UPDATE",
+      headline: "체인 사이의 경계를 넘다",
+      expectedHeadlineLines: ["체인 사이의 경계를", "넘다"],
+      hasMetric: false,
+    },
+    milestone_metric: {
+      root: "Squid-Generated-Milestone-Metric",
+      frameWord: "MILESTONE",
+      headline: "하나의 흐름으로 이어진 기록",
+      expectedHeadlineLines: ["하나의 흐름으로 이어진 기록"],
+      hasMetric: true,
+    },
+    status_progress: {
+      root: "Squid-Generated-Status-Progress",
+      frameWord: "STATUS",
+      headline: "새로운 단계가 열렸어요",
+      expectedHeadlineLines: ["새로운 단계가", "열렸어요"],
+      hasMetric: false,
+    },
+    product_proof: {
+      root: "Squid-Generated-Product-Proof",
+      frameWord: "ROUTE",
+      headline: "한 번의 경로로 더 간단하게",
+      expectedHeadlineLines: ["한 번의 경로로 더", "간단하게"],
+      hasMetric: false,
+    },
+  } as const;
+
+  for (const [creativeFamily, contract] of Object.entries(familyContracts)) {
+    const svg = buildEditableSvg("squid", "classic", {
+      ...SPEC,
+      label: creativeFamily === "milestone_metric" ? "MILESTONE" : "SQUID UPDATE",
+      headline: contract.headline,
+      visual_metric: creativeFamily === "milestone_metric" ? "5M" : undefined,
+      body_lines: ["공식 원문에서 확인한 소식이에요", "한국 사용자에게 자연스럽게 전해요"],
+      render_strategy: "generated_gtm",
+      creative_family: creativeFamily,
+    }, SQUID_ASSETS);
+
+    assert.match(svg, new RegExp(`id="${contract.root}"`));
+    assert.match(svg, new RegExp(`data-creative-family="${creativeFamily}"`));
+    assert.match(svg, /id="Canvas-Background"[^>]+fill="#E8E6EA"/);
+    assert.match(svg, /#E6FA36/);
+    assert.match(svg, /#BC8EE4/);
+    assert.match(svg, /id="Stage-Lavender-Haze"[^>]+url\(#Squid-Stage-Lavender-Halo\)/);
+    assert.match(svg, /id="White-Oval-Halo" cx="540" cy="552" rx="510" ry="278"/);
+    assert.match(svg, /id="White-Oval-Stage" cx="540" cy="552" rx="492" ry="260"[^>]+fill="#FFFFFF"/);
+    assert.match(svg, /id="Stage-Word-Top"[^>]+x="276" y="200"[^>]+textLength="791"[^>]+font-size="180"[^>]*>SQUID<\/text>/);
+    const bottomGeometry = creativeFamily === "milestone_metric"
+      ? { x: -34, textLength: 1148 }
+      : creativeFamily === "product_proof"
+      ? { x: 74, textLength: 948 }
+      : creativeFamily === "status_progress"
+      ? { x: 4, textLength: 1100 }
+      : { x: -3, textLength: 1100 };
+    assert.match(
+      svg,
+      new RegExp(`id="Stage-Word-Bottom"[^>]+x="${bottomGeometry.x}" y="1088"[^>]+textLength="${bottomGeometry.textLength}"[^>]*>${contract.frameWord}<\\/text>`),
+    );
+    assert.match(svg, /id="Squid-Official-Form-Language" x="-352" y="-314" width="1784" height="1784"[^>]+opacity="\.84"[^>]+rotate\(82 540 540\)/);
+    assert.match(svg, /id="Squid-Official-Bubbles" x="708" y="130" width="430" height="430"/);
+    assert.match(svg, /id="Squid-Official-SQUIB" x="716" y="292" width="398" height="398"/);
+    assert.match(
+      svg,
+      new RegExp(`id="Brand-Logo" data-logo-variant="light"[^>]+x="44" y="24" width="148" height="83"[^>]+href="${SQUID_ASSETS.logoLight}"`),
+    );
+    assert.match(svg, /id="Headline-Line-1"[^>]+x="425"[^>]+text-anchor="middle"[^>]+font-family="Pretendard, sans-serif"[^>]+font-weight="650"/);
+    assert.match(svg, /id="Lime-Divider" x="359"[^>]+width="132" height="8"/);
+    assert.match(svg, /id="Support-Line-1"[^>]+x="425"[^>]+text-anchor="middle"[^>]+font-size="24"/);
+    assert.match(svg, /id="Public-Source-Metadata"/);
+    assert.match(svg, /id="Source-URL" x="90" y="790"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
+    assert.match(svg, /id="Date" x="760" y="790"[^>]+text-anchor="end"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
+    if (contract.hasMetric) {
+      assert.match(svg, /id="Metric-Line-1"[^>]+x="425" y="500"[^>]+text-anchor="middle"[^>]+font-size="166"[^>]*>5M<\/text>/);
+    } else {
+      assert.doesNotMatch(svg, /id="Metric"/);
+    }
+    const assetLayerIds = [
+      "Squid-Official-Form-Language",
+      "Squid-Official-Bubbles",
+      "Squid-Official-SQUIB",
+      "Brand-Logo",
+    ];
+    const assetLayerPositions = assetLayerIds.map((id) => svg.indexOf(`id="${id}"`));
+    assert.ok(assetLayerPositions.every((position) => position >= 0));
+    assert.deepEqual(assetLayerPositions, [...assetLayerPositions].sort((left, right) => left - right));
+    const renderedHeadlineLines = [...svg.matchAll(/id="Headline-Line-[0-9]+"[^>]*>([^<]+)<\/text>/g)]
+      .map((match) => match[1]);
+    assert.deepEqual(renderedHeadlineLines, contract.expectedHeadlineLines);
+    assert.doesNotMatch(svg, /CoinEasy|COINEASY|KOREA/);
+    assert.doesNotMatch(svg, /id="[^"]*(?:Card|Panel|Button|Dashboard|CTA)/);
+    assert.doesNotMatch(svg, /foreignObject|<style/);
+  }
+});
+
+test("keeps a brand-QA boundary Squid support line complete", () => {
+  const supportLine = "가".repeat(23);
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    headline: "한국 이용자를 위한 업데이트",
+    body_lines: [supportLine],
+    render_strategy: "generated_gtm",
+    creative_family: "editorial_big_type",
+  }, SQUID_ASSETS);
+
+  assert.match(svg, new RegExp(`>${supportLine}<\\/text>`));
+  assert.doesNotMatch(svg, /가+…/);
+});
+
+test("requires all four official stage assets for every generated Squid family", () => {
+  const generatedSpec = {
+    ...SPEC,
+    render_strategy: "generated_gtm",
+  };
+  const incompleteAssetSets = [
+    {
+      logoDark: SQUID_ASSETS.logoDark,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidSquib: SQUID_ASSETS.squidSquib,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidSquib: SQUID_ASSETS.squidSquib,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidSquib: SQUID_ASSETS.squidSquib,
+    },
+  ] as const;
+
+  for (const creativeFamily of [
+    "editorial_big_type",
+    "milestone_metric",
+    "status_progress",
+    "product_proof",
+  ] as const) {
+    const complete = buildEditableSvg("squid", "classic", {
+      ...generatedSpec,
+      creative_family: creativeFamily,
+      visual_metric: creativeFamily === "milestone_metric" ? "5M" : undefined,
+    }, SQUID_ASSETS);
+    assert.match(complete, /data-logo-variant="light"/);
+    assert.match(complete, /id="Squid-Official-Form-Language"/);
+
+    for (const incompleteAssets of incompleteAssetSets) {
+      assert.throws(
+        () => buildEditableSvg("squid", "classic", {
+          ...generatedSpec,
+          creative_family: creativeFamily,
+          visual_metric: creativeFamily === "milestone_metric" ? "5M" : undefined,
+        }, incompleteAssets),
+        new RegExp(`official_squid_generated_assets_required:${creativeFamily}`),
+      );
+    }
+  }
+});
+
+test("uses official form language for product proof and fails closed for worldbuilding", () => {
+  const product = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    render_strategy: "generated_gtm",
+    creative_family: "product_proof",
+  }, SQUID_ASSETS);
+  assert.match(product, /id="Squid-Official-Form-Language"/);
+  assert.doesNotMatch(product, /Mock|Placeholder|Wireframe|Dashboard/);
+
+  assert.throws(
+    () => buildEditableSvg("squid", "classic", {
+      ...SPEC,
+      render_strategy: "generated_gtm",
+      creative_family: "worldbuilding",
+    }, SQUID_ASSETS),
+    /approved_squid_worldbuilding_assets_required/,
+  );
+});
+
+test("keeps Squid source-remix SVG output byte-identical and source-native", () => {
+  const remixSpec = {
+    ...SPEC,
+    source_image_width: 1600,
+    source_image_height: 900,
+    output_width: 1200,
+    output_height: 675,
+    output_policy: "official_source_native_v1",
+  };
+  const assets = { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" };
+  const beforeRoutingFields = buildEditableSvg("squid", "remix", remixSpec, assets);
+  const routedSourceRemix = buildEditableSvg("squid", "remix", {
+    ...remixSpec,
+    render_strategy: "source_remix",
+    creative_family: "product_proof",
+  }, assets);
+
+  assert.equal(routedSourceRemix, beforeRoutingFields);
+  assert.match(routedSourceRemix, /width="1200" height="675" viewBox="0 0 1200 675"/);
+  assert.doesNotMatch(routedSourceRemix, /Squid-Generated-|COINEASY|KOREA/);
+});
+
+test("fails closed when Squid classic official assets are incomplete", () => {
+  assert.throws(
+    () => buildEditableSvg("squid", "classic", SPEC, { logoLight: "data:image/png;base64,bG9nbw==" }),
+    /official_squid_classic_assets_required/,
+  );
+});
+
+test("fits an unbroken Korean Squid headline inside the classic editable safe width", () => {
+  const headline = "한국사용자에게정확하고자연스럽게전달하는업데이트입니다";
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    headline,
+    body_lines: ["공식 원문에서 확인한 내용이에요"],
+  }, {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  });
+
+  const lines = [...svg.matchAll(/id="Headline-Line-[0-9]+"[^>]*>([^<]*)<\/text>/g)]
+    .map(match => match[1]);
+  assert.deepEqual(lines, ["한국사용자에게정확하고자연스", "럽게전달하는업데이트입니다"]);
+  assert.doesNotMatch(lines.join(""), /…/);
+  assert.match(svg, /font-size="64"/);
+});
+
+test("canonicalizes generic Squid editorial and signal requests to the official classic", () => {
+  const assets = {
+    logoLight: "data:image/png;base64,bG9nbw==",
+    squidFormLanguage: "data:image/png;base64,Zm9ybQ==",
+    squidSquib: "data:image/png;base64,c3F1aWI=",
+    squidBubbles: "data:image/png;base64,YnViYmxlcw==",
+  };
+  for (const style of ["editorial", "signal"] as const) {
+    assert.equal(effectiveEditableTemplateStyle("squid", style), "classic");
+    const svg = buildEditableSvg("squid", style, SPEC, assets);
+    assert.match(svg, /Localized News Card · Figma Editable · classic/);
+    assert.match(svg, /id="Squid-Figma-Daily-News"/);
+    assert.doesNotMatch(svg, /Main-Card-Background|Editorial-Grid|Brand-Rail|Body-Item-1-Background/);
+  }
+  assert.equal(effectiveEditableTemplateStyle("yellow", "editorial"), "editorial");
+});
+
 test("creates a Squid official-creative translation layer without extra card chrome", () => {
   const svg = buildEditableSvg("squid", "remix", {
     ...SPEC,
@@ -94,6 +408,10 @@ test("creates a Squid official-creative translation layer without extra card chr
     source_crop_bottom: 70,
     source_image_width: 1600,
     source_image_height: 900,
+    output_width: 1200,
+    output_height: 675,
+    output_policy: "official_source_native_v1",
+    source_background_color: "#B881DF",
     translation_regions: [{
       source_text: "Need XRP anywhere?",
       text: "어디서나 XRP를 사용하세요",
@@ -116,8 +434,10 @@ test("creates a Squid official-creative translation layer without extra card chr
     sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
   });
   assert.match(svg, /id="Source-Visual"/);
+  assert.match(svg, /id="Canvas-Background"[^>]+fill="#B881DF"/);
   assert.match(svg, /href="data:image\/jpeg;base64,aW1hZ2U="/);
-  assert.match(svg, /<image id="Source-Visual" x="0" y="236\.25" width="1080" height="607\.5"/);
+  assert.match(svg, /<svg[^>]+width="1200" height="675" viewBox="0 0 1200 675"/);
+  assert.match(svg, /<image id="Source-Visual" x="0" y="0" width="1200" height="675"/);
   assert.match(svg, /id="Korean-Translation-Layer"/);
   assert.match(svg, /id="Korean-Translation-Region-1-Text-Line-1"/);
   assert.match(svg, /어디서나 XRP를/);
@@ -129,6 +449,21 @@ test("creates a Squid official-creative translation layer without extra card chr
   assert.doesNotMatch(svg, /Source-Text-Replacement|Source-Text-Clean-Patch|Korean-Translation-Region-1-Clip|clipPath|clip-path|<mask|filter=|feGaussianBlur/);
   assert.doesNotMatch(svg, /Korean-Subtitle-Scrim|Source-Visual-Crop|Translation-Footer|Korean-Translation-Footer|Blur-Patch|Feather-Mask/);
   assert.doesNotMatch(svg, /Localized-Content-Panel|Official-Logo-Safe-Area|Brand-Logo|Label-Text|CoinEasy|COINEASY/i);
+});
+
+test("does not trust manipulated Squid source-native SVG dimensions", () => {
+  const svg = buildEditableSvg("squid", "remix", {
+    ...SPEC,
+    source_image_width: 1600,
+    source_image_height: 900,
+    output_width: 1080,
+    output_height: 1080,
+    output_policy: "official_source_native_v1",
+  }, {
+    sourceImage: "data:image/jpeg;base64,aW1hZ2U=",
+  });
+  assert.match(svg, /<svg[^>]+width="1080" height="1080" viewBox="0 0 1080 1080"/);
+  assert.match(svg, /<image id="Source-Visual" x="0" y="236\.25" width="1080" height="607\.5"/);
 });
 
 test("keeps explicit Squid translation line breaks as separate editable text layers", () => {

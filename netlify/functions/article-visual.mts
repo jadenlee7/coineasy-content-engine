@@ -108,18 +108,25 @@ export default async (req: Request, context: Context): Promise<Response> => {
   try {
     logoDataUrl = await fetchOfficialBrandLogoDataUrl(
       clientId,
-      visualId === "hero" ? articleHeroLogoVariant(clientId) : "dark",
+      visualId === "hero" || clientId === "squid"
+        ? articleHeroLogoVariant(clientId)
+        : "dark",
       siteOrigin,
     );
   } catch {
     return jsonError("official_logo_unavailable", 503);
   }
   let heroAssets: ArticleHeroBrandAssets | null = null;
-  if (visualId === "hero") {
+  if (visualId === "hero" || clientId === "squid") {
     try {
       heroAssets = await fetchOfficialArticleHeroAssetDataUrls(clientId, siteOrigin);
     } catch {
-      return jsonError("official_article_hero_assets_unavailable", 503);
+      return jsonError(
+        visualId === "hero"
+          ? "official_article_hero_assets_unavailable"
+          : "official_article_inline_assets_unavailable",
+        503,
+      );
     }
   }
 
@@ -139,7 +146,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       visual,
       sourceUrl,
       date,
-    }, logoDataUrl);
+    }, logoDataUrl, heroAssets);
   }
 
   const filename = articleVisualFilename(

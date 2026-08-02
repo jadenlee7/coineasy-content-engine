@@ -22,6 +22,7 @@ import base64
 import copy
 import json
 import math
+import re
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -39,13 +40,22 @@ from core.llm.news_card_pipeline import (
     _text_width_units,
     generate_news_card_spec,
 )
-from core.renderers.playwright_renderer import render_png, EDU_CAROUSEL_SIZE, NEWS_CARD_1x1
-from core.sources.source_image import SourceImageError, fetch_source_image
+from core.renderers.playwright_renderer import (
+    EDU_CAROUSEL_SIZE,
+    NEWS_CARD_1x1,
+    TranslationLayoutError,
+    render_png,
+)
+from core.sources.source_image import (
+    SourceImageError,
+    fetch_source_image,
+    validate_source_image_url,
+)
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
     clean_source_text,
-    crop_confirmed_lower_caption,
 )
+from core.squid_visual_style import classify_squid_visual_style
 from core.sources.visual_localization_cache import (
     discard_visual_localization,
     get_visual_localization,
@@ -75,6 +85,12 @@ NEWS_CARD_TEMPLATES = {
     "editorial": "news/news_editorial_card.html",
     "signal": "news/news_signal_card.html",
 }
+
+_SQUID_BRAND_TOKENS_VERSION = "squid-brand-tokens@1"
+_SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@3"
+_SQUID_SOURCE_TEMPLATE_VERSION = "squid-source-remix@1"
+_SQUID_GENERATED_ASSET_PACK_VERSION = "squid-local-approved@1"
+_SQUID_SOURCE_ASSET_PACK_VERSION = "official-source-media@1"
 
 # OpenCV cleanup is CPU-bound. A dedicated single-worker executor keeps it off
 # the event loop, bounds Railway CPU/memory, and stays safe across test/worker
@@ -319,6 +335,8 @@ class NewsCardResult:
     template_style: str
     requested_template_style: str
     source_image_used: bool
+    source_image_url: str
+    source_image_sha256: str
     source_visual_path: Optional[str]
     figma_template: Optional[dict]
     manifest_path: str
@@ -508,7 +526,11 @@ async def generate_news_card(
     brand_review_guidance: Mapping[str, object] | None = None,
 ) -> NewsCardResult:
     """
-    End-to-end async: source → news_card spec → single 1080x1080 PNG + manifest.
+    End-to-end async: source → news_card spec → one PNG + manifest.
+
+    Generated cards remain 1080x1080. A Squid official-source remix instead
+    keeps the source aspect ratio so an X banner is not reduced to a small
+    letterboxed image inside a square canvas.
     Must be awaited inside an asyncio event loop (e.g. FastAPI async endpoint).
     """
     start = datetime.now(timezone.utc)
@@ -528,11 +550,21 @@ async def generate_news_card(
 
     requested_template_style = template_style
     actual_template_style = template_style
+    if client_id == "squid" and requested_template_style in {"editorial", "signal"}:
+        # Squid's generated family has one reviewed source-free composition.
+        # Keep legacy/API selections readable, but never route them into the
+        # shared publisher-looking editorial or signal templates.
+        actual_template_style = "classic"
     source_image = None
+    source_image_canonical_url = ""
+    source_image_sha256 = ""
     if requested_template_style == "remix":
         if source_image_url:
             try:
-                source_image = await fetch_source_image(source_image_url)
+                canonical_image_url = validate_source_image_url(source_image_url)
+                source_image = await fetch_source_image(canonical_image_url)
+                source_image_canonical_url = canonical_image_url
+                source_image_sha256 = source_image.sha256
                 print(
                     f"[{client_id}] Source visual ready: "
                     f"{source_image.width}x{source_image.height}"
@@ -614,14 +646,78 @@ async def generate_news_card(
         traceback.print_exc()
         raise
 
+    if client_id == "squid":
+        # The browser and LLM cannot choose a visual family. Bind it to the
+        # immutable source and the already-verified media decision so an exact
+        # official creative always wins over generated Korean GTM artwork.
+        squid_visual = classify_squid_visual_style(
+            source_content,
+            source_url=source_url,
+            has_official_media=(
+                actual_template_style == "remix" and source_image is not None
+            ),
+        )
+        if squid_visual.manual_review_required:
+            raise ValueError(
+                "Squid text-only worldbuilding requires approved official media"
+            )
+        expected_strategy = (
+            "source_remix" if actual_template_style == "remix" else "generated_gtm"
+        )
+        if squid_visual.channel != expected_strategy:
+            raise ValueError("Squid visual routing is inconsistent with the render path")
+        spec.update(squid_visual.as_spec_metadata())
+        licensed_display_font = config.font_display_file_path
+        spec.update({
+            "brand_tokens_version": _SQUID_BRAND_TOKENS_VERSION,
+            "template_version": (
+                _SQUID_SOURCE_TEMPLATE_VERSION
+                if actual_template_style == "remix"
+                else _SQUID_GENERATED_TEMPLATE_VERSION
+            ),
+            "asset_pack_version": (
+                _SQUID_SOURCE_ASSET_PACK_VERSION
+                if actual_template_style == "remix"
+                else _SQUID_GENERATED_ASSET_PACK_VERSION
+            ),
+            "font_status": (
+                "bagoss_condensed_licensed"
+                if licensed_display_font is not None
+                and licensed_display_font.is_file()
+                else "pretendard_fallback"
+            ),
+        })
+
     print(f"  → label: {spec['label']} · theme: {spec['theme']}")
     visual_cache_hit = spec.pop("_visual_localization_cache_hit", False) is True
 
     # Renderer/editable SVG need the prepared image aspect ratio so LLM-provided
     # translation regions stay image-relative instead of drifting into letterbox space.
+    spec.pop("source_background_color", None)
+    spec.pop("output_policy", None)
+    spec.pop("output_width", None)
+    spec.pop("output_height", None)
+    render_viewport = NEWS_CARD_1x1
+    render_scale_factor = 2
     if source_image is not None:
         spec["source_image_width"] = source_image.width
         spec["source_image_height"] = source_image.height
+        if re.fullmatch(r"#[0-9A-F]{6}", source_image.background_color or ""):
+            spec["source_background_color"] = source_image.background_color
+        if client_id == "squid" and actual_template_style == "remix":
+            # Prepared X media is already bounded. Keep the complete source
+            # composition, reducing only oversized assets to a 1200 px long
+            # edge to stay comfortably inside the synchronous PNG budget.
+            scale = min(1.0, 1200.0 / max(source_image.width, source_image.height))
+            render_viewport = (
+                max(1, round(source_image.width * scale)),
+                max(1, round(source_image.height * scale)),
+            )
+            spec["output_width"], spec["output_height"] = render_viewport
+            spec["output_policy"] = "official_source_native_v1"
+            # The prepared source pixels are already the authoritative X
+            # creative. Do not upscale them through the default 2x screenshot.
+            render_scale_factor = 1
 
     # Source copy is baked into the raster. For Squid, remove the audited
     # lettering before either renderer sees the image. A cleanup failure is
@@ -645,26 +741,19 @@ async def generate_news_card(
         aligned_regions = None
         try:
             loop = asyncio.get_running_loop()
-            try:
-                cleanup = await loop.run_in_executor(
-                    _SOURCE_TEXT_CLEANUP_EXECUTOR,
-                    clean_source_text,
-                    source_image,
-                    spec["translation_regions"],
+            cleanup = await loop.run_in_executor(
+                _SOURCE_TEXT_CLEANUP_EXECUTOR,
+                clean_source_text,
+                source_image,
+                spec["translation_regions"],
+            )
+            if (
+                cleanup.image.width != source_image.width
+                or cleanup.image.height != source_image.height
+            ):
+                raise SourceTextCleanupError(
+                    "cleaned source image dimensions must match the original"
                 )
-            except SourceTextCleanupError as cleanup_error:
-                try:
-                    cleanup = await loop.run_in_executor(
-                        _SOURCE_TEXT_CLEANUP_EXECUTOR,
-                        crop_confirmed_lower_caption,
-                        source_image,
-                        spec["translation_regions"],
-                    )
-                except SourceTextCleanupError:
-                    # Keep the primary cleanup reason in logs. The crop path is
-                    # merely a narrowly gated recovery strategy, not evidence
-                    # that a cached visual placement is valid on its own.
-                    raise cleanup_error
             aligned_regions = _align_regions_to_detected_text(
                 spec["translation_regions"],
                 getattr(cleanup, "detected_regions", ()),
@@ -737,16 +826,10 @@ async def generate_news_card(
                             f"[{client_id}] ⚠ Visual localization cache write skipped: "
                             f"{type(exc).__name__}"
                         )
-                if getattr(cleanup, "strategy", "inpaint") == "lower_crop":
-                    print(
-                        f"[{client_id}] Source lower-caption crop fallback: "
-                        f"{cleanup.image.width}x{cleanup.image.height}"
-                    )
-                else:
-                    print(
-                        f"[{client_id}] Source lettering removed: "
-                        f"{cleanup.masked_pixels} pixels"
-                    )
+                print(
+                    f"[{client_id}] Source lettering removed: "
+                    f"{cleanup.masked_pixels} pixels"
+                )
 
     # Audit evidence is internal even if a future path bypasses cleanup. Keep
     # every public consumer (PNG, editable SVG, manifest, API result) clean.
@@ -768,7 +851,40 @@ async def generate_news_card(
             slots=render_slots,
             output_path=output_png,
             theme=spec["theme"],
-            viewport=NEWS_CARD_1x1,
+            viewport=render_viewport,
+            device_scale_factor=render_scale_factor,
+        )
+    except TranslationLayoutError as exc:
+        if not (
+            client_id == "squid"
+            and actual_template_style == "remix"
+            and source_image is not None
+            and source_visual_path is not None
+        ):
+            raise
+        print(
+            f"[{client_id}] ⚠ Korean replacement layout rejected safely: {exc}"
+        )
+        await _unlink_best_effort(source_visual_path)
+        source_visual_path = None
+        render_source_image = source_image
+        spec["source_text_visible"] = False
+        spec["translation_regions"] = []
+        spec["visual_localization_status"] = "unsafe_placement"
+        spec["source_image_width"] = source_image.width
+        spec["source_image_height"] = source_image.height
+        if visual_cache_key is not None:
+            discard_visual_localization(visual_cache_key)
+        fallback_slots = dict(spec)
+        fallback_slots["source_image_data_url"] = source_image.data_url
+        await render_png(
+            client_id=client_id,
+            template_path=template_path,
+            slots=fallback_slots,
+            output_path=output_png,
+            theme=spec["theme"],
+            viewport=render_viewport,
+            device_scale_factor=render_scale_factor,
         )
     except Exception as e:
         print(f"  ✗ Render failed: {type(e).__name__}: {e}")
@@ -781,10 +897,14 @@ async def generate_news_card(
     # Figma is an explicit approval registry, not a "newest frame wins" source.
     # Only an approved [KEEP] frame whose mapped renderer style was actually
     # used is attached to the immutable generation result.
-    figma_template = approved_figma_template(
-        client_id,
-        content_kind="daily_news",
-        template_style=actual_template_style,
+    figma_template = (
+        None
+        if client_id == "squid" and "creative_family" in spec
+        else approved_figma_template(
+            client_id,
+            content_kind="daily_news",
+            template_style=actual_template_style,
+        )
     )
     manifest = {
         "client_id": client_id,
@@ -793,7 +913,8 @@ async def generate_news_card(
         "generated_at": start.isoformat(),
         "source_type": source_type,
         "source_url": source_url,
-        "source_image_url": source_image_url,
+        "source_image_url": source_image_canonical_url,
+        "source_image_sha256": source_image_sha256,
         "source_image_used": source_image is not None,
         "source_visual_path": str(source_visual_path) if source_visual_path else None,
         "source_content_preview": source_content[:200],
@@ -819,6 +940,8 @@ async def generate_news_card(
         template_style=actual_template_style,
         requested_template_style=requested_template_style,
         source_image_used=source_image is not None,
+        source_image_url=source_image_canonical_url,
+        source_image_sha256=source_image_sha256,
         source_visual_path=str(source_visual_path) if source_visual_path else None,
         figma_template=figma_template,
         manifest_path=str(manifest_path),

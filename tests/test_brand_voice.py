@@ -53,6 +53,11 @@ def test_news_card_prompt_includes_official_voice_lock_and_factual_boundary():
     assert "Mirror the original post's brevity" in build_brand_voice_prompt(config, "x")
     assert "Need XRP anywhere?" in prompt
     assert "Squid Router" not in prompt
+    assert "Squid Korean GTM Card Rules" in prompt
+    assert "Natural 해요체 is allowed" in prompt
+    assert '"CANTON × SQUID"' in prompt
+    assert "간편하게 탐색할 수 있습니다" in prompt
+    assert "maximum two visual lines" in prompt
 
 
 def test_runtime_references_are_explicitly_style_only_and_delimited():
@@ -120,6 +125,10 @@ def test_article_prompt_uses_distinct_client_editorial_and_visual_direction():
         assert "Channel rule (article):" in prompt
         assert "Source fidelity target for this output: 92%" in prompt
         assert all(phrase in prompt for phrase in expected_phrases)
+        if client_id == "squid":
+            assert "Squid inline visual override" in prompt
+            assert "20 Korean characters or fewer" in prompt
+            assert "exactly 2 points per visual" in prompt
 
 
 def test_generation_fails_closed_when_channel_brand_direction_is_missing():
