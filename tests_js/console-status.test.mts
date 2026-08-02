@@ -37,8 +37,8 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /prepareArticleBanner\(articlePayload, requestSessionEpoch, requestContext\)/);
   assert.match(consoleHtml, /canvas\.width = width/);
   assert.match(consoleHtml, /canvas\.height = height/);
-  assert.match(consoleHtml, /배너 PNG 저장/);
-  assert.match(consoleHtml, /Figma 배너 SVG/);
+  assert.match(consoleHtml, /미승인 배너 PNG 참고본/);
+  assert.match(consoleHtml, /미승인 배너 SVG 참고본/);
   assert.match(consoleHtml, /data-article-visual-png/);
   assert.match(consoleHtml, /비주얼 3장/);
   assert.match(consoleHtml, /id="article-markdown"/);
@@ -49,6 +49,7 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
   assert.equal((consoleHtml.match(/"Idempotency-Key": generationRequestId/g) || []).length, 3);
   assert.match(consoleHtml, /state\.generationRequest = null/);
+  assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
 });
 
@@ -217,6 +218,14 @@ test("keeps mock tutorials visibly marked as samples that must not be published"
   assert.match(consoleHtml, /승인·게시할 수 있는 완성본이 아닙니다/);
 });
 
+test("labels every pre-approval tutorial and article output as review-only", () => {
+  assert.match(consoleHtml, /미승인 검토용 튜토리얼/);
+  assert.match(consoleHtml, /미승인 PNG 참고본/);
+  assert.match(consoleHtml, /이중 사실 확인 승인 전에는 PNG를 게시하지 마세요/);
+  assert.match(consoleHtml, /미승인 검토용 Railway 원고/);
+  assert.match(consoleHtml, /현재 원고와 게시 문구도 이중 사실 확인 승인 전에는 사용할 수 없습니다/);
+});
+
 test("counts X copy with the same weighted Unicode ranges as the server", () => {
   const functionSource = consoleHtml.match(
     /function xWeightedLength\(value\) \{[\s\S]*?\n      \}(?=\n\n      function updateCopyCounts)/,
@@ -244,7 +253,7 @@ test("explains durable tutorial storage setup and failures to team members", () 
   assert.match(consoleHtml, /tutorial_deadline_exceeded/);
   assert.match(consoleHtml, /news_card_deadline_exceeded/);
   assert.match(consoleHtml, /article_deadline_exceeded/);
-  assert.match(consoleHtml, /payload\.error\.endsWith\("_idempotency_conflict"\)\) state\.generationRequest = null/);
+  assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /confirmResultReset\(\)/);
 });
 

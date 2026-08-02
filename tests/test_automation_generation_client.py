@@ -20,6 +20,53 @@ SOURCE_IMAGE_URL = "https://pbs.twimg.com/media/source.jpg?name=orig"
 SOURCE_IMAGE_SHA256 = "a" * 64
 
 
+def generation_capabilities() -> dict:
+    return {
+        "schema_version": "1.0",
+        "generation_contract": "double-fact-check@1",
+        "generated_content_kinds": ["daily_news", "article", "tutorial"],
+        "tutorial_claims_contract": "lessons@1",
+    }
+
+
+def capable_transport(handler) -> httpx.MockTransport:
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/studio-capabilities":
+            assert request.headers["x-studio-automation-key"] == AUTOMATION_TOKEN
+            return httpx.Response(200, json=generation_capabilities())
+        return handler(request)
+
+    return httpx.MockTransport(wrapped)
+
+
+def fact_check(content_kind: str) -> dict:
+    return {
+        "schema_version": "1.0",
+        "policy_version": "double-fact-check@1",
+        "content_kind": content_kind,
+        "status": "review",
+        "human_review_required": True,
+        "input_sha256": "a" * 64,
+        "output_sha256": "b" * 64,
+        "checks": [
+            {
+                "id": "source_evidence",
+                "status": "review",
+                "label": "Source evidence",
+                "detail": "Human verification is required.",
+                "metrics": {},
+            },
+            {
+                "id": "output_claims",
+                "status": "pass",
+                "label": "Output claims",
+                "detail": "Mechanical anchors were recorded.",
+                "metrics": {},
+            },
+        ],
+    }
+
+
 @pytest.mark.asyncio
 async def test_daily_news_uses_review_generation_route_and_classic_by_default():
     captured: dict = {}
@@ -32,12 +79,13 @@ async def test_daily_news_uses_review_generation_route_and_classic_by_default():
             "asset_ids": [ASSET_ID],
             "storage_backend": "supabase",
             "reused": False,
+            "fact_check": fact_check("daily_news"),
         })
 
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     result = await client.generate(
         client_id="squid",
@@ -78,12 +126,13 @@ async def test_squid_remix_forwards_only_the_official_x_image():
             "source_image_url": SOURCE_IMAGE_URL,
             "source_media_status": "present",
             "source_image_sha256": SOURCE_IMAGE_SHA256,
+            "fact_check": fact_check("daily_news"),
         })
 
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     await client.generate(
         client_id="squid",
@@ -114,12 +163,13 @@ async def test_squid_remix_rejects_a_result_without_the_pinned_source_proof():
             "source_image_url": SOURCE_IMAGE_URL,
             "source_media_status": "present",
             "source_image_sha256": SOURCE_IMAGE_SHA256,
+            "fact_check": fact_check("daily_news"),
         })
 
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     with pytest.raises(GenerationRequestError, match="studio_generation_invalid_response") as error:
         await client.generate(
@@ -135,6 +185,37 @@ async def test_squid_remix_rejects_a_result_without_the_pinned_source_proof():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("report", [None, fact_check("article")])
+async def test_automation_retries_when_generation_lacks_the_current_fact_check(report):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        body = {
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+        }
+        if report is not None:
+            body["fact_check"] = report
+        return httpx.Response(200, json=body)
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(GenerationRequestError, match="studio_generation_invalid_response") as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="A sufficiently long official update.",
+            source_url="https://x.com/Yellow/status/123",
+        )
+    assert error.value.retryable is True
+
+
+@pytest.mark.asyncio
 async def test_complete_note_can_use_article_route_without_assets():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/article/yellow"
@@ -144,12 +225,13 @@ async def test_complete_note_can_use_article_route_without_assets():
             "asset_ids": [],
             "storage_backend": "supabase",
             "reused": True,
+            "fact_check": fact_check("article"),
         })
 
     client = StudioGenerationClient(
         base_url="http://localhost:8888",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     result = await client.generate(
         client_id="yellow",
@@ -174,12 +256,13 @@ async def test_automation_forwards_bounded_style_pack_separately_from_source():
             "asset_ids": [ASSET_ID],
             "storage_backend": "supabase",
             "reused": False,
+            "fact_check": fact_check("daily_news"),
         })
 
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     reference = StyleReference(
         source_item_id="44444444-4444-4444-8444-444444444444",
@@ -216,11 +299,49 @@ def test_generation_target_and_token_are_fail_closed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (404, {"error": "not_found"}),
+        (200, {"schema_version": "1.0", "generation_contract": "old-contract@1"}),
+    ],
+)
+async def test_generation_preflight_blocks_mutation_until_the_current_contract_exists(
+    status_code,
+    body,
+):
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(status_code, json=body)
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_contract_unavailable",
+    ) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="A sufficiently long official update.",
+            source_url="https://x.com/Yellow/status/123",
+        )
+    assert error.value.retryable is True
+    assert methods == ["GET"]
+
+
+@pytest.mark.asyncio
 async def test_generation_rejects_redirects_and_untracked_results():
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(
+        transport=capable_transport(
             lambda _request: httpx.Response(302, headers={"location": "https://attacker.example"})
         ),
     )
@@ -237,7 +358,7 @@ async def test_generation_rejects_redirects_and_untracked_results():
     invalid = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={
+        transport=capable_transport(lambda _request: httpx.Response(200, json={
             "content_item_id": "44444444-4444-4444-8444-444444444444",
             "content_version_id": VERSION_ID,
             "asset_ids": [ASSET_ID],
@@ -278,7 +399,7 @@ async def test_generation_does_not_expose_provider_error_text():
     client = StudioGenerationClient(
         base_url="https://coineasy-newscard.netlify.app",
         automation_token=AUTOMATION_TOKEN,
-        transport=httpx.MockTransport(handler),
+        transport=capable_transport(handler),
     )
     with pytest.raises(GenerationRequestError) as error:
         await client.generate(

@@ -11,6 +11,10 @@ import {
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
 import { evaluateBrandQuality } from "./_shared/brand-quality.mts";
 import {
+  evaluateFactCheck,
+  validatedFactCheckReport,
+} from "./_shared/fact-check.mts";
+import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
 } from "./_shared/studio-session.mts";
@@ -451,6 +455,10 @@ async function catalogRetryResponse(
   if (existing.assets.length !== 1) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
+  const factCheck = validatedFactCheckReport(existing.generationMeta.fact_check, "daily_news");
+  if (!factCheck) {
+    throw new ContentCatalogError("fact_check_regeneration_required");
+  }
   const replayAsset = existing.assets[0];
   if (
     typeof replayAsset.byteSize !== "number"
@@ -547,6 +555,7 @@ async function catalogRetryResponse(
     mock_mode: existing.generationMeta.mock_mode === true,
     channel_copy: existing.channelCopy,
     brand_qa: existing.generationMeta.brand_qa || null,
+    fact_check: factCheck,
     output_width: replayDimensions.width,
     output_height: replayDimensions.height,
     image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
@@ -752,6 +761,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
           || Date.now() >= requestDeadline - 100;
         const status = deadlineExceeded
           ? 504
+          : code === "fact_check_regeneration_required"
+            ? 409
           : code === "generated_image_too_large"
             ? 502
             : 503;
@@ -831,6 +842,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
         || Date.now() >= requestDeadline - 100;
       const status = deadlineExceeded
         ? 504
+        : code === "fact_check_regeneration_required"
+          ? 409
         : code === "generated_image_too_large"
           ? 502
           : 503;
@@ -1022,6 +1035,29 @@ export default async (req: Request, context: Context): Promise<Response> => {
       sourceLogoVisible: resultSpec.source_logo_visible,
       visualLocalizationStatus: resultSpec.visual_localization_status,
     });
+    const factCheck = evaluateFactCheck({
+      contentKind: "daily_news",
+      source: resolvedSource,
+      publicText: {
+        label: resultSpec.label,
+        headline: resultSpec.headline,
+        body_lines: resultSpec.body_lines,
+        visual_metric: resultSpec.visual_metric,
+        date: resultSpec.date,
+        source_url: resultSpec.source_url,
+        translation_regions: Array.isArray(resultSpec.translation_regions)
+          ? resultSpec.translation_regions.map((region) => {
+            const value = objectValue(region);
+            return { source_text: value.source_text, text: value.text };
+          })
+          : [],
+      },
+      channelCopy,
+      artifactSha256: [
+        createHash("sha256").update(Buffer.from(imageBytes)).digest("hex"),
+      ],
+      brandQa,
+    });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
     const reviewGuidanceAudit = {
       ...brandReviewGuidanceAudit(brandReviewGuidance),
@@ -1090,6 +1126,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           figma_template_version: figmaTemplate?.version || null,
           ...squidCreativeAudit,
           brand_qa: brandQa,
+          fact_check: factCheck,
         },
         asset: storedAsset,
         promptVersion: clientId === "squid" ? "news-card@3" : "news-card@2",
@@ -1113,6 +1150,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         mock_mode: mockMode,
         channel_copy: channelCopy,
         brand_qa: brandQa,
+        fact_check: factCheck,
         output_width: imageDimensions.width,
         output_height: imageDimensions.height,
         image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
@@ -1175,6 +1213,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
             || Date.now() >= requestDeadline - 100;
           const status = deadlineExceeded
             ? 504
+            : code === "fact_check_regeneration_required"
+              ? 409
             : code === "generated_image_too_large"
               ? 502
               : 503;

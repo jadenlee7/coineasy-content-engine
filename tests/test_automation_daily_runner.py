@@ -33,6 +33,7 @@ from core.batch.policy import BatchPolicy
 from core.batch.repository import BatchRepositoryError
 from core.batch.settings import BatchSettings
 from core.sources.x_client import XTransientError
+from core.squid_visual_style import SQUID_VISUAL_POLICY_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -511,10 +512,21 @@ def test_request_uuid_is_stable_and_bound_to_mode():
         "official-x-review:v1:squid:"
         "22222222-2222-4222-8222-222222222222:daily_news",
     ))
+    assert squid == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v3:double-fact-check@1:"
+        f"{SQUID_VISUAL_POLICY_VERSION}:squid:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
+    ))
     assert squid_article == str(uuid.uuid5(
         uuid.UUID(WORKSPACE_ID),
-        "official-x-review:v1:squid:"
+        "official-x-review:v2:double-fact-check@1:squid:"
         "22222222-2222-4222-8222-222222222222:article",
+    ))
+    assert first == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v2:double-fact-check@1:yellow:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
     ))
 
 

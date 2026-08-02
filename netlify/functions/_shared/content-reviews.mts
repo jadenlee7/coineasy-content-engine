@@ -18,16 +18,30 @@ export const REVIEW_REASON_CODES = [
 
 export type ReviewReasonCode = typeof REVIEW_REASON_CODES[number];
 export type StudioReviewDecision = "approved" | "rejected";
+export const FACT_CHECK_POLICY_VERSION = "double-fact-check@1" as const;
+
+export type StudioFactCheckAttestation = {
+  policyVersion: typeof FACT_CHECK_POLICY_VERSION;
+  sourceFactsVerified: boolean;
+  outputClaimsVerified: boolean;
+};
+
+export type PersistedFactCheckAttestation = {
+  fact_check_policy_version: typeof FACT_CHECK_POLICY_VERSION | null;
+  source_facts_verified: boolean;
+  output_claims_verified: boolean;
+};
 
 export type StudioReviewInput = {
   contentVersionId: string;
   decision: StudioReviewDecision;
   reasonCodes: ReviewReasonCode[];
   comment: string | null;
+  factCheck: StudioFactCheckAttestation | null;
   idempotencyKey: string;
 };
 
-export type ContentReviewSummary = {
+export type ContentReviewSummary = PersistedFactCheckAttestation & {
   approval_id: string;
   content_version_id: string;
   decision: StudioReviewDecision | "commented";
@@ -94,6 +108,32 @@ function validReasonCodes(value: unknown, maximum = 5): value is ReviewReasonCod
     && value.every((code) => typeof code === "string" && REASON_CODES.has(code));
 }
 
+function persistedFactCheckAttestation(
+  value: Record<string, unknown>,
+  allowMissing = false,
+): PersistedFactCheckAttestation {
+  const policyVersion = value.fact_check_policy_version;
+  const sourceFactsVerified = value.source_facts_verified;
+  const outputClaimsVerified = value.output_claims_verified;
+  const normalizedPolicyVersion = allowMissing && policyVersion === undefined ? null : policyVersion;
+  const normalizedSourceFactsVerified = allowMissing && sourceFactsVerified === undefined
+    ? false
+    : sourceFactsVerified;
+  const normalizedOutputClaimsVerified = allowMissing && outputClaimsVerified === undefined
+    ? false
+    : outputClaimsVerified;
+  if (
+    !(normalizedPolicyVersion === null || normalizedPolicyVersion === FACT_CHECK_POLICY_VERSION)
+    || typeof normalizedSourceFactsVerified !== "boolean"
+    || typeof normalizedOutputClaimsVerified !== "boolean"
+  ) throw new ContentReviewError("invalid_content_review_response");
+  return {
+    fact_check_policy_version: normalizedPolicyVersion,
+    source_facts_verified: normalizedSourceFactsVerified,
+    output_claims_verified: normalizedOutputClaimsVerified,
+  };
+}
+
 function validateReviewSummary(value: unknown): ContentReviewSummary | null {
   if (value === null) return null;
   const row = objectValue(value);
@@ -117,6 +157,7 @@ function validateReviewSummary(value: unknown): ContentReviewSummary | null {
     comment: row.comment as string | null,
     reviewer_source: row.reviewer_source as ContentReviewSummary["reviewer_source"],
     created_at: row.created_at,
+    ...persistedFactCheckAttestation(row, true),
   };
 }
 
@@ -222,6 +263,9 @@ async function rpc(
     if (message.includes("not found")) {
       throw new ContentReviewError("library_item_not_found");
     }
+    if (message.includes("fact check") || message.includes("fact-check") || message.includes("attestation")) {
+      throw new ContentReviewError("invalid_fact_check_attestation");
+    }
     if (
       message.includes("invalid")
       || message.includes("requires a reason")
@@ -254,17 +298,39 @@ export async function recordStudioContentReview(
   reason_codes: ReviewReasonCode[];
   created_at: string;
   reused: boolean;
-}> {
-  const raw = await rpc(config, "record_studio_content_review", {
+} & PersistedFactCheckAttestation> {
+  const submittedFactCheck = input.factCheck ?? null;
+  const factCheck = submittedFactCheck || {
+    policyVersion: FACT_CHECK_POLICY_VERSION,
+    sourceFactsVerified: false,
+    outputClaimsVerified: false,
+  };
+  if (
+    (submittedFactCheck !== null && submittedFactCheck.policyVersion !== FACT_CHECK_POLICY_VERSION)
+    || typeof factCheck.sourceFactsVerified !== "boolean"
+    || typeof factCheck.outputClaimsVerified !== "boolean"
+    || (input.decision === "approved" && (
+      factCheck.policyVersion !== FACT_CHECK_POLICY_VERSION
+      || !factCheck.sourceFactsVerified
+      || !factCheck.outputClaimsVerified
+    ))
+  ) throw new ContentReviewError("invalid_fact_check_attestation");
+  const raw = await rpc(config, "record_studio_content_review_v2", {
     target_workspace_id: config.workspaceId,
     target_content_item_id: contentItemId,
     target_content_version_id: input.contentVersionId,
     review_decision: input.decision,
     review_reason_codes: input.reasonCodes,
     review_comment: input.comment,
+    review_fact_check_policy_version: factCheck.policyVersion,
+    review_source_facts_verified: factCheck.sourceFactsVerified,
+    review_output_claims_verified: factCheck.outputClaimsVerified,
     review_idempotency_key: input.idempotencyKey,
   }, fetcher, signal);
   const result = objectValue(raw);
+  const persistedFactCheck = result
+    ? persistedFactCheckAttestation(result)
+    : null;
   if (
     !result
     || !UUID_PATTERN.test(String(result.approval_id || ""))
@@ -275,6 +341,10 @@ export async function recordStudioContentReview(
     || !validReasonCodes(result.reason_codes)
     || !validDate(result.created_at)
     || typeof result.reused !== "boolean"
+    || !persistedFactCheck
+    || persistedFactCheck.fact_check_policy_version !== factCheck.policyVersion
+    || persistedFactCheck.source_facts_verified !== factCheck.sourceFactsVerified
+    || persistedFactCheck.output_claims_verified !== factCheck.outputClaimsVerified
   ) throw new ContentReviewError("invalid_content_review_response");
   return {
     approval_id: String(result.approval_id).toLowerCase(),
@@ -285,6 +355,7 @@ export async function recordStudioContentReview(
     reason_codes: result.reason_codes as ReviewReasonCode[],
     created_at: result.created_at,
     reused: result.reused,
+    ...persistedFactCheck,
   };
 }
 
@@ -353,6 +424,10 @@ export function contentReviewStatus(error: unknown): number {
     || code === "mock_content_cannot_be_approved"
     || code === "content_not_awaiting_review"
   ) return 409;
-  if (code === "invalid_content_review" || code === "invalid_library_item_id") return 400;
+  if (
+    code === "invalid_content_review"
+    || code === "invalid_fact_check_attestation"
+    || code === "invalid_library_item_id"
+  ) return 400;
   return 502;
 }

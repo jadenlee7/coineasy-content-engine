@@ -6,6 +6,10 @@ import {
 } from "./_shared/studio-session.mts";
 import { evaluateBrandQuality } from "./_shared/brand-quality.mts";
 import {
+  evaluateFactCheck,
+  validatedFactCheckReport,
+} from "./_shared/fact-check.mts";
+import {
   parseStyleReferencePack,
   StyleReferenceInputError,
   styleReferenceAudit,
@@ -125,6 +129,10 @@ export function articleRetryResponse(
   clientId: ContentCatalogClient,
 ): RailwayArticleResponse & Record<string, unknown> {
   const content = existing.content;
+  const factCheck = validatedFactCheckReport(existing.generationMeta.fact_check, "article");
+  if (!factCheck) {
+    throw new ContentCatalogError("fact_check_regeneration_required");
+  }
   const candidate = {
     client_id: clientId,
     content_type: "article" as const,
@@ -148,6 +156,7 @@ export function articleRetryResponse(
     content_version_id: existing.contentVersionId,
     asset_ids: [],
     brand_qa: existing.generationMeta.brand_qa || null,
+    fact_check: factCheck,
     reused: true,
   };
 }
@@ -326,7 +335,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       const code = error instanceof ContentCatalogError
         ? error.code
         : "durable_storage_invalid_response";
-      return json({ error: code }, 503);
+      return json({ error: code }, code === "fact_check_regeneration_required" ? 409 : 503);
     }
   }
 
@@ -405,6 +414,30 @@ export default async (req: Request, context: Context): Promise<Response> => {
       visuals: result.visuals,
       channelCopy: result.channel_copy,
     });
+    const factCheck = evaluateFactCheck({
+      contentKind: "article",
+      // Article generation intentionally accepts pasted source text without a
+      // fetch. Preserve that boundary and mark it for human verification.
+      source: { content: sourceContent, url: sourceUrl, mode: "provided" },
+      publicText: {
+        title: result.title,
+        lead: result.lead,
+        sections: result.sections.map((section) => ({
+          heading: section.heading,
+          body: section.body,
+        })),
+        key_takeaways: result.key_takeaways,
+        visuals: (result.visuals || []).map((visual) => ({
+          eyebrow: visual.eyebrow,
+          headline: visual.headline,
+          caption: visual.caption,
+          points: visual.points,
+        })),
+        markdown: result.markdown,
+      },
+      channelCopy: result.channel_copy,
+      brandQa,
+    });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
     const reviewGuidanceAudit = {
       ...brandReviewGuidanceAudit(brandReviewGuidance),
@@ -441,6 +474,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...referenceAudit,
           ...reviewGuidanceAudit,
           brand_qa: brandQa,
+          fact_check: factCheck,
         },
         asset: null,
         promptVersion: "article@4",
@@ -452,6 +486,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         content_version_id: catalog.contentVersionId,
         asset_ids: catalog.assetIds,
         brand_qa: brandQa,
+        fact_check: factCheck,
         reused: false,
       });
     } catch (error) {
@@ -477,7 +512,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
             const code = lookupError instanceof ContentCatalogError
               ? lookupError.code
               : "durable_catalog_lookup_failed";
-            return json({ error: code }, Date.now() >= requestDeadline - 100 ? 504 : 503);
+            return json(
+              { error: code },
+              Date.now() >= requestDeadline - 100
+                ? 504
+                : code === "fact_check_regeneration_required" ? 409 : 503,
+            );
           }
         }
         const deadlineExceeded = error.code === "article_deadline_exceeded"

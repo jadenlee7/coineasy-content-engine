@@ -111,8 +111,9 @@ export function buildTelegramReviewCaption(detail: ContentLibraryDetail): string
   const kind = CONTENT_KIND_NAMES[detail.content_kind];
   const title = normalizedText(detail.title, 240);
   const caption = [
+    "⚠️ <b>미승인 검토용 · 전달/게시 금지</b>",
     `🔎 <b>검토 요청 · ${escapeTelegramHtml(brand)}</b>`,
-    `${escapeTelegramHtml(kind)} · 게시 전 확인`,
+    `${escapeTelegramHtml(kind)} · 승인 전 확인`,
     `<b>${escapeTelegramHtml(title)}</b>`,
     "배너와 발행 문구를 확인해 주세요.",
   ].join("\n");
@@ -123,8 +124,8 @@ export function buildTelegramReviewMessage(detail: ContentLibraryDetail): string
   const channelCopy = recordValue(detail.current_version.channel_copy);
   const reviewBody = normalizedText(channelCopy.telegram, 3_400)
     || fallbackReviewBody(detail);
-  const prefix = "<b>게시할 Telegram 문구</b>\n\n";
-  const suffix = "\n\n<i>개인 검토 알림입니다. 승인 전에는 어디에도 게시되지 않습니다.</i>";
+  const prefix = "⚠️ <b>미승인 검토용 · 전달/게시 금지</b>\n<b>검토용 Telegram 문구</b>\n\n";
+  const suffix = "\n\n<i>개인 검토 알림입니다. 이 문구와 배너는 이중 사실 확인 승인 전에는 전달하거나 게시하지 마세요.</i>";
   const available = Math.max(
     0,
     TELEGRAM_TEXT_LIMIT - prefix.length - suffix.length - 32,

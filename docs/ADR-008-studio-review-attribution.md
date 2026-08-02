@@ -4,6 +4,11 @@ Status: Proposed. The approval screen and its state machine already ship; this
 ADR covers only the identity that the recorded decision is missing.
 Date: 2026-08-01
 
+Update (2026-08-02): ADR-010 replaced the executable review boundary with
+`record_studio_content_review_v2` and mandatory double-fact-check attestations.
+Any future reviewer-label proposal must extend that v2 contract without
+re-enabling either revoked legacy review RPC.
+
 ## Context
 
 `README.md` still lists "approval/publishing screens" as a later delivery phase.
@@ -24,7 +29,7 @@ a rebuild of something that already works. What ships today, verified in code:
 The decision path is therefore complete, transactional, idempotent, and
 auditable in every dimension except one.
 
-**Every approval in the system is anonymous.** `record_studio_content_review`
+**Every approval in the system is anonymous.** `record_studio_content_review_v2`
 inserts `reviewer_id => null` with `reviewer_source => 'studio_session'`
 (migration `20260730202817:203-204`). It has to: the Studio authenticates one
 shared `STUDIO_ACCESS_TOKEN` against a single access code
@@ -80,7 +85,7 @@ to the timing profile. `v1` cookies keep verifying against `STUDIO_ACCESS_TOKEN`
 for the remainder of their 4-hour TTL, so the rollout logs nobody out.
 
 **3. `approvals.reviewer_label`.** A new nullable `text` column, written from
-the session slug. `record_studio_content_review` takes
+the session slug. A future successor to `record_studio_content_review_v2` takes
 `review_reviewer_label text` and rejects a `studio_session` decision without
 one. `reviewer_source` stays `'studio_session'` and `reviewer_id` stays null —
 this ADR does not introduce `auth.users` rows.
@@ -142,7 +147,7 @@ The migration drops the existing signature, creates the new one, and re-grants
 
 **No interaction with the PR #91 role grants.** `coineasy_batch_reviewer` holds
 only `list_agent_batch_review_inbox` and `get_agent_batch_review_item`;
-`record_studio_content_review` is called by the Netlify console under its own
+`record_studio_content_review_v2` is called by the Netlify console under its own
 credential and appears in no role in
 `20260801090000_least_privilege_ledger_roles.sql`. The least-privilege assertions
 in `supabase/tests/agent_batch_ledger_least_privilege.sql` are unaffected.

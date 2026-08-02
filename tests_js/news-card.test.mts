@@ -31,6 +31,22 @@ const SOURCE = "Squid shipped a safer cross-chain routing update for integrators
 const SOURCE_TWEET_ID = "1234567890";
 const SOURCE_URL = `https://x.com/squidrouter/status/${SOURCE_TWEET_ID}`;
 
+function validFactCheck(contentKind = "daily_news"): Record<string, unknown> {
+  return {
+    schema_version: "1.0",
+    policy_version: "double-fact-check@1",
+    content_kind: contentKind,
+    status: "review",
+    human_review_required: true,
+    input_sha256: "a".repeat(64),
+    output_sha256: "b".repeat(64),
+    checks: [
+      { id: "source_evidence", status: "review", label: "Source evidence", detail: "Human verification required.", metrics: {} },
+      { id: "output_claims", status: "pass", label: "Output claims", detail: "Mechanical anchors recorded.", metrics: {} },
+    ],
+  };
+}
+
 function squidCreativeMetadata(
   templateStyle: "classic" | "remix",
   family: "editorial_big_type" | "milestone_metric" | "status_progress" | "product_proof" | "worldbuilding" = "editorial_big_type",
@@ -117,7 +133,12 @@ function storedSquidRemixLookup(
       },
     },
     channel_copy: { telegram: "텔레그램", x: "X" },
-    generation_meta: { request_hash: requestHash, duration_ms: 987, mock_mode: false },
+    generation_meta: {
+      request_hash: requestHash,
+      duration_ms: 987,
+      mock_mode: false,
+      fact_check: validFactCheck(),
+    },
     assets: [{
       asset_id: ASSET_ID,
       asset_kind: "png",
@@ -445,6 +466,9 @@ test("news card generation persists one immutable PNG before returning", async (
     assert.equal(result.brand_qa.policy_version, "brand-qa@1");
     assert.equal(result.brand_qa.client_id, "squid");
     assert.equal(result.brand_qa.content_kind, "daily_news");
+    assert.equal(result.fact_check.policy_version, "double-fact-check@1");
+    assert.equal(result.fact_check.human_review_required, true);
+    assert.equal(result.fact_check.checks[1].metrics.artifact_count, 1);
     assert.match(result.image_data_url, /^data:image\/png;base64,/);
     assert.equal(railwayCalls, 1);
     assert.equal(uploadUpsert, "false");
@@ -454,6 +478,10 @@ test("news card generation persists one immutable PNG before returning", async (
     assert.deepEqual(
       (recordBody.target_generation_meta as Record<string, unknown>).brand_qa,
       result.brand_qa,
+    );
+    assert.deepEqual(
+      (recordBody.target_generation_meta as Record<string, unknown>).fact_check,
+      result.fact_check,
     );
     assert.equal(
       (recordBody.target_generation_meta as Record<string, unknown>).figma_template_version,
@@ -916,7 +944,12 @@ test("an exact news card retry replays verified Supabase bytes without Railway",
           render: { template_style: "classic", requested_template_style: "classic" },
         },
         channel_copy: { telegram: "텔레그램", x: "X" },
-        generation_meta: { request_hash: requestHash, duration_ms: 1234, mock_mode: false },
+        generation_meta: {
+          request_hash: requestHash,
+          duration_ms: 1234,
+          mock_mode: false,
+          fact_check: validFactCheck(),
+        },
         assets: [{
           asset_id: ASSET_ID,
           asset_kind: "png",
@@ -1372,7 +1405,12 @@ test("a pinned Squid retry with another source image conflicts before asset acce
           render: { template_style: "remix", requested_template_style: "remix", source_image_used: true },
         },
         channel_copy: { telegram: "텔레그램", x: "X" },
-        generation_meta: { request_hash: storedHash, duration_ms: 987, mock_mode: false },
+        generation_meta: {
+          request_hash: storedHash,
+          duration_ms: 987,
+          mock_mode: false,
+          fact_check: validFactCheck(),
+        },
         assets: [{
           asset_id: ASSET_ID,
           asset_kind: "png",
@@ -1487,7 +1525,12 @@ test("news card replay rejects an oversized stored PNG before download", async (
           render: { template_style: "classic", requested_template_style: "classic" },
         },
         channel_copy: { telegram: "텔레그램", x: "X" },
-        generation_meta: { request_hash: requestHash, duration_ms: 1234, mock_mode: false },
+        generation_meta: {
+          request_hash: requestHash,
+          duration_ms: 1234,
+          mock_mode: false,
+          fact_check: validFactCheck(),
+        },
         assets: [{
           asset_id: ASSET_ID,
           asset_kind: "png",

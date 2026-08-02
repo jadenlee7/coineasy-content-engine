@@ -195,6 +195,9 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
     assert.equal(payload.brand_qa.content_kind, "article");
     assert.equal(payload.brand_qa.human_review_required, true);
     assert.deepEqual(recordBody.target_generation_meta.brand_qa, payload.brand_qa);
+    assert.equal(payload.fact_check.policy_version, "double-fact-check@1");
+    assert.equal(payload.fact_check.human_review_required, true);
+    assert.deepEqual(recordBody.target_generation_meta.fact_check, payload.fact_check);
     assert.equal(
       recordBody.target_generation_meta.brand_review_policy_version,
       "brand-review-learning@1",
@@ -213,7 +216,7 @@ test("article proxy forwards pasted source to the typed Railway endpoint", async
       /^[a-f0-9]{64}$/,
     );
     assert.doesNotMatch(JSON.stringify(recordBody.target_generation_meta), /승인된 Squid/);
-    const { brand_qa: _brandQa, ...responseWithoutQa } = payload;
+    const { brand_qa: _brandQa, fact_check: _factCheck, ...responseWithoutQa } = payload;
     assert.deepEqual(responseWithoutQa, {
       ...GENERATED_ARTICLE,
       storage_backend: "supabase",
@@ -339,6 +342,31 @@ test("article response guard requires the complete three-section contract", () =
 
 
 test("an exact article retry returns the immutable catalog without Railway", async () => {
+  const storedFactCheck = {
+    schema_version: "1.0",
+    policy_version: "double-fact-check@1",
+    content_kind: "article",
+    status: "review",
+    human_review_required: true,
+    input_sha256: "a".repeat(64),
+    output_sha256: "b".repeat(64),
+    checks: [
+      {
+        id: "source_evidence",
+        status: "review",
+        label: "Source evidence",
+        detail: "Human verification is required.",
+        metrics: {},
+      },
+      {
+        id: "output_claims",
+        status: "pass",
+        label: "Output claims",
+        detail: "Mechanical anchors were recorded.",
+        metrics: {},
+      },
+    ],
+  };
   const requestHash = articleRequestHash({
     clientId: "squid",
     sourceContent: PASTED_SOURCE,
@@ -378,6 +406,7 @@ test("an exact article retry returns the immutable catalog without Railway", asy
           request_hash: requestHash,
           duration_ms: GENERATED_ARTICLE.duration_ms,
           mock_mode: false,
+          fact_check: storedFactCheck,
         },
         assets: [],
       });
@@ -405,7 +434,8 @@ test("an exact article retry returns the immutable catalog without Railway", asy
     assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
     const payload = await response.json();
     assert.equal(payload.brand_qa, null);
-    const { brand_qa: _brandQa, ...responseWithoutQa } = payload;
+    assert.deepEqual(payload.fact_check, storedFactCheck);
+    const { brand_qa: _brandQa, fact_check: _factCheck, ...responseWithoutQa } = payload;
     assert.deepEqual(responseWithoutQa, {
       ...GENERATED_ARTICLE,
       storage_backend: "supabase",

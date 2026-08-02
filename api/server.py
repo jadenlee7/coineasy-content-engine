@@ -206,10 +206,26 @@ class GenerateResponse(BaseModel):
     client_id: str
     content_type: str
     series: dict
+    lessons: list[dict]
     lesson_count: int
     png_paths: list[str]
     manifest_path: str
     duration_ms: int
+
+
+def _public_tutorial_claim_value(value: Any) -> Any:
+    """Remove renderer-only SVG/private fields from the reviewable lesson spec."""
+    if isinstance(value, dict):
+        return {
+            key: _public_tutorial_claim_value(item)
+            for key, item in value.items()
+            if isinstance(key, str)
+            and not key.startswith("_")
+            and not key.endswith("_svg")
+        }
+    if isinstance(value, list):
+        return [_public_tutorial_claim_value(item) for item in value]
+    return value
 
 
 class StyleReferenceRequest(BaseModel):
@@ -630,6 +646,15 @@ async def generate_carousel(
         client_id=result.client_id,
         content_type=result.content_type,
         series=result.series_meta,
+        lessons=[
+            _public_tutorial_claim_value({
+                "lesson_number": lesson.get("lesson_number"),
+                "layout": lesson.get("layout"),
+                "theme": lesson.get("theme", result.series_meta.get("theme")),
+                "slots": lesson.get("slots", {}),
+            })
+            for lesson in result.lessons_data
+        ],
         lesson_count=len(result.png_paths),
         png_paths=result.png_paths,
         manifest_path=result.manifest_path,
@@ -885,13 +910,13 @@ async def publish_daily_news(
     """
     _check_client_auth(x_api_key, client_id)
 
-    # Squid public Telegram delivery is owned exclusively by the durable Studio
-    # exact-version workflow.  The legacy route regenerates copy, sends text
-    # without the approved PNG, and retries provider failures, so allowing a
-    # live call here could duplicate an exact or delivery-unknown publication.
-    # Dry runs and non-Telegram channels remain available for compatibility.
-    if client_id == "squid" and not req.dry_run and "telegram" in req.channels:
-        raise HTTPException(409, "squid_telegram_exact_publication_required")
+    # Live delivery must originate from an immutable Studio version carrying a
+    # current double-fact-check approval. This legacy endpoint generates and
+    # publishes in one request, so it cannot prove either invariant. Keep its
+    # deterministic dry-run preview for compatibility, but fail closed before
+    # generation for every live client/channel request.
+    if not req.dry_run:
+        raise HTTPException(409, "studio_double_fact_check_publication_required")
 
     generation_result = await _run_daily_news_generation(
         client_id=client_id,
