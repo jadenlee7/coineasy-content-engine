@@ -51,6 +51,11 @@ from core.sources.source_image import (
     fetch_source_image,
     validate_source_image_url,
 )
+from core.sources.approved_clean_plate import (
+    ApprovedCleanPlate,
+    ApprovedCleanPlateError,
+    resolve_approved_clean_plate,
+)
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
     clean_source_text,
@@ -584,6 +589,27 @@ async def generate_news_card(
             print(f"[{client_id}] ⚠ Remix requested without an image, falling back to classic")
             actual_template_style = "classic"
 
+    approved_clean_plate: Optional[ApprovedCleanPlate] = None
+    approved_clean_plate_failed = False
+    if (
+        client_id == "squid"
+        and actual_template_style == "remix"
+        and source_image is not None
+    ):
+        try:
+            approved_clean_plate = resolve_approved_clean_plate(
+                client_id,
+                source_url,
+                source_image_canonical_url,
+                source_image,
+            )
+        except ApprovedCleanPlateError as exc:
+            # A registry hit whose reviewed asset changed or disappeared must
+            # not fall through to sampled visual discovery or generic raster
+            # cleanup. Preserve the exact official source for human review.
+            approved_clean_plate_failed = True
+            print(f"[{client_id}] ⚠ Approved clean plate unavailable: {exc}")
+
     template_path = NEWS_CARD_TEMPLATES[actual_template_style]
 
     visual_cache_key: Optional[str] = None
@@ -593,6 +619,8 @@ async def generate_news_card(
         and client_id == "squid"
         and actual_template_style == "remix"
         and source_image is not None
+        and approved_clean_plate is None
+        and not approved_clean_plate_failed
     ):
         visual_config_fingerprint = json.dumps(
             {
@@ -636,8 +664,13 @@ async def generate_news_card(
             source_url=source_url,
             mock_mode=mock_mode,
             mock_response=mock_response,
-            source_image=source_image,
+            source_image=(None if approved_clean_plate_failed else source_image),
             cached_visual_localization=cached_visual_localization,
+            approved_visual_localization=(
+                approved_clean_plate.render_regions()
+                if approved_clean_plate is not None
+                else None
+            ),
             style_references=style_references,
             brand_review_guidance=brand_review_guidance,
         )
@@ -687,6 +720,24 @@ async def generate_news_card(
                 else "pretendard_fallback"
             ),
         })
+        if approved_clean_plate is not None:
+            spec.update({
+                "visual_localization_method": approved_clean_plate.method,
+                "visual_localization_version": approved_clean_plate.approval_version,
+                "visual_localization_registry_version": (
+                    approved_clean_plate.registry_version
+                ),
+                "visual_localization_cache_namespace": (
+                    approved_clean_plate.cache_namespace
+                ),
+                "visual_localization_clean_plate_sha256": (
+                    approved_clean_plate.clean_plate_sha256
+                ),
+            })
+        elif approved_clean_plate_failed:
+            spec["source_text_visible"] = False
+            spec["translation_regions"] = []
+            spec["visual_localization_status"] = "cleanup_failed"
 
     print(f"  → label: {spec['label']} · theme: {spec['theme']}")
     visual_cache_hit = spec.pop("_visual_localization_cache_hit", False) is True
@@ -725,9 +776,49 @@ async def generate_news_card(
     render_source_image = source_image
     source_visual_path: Optional[Path] = None
     if (
+        approved_clean_plate is not None
+        and spec.get("source_text_visible") is True
+        and isinstance(spec.get("translation_regions"), list)
+        and spec["translation_regions"]
+    ):
+        candidate_path = output_dir / "source_visual_cleaned.jpg"
+        temporary_path = output_dir / (
+            f".source_visual_cleaned.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            clean_plate_bytes = await asyncio.to_thread(
+                _decode_base64_strict,
+                approved_clean_plate.image.base64_data,
+            )
+            await asyncio.to_thread(temporary_path.write_bytes, clean_plate_bytes)
+            await asyncio.to_thread(temporary_path.replace, candidate_path)
+        except asyncio.CancelledError:
+            await _unlink_best_effort(temporary_path)
+            raise
+        except Exception as exc:
+            await _unlink_best_effort(temporary_path)
+            print(
+                f"[{client_id}] ⚠ Approved clean-plate publish failed safely: "
+                f"{type(exc).__name__}"
+            )
+            spec["source_text_visible"] = False
+            spec["translation_regions"] = []
+            spec["visual_localization_status"] = "cleanup_failed"
+        else:
+            render_source_image = approved_clean_plate.image
+            source_visual_path = candidate_path
+            spec["source_image_width"] = approved_clean_plate.image.width
+            spec["source_image_height"] = approved_clean_plate.image.height
+            print(
+                f"[{client_id}] Approved clean plate ready: "
+                f"{approved_clean_plate.approval_version}"
+            )
+    if (
         client_id == "squid"
         and actual_template_style == "remix"
         and source_image is not None
+        and approved_clean_plate is None
+        and not approved_clean_plate_failed
         and spec.get("source_text_visible") is True
         and isinstance(spec.get("translation_regions"), list)
         and spec["translation_regions"]
