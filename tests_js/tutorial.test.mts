@@ -53,6 +53,35 @@ function minimalPng(width: number, height: number, marker = 0): Uint8Array {
   return bytes;
 }
 
+function tutorialLessons(count: number): Record<string, unknown>[] {
+  return Array.from({ length: count }, (_, index) => ({
+    lesson_number: index + 1,
+    layout: "P2_BULLETS",
+    theme: "dark",
+    slots: {
+      lesson_title_kr: `검증 레슨 ${index + 1}`,
+      lesson_body_kr: `원문에 근거한 검증 본문 ${index + 1}`,
+      bullets: [{ text_kr: "근거 확인" }],
+    },
+  }));
+}
+
+function validTutorialFactCheck(): Record<string, unknown> {
+  return {
+    schema_version: "1.0",
+    policy_version: "double-fact-check@1",
+    content_kind: "tutorial",
+    status: "review",
+    human_review_required: true,
+    input_sha256: "a".repeat(64),
+    output_sha256: "b".repeat(64),
+    checks: [
+      { id: "source_evidence", status: "review", label: "Source evidence", detail: "Human verification required.", metrics: {} },
+      { id: "output_claims", status: "pass", label: "Output claims", detail: "Mechanical anchors recorded.", metrics: {} },
+    ],
+  };
+}
+
 async function withNetlifyEnvironment(
   values: Record<string, string | undefined>,
   run: () => Promise<void>,
@@ -630,6 +659,7 @@ test("tutorial generation catalogs uploaded PNGs before returning durable slide 
           series_title_en: "Squid Fundamentals",
           series_subtitle_kr: "스퀴드 핵심 이해하기",
         },
+        lessons: tutorialLessons(2),
         lesson_count: 2,
         png_paths: [
           "/tmp/output/squid/edu_2087200000/lesson_01.png",
@@ -702,7 +732,12 @@ test("tutorial generation catalogs uploaded PNGs before returning durable slide 
       assert.equal(payload.brand_qa.policy_version, "brand-qa@1");
       assert.equal(payload.brand_qa.client_id, "squid");
       assert.equal(payload.brand_qa.content_kind, "tutorial");
+      assert.equal(payload.fact_check.policy_version, "double-fact-check@1");
+      assert.equal(payload.fact_check.human_review_required, true);
+      assert.equal(payload.fact_check.checks[1].metrics.artifact_count, 2);
+      assert.deepEqual(payload.lessons, tutorialLessons(2));
       assert.equal(rpcBody.target_title, "스퀴드 핵심 이해하기");
+      assert.deepEqual(rpcBody.target_content.lessons, tutorialLessons(2));
       assert.equal(rpcBody.target_content.source.mode, "provided");
       assert.equal(rpcBody.target_content.request_hash, expectedRequestHash);
       assert.equal(
@@ -713,6 +748,7 @@ test("tutorial generation catalogs uploaded PNGs before returning durable slide 
       assert.equal(rpcBody.target_generation_meta.mock_mode, true);
       assert.equal(rpcBody.target_generation_meta.request_hash, expectedRequestHash);
       assert.deepEqual(rpcBody.target_generation_meta.brand_qa, payload.brand_qa);
+      assert.deepEqual(rpcBody.target_generation_meta.fact_check, payload.fact_check);
       assert.deepEqual(
         rpcBody.target_slides.map((slide: Record<string, unknown>) => ({
           number: slide.number,
@@ -771,6 +807,7 @@ test("a definite tutorial catalog conflict returns 409 and removes every uploade
         client_id: "squid",
         content_type: "edu_carousel",
         series: { series_subtitle_kr: "정리 테스트" },
+        lessons: tutorialLessons(2),
         lesson_count: 2,
         png_paths: [
           "/tmp/output/squid/edu_2087200001/lesson_01.png",
@@ -860,9 +897,14 @@ test("a same-payload catalog race cleans losing uploads and returns the winner",
         content: {
           request_hash: requestHash,
           series: { series_subtitle_kr: "먼저 저장된 튜토리얼" },
+          lessons: tutorialLessons(1),
           source: { mode: "provided", content: sourceContent },
         },
-        generation_meta: { request_hash: requestHash, duration_ms: 99 },
+        generation_meta: {
+          request_hash: requestHash,
+          duration_ms: 99,
+          fact_check: validTutorialFactCheck(),
+        },
         slides: [{
           asset_id: OBJECT_ID,
           number: 1,
@@ -880,6 +922,7 @@ test("a same-payload catalog race cleans losing uploads and returns the winner",
         client_id: "squid",
         content_type: "edu_carousel",
         series: { series_subtitle_kr: "동시 요청" },
+        lessons: tutorialLessons(1),
         lesson_count: 1,
         png_paths: ["/tmp/output/squid/edu_2087200004/lesson_01.png"],
         manifest_path: "/tmp/output/squid/edu_2087200004/manifest.json",
@@ -958,6 +1001,7 @@ test("an ambiguous upload failure removes every intended object path", async () 
         client_id: "squid",
         content_type: "edu_carousel",
         series: { series_subtitle_kr: "업로드 정리 테스트" },
+        lessons: tutorialLessons(2),
         lesson_count: 2,
         png_paths: [
           "/tmp/output/squid/edu_2087200002/lesson_01.png",
@@ -1041,6 +1085,7 @@ test("an unknown catalog outcome preserves every attempted object", async () => 
         client_id: "squid",
         content_type: "edu_carousel",
         series: { series_subtitle_kr: "카탈로그 보존 테스트" },
+        lessons: tutorialLessons(1),
         lesson_count: 1,
         png_paths: ["/tmp/output/squid/edu_2087200003/lesson_01.png"],
         manifest_path: "/tmp/output/squid/edu_2087200003/manifest.json",
@@ -1128,12 +1173,14 @@ test("a repeated tutorial request returns the committed catalog without Railway"
         content: {
           request_hash: requestHash,
           series: { series_subtitle_kr: "이미 저장된 튜토리얼" },
+          lessons: tutorialLessons(1),
           source: { mode: "x_import", url: sourceUrl, content: "전체 원문" },
         },
         generation_meta: {
           request_hash: requestHash,
           duration_ms: 222,
           mock_mode: true,
+          fact_check: validTutorialFactCheck(),
         },
         slides: [{
           asset_id: OBJECT_ID,

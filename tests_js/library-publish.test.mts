@@ -483,6 +483,7 @@ test("POST maps exact migration state failures without making them look retryabl
       ["exact Telegram publication requires a production version", 422, "mock_content_cannot_be_published"],
       ["only exact current approved Squid daily news can be published", 409, "telegram_publication_not_approved"],
       ["exact Telegram publication requires an approval record", 409, "telegram_publication_not_approved"],
+      ["double-fact-check approval is required", 409, "telegram_publication_not_approved"],
       ["exact Telegram publication client is not active", 403, "telegram_publication_client_not_allowed"],
       ["exact Telegram caption must be 1 to 1024 characters", 400, "telegram_publication_payload_incomplete"],
     ] as const) {

@@ -3,6 +3,42 @@
 
 begin;
 
+create function pg_temp.double_fact_check_meta(target_request_hash text)
+returns jsonb
+language sql
+immutable
+as $$
+    select jsonb_build_object(
+        'request_hash', target_request_hash,
+        'mock_mode', false,
+        'fact_check', jsonb_build_object(
+            'schema_version', '1.0',
+            'policy_version', 'double-fact-check@1',
+            'content_kind', 'daily_news',
+            'status', 'review',
+            'human_review_required', true,
+            'input_sha256', repeat('a', 64),
+            'output_sha256', repeat('b', 64),
+            'checks', jsonb_build_array(
+                jsonb_build_object(
+                    'id', 'source_evidence',
+                    'status', 'review',
+                    'label', 'Source evidence',
+                    'detail', 'Human verification fixture.',
+                    'metrics', '{}'::jsonb
+                ),
+                jsonb_build_object(
+                    'id', 'output_claims',
+                    'status', 'pass',
+                    'label', 'Output claims',
+                    'detail', 'Output fixture.',
+                    'metrics', '{}'::jsonb
+                )
+            )
+        )
+    )
+$$;
+
 do $test$
 declare
     signature text;
@@ -76,7 +112,9 @@ values
     ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000006/news-card.png'),
     ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000007/news-card.png'),
     ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000008/news-card.png'),
-    ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000009/news-card.png');
+    ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000009/news-card.png'),
+    ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000010/news-card.png'),
+    ('content-studio', 'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000011/news-card.png');
 
 do $test$
 declare
@@ -91,16 +129,19 @@ begin
         'Yellow canary exclusion',
         '{"request_hash":"1111111111111111111111111111111111111111111111111111111111111111"}'::jsonb,
         '{"telegram":"Yellow must remain outside the Squid-only canary."}'::jsonb,
-        '{"request_hash":"1111111111111111111111111111111111111111111111111111111111111111","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('1', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000001","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/yellow/d3000000-0000-4000-8000-000000000001/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     yellow_version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000001',
         yellow_version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'yellow-approval-smoke'
@@ -116,6 +157,138 @@ begin
         raise exception 'Yellow escaped the Squid-only Telegram canary';
     exception when check_violation then null;
     end;
+end
+$test$;
+
+do $test$
+declare
+    generated jsonb;
+    invalid_version_id uuid;
+    valid_version_id uuid;
+    invalid_request jsonb;
+    valid_request jsonb;
+    claim jsonb;
+begin
+    generated := public.record_generated_content(
+        'd1000000-0000-4000-8000-000000000010',
+        'd0000000-0000-4000-8000-000000000001',
+        'squid',
+        'daily_news',
+        'Legacy queue head quarantine',
+        '{"request_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb,
+        '{"telegram":"This legacy queue head must be quarantined."}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('a', 64)),
+        '{"asset_id":"d3000000-0000-4000-8000-000000000010","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000010/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","width":1080,"height":1080}'::jsonb,
+        'exact-telegram-smoke@1'
+    );
+    invalid_version_id := (generated ->> 'content_version_id')::uuid;
+    perform public.record_studio_content_review_v2(
+        'd0000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000010',
+        invalid_version_id,
+        'approved',
+        'double-fact-check@1',
+        true,
+        true,
+        '{}'::text[],
+        null,
+        'quarantine-v2-approval'
+    );
+    invalid_request := public.request_studio_telegram_publication(
+        'd0000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000010',
+        invalid_version_id,
+        'd4000000-0000-4000-8000-000000000011'
+    );
+    update public.jobs
+    set available_at = statement_timestamp() - interval '1 hour'
+    where id = (invalid_request ->> 'job_id')::uuid;
+    update public.content_items
+    set status = 'needs_review'
+    where id = 'd1000000-0000-4000-8000-000000000010';
+    perform public.record_studio_content_review(
+        'd0000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000010',
+        invalid_version_id,
+        'approved',
+        '{}'::text[],
+        null,
+        'later-legacy-approval'
+    );
+
+    generated := public.record_generated_content(
+        'd1000000-0000-4000-8000-000000000011',
+        'd0000000-0000-4000-8000-000000000001',
+        'squid',
+        'daily_news',
+        'Valid queue follower',
+        '{"request_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'::jsonb,
+        '{"telegram":"This attested job must remain claimable."}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('b', 64)),
+        '{"asset_id":"d3000000-0000-4000-8000-000000000011","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000011/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","width":1080,"height":1080}'::jsonb,
+        'exact-telegram-smoke@1'
+    );
+    valid_version_id := (generated ->> 'content_version_id')::uuid;
+    perform public.record_studio_content_review_v2(
+        'd0000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000011',
+        valid_version_id,
+        'approved',
+        'double-fact-check@1',
+        true,
+        true,
+        '{}'::text[],
+        null,
+        'quarantine-valid-approval'
+    );
+    valid_request := public.request_studio_telegram_publication(
+        'd0000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000011',
+        valid_version_id,
+        'd4000000-0000-4000-8000-000000000012'
+    );
+
+    claim := public.claim_exact_telegram_publication_job(
+        'd0000000-0000-4000-8000-000000000001',
+        'worker-quarantine-smoke',
+        300
+    );
+    if claim ->> 'content_item_id'
+            <> 'd1000000-0000-4000-8000-000000000011'
+       or not exists (
+            select 1
+            from public.jobs as job
+            where job.id = (invalid_request ->> 'job_id')::uuid
+              and job.status = 'failed'
+              and job.last_error_code
+                    = 'double_fact_check_approval_invalid'
+       )
+       or not exists (
+            select 1
+            from public.publications as publication
+            where publication.id
+                    = (invalid_request ->> 'publication_id')::uuid
+              and publication.status = 'failed'
+              and publication.last_error
+                    = 'double_fact_check_approval_invalid'
+       )
+       or not exists (
+            select 1
+            from public.event_log as event
+            where event.entity_id
+                    = (invalid_request ->> 'publication_id')::uuid
+              and event.event_type
+                    = 'exact_telegram_publication_quarantined'
+       ) then
+        raise exception 'invalid legacy exact job starved a later attested job';
+    end if;
+
+    perform public.fail_exact_telegram_publication_job(
+        (claim ->> 'job_id')::uuid,
+        'worker-quarantine-smoke',
+        'telegram_preflight_rejected',
+        false
+    );
 end
 $test$;
 
@@ -142,16 +315,19 @@ begin
         'Squid retry boundary',
         '{"request_hash":"2222222222222222222222222222222222222222222222222222222222222222"}'::jsonb,
         '{"telegram":"승인된 Squid 캡션과 정확한 PNG만 전송합니다."}'::jsonb,
-        '{"request_hash":"2222222222222222222222222222222222222222222222222222222222222222","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('2', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000002","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000002/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000002',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-retry-approval-smoke'
@@ -361,16 +537,19 @@ begin
         'Squid exact success',
         '{"request_hash":"3333333333333333333333333333333333333333333333333333333333333333"}'::jsonb,
         '{"telegram":"공식 Squid Korea 채널에 한 번만 발행됩니다."}'::jsonb,
-        '{"request_hash":"3333333333333333333333333333333333333333333333333333333333333333","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('3', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000003","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000003/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000003',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-success-approval-smoke'
@@ -495,16 +674,19 @@ begin
         'Squid final approval fence',
         '{"request_hash":"4444444444444444444444444444444444444444444444444444444444444444"}'::jsonb,
         '{"telegram":"전송 직전에 현재 승인 상태를 다시 확인합니다."}'::jsonb,
-        '{"request_hash":"4444444444444444444444444444444444444444444444444444444444444444","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('4', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000004","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000004/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000004',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-fence-approval-smoke'
@@ -567,16 +749,19 @@ begin
         'Squid expired delivery fence',
         '{"request_hash":"5555555555555555555555555555555555555555555555555555555555555555"}'::jsonb,
         '{"telegram":"전송 fence 이후 lease가 끝나면 다시 보내지 않습니다."}'::jsonb,
-        '{"request_hash":"5555555555555555555555555555555555555555555555555555555555555555","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('5', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000005","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000005/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000005',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-expired-fence-approval-smoke'
@@ -651,16 +836,19 @@ begin
         'Squid generic delivery unknown exclusion',
         '{"request_hash":"6666666666666666666666666666666666666666666666666666666666666666"}'::jsonb,
         '{"telegram":"기존 일반 발행 결과가 불명확하면 exact 전송을 시작하지 않습니다."}'::jsonb,
-        '{"request_hash":"6666666666666666666666666666666666666666666666666666666666666666","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('6', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000006","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000006/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"6666666666666666666666666666666666666666666666666666666666666666","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000006',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-generic-unknown-approval-smoke'
@@ -719,16 +907,19 @@ begin
         'Squid asset snapshot drift',
         '{"request_hash":"7777777777777777777777777777777777777777777777777777777777777777"}'::jsonb,
         '{"telegram":"승인된 PNG의 전체 스냅샷이 바뀌면 전송하지 않습니다."}'::jsonb,
-        '{"request_hash":"7777777777777777777777777777777777777777777777777777777777777777","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('7', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000007","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000007/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"7777777777777777777777777777777777777777777777777777777777777777","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000007',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-asset-drift-approval-smoke'
@@ -778,16 +969,19 @@ begin
         'Squid Storage object replacement',
         '{"request_hash":"8888888888888888888888888888888888888888888888888888888888888888"}'::jsonb,
         '{"telegram":"같은 경로의 Storage 객체가 교체되어도 전송하지 않습니다."}'::jsonb,
-        '{"request_hash":"8888888888888888888888888888888888888888888888888888888888888888","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('8', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000008","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000008/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"8888888888888888888888888888888888888888888888888888888888888888","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000008',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-storage-replacement-approval-smoke'
@@ -844,16 +1038,19 @@ begin
         'Squid recovery-only pre-attempt lease',
         '{"request_hash":"9999999999999999999999999999999999999999999999999999999999999999"}'::jsonb,
         '{"telegram":"provider 호출 전 만료된 lease는 복구 RPC가 재시도 상태로 돌립니다."}'::jsonb,
-        '{"request_hash":"9999999999999999999999999999999999999999999999999999999999999999","mock_mode":false}'::jsonb,
+        pg_temp.double_fact_check_meta(repeat('9', 64)),
         '{"asset_id":"d3000000-0000-4000-8000-000000000009","filename":"news-card.png","storage_path":"d0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000009/news-card.png","mime_type":"image/png","byte_size":128,"sha256":"9999999999999999999999999999999999999999999999999999999999999999","width":1080,"height":1080}'::jsonb,
         'exact-telegram-smoke@1'
     );
     version_id := (generated ->> 'content_version_id')::uuid;
-    perform public.record_studio_content_review(
+    perform public.record_studio_content_review_v2(
         'd0000000-0000-4000-8000-000000000001',
         'd1000000-0000-4000-8000-000000000009',
         version_id,
         'approved',
+        'double-fact-check@1',
+        true,
+        true,
         '{}'::text[],
         null,
         'squid-recovery-approval-smoke'

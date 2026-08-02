@@ -4,6 +4,7 @@ import reviewHandler from "../netlify/functions/library-review.mts";
 import {
   brandReviewGuidanceAudit,
   getBrandReviewGuidance,
+  getContentReviewSummary,
   recordStudioContentReview,
 } from "../netlify/functions/_shared/content-reviews.mts";
 import {
@@ -129,6 +130,7 @@ test("studio review RPC binds workspace, current version, reasons, and idempoten
       decision: "rejected",
       reasonCodes: ["off_brand_tone", "awkward_korean"],
       comment: "브랜드 문장 리듬을 다시 맞춰주세요.",
+      factCheck: null,
       idempotencyKey: REQUEST_ID,
     },
     async (_input, init) => {
@@ -140,6 +142,9 @@ test("studio review RPC binds workspace, current version, reasons, and idempoten
         decision: "rejected",
         status: "rejected",
         reason_codes: ["awkward_korean", "off_brand_tone"],
+        fact_check_policy_version: "double-fact-check@1",
+        source_facts_verified: false,
+        output_claims_verified: false,
         created_at: CREATED_AT,
         reused: false,
       });
@@ -154,7 +159,70 @@ test("studio review RPC binds workspace, current version, reasons, and idempoten
     review_decision: "rejected",
     review_reason_codes: ["off_brand_tone", "awkward_korean"],
     review_comment: "브랜드 문장 리듬을 다시 맞춰주세요.",
+    review_fact_check_policy_version: "double-fact-check@1",
+    review_source_facts_verified: false,
+    review_output_claims_verified: false,
     review_idempotency_key: REQUEST_ID,
+  });
+});
+
+test("legacy review summaries default missing fact-check fields to unverified", async () => {
+  const summary = await getContentReviewSummary(
+    config(),
+    ITEM_ID,
+    async () => Response.json({
+      approval_id: APPROVAL_ID,
+      content_version_id: VERSION_ID,
+      decision: "approved",
+      reason_codes: [],
+      comment: null,
+      reviewer_source: "studio_session",
+      created_at: CREATED_AT,
+    }),
+  );
+  assert.deepEqual({
+    fact_check_policy_version: summary?.fact_check_policy_version,
+    source_facts_verified: summary?.source_facts_verified,
+    output_claims_verified: summary?.output_claims_verified,
+  }, {
+    fact_check_policy_version: null,
+    source_facts_verified: false,
+    output_claims_verified: false,
+  });
+});
+
+test("approval HTTP input requires the completed double fact-check attestation", async () => {
+  const cookie = createStudioSessionValue(ACCESS_TOKEN);
+  await withNetlifyEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    SUPABASE_URL: "https://project.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
+    CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+  }, async () => {
+    const response = await reviewHandler(new Request(
+      `https://console.example/api/library/${ITEM_ID}/review`,
+      {
+        method: "POST",
+        headers: {
+          cookie: `${STUDIO_SESSION_COOKIE}=${cookie}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": REQUEST_ID,
+        },
+        body: JSON.stringify({
+          content_version_id: VERSION_ID,
+          decision: "approved",
+          reason_codes: [],
+          comment: "",
+          fact_check: {
+            policy_version: "double-fact-check@1",
+            source_facts_verified: true,
+            output_claims_verified: false,
+          },
+        }),
+      },
+    ), { params: { contentId: ITEM_ID } } as never);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_fact_check_attestation" });
   });
 });
 
@@ -168,7 +236,7 @@ test("review HTTP route requires the Studio session and records an approval with
     if (request.url.endsWith("/rpc/get_content_library_item")) {
       return Response.json(detailResult());
     }
-    if (request.url.endsWith("/rpc/record_studio_content_review")) {
+    if (request.url.endsWith("/rpc/record_studio_content_review_v2")) {
       return Response.json({
         approval_id: APPROVAL_ID,
         content_item_id: ITEM_ID,
@@ -176,6 +244,9 @@ test("review HTTP route requires the Studio session and records an approval with
         decision: "approved",
         status: "approved",
         reason_codes: [],
+        fact_check_policy_version: "double-fact-check@1",
+        source_facts_verified: true,
+        output_claims_verified: true,
         created_at: CREATED_AT,
         reused: false,
       });
@@ -189,6 +260,9 @@ test("review HTTP route requires the Studio session and records an approval with
         comment: null,
         reviewer_source: "studio_session",
         created_at: CREATED_AT,
+        fact_check_policy_version: "double-fact-check@1",
+        source_facts_verified: true,
+        output_claims_verified: true,
       });
     }
     if (request.url.endsWith("/rpc/get_brand_review_guidance")) {
@@ -217,6 +291,11 @@ test("review HTTP route requires the Studio session and records an approval with
             decision: "approved",
             reason_codes: [],
             comment: "",
+            fact_check: {
+              policy_version: "double-fact-check@1",
+              source_facts_verified: true,
+              output_claims_verified: true,
+            },
           }),
         },
       ), { params: { contentId: ITEM_ID } } as never);
@@ -237,6 +316,11 @@ test("review HTTP route requires the Studio session and records an approval with
             decision: "approved",
             reason_codes: [],
             comment: "",
+            fact_check: {
+              policy_version: "double-fact-check@1",
+              source_facts_verified: true,
+              output_claims_verified: true,
+            },
           }),
         },
       ), { params: { contentId: ITEM_ID } } as never);
@@ -245,6 +329,7 @@ test("review HTTP route requires the Studio session and records an approval with
       const payload = await response.json() as Record<string, any>;
       assert.equal(payload.result.status, "approved");
       assert.equal(payload.latest_review.reviewer_source, "studio_session");
+      assert.equal(payload.latest_review.source_facts_verified, true);
       assert.equal(payload.brand_learning.brand_review_example_ids[0], ITEM_ID);
       assert.ok(calls.every((url) => !url.includes("publication")));
     });
@@ -261,7 +346,7 @@ test("a post-commit projection failure still returns the committed review", asyn
     if (url.endsWith("/rpc/get_content_library_item")) {
       return Response.json(detailResult());
     }
-    if (url.endsWith("/rpc/record_studio_content_review")) {
+    if (url.endsWith("/rpc/record_studio_content_review_v2")) {
       return Response.json({
         approval_id: APPROVAL_ID,
         content_item_id: ITEM_ID,
@@ -269,6 +354,9 @@ test("a post-commit projection failure still returns the committed review", asyn
         decision: "approved",
         status: "approved",
         reason_codes: [],
+        fact_check_policy_version: "double-fact-check@1",
+        source_facts_verified: true,
+        output_claims_verified: true,
         created_at: CREATED_AT,
         reused: false,
       });
@@ -303,6 +391,11 @@ test("a post-commit projection failure still returns the committed review", asyn
             decision: "approved",
             reason_codes: [],
             comment: "",
+            fact_check: {
+              policy_version: "double-fact-check@1",
+              source_facts_verified: true,
+              output_claims_verified: true,
+            },
           }),
         },
       ), { params: { contentId: ITEM_ID } } as never);
@@ -312,6 +405,7 @@ test("a post-commit projection failure still returns the committed review", asyn
       assert.equal(payload.result.status, "approved");
       assert.equal(payload.latest_review.approval_id, APPROVAL_ID);
       assert.equal(payload.latest_review.reviewer_source, "studio_session");
+      assert.equal(payload.latest_review.output_claims_verified, true);
       assert.deepEqual(payload.brand_learning, { available: false });
     });
   } finally {

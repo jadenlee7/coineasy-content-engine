@@ -56,23 +56,44 @@ by `X-Publication-Worker-Key`.
 
 ## Rollout order
 
-1. Apply the migration and run all transactional SQL smoke tests.
+For the `double-fact-check@1` upgrade, this order supersedes the earlier
+migration-first rollout. Do not apply
+`20260802120000_double_fact_check_approval_gate.sql` while either publication
+execution plane or the official-X generation cron can claim new work.
+
+1. Disable new Studio publication requests, pause the official-X generation
+   cron, and set `TELEGRAM_PUBLICATION_ENABLED=false` on both the main Railway
+   API and the mandatory publication cron. Wait for current leases to expire,
+   run the recovery-only command below, and use the read-only queue gate in
+   step 8. Do not continue while an exact Telegram job is `running` or a
+   publication is `publishing` with a non-null `delivery_started_at`. The
+   double-fact-check migration deliberately aborts and rolls back in either
+   state.
 2. Deploy the main Railway API and mandatory cron worker with
    `TELEGRAM_PUBLICATION_ENABLED=false`. Set the cron service config source to
    `/railway.telegram-publication-worker.json` and confirm it has no public
-   domain.
-3. Set the dedicated shared worker token only on the main API and Netlify, plus
+   domain. Keep the official-X generation cron paused. For the
+   double-fact-check upgrade, verify the Railway Tutorial response contract
+   exposes bounded `lessons`; do not send a mutating generation request yet.
+3. Apply all pending migrations, including the double-fact-check approval gate,
+   and run all transactional SQL smoke tests. This creates a brief fail-closed
+   Studio review maintenance window until the matching Netlify functions are
+   deployed; legacy approval RPCs remain revoked.
+4. Set the dedicated shared worker token only on the main API and Netlify, plus
    the service-specific Supabase/Telegram variables from the table above. Run
    the built publication image with `--validate-only`; this mode must report
    `provider_calls:false` and `database_calls:false`.
-4. Deploy Netlify with `STUDIO_TELEGRAM_PUBLISH_ENABLED=false`. Existing
+5. Deploy Netlify with `STUDIO_TELEGRAM_PUBLISH_ENABLED=false`. Existing
    publication status remains readable, but no new request can be queued.
-5. Run the Python publisher, worker, endpoint, Netlify, and PostgreSQL tests.
+   Verify the authenticated `/api/studio-capabilities` response advertises
+   `double-fact-check@1`, generate each supported content kind, record both
+   human attestations, and exercise publication in dry-run mode.
+6. Run the Python publisher, worker, endpoint, Netlify, and PostgreSQL tests.
    Provider tests use a mock transport and must assert one `sendPhoto` call.
-6. If a live non-production canary is required, create an isolated deployment
+7. If a live non-production canary is required, create an isolated deployment
    and database migration that explicitly pins a disposable public test
    channel. Do not repoint the production Squid environment alone.
-7. Before every first activation or reactivation, run this read-only queue gate:
+8. Before every first activation or reactivation, run this read-only queue gate:
 
    ```sql
    select
@@ -103,8 +124,10 @@ by `X-Publication-Worker-Key`.
    as Railway is enabled, so proceed only when the operator has explicitly
    re-approved that exact item/version for immediate public delivery. Do not
    edit queue rows directly to make this check pass.
-8. Enable the main Railway API and mandatory cron worker first, then enable
-   Netlify. Keep both allowlists exactly `squid`.
+9. Enable the main Railway API and mandatory cron worker first, then enable
+   Netlify. Resume official-X generation only after its authenticated capability
+   preflight succeeds against the matching Netlify deployment. Keep both
+   publication allowlists exactly `squid`.
 
 Turning off the Netlify flag stops new requests without hiding existing state.
 Turning off Railway stops new claims. Neither action cancels a provider call

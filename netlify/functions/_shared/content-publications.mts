@@ -122,6 +122,10 @@ function publicationError(message: string, status: number): string {
     normalized.includes("not approved")
     || normalized.includes("current approved")
     || normalized.includes("approval record")
+    || normalized.includes("double-fact-check")
+    || normalized.includes("double fact check")
+    || normalized.includes("fact-check")
+    || normalized.includes("fact check")
   ) {
     return "telegram_publication_not_approved";
   }

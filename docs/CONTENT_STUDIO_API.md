@@ -16,7 +16,7 @@ worker is introduced.
   `API_SECRET`.
 - Mutating requests accept `Idempotency-Key`; retries return the same resource/job.
 - Netlify routes map workflow changes to the database RPCs
-  `queue_content_generation`, `review_content_version`,
+  `queue_content_generation`, `record_studio_content_review_v2`,
   `request_content_publication`, and `record_approved_figma_link`; the browser
   cannot insert queue/publication/Figma-link rows or update workflow status
   directly.
@@ -141,8 +141,10 @@ Current incremental Netlify bridge:
 - `POST /api/library/{content_item_id}/review` accepts `approved` or `rejected`
   for the exact current version through the signed Studio session. It requires a
   UUID `Idempotency-Key`, appends an immutable approval row, and never publishes.
-  Mock generations cannot be approved. Rejections carry at most five allowlisted
-  reason codes and an optional bounded team comment.
+  Mock generations cannot be approved. Approval additionally requires policy
+  `double-fact-check@1` and both source-fact/output-claim attestations for the
+  exact version. Rejections carry at most five allowlisted reason codes and an
+  optional bounded team comment.
 - `POST /api/library/{content_item_id}/publish` is the current Squid-only exact
   Telegram bridge. It accepts only the current `content_version_id`, channel
   `telegram`, and a UUID `Idempotency-Key`. It is disabled by default and never
@@ -167,6 +169,11 @@ reusing the UUID for changed input returns a mode-specific
 asset IDs. Every generated item starts in `needs_review`, and generation never
 implies approval. Missing catalog rows, metadata mismatches, or missing private
 objects fail closed rather than returning an untracked temporary result.
+Automation first calls the authenticated `GET /api/studio-capabilities` endpoint
+and submits no mutating request unless the server advertises
+`double-fact-check@1` and Tutorial `lessons@1`. Exact replays also validate the
+complete persisted report; legacy or corrupted rows return
+`fact_check_regeneration_required` instead of a partial success.
 
 Approved non-mock output excerpts are available to later generation only for the
 same client and content kind. They guide Korean cadence, terminology, and channel
@@ -177,7 +184,7 @@ policy version, and payload hash are stored in generation metadata for audit.
 
 Source content is stored in full and test-mode generations are explicitly marked
 in generation metadata, the generation response, and the team library.
-`review_content_version` refuses to approve a version with `mock_mode: true`, and
+`record_studio_content_review_v2` refuses to approve a version with `mock_mode: true`, and
 `request_content_publication` repeats that check as a server-side backstop. These
 incremental `/api/*` routes use the signed team cookie described in
 `docs/STUDIO_ACCESS.md`; the future `/v1/workspaces/*` contract above will use
@@ -197,13 +204,23 @@ Current signed-session bridge:
 ```json
 {
   "content_version_id": "version-uuid",
-  "decision": "rejected",
-  "reason_codes": ["off_brand_tone", "awkward_korean"],
-  "comment": "문장 리듬을 브랜드 기준에 맞춰주세요."
+  "decision": "approved",
+  "reason_codes": [],
+  "comment": "",
+  "fact_check": {
+    "policy_version": "double-fact-check@1",
+    "source_facts_verified": true,
+    "output_claims_verified": true
+  }
 }
 ```
 
-The route calls the service-only `record_studio_content_review` RPC. Studio
+The route calls the service-only `record_studio_content_review_v2` RPC. The
+automatic report records provenance, lexical/numeric anchors, and artifact
+fingerprints; even `pass` is not a semantic truth guarantee. The reviewer must
+open the primary source and separately attest the source facts and every final
+claim. Legacy approvals and edited/downloaded derivatives are not publishable
+without a new version and review. Studio
 session reviews are identified explicitly as `reviewer_source = studio_session`;
 they do not create a fake Supabase Auth user. An approval becomes a bounded
 positive style example. For a rejection, only allowlisted reason codes—not the

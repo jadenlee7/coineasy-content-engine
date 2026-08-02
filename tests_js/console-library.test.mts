@@ -63,6 +63,16 @@ test("records explicit approve or change-request decisions without auto publishi
   assert.match(consoleHtml, /fetch\(`\/api\/library\/\$\{encodeURIComponent\(activeContentId\)\}\/review`/);
   assert.match(consoleHtml, /"Idempotency-Key": reviewRequest\.id/);
   assert.match(consoleHtml, /reason_codes: reasonCodes/);
+  assert.match(consoleHtml, /function factCheckReviewState\(rawGenerationMeta, expectedContentKind\)/);
+  assert.match(consoleHtml, /report\.policy_version === "double-fact-check@1"/);
+  assert.match(consoleHtml, /data-library-fact-check-attestation="source_facts_verified"/);
+  assert.match(consoleHtml, /data-library-fact-check-attestation="output_claims_verified"/);
+  assert.match(consoleHtml, /fact_check: factCheckAttestation/);
+  assert.match(consoleHtml, /fact_check_policy_version/);
+  assert.match(consoleHtml, /source_facts_verified/);
+  assert.match(consoleHtml, /output_claims_verified/);
+  assert.match(consoleHtml, /기존 승인 · 이중 사실 확인 재검증 필요/);
+  assert.match(consoleHtml, /같은 공식 원문으로 새 버전을 생성한 뒤 이중 사실 확인을 완료해주세요/);
   assert.match(consoleHtml, /window\.confirm\(`\$\{decisionLabel\}을 기록할까요\?/);
   assert.match(consoleHtml, /이 작업은 게시를 실행하지 않지만/);
   assert.match(consoleHtml, /선택한 사유 코드만 다음 생성의 주의점에 반영됩니다/);
@@ -72,11 +82,26 @@ test("records explicit approve or change-request decisions without auto publishi
   assert.doesNotMatch(reviewFunction, /publication|publish/);
 });
 
+test("keeps generated and stored post copy in review mode until attested approval", () => {
+  assert.doesNotMatch(consoleHtml, /복사해서 바로 게시하기/);
+  assert.match(consoleHtml, /<h3>검토용 게시 문구<\/h3>/);
+  assert.match(consoleHtml, /data-copy-target="telegram-copy" disabled>승인 후 복사/);
+  assert.match(consoleHtml, /data-copy-target="x-copy" disabled>승인 후 복사/);
+  assert.match(consoleHtml, /id="article-markdown"[^>]*readonly/);
+  assert.match(consoleHtml, /const copyAllowed = !isMock[\s\S]*detail\.status === "approved"[\s\S]*hasAttestedDoubleFactCheckApproval/);
+  assert.match(consoleHtml, /copyFactCheck\.approvalEligible/);
+  assert.match(consoleHtml, /검토용 미리보기입니다\. 공식 원문과 최종 주장을 모두 확인한 현재 버전만 복사할 수 있습니다/);
+});
+
 test("publishes only the exact server-allowed approved Telegram version", () => {
   assert.match(consoleHtml, /function renderTelegramPublishMarkup\(rawDetail, isMock, assets, channelCopyValue\)/);
   assert.match(consoleHtml, /capabilities\.telegram !== true\s*\|\| capabilities\.telegram_client_allowed !== true/);
   assert.match(consoleHtml, /detail\.content_kind !== "daily_news"/);
-  assert.match(consoleHtml, /latestReview\.content_version_id === contentVersionId/);
+  assert.match(consoleHtml, /function hasAttestedDoubleFactCheckApproval\(rawReview, contentVersionId\)/);
+  assert.match(consoleHtml, /review\.fact_check_policy_version === "double-fact-check@1"/);
+  assert.match(consoleHtml, /review\.source_facts_verified === true/);
+  assert.match(consoleHtml, /review\.output_claims_verified === true/);
+  assert.match(consoleHtml, /factCheck\.approvalEligible/);
   assert.match(consoleHtml, /generationMeta\.mock_mode === true/);
   assert.match(consoleHtml, /asset\.asset_kind === "png" && asset\.mime_type === "image\/png"/);
   assert.match(consoleHtml, /data-library-publish-channel="telegram"/);
@@ -94,6 +119,38 @@ test("publishes only the exact server-allowed approved Telegram version", () => 
   assert.match(consoleHtml, /중복 게시를 막기 위해 자동 재시도하지 않습니다/);
   assert.match(consoleHtml, /telegram_publication_client_not_allowed/);
   assert.doesNotMatch(consoleHtml, /PUBLICATION_WORKER_TOKEN|X-Publication-Worker-Key/);
+});
+
+test("accepts only a complete current-version fact-check report in the browser", () => {
+  const functionSource = consoleHtml.match(
+    /function factCheckReviewState\(rawGenerationMeta, expectedContentKind\) \{[\s\S]*?\n      \}(?=\n\n      function renderContentReviewMarkup)/,
+  )?.[0];
+  assert.ok(functionSource, "factCheckReviewState must be present");
+  const factCheckReviewState = Function(
+    "plainObject",
+    `"use strict"; ${functionSource}; return factCheckReviewState;`,
+  )(
+    (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+  ) as (value: unknown, kind: string) => { approvalEligible: boolean; status: string };
+  const report = {
+    schema_version: "1.0",
+    policy_version: "double-fact-check@1",
+    content_kind: "daily_news",
+    status: "review",
+    human_review_required: true,
+    input_sha256: "a".repeat(64),
+    output_sha256: "b".repeat(64),
+    checks: [
+      { id: "source_evidence", status: "review", label: "Source evidence", detail: "Human review required.", metrics: {} },
+      { id: "output_claims", status: "pass", label: "Output claims", detail: "Mechanical anchors recorded.", metrics: {} },
+    ],
+  };
+  assert.equal(factCheckReviewState({ fact_check: report }, "daily_news").approvalEligible, true);
+  assert.equal(factCheckReviewState({ fact_check: report }, "article").approvalEligible, false);
+  assert.equal(factCheckReviewState({ fact_check: { ...report, input_sha256: "short" } }, "daily_news").approvalEligible, false);
+  assert.equal(factCheckReviewState({ fact_check: { ...report, checks: report.checks.slice(0, 1) } }, "daily_news").approvalEligible, false);
+  assert.equal(factCheckReviewState({ fact_check: { ...report, status: "pass" } }, "daily_news").approvalEligible, false);
+  assert.equal(factCheckReviewState({ fact_check: { ...report, status: "blocked", checks: report.checks.map(check => ({ ...check, status: "blocked" })) } }, "daily_news").approvalEligible, false);
 });
 
 test("accepts only canonical delivery timestamps in the browser publication DTO", () => {
@@ -284,13 +341,14 @@ test("rebuilds durable Figma SVGs from only the stored daily-news render envelop
     current_version: { content: { spec: {}, render: { template_style: "classic" } } },
   }), null);
 
-  assert.match(consoleHtml, /data-library-editable>Figma 편집용 SVG 받기</);
+  assert.match(consoleHtml, /data-library-editable>미승인 편집 참고용 SVG 받기</);
   assert.match(consoleHtml, /fetch\(`\/api\/editable-card\/\$\{encodeURIComponent\(request\.clientId\)\}`/);
   assert.match(consoleHtml, /credentials: "same-origin"/);
   assert.match(consoleHtml, /handleStudioAccessResponse\(response, errorPayload\)/);
   assert.match(consoleHtml, /URL\.revokeObjectURL\(blobUrl\)/);
   assert.match(consoleHtml, /activeContentId !== libraryState\.activeId/);
-  assert.match(consoleHtml, /리믹스 편집본은 원본 이미지의 영구 보관이 준비된 뒤 보관함에서 다시 받을 수 있습니다/);
+  assert.match(consoleHtml, /생성 직후 받은 SVG도 미승인이며 수정 후 새 버전 등록과 재검토가 필요합니다/);
+  assert.match(consoleHtml, /SVG를 수정하면 승인된 현재 버전과 다른 미승인 파생본/);
 });
 
 test("prefills deeper work only from an exact performance recommendation and source-ready official evidence", () => {

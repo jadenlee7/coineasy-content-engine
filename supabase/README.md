@@ -88,7 +88,10 @@ writes and asset/Storage mutations remain server-only. `content_versions`,
 `approvals`, and `event_log` are append-only for the service role as well.
 
 The signed Studio session records human decisions through the service-only
-`record_studio_content_review` RPC. These rows use
+`record_studio_content_review_v2` RPC. Approval requires the exact version's
+valid `double-fact-check@1` report plus separate `source_facts_verified` and
+`output_claims_verified` attestations. The legacy Studio review RPC and
+`review_content_version` cannot execute after the gate migration. These rows use
 `reviewer_source = 'studio_session'` and a null `reviewer_id`; authenticated
 Supabase users continue to use `reviewer_source = 'supabase_auth'` with their
 real user ID. No fake `auth.users` identity is created. Review requests are

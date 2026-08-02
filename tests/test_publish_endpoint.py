@@ -75,7 +75,17 @@ def test_invalid_channel_rejected_by_pydantic(client):
     assert r.status_code == 422
 
 
-def test_live_squid_telegram_is_exclusive_to_exact_studio_publication(
+@pytest.mark.parametrize(
+    ("client_id", "channels"),
+    [
+        ("squid", ["telegram"]),
+        ("yellow", ["telegram"]),
+        ("yellow", ["typefully"]),
+        ("yellow", ["typefully", "telegram"]),
+    ],
+)
+def test_all_legacy_live_publication_requires_double_checked_studio_version(
+    client_id, channels,
     client, monkeypatch
 ):
     from api import server
@@ -89,13 +99,13 @@ def test_live_squid_telegram_is_exclusive_to_exact_studio_publication(
         _generation_must_not_run,
     )
     response = client.post(
-        "/clients/squid/publish/daily-news",
-        json={"hours": 24, "dry_run": False, "channels": ["telegram"]},
+        f"/clients/{client_id}/publish/daily-news",
+        json={"hours": 24, "dry_run": False, "channels": channels},
         headers={"x-api-key": ADMIN_KEY},
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "squid_telegram_exact_publication_required"
+    assert response.json()["detail"] == "studio_double_fact_check_publication_required"
 
 
 def test_empty_news_skips_publishing(client, monkeypatch):

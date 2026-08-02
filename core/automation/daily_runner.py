@@ -55,6 +55,7 @@ from core.squid_visual_style import (
 
 _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
+_FACT_CHECK_GENERATION_POLICY_VERSION = "double-fact-check@1"
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -984,9 +985,9 @@ class OfficialXDailyRunner:
     ) -> str:
         namespace = uuid.UUID(self.settings.workspace_id)
         policy_identity = (
-            f"v2:{SQUID_VISUAL_POLICY_VERSION}"
+            f"v3:{_FACT_CHECK_GENERATION_POLICY_VERSION}:{SQUID_VISUAL_POLICY_VERSION}"
             if client_id == "squid" and content_kind == "daily_news"
-            else "v1"
+            else f"v2:{_FACT_CHECK_GENERATION_POLICY_VERSION}"
         )
         return str(uuid.uuid5(
             namespace,

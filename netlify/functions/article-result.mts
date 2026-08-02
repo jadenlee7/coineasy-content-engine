@@ -68,7 +68,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     const code = error instanceof ContentCatalogError
       ? error.code
       : "durable_catalog_lookup_failed";
-    return json({ error: code }, 503);
+    return json({ error: code }, code === "fact_check_regeneration_required" ? 409 : 503);
   }
 };
 

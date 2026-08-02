@@ -8,12 +8,14 @@ import {
   brandReviewGuidanceAudit,
   contentReviewStatus,
   ContentReviewError,
+  FACT_CHECK_POLICY_VERSION,
   getBrandReviewGuidance,
   getContentReviewSummary,
   recordStudioContentReview,
   REVIEW_REASON_CODES,
   type ContentReviewSummary,
   type ReviewReasonCode,
+  type StudioFactCheckAttestation,
   type StudioReviewDecision,
 } from "./_shared/content-reviews.mts";
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
@@ -60,6 +62,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       "decision",
       "reason_codes",
       "comment",
+      "fact_check",
     ].includes(key))
   ) return studioSessionJson({ error: "invalid_content_review" }, 400);
 
@@ -69,6 +72,29 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const decision = body.decision;
   const rawReasonCodes = body.reason_codes ?? [];
   const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+  const rawFactCheck = body.fact_check;
+  const factCheckValue = rawFactCheck === undefined || rawFactCheck === null
+    ? null
+    : objectValue(rawFactCheck);
+  const factCheck = factCheckValue && (
+    Object.keys(factCheckValue).length === 3
+    && factCheckValue.policy_version === FACT_CHECK_POLICY_VERSION
+    && typeof factCheckValue.source_facts_verified === "boolean"
+    && typeof factCheckValue.output_claims_verified === "boolean"
+  )
+    ? {
+      policyVersion: FACT_CHECK_POLICY_VERSION,
+      sourceFactsVerified: factCheckValue.source_facts_verified,
+      outputClaimsVerified: factCheckValue.output_claims_verified,
+    } satisfies StudioFactCheckAttestation
+    : null;
+  const invalidFactCheck = (rawFactCheck !== undefined && rawFactCheck !== null && !factCheck)
+    || (decision === "approved" && (!factCheck
+      || !factCheck.sourceFactsVerified
+      || !factCheck.outputClaimsVerified));
+  if (invalidFactCheck) {
+    return studioSessionJson({ error: "invalid_fact_check_attestation" }, 400);
+  }
   if (
     !UUID_PATTERN.test(contentVersionId)
     || !["approved", "rejected"].includes(String(decision))
@@ -92,6 +118,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       decision: decision as StudioReviewDecision,
       reasonCodes: rawReasonCodes as ReviewReasonCode[],
       comment: comment || null,
+      factCheck,
       idempotencyKey,
     });
     let latestReview: ContentReviewSummary = {
@@ -102,6 +129,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
       comment: comment || null,
       reviewer_source: "studio_session",
       created_at: result.created_at,
+      fact_check_policy_version: result.fact_check_policy_version,
+      source_facts_verified: result.source_facts_verified,
+      output_claims_verified: result.output_claims_verified,
     };
     try {
       latestReview = await getContentReviewSummary(config, contentItemId) || latestReview;
