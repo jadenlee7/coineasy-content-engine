@@ -1245,6 +1245,237 @@ def test_squid_stable_discovery_overrides_a_valid_but_wrong_main_candidate(monke
     assert result["translation_regions"][0]["text"] == "여유롭게"
 
 
+def test_squid_stacked_discovery_still_fails_closed_when_raster_rejects(monkeypatch):
+    calls = []
+    payloads = [
+        {
+            "label": "TELEGRAM × SQUID",
+            "date": "2026.08.01",
+            "headline": "Squid가 Telegram에 왔습니다",
+            "body_lines": ["공식 커뮤니티 소식을 확인하세요"],
+            "source_url": "ignored",
+            "theme": "yellow",
+            "source_logo_visible": False,
+            "source_text_visible": True,
+            "translation_regions": [{
+                "source_text": "SQUID IS ON TELEGRAM",
+                "text": "SQUID가 Telegram에 왔어요",
+                "x": 5,
+                "y": 5,
+                "width": 90,
+                "height": 90,
+            }],
+        },
+        {
+            "found": True,
+            "regions": [{
+                "source_text": "SQUID IS ON TELEGRAM",
+                "text": "SQUID가\n텔레그램에 왔어요",
+                "x": 5,
+                "y": 5,
+                "width": 90,
+                "height": 90,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 12,
+                "text_color": "#000000",
+            }],
+        },
+        {
+            "found": True,
+            "regions": [
+                {
+                    "source_text": "SQUID IS",
+                    "text": "SQUID가",
+                    "x": 13.70,
+                    "y": 4.91,
+                    "width": 71.57,
+                    "height": 16.02,
+                    "align": "center",
+                    "font_role": "display",
+                    "font_size": 12,
+                    "text_color": "#000000",
+                },
+                {
+                    "source_text": "ON",
+                    "text": "있는 곳",
+                    "x": 37.13,
+                    "y": 64.91,
+                    "width": 24.35,
+                    "height": 13.80,
+                    "align": "center",
+                    "font_role": "display",
+                    "font_size": 7.5,
+                    "text_color": "#000000",
+                },
+                {
+                    "source_text": "TELEGRAM",
+                    "text": "TELEGRAM",
+                    "x": 3.61,
+                    "y": 81.85,
+                    "width": 91.76,
+                    "height": 13.80,
+                    "align": "center",
+                    "font_role": "display",
+                    "font_size": 10,
+                    "text_color": "#000000",
+                },
+            ],
+        },
+        {
+            "safe": True,
+            "verified_source_texts": [
+                {"source_index": 0, "text": "SQUID IS"},
+                {"source_index": 1, "text": "ON"},
+            ],
+            "protected_regions": [
+                {
+                    "kind": "source_text", "source_index": 0,
+                    "x": 13.70, "y": 4.91, "width": 71.57, "height": 16.02,
+                },
+                {
+                    "kind": "source_text", "source_index": 1,
+                    "x": 37.13, "y": 64.91, "width": 24.35, "height": 13.80,
+                },
+                {
+                    "kind": "other_text",
+                    "x": 3.61, "y": 81.85, "width": 91.76, "height": 13.80,
+                },
+                {"kind": "character", "x": 3.70, "y": 23.33, "width": 73.15, "height": 66.76},
+                {"kind": "face", "x": 31.02, "y": 42.13, "width": 22.69, "height": 17.13},
+                {"kind": "other_visual", "x": 60.56, "y": 21.30, "width": 25.00, "height": 18.00},
+                {"kind": "other_visual", "x": 85.60, "y": 15.28, "width": 12.66, "height": 24.00},
+            ],
+        },
+    ]
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payloads[len(calls) - 1], ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+
+    def probe_stacked_regions(_image, regions):
+        assert [region["_source_index"] for region in regions] == [0, 1]
+        assert [region["_source_line_count"] for region in regions] == [1, 1]
+        assert [
+            (region["source_text"], region["text"])
+            for region in regions
+        ] == [("SQUID IS", "SQUID가"), ("ON", "있는 곳")]
+        assert all(
+            any(box["kind"] == "other_text" for box in region["_protected_regions"])
+            for region in regions
+        )
+        assert all(
+            any(box["kind"] == "other_visual" for box in region["_protected_regions"])
+            for region in regions
+        )
+        raise SourceTextCleanupError(
+            "official poster lettering cannot be isolated without substrate damage"
+        )
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        probe_stacked_regions,
+    )
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=1080,
+        height=1080,
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid is live on Telegram.",
+        source_url="https://x.com/squidrouter/status/2083266484789514640",
+        source_image=image,
+    )
+
+    assert len(calls) == 4
+    first_discovery_prompt = calls[1]["messages"][0]["content"][1]["text"]
+    retry_discovery_prompt = calls[2]["messages"][0]["content"][1]["text"]
+    assert "merged a stacked, multi-row slogan" not in first_discovery_prompt
+    assert "merged a stacked, multi-row slogan" in retry_discovery_prompt
+    assert "connector such as \"ON\" may be its own compact localization block" in retry_discovery_prompt
+    assert calls[3]["system"].startswith("You are the final visual replacement QA")
+    assert result["visual_localization_status"] == "cleanup_failed"
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_stable_discovery_fails_closed_when_retry_is_still_scene_wide(monkeypatch):
+    calls = []
+    scene_wide = {
+        "found": True,
+        "regions": [{
+            "source_text": "SQUID IS ON TELEGRAM",
+            "text": "SQUID가 텔레그램에 왔어요",
+            "x": 5,
+            "y": 5,
+            "width": 90,
+            "height": 90,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 12,
+            "text_color": "#000000",
+        }],
+    }
+    payloads = [
+        {
+            "label": "TELEGRAM × SQUID",
+            "date": "2026.08.01",
+            "headline": "Squid가 Telegram에 왔습니다",
+            "body_lines": ["공식 커뮤니티 소식을 확인하세요"],
+            "source_url": "ignored",
+            "theme": "yellow",
+            "source_logo_visible": False,
+            "source_text_visible": True,
+            "translation_regions": [dict(scene_wide["regions"][0])],
+        },
+        scene_wide,
+        scene_wide,
+    ]
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payloads[len(calls) - 1], ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("scene-wide discovery must not reach raster probing"),
+    )
+    image = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="aW1hZ2U=",
+        width=1080,
+        height=1080,
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid is live on Telegram.",
+        source_url="https://x.com/squidrouter/status/2083266484789514640",
+        source_image=image,
+    )
+
+    assert len(calls) == 3
+    assert all(
+        not call["system"].startswith("You are the final visual replacement QA")
+        for call in calls
+    )
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+
+
 def test_squid_stable_discovery_accepts_an_explicit_textless_visual(monkeypatch):
     calls = []
     main_payload = {
@@ -3362,6 +3593,68 @@ def test_squid_stacked_source_boxes_count_as_two_visual_lines(monkeypatch):
 
     region = normalized["translation_regions"][0]
     assert region["_source_line_count"] == 2
+
+
+def test_squid_placement_audit_rejects_three_visual_rows_in_one_region(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "ROW ONE\nROW TWO\nROW THREE",
+            "text": "세 줄 문구",
+            "x": 20,
+            "y": 60,
+            "width": 30,
+            "height": 24,
+        }],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 21, "y": 61, "width": 28, "height": 4},
+            {"kind": "source_text", "source_index": 0, "x": 21, "y": 69, "width": 28, "height": 4},
+            {"kind": "source_text", "source_index": 0, "x": 21, "y": 77, "width": 28, "height": 4},
+        ],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+
+
+def test_squid_stacked_poster_rejects_a_broad_plane_box_over_top_copy(monkeypatch):
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [
+            {
+                "source_text": "SQUID IS",
+                "text": "SQUID가",
+                "x": 14,
+                "y": 5,
+                "width": 72,
+                "height": 18,
+            },
+            {
+                "source_text": "ON",
+                "text": "있는 곳",
+                "x": 35,
+                "y": 62,
+                "width": 30,
+                "height": 18,
+            },
+        ],
+    }
+    result = _audit_result(monkeypatch, raw, {
+        "safe": True,
+        "protected_regions": [
+            {"kind": "source_text", "source_index": 0, "x": 14, "y": 5, "width": 72, "height": 18},
+            {"kind": "source_text", "source_index": 1, "x": 35, "y": 62, "width": 30, "height": 18},
+            {"kind": "other_text", "x": 3, "y": 82, "width": 94, "height": 18},
+            {"kind": "character", "x": 4, "y": 24, "width": 72, "height": 72},
+            {"kind": "other_visual", "x": 60, "y": 18, "width": 38, "height": 38},
+        ],
+    })
+
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
 
 
 def test_squid_two_row_translation_reflow_is_deterministic():

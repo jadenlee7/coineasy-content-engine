@@ -44,6 +44,17 @@ _PROTECTED_VISUAL_KINDS = {
 }
 _CAPTION_SUBSTRATE_KINDS = {"character", "limb", "product"}
 _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO = 0.50
+# Small baked captions can be reconstructed across a locally smooth character
+# or product edge. Large display lettering erases too much of the underlying
+# branded object for deterministic OpenCV inpainting to recover faithfully.
+# Bound the *verified source pixels inside that object*, not the enclosing box,
+# so a broad audit rectangle alone cannot trigger or bypass this gate.
+_MAX_CAPTION_SUBSTRATE_SOURCE_MASK_FRACTION = 0.02
+_MAX_UNSAFE_AUDITED_SOURCE_MASK_FRACTION = 0.02
+_MIN_DENSE_SOURCE_MASK_BOUNDS_FRACTION = 0.70
+_MAX_LARGE_SOURCE_RING_CHANNEL_STD = 16.0
+_LARGE_SOURCE_RING_INNER_GAP_FRACTION = 0.006
+_LARGE_SOURCE_RING_OUTER_RADIUS_FRACTION = 0.02
 _RECOVERY_HORIZONTAL_REGION_FRACTION = 0.45
 _RECOVERY_HORIZONTAL_IMAGE_FRACTION = 0.08
 _RECOVERY_VERTICAL_REGION_FRACTION = 0.75
@@ -1781,13 +1792,13 @@ def _validate_dilated_mask_protection(
     minimum_substrate_source_ratio: float = (
         _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO
     ),
-) -> None:
+) -> np.ndarray:
     """Reject final cleanup pixels that leave the visual audit's safe area."""
     # Production Squid cleanup always carries the validator-produced protected
     # map.  Legacy/direct utility callers do not, so retain their historical
     # behavior while enforcing the strict envelope on the audited path.
     if not isinstance(region, dict) or "_protected_regions" not in region:
-        return
+        return np.zeros_like(mask)
     image_height, image_width = mask.shape
     if source_mask.shape != mask.shape:
         raise SourceTextCleanupError("source-text mask metadata is invalid")
@@ -1816,6 +1827,7 @@ def _validate_dilated_mask_protection(
     ):
         raise SourceTextCleanupError("protected visual metadata is invalid")
 
+    substrate_boxes = np.zeros_like(mask)
     for protected in protected_regions:
         if not isinstance(protected, dict):
             raise SourceTextCleanupError("protected visual metadata is invalid")
@@ -1841,6 +1853,9 @@ def _validate_dilated_mask_protection(
             if protected_source_index == source_index:
                 continue
 
+        if kind in _CAPTION_SUBSTRATE_KINDS:
+            substrate_boxes[top:bottom, left:right] = 255
+
         overlap_y, overlap_x = np.where(mask[top:bottom, left:right] > 0)
         if not len(overlap_x):
             continue
@@ -1862,6 +1877,11 @@ def _validate_dilated_mask_protection(
             raise SourceTextCleanupError(
                 f"source-text mask leaves its audited {kind} substrate"
             )
+    return np.where(
+        (source_mask > 0) & (substrate_boxes > 0),
+        255,
+        0,
+    ).astype(np.uint8)
 
 
 def _validate_region_reconstruction_complexity(
@@ -1900,6 +1920,58 @@ def _validate_region_reconstruction_complexity(
         raise SourceTextCleanupError(
             "source background is too complex for clean reconstruction"
         )
+
+
+def _large_audited_source_mask_is_unsafe(
+    image: np.ndarray,
+    source_mask: np.ndarray,
+    dilated_mask: np.ndarray,
+) -> bool:
+    """Reject dense display glyphs unless their visible substrate is flat.
+
+    The tight mask bounds and raster colours are independent of the model's
+    discovery-box padding. A large thin caption can still be reconstructed on a
+    demonstrably flat field, while dense lettering or a coloured object edge is
+    unsafe once the audited source-mask union exceeds the global cap.
+    """
+    mask_left, mask_top, mask_right, mask_bottom = _mask_bounds(source_mask)
+    mask_bounds_area = max(
+        1,
+        (mask_right - mask_left) * (mask_bottom - mask_top),
+    )
+    if (
+        np.count_nonzero(source_mask) / mask_bounds_area
+        >= _MIN_DENSE_SOURCE_MASK_BOUNDS_FRACTION
+    ):
+        return True
+
+    image_height, image_width = source_mask.shape
+    long_edge = max(image_width, image_height)
+    inner_radius = max(
+        2,
+        round(long_edge * _LARGE_SOURCE_RING_INNER_GAP_FRACTION),
+    )
+    outer_radius = max(
+        inner_radius + 2,
+        round(long_edge * _LARGE_SOURCE_RING_OUTER_RADIUS_FRACTION),
+    )
+    inner_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (inner_radius * 2 + 1, inner_radius * 2 + 1),
+    )
+    outer_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (outer_radius * 2 + 1, outer_radius * 2 + 1),
+    )
+    inner_gap = cv2.dilate(dilated_mask, inner_kernel) > 0
+    context_ring = (
+        (cv2.dilate(dilated_mask, outer_kernel) > 0)
+        & ~inner_gap
+    )
+    if not np.any(context_ring):
+        return True
+    channel_std = np.std(image[context_ring], axis=0)
+    return float(np.max(channel_std)) > _MAX_LARGE_SOURCE_RING_CHANNEL_STD
 
 
 def _text_detection_working_image(image: np.ndarray) -> np.ndarray:
@@ -2000,6 +2072,15 @@ def _prepare_cleanup_mask(
         (dilation_radius * 2 + 1, dilation_radius * 2 + 1),
     )
     full_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    substrate_source_mask = np.zeros(
+        (image_height, image_width),
+        dtype=np.uint8,
+    )
+    audited_source_mask = np.zeros(
+        (image_height, image_width),
+        dtype=np.uint8,
+    )
+    has_unsafe_large_audited_source_region = False
     detected_regions: list[dict[str, float]] = []
     used_light_caption_recovery = False
     for region in translation_regions:
@@ -2186,6 +2267,11 @@ def _prepare_cleanup_mask(
             (detection_height, detection_width),
             (image_height, image_width),
         )
+        if isinstance(region, dict) and "_protected_regions" in region:
+            audited_source_mask = cv2.bitwise_or(
+                audited_source_mask,
+                native_region_mask,
+            )
         if light_caption_fallback:
             verified_bright_core = _project_working_mask(
                 region_bright_provenance,
@@ -2216,7 +2302,17 @@ def _prepare_cleanup_mask(
             minimum_substrate_source_ratio = (
                 _CAPTION_SUBSTRATE_MIN_SOURCE_MASK_RATIO
             )
-        _validate_dilated_mask_protection(
+        if (
+            isinstance(region, dict)
+            and "_protected_regions" in region
+            and _large_audited_source_mask_is_unsafe(
+                image,
+                protection_source_mask,
+                dilated_region_mask,
+            )
+        ):
+            has_unsafe_large_audited_source_region = True
+        region_substrate_source_mask = _validate_dilated_mask_protection(
             dilated_region_mask,
             protection_source_mask,
             region,
@@ -2224,6 +2320,32 @@ def _prepare_cleanup_mask(
                 minimum_substrate_source_ratio
             ),
         )
+        substrate_source_mask = cv2.bitwise_or(
+            substrate_source_mask,
+            region_substrate_source_mask,
+        )
+        if (
+            np.count_nonzero(substrate_source_mask)
+            / max(1, image_width * image_height)
+            > _MAX_CAPTION_SUBSTRATE_SOURCE_MASK_FRACTION
+        ):
+            raise SourceTextCleanupError(
+                "source-text mask is too large for protected caption substrate"
+        )
+        if (
+            has_unsafe_large_audited_source_region
+            and np.count_nonzero(audited_source_mask)
+            / max(1, image_width * image_height)
+            > _MAX_UNSAFE_AUDITED_SOURCE_MASK_FRACTION
+        ):
+            # A dense display word or thin lettering over a complex field can
+            # erase branded pixels even when the audit omits the mascot/product.
+            # Apply the cap to the union so splitting one phrase into several
+            # regions cannot bypass it. Sparse lettering on a broad, flat caption
+            # remains eligible for deterministic reconstruction.
+            raise SourceTextCleanupError(
+                "source-text mask is too large for deterministic reconstruction"
+            )
         _validate_region_reconstruction_complexity(
             image,
             dilated_region_mask,

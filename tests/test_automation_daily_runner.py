@@ -614,7 +614,19 @@ async def test_pending_source_recovers_when_fresh_x_poll_is_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_squid_photo_daily_news_reaches_generation_as_remix():
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "A new era for Squid starts today.",
+        "Squid has crossed 5 million swaps across connected chains.",
+        "The TGE claim phase status is available.",
+        "Use MiniPay to bridge with Squid.",
+        "Bouncing through the weekend with the official SQUIB mascot.",
+    ],
+)
+async def test_every_squid_photo_daily_news_family_reaches_generation_as_remix(
+    source_text,
+):
     states = {
         client_id: AutomationState(None, client_id != "squid", ())
         for client_id in AUTOMATION_CLIENTS
@@ -624,6 +636,7 @@ async def test_squid_photo_daily_news_reaches_generation_as_remix():
         False,
         (pending(
             "squid",
+            text=source_text,
             source_image_url="https://pbs.twimg.com/media/official.jpg",
         ),),
     )

@@ -22,6 +22,15 @@ the official source as the factual and visual boundary.
 5. Never borrow media from a partner or community quote merely because it is
    visually relevant.
 
+This is the default for every ordinary Squid official-X `daily_news` post, not
+only launch or campaign posters. Once verified official media exists, neither
+its visual family nor its subject matter may route the post to generated GTM
+artwork: the output keeps the official composition and changes only audited
+in-image copy to Korean. If copy discovery, placement, cleanup, or browser fit
+is unsafe, the renderer keeps the untouched original, records the failure for
+critical brand review, and the durable item remains `needs_review`; it never
+silently redesigns or publishes the post.
+
 The Studio defaults Squid news creation to `원문 우선`. Scheduled automation
 pins the already-selected official X media URL through the automation-only
 boundary, binds that normalized URL to the idempotency hash, and stores its
