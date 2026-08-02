@@ -1611,6 +1611,45 @@ def test_two_line_audited_rows_are_detected_atomically_and_deterministically():
     )
 
 
+@pytest.mark.parametrize("width", [480, 720, 900, 1200])
+@pytest.mark.parametrize("quality", [75, 85, 95])
+def test_large_flat_two_line_caption_is_stable_across_resolution_and_jpeg(
+    width,
+    quality,
+):
+    base = _two_line_outlined_caption_source()
+    image = Image.open(
+        BytesIO(base64.b64decode(base.base64_data))
+    ).convert("RGB")
+    image = image.resize(
+        (width, round(width * 2 / 3)),
+        Image.Resampling.LANCZOS,
+    )
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=quality)
+    source = prepare_source_image_bytes(output.getvalue())
+    region = {
+        "source_x": 20,
+        "source_y": 70,
+        "source_width": 45,
+        "source_height": 25,
+        "_source_index": 0,
+        "_source_line_count": 2,
+        "_protected_regions": [
+            {
+                "kind": "source_text", "source_index": 0,
+                "x": 24.5, "y": 72.5, "width": 36.0, "height": 11.5,
+            },
+            {
+                "kind": "source_text", "source_index": 0,
+                "x": 25.5, "y": 83.2, "width": 33.5, "height": 10.5,
+            },
+        ],
+    }
+
+    assert probe_source_text(source, [region]).masked_pixels > 1_000
+
+
 @pytest.mark.parametrize("protected_kind", ["character", "limb", "product"])
 def test_caption_substrate_requires_verified_source_pixels(
     monkeypatch,
@@ -1676,6 +1715,240 @@ def test_caption_substrate_requires_verified_source_pixels(
         match=f"audited {protected_kind} substrate",
     ):
         probe_source_text(source, [region])
+
+
+@pytest.mark.parametrize("protected_kind", ["character", "limb", "product"])
+def test_large_display_mask_cannot_reconstruct_a_branded_substrate(
+    monkeypatch,
+    protected_kind,
+):
+    source = _checker_source(100, 100)
+    region = {
+        "source_x": 30,
+        "source_y": 30,
+        "source_width": 30,
+        "source_height": 20,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [
+            {
+                "kind": "source_text", "source_index": 0,
+                "x": 30, "y": 30, "width": 30, "height": 20,
+            },
+            {
+                "kind": protected_kind,
+                "x": 30, "y": 30, "width": 30, "height": 20,
+            },
+        ],
+    }
+
+    def large_display_mask(_image, _region):
+        mask = np.full((20, 30), 255, dtype=np.uint8)
+        return mask, (30, 30), (30, 30, 60, 50)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        large_display_mask,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for protected caption substrate",
+    ):
+        probe_source_text(source, [region])
+
+
+def test_split_substrate_boxes_cannot_bypass_the_total_source_mask_cap(
+    monkeypatch,
+):
+    source = _checker_source(100, 100)
+    region = {
+        "source_x": 30,
+        "source_y": 30,
+        "source_width": 24,
+        "source_height": 10,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [
+            {
+                "kind": "source_text", "source_index": 0,
+                "x": 30, "y": 30, "width": 24, "height": 10,
+            },
+            {"kind": "character", "x": 30, "y": 30, "width": 12, "height": 10},
+            {"kind": "limb", "x": 42, "y": 30, "width": 12, "height": 10},
+        ],
+    }
+
+    def split_display_mask(_image, _region):
+        mask = np.full((10, 24), 255, dtype=np.uint8)
+        return mask, (30, 30), (30, 30, 54, 40)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        split_display_mask,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for protected caption substrate",
+    ):
+        probe_source_text(source, [region])
+
+
+def test_large_display_mask_fails_without_a_mascot_protection_box(monkeypatch):
+    source = _checker_source(100, 100)
+    region = {
+        # The immutable discovery box is deliberately wider than the real
+        # lettering. A model-controlled denominator must not lower the mask
+        # density enough to bypass the protection-independent gate.
+        "source_x": 20,
+        "source_y": 30,
+        "source_width": 50,
+        "source_height": 20,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [{
+            "kind": "source_text", "source_index": 0,
+            "x": 30, "y": 30, "width": 30, "height": 20,
+        }],
+    }
+
+    def unprotected_display_mask(_image, _region):
+        mask = np.full((20, 30), 255, dtype=np.uint8)
+        return mask, (30, 30), (30, 30, 60, 50)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        unprotected_display_mask,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for deterministic reconstruction",
+    ):
+        probe_source_text(source, [region])
+
+
+def test_large_sparse_mask_fails_on_a_complex_unprotected_substrate(monkeypatch):
+    source = _checker_source(100, 100)
+    region = {
+        "source_x": 30,
+        "source_y": 30,
+        "source_width": 30,
+        "source_height": 20,
+        "_source_index": 0,
+        "_source_line_count": 1,
+        "_protected_regions": [{
+            "kind": "source_text", "source_index": 0,
+            "x": 30, "y": 30, "width": 30, "height": 20,
+        }],
+    }
+
+    def sparse_display_mask(_image, _region):
+        mask = np.zeros((20, 30), dtype=np.uint8)
+        # A thin display face can stay below the density guard while still
+        # erasing more than 2% of a branded object. The colour-aware ring must
+        # independently reject its complex substrate.
+        mask[:, ::3] = 255
+        mask[:, -1] = 255
+        return mask, (30, 30), (30, 30, 60, 50)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        sparse_display_mask,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for deterministic reconstruction",
+    ):
+        probe_source_text(source, [region])
+
+
+def test_split_unprotected_display_regions_cannot_bypass_total_mask_cap(
+    monkeypatch,
+):
+    source = _checker_source(100, 100)
+
+    def region(index, x):
+        return {
+            "source_x": x,
+            "source_y": 30,
+            "source_width": 15,
+            "source_height": 10,
+            "_source_index": index,
+            "_source_line_count": 1,
+            "_protected_regions": [{
+                "kind": "source_text", "source_index": index,
+                "x": x, "y": 30, "width": 15, "height": 10,
+            }],
+        }
+
+    def regional_display_mask(_image, value):
+        x = int(value["source_x"])
+        mask = np.full((10, 15), 255, dtype=np.uint8)
+        return mask, (x, 30), (x, 30, x + 15, 40)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        regional_display_mask,
+    )
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._validate_region_reconstruction_complexity",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for deterministic reconstruction",
+    ):
+        probe_source_text(source, [region(0, 20), region(1, 55)])
+
+
+def test_multiple_regions_cannot_bypass_the_total_substrate_mask_cap(
+    monkeypatch,
+):
+    source = _checker_source(100, 100)
+
+    def region(index, x):
+        return {
+            "source_x": x,
+            "source_y": 30,
+            "source_width": 15,
+            "source_height": 10,
+            "_source_index": index,
+            "_source_line_count": 1,
+            "_protected_regions": [
+                {
+                    "kind": "source_text", "source_index": index,
+                    "x": x, "y": 30, "width": 15, "height": 10,
+                },
+                {
+                    "kind": "character",
+                    "x": x, "y": 30, "width": 15, "height": 10,
+                },
+            ],
+        }
+
+    def regional_display_mask(_image, value):
+        x = int(value["source_x"])
+        mask = np.full((10, 15), 255, dtype=np.uint8)
+        return mask, (x, 30), (x, 30, x + 15, 40)
+
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._detect_audited_region_text_mask",
+        regional_display_mask,
+    )
+    monkeypatch.setattr(
+        "core.sources.source_text_cleanup._validate_region_reconstruction_complexity",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(
+        SourceTextCleanupError,
+        match="too large for protected caption substrate",
+    ):
+        probe_source_text(source, [region(0, 20), region(1, 55)])
 
 
 def test_fails_closed_when_no_reliable_lettering_mask_exists():
