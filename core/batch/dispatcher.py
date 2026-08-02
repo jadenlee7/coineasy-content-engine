@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Protocol, Sequence
 
 from core.batch.models import (
@@ -11,15 +13,25 @@ from core.batch.models import (
     BatchSnapshot,
     BatchWorkItem,
 )
-from core.batch.openai_client import OpenAIBatchClient, OpenAIBatchError
+from core.batch.openai_client import (
+    BATCH_COMPLETION_WINDOW,
+    BATCH_OUTPUT_RETENTION_SECONDS,
+    OpenAIBatchClient,
+    OpenAIBatchError,
+)
 from core.batch.policy import (
     BatchPolicy,
     actual_batch_cost_usd,
 )
-from core.batch.repository import BatchRepositoryError, batch_dispatch_key
+from core.batch.repository import (
+    BatchRepositoryError,
+    batch_dispatch_key,
+    provider_create_request_sha256,
+)
 
 
 _BUNDLE_NAMESPACE = uuid.UUID("837d2e11-6c75-44bb-8daa-4d19d587444c")
+_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _RETRYABLE_ITEM_CODES = frozenset({
     "openai_batch_item_retryable",
     "request_timeout",
@@ -28,12 +40,15 @@ _RETRYABLE_ITEM_CODES = frozenset({
 
 class BatchRepository(Protocol):
     async def claim_jobs(self, **kwargs) -> tuple[BatchWorkItem, ...]: ...
+    async def claim_canary_job(self, **kwargs) -> tuple[BatchWorkItem, ...]: ...
+    async def authorize_canary_provider_create(self, **kwargs) -> datetime: ...
     async def expire_jobs(self, **kwargs) -> tuple[int, int]: ...
     async def register_batch(self, **kwargs) -> None: ...
+    async def register_canary_batch(self, **kwargs) -> None: ...
     async def list_active_batches(self, **kwargs) -> tuple[ActiveBatch, ...]: ...
     async def update_batch_poll(self, snapshot: BatchSnapshot) -> None: ...
-    async def complete_job(self, **kwargs) -> None: ...
-    async def fail_job(self, **kwargs) -> None: ...
+    async def complete_job(self, **kwargs) -> str: ...
+    async def fail_job(self, **kwargs) -> str: ...
     async def finalize_batch(self, provider_batch_id: str) -> None: ...
 
 
@@ -101,6 +116,14 @@ class BatchDispatcher:
         worker_id: str,
         max_claims: int = 100,
         max_requests_per_batch: int = 1,
+        canary_config_subject_sha256: str | None = None,
+        canary_config_approval_id: str | None = None,
+        canary_dispatch_subject_sha256: str | None = None,
+        canary_dispatch_approval_id: str | None = None,
+        canary_job_id: str | None = None,
+        canary_input_sha256: str | None = None,
+        canary_request_sha256: str | None = None,
+        canary_not_after: datetime | None = None,
         now_factory=lambda: datetime.now(timezone.utc),
     ):
         if (
@@ -114,17 +137,77 @@ class BatchDispatcher:
             raise ValueError(
                 "the first Batch experiment requires one request per batch"
             )
+        canary_values = (
+            canary_config_subject_sha256,
+            canary_config_approval_id,
+            canary_dispatch_subject_sha256,
+            canary_dispatch_approval_id,
+            canary_job_id,
+            canary_input_sha256,
+            canary_request_sha256,
+            canary_not_after,
+        )
+        single_submission_canary = any(
+            value is not None for value in canary_values
+        )
+        if single_submission_canary:
+            try:
+                normalized_canary_job_id = str(uuid.UUID(canary_job_id or ""))
+                normalized_config_approval_id = str(uuid.UUID(
+                    canary_config_approval_id or ""
+                ))
+                normalized_dispatch_approval_id = str(uuid.UUID(
+                    canary_dispatch_approval_id or ""
+                ))
+            except (AttributeError, ValueError) as exc:
+                raise ValueError("Batch canary IDs must be UUIDs") from exc
+            if (
+                any(value is None for value in canary_values)
+                or normalized_canary_job_id != canary_job_id
+                or normalized_config_approval_id != canary_config_approval_id
+                or normalized_dispatch_approval_id
+                != canary_dispatch_approval_id
+                or not isinstance(canary_config_subject_sha256, str)
+                or _SHA256_RE.fullmatch(canary_config_subject_sha256) is None
+                or not isinstance(canary_dispatch_subject_sha256, str)
+                or _SHA256_RE.fullmatch(canary_dispatch_subject_sha256) is None
+                or canary_input_sha256 is None
+                or not isinstance(canary_input_sha256, str)
+                or _SHA256_RE.fullmatch(canary_input_sha256) is None
+                or not isinstance(canary_request_sha256, str)
+                or _SHA256_RE.fullmatch(canary_request_sha256) is None
+                or not isinstance(canary_not_after, datetime)
+                or canary_not_after.tzinfo is None
+                or max_claims != 1
+                or policy.allowed_clients != frozenset({"origintrail"})
+            ):
+                raise ValueError("single Batch canary authorization is invalid")
         self.repository = repository
         self.provider = provider
         self.policy = policy
         self.worker_id = worker_id
         self.max_claims = max_claims
         self.max_requests_per_batch = max_requests_per_batch
+        self.canary_config_subject_sha256 = canary_config_subject_sha256
+        self.canary_config_approval_id = canary_config_approval_id
+        self.canary_dispatch_subject_sha256 = canary_dispatch_subject_sha256
+        self.canary_dispatch_approval_id = canary_dispatch_approval_id
+        self.canary_job_id = canary_job_id
+        self.canary_input_sha256 = canary_input_sha256
+        self.canary_request_sha256 = canary_request_sha256
+        self.canary_not_after = canary_not_after
+        self.single_submission_canary = single_submission_canary
         self.now_factory = now_factory
 
     async def run_once(self) -> BatchDispatchSummary:
         summary = BatchDispatchSummary()
         await self.poll_once(summary=summary)
+        if summary.errors:
+            summary.add(
+                "submission_blocked_after_poll_error",
+                "active_batch_state_unverified",
+            )
+            return summary
         await self.submit_once(summary=summary)
         return summary
 
@@ -164,18 +247,62 @@ class BatchDispatcher:
         summary: BatchDispatchSummary | None = None,
     ) -> BatchDispatchSummary:
         summary = summary or BatchDispatchSummary()
+        if not self._canary_submission_active(
+            summary,
+            detail="before_claim",
+        ):
+            return summary
         try:
-            claimed = await self.repository.claim_jobs(
-                worker_id=self.worker_id,
-                allowed_clients=self.policy.allowed_clients,
-                limit=self.max_claims,
-                lease_seconds=900,
-            )
+            if self.single_submission_canary:
+                claimed = await self.repository.claim_canary_job(
+                    worker_id=self.worker_id,
+                    config_subject_sha256=(
+                        self.canary_config_subject_sha256
+                    ),
+                    config_approval_id=self.canary_config_approval_id,
+                    dispatch_subject_sha256=(
+                        self.canary_dispatch_subject_sha256
+                    ),
+                    dispatch_approval_id=self.canary_dispatch_approval_id,
+                    job_id=self.canary_job_id,
+                    input_sha256=self.canary_input_sha256,
+                    request_sha256=self.canary_request_sha256,
+                    expires_at=self.canary_not_after,
+                    hard_limit_usd=Decimal("0.05"),
+                    lease_seconds=900,
+                )
+            else:
+                claimed = await self.repository.claim_jobs(
+                    worker_id=self.worker_id,
+                    allowed_clients=self.policy.allowed_clients,
+                    limit=self.max_claims,
+                    lease_seconds=900,
+                )
         except BatchRepositoryError as exc:
             summary.errors += 1
             summary.add("claim_failed", exc.code)
             return summary
         summary.claimed += len(claimed)
+        if self.single_submission_canary and (
+            len(claimed) > 1
+            or any(
+                item.job_id != self.canary_job_id
+                or item.input_sha256 != self.canary_input_sha256
+                or item.request_sha256 != self.canary_request_sha256
+                for item in claimed
+            )
+        ):
+            summary.errors += 1
+            summary.add(
+                "canary_authorization_mismatch",
+                "claimed_job_or_input_not_authorized",
+            )
+            return summary
+        if not self._canary_submission_active(
+            summary,
+            detail="after_claim",
+        ):
+            return summary
         eligible: list[BatchWorkItem] = []
         now = self._now()
         for item in claimed:
@@ -283,8 +410,28 @@ class BatchDispatcher:
         items: tuple[BatchWorkItem, ...],
         summary: BatchDispatchSummary,
     ) -> None:
+        if self.single_submission_canary and (
+            len(items) != 1
+            or items[0].job_id != self.canary_job_id
+            or items[0].input_sha256 != self.canary_input_sha256
+            or items[0].request_sha256 != self.canary_request_sha256
+        ):
+            summary.errors += 1
+            summary.add(
+                "canary_authorization_mismatch",
+                "provider_submission_blocked",
+            )
+            return
         dispatch_key = batch_dispatch_key(items)
         bundle_id = str(uuid.uuid5(_BUNDLE_NAMESPACE, dispatch_key))
+        create_metadata = {
+            "dispatch_key": dispatch_key,
+            "bundle_id": bundle_id,
+            "client_id": items[0].client_id,
+            "policy": "batch_first_v1",
+        }
+        create_request_fingerprint: str | None = None
+        create_intent_armed = False
         try:
             if items[0].recovery_required:
                 attempt_started_at = items[0].attempt_started_at
@@ -298,20 +445,103 @@ class BatchDispatcher:
                 snapshot = None
             recovered = snapshot is not None
             if snapshot is None:
+                if items[0].recovery_required:
+                    summary.errors += 1
+                    summary.add(
+                        (
+                            "canary_new_batch_forbidden"
+                            if self.single_submission_canary
+                            else "batch_recovery_lookup_miss"
+                        ),
+                        "same_attempt_recovery_is_lookup_only",
+                    )
+                    return
+                if self.single_submission_canary and items[0].attempt != 1:
+                    summary.errors += 1
+                    summary.add(
+                        "canary_new_batch_forbidden",
+                        "attempt_requires_new_experiment",
+                    )
+                    return
+                if not self._canary_submission_active(
+                    summary,
+                    detail="before_upload",
+                ):
+                    return
                 payload = self.provider.build_jsonl(items)
                 input_file_id = await self.provider.upload_input_file(
                     payload=payload,
                     bundle_id=bundle_id,
                 )
+                if not self._canary_submission_active(
+                    summary,
+                    detail="before_create",
+                ):
+                    return
+                if self.single_submission_canary:
+                    create_request_fingerprint = (
+                        provider_create_request_sha256(
+                            input_file_id=input_file_id,
+                            completion_window=BATCH_COMPLETION_WINDOW,
+                            metadata=create_metadata,
+                            output_expires_after={
+                                "anchor": "created_at",
+                                "seconds": BATCH_OUTPUT_RETENTION_SECONDS,
+                            },
+                        )
+                    )
+                    create_not_after = (
+                        await self.repository.authorize_canary_provider_create(
+                            worker_id=self.worker_id,
+                            config_subject_sha256=(
+                                self.canary_config_subject_sha256
+                            ),
+                            config_approval_id=(
+                                self.canary_config_approval_id
+                            ),
+                            dispatch_subject_sha256=(
+                                self.canary_dispatch_subject_sha256
+                            ),
+                            dispatch_approval_id=(
+                                self.canary_dispatch_approval_id
+                            ),
+                            job_id=items[0].job_id,
+                            input_sha256=items[0].input_sha256,
+                            request_sha256=items[0].request_sha256,
+                            expires_at=self.canary_not_after,
+                            hard_limit_usd=Decimal("0.05"),
+                            intent_id=bundle_id,
+                            dispatch_key=dispatch_key,
+                            create_request_sha256=(
+                                create_request_fingerprint
+                            ),
+                            input_file_id=input_file_id,
+                        )
+                    )
+                    create_intent_armed = True
+                    if not self._canary_submission_active(
+                        summary,
+                        detail="after_provider_create_authorization",
+                    ):
+                        return
+                    if self._now() >= create_not_after:
+                        summary.errors += 1
+                        summary.add(
+                            "provider_create_authorization_expired",
+                            "lookup_only_recovery_required",
+                        )
+                        return
                 snapshot = await self.provider.create_batch(
                     input_file_id=input_file_id,
-                    metadata={
-                        "dispatch_key": dispatch_key,
-                        "bundle_id": bundle_id,
-                        "client_id": items[0].client_id,
-                        "policy": "batch_first_v1",
-                    },
+                    metadata=create_metadata,
                 )
+        except BatchRepositoryError as exc:
+            # The durable RPC may have committed even when its HTTP response
+            # was lost.  Never create on an unverified receipt; the consumed
+            # canary attempt may only recover by deterministic provider lookup.
+            summary.errors += 1
+            summary.add("provider_create_authorization_failed", exc.code)
+            return
         except OpenAIBatchError as exc:
             # Any provider error after entering the upload/create path is
             # ambiguous: a file or billable Batch may already exist even when
@@ -322,6 +552,12 @@ class BatchDispatcher:
             return
         except ValueError:
             summary.errors += 1
+            if create_intent_armed:
+                summary.add(
+                    "submit_held",
+                    "armed_provider_create_intent_requires_lookup",
+                )
+                return
             summary.add("submit_failed", "batch_submission_invalid")
             await self._fail_submission_items(
                 items,
@@ -330,12 +566,40 @@ class BatchDispatcher:
             )
             return
         try:
-            await self.repository.register_batch(
-                worker_id=self.worker_id,
-                input_file_id=snapshot.input_file_id,
-                snapshot=snapshot,
-                job_ids=[item.job_id for item in items],
-            )
+            if self.single_submission_canary:
+                if create_request_fingerprint is None:
+                    create_request_fingerprint = (
+                        provider_create_request_sha256(
+                            input_file_id=snapshot.input_file_id,
+                            completion_window=BATCH_COMPLETION_WINDOW,
+                            metadata=create_metadata,
+                            output_expires_after={
+                                "anchor": "created_at",
+                                "seconds": BATCH_OUTPUT_RETENTION_SECONDS,
+                            },
+                        )
+                    )
+                await self.repository.register_canary_batch(
+                    worker_id=self.worker_id,
+                    intent_id=bundle_id,
+                    config_subject_sha256=(
+                        self.canary_config_subject_sha256
+                    ),
+                    job_id=items[0].job_id,
+                    input_sha256=items[0].input_sha256,
+                    request_sha256=items[0].request_sha256,
+                    dispatch_key=dispatch_key,
+                    create_request_sha256=create_request_fingerprint,
+                    input_file_id=snapshot.input_file_id,
+                    snapshot=snapshot,
+                )
+            else:
+                await self.repository.register_batch(
+                    worker_id=self.worker_id,
+                    input_file_id=snapshot.input_file_id,
+                    snapshot=snapshot,
+                    job_ids=[item.job_id for item in items],
+                )
         except BatchRepositoryError as exc:
             # A provider batch may already exist. Leave the DB lease to expire;
             # the deterministic dispatch_key lets the next worker recover it.
@@ -376,7 +640,7 @@ class BatchDispatcher:
                     output_tokens=outcome.output_tokens,
                 )
                 try:
-                    await self.repository.complete_job(
+                    settlement = await self.repository.complete_job(
                         job_id=job_id,
                         provider_batch_id=snapshot.provider_batch_id,
                         output=outcome.output or {},
@@ -391,7 +655,7 @@ class BatchDispatcher:
                     # workflow-specific review schema. It already incurred
                     # usage, so settle it as a terminal failure instead of
                     # leaving the reservation held and polling forever.
-                    await self.repository.fail_job(
+                    failure_settlement = await self.repository.fail_job(
                         job_id=job_id,
                         provider_batch_id=snapshot.provider_batch_id,
                         error_code="batch_result_rejected",
@@ -402,9 +666,24 @@ class BatchDispatcher:
                         actual_cost_usd=actual_cost,
                     )
                     summary.failed += 1
-                    summary.add("batch_result_rejected", exc.code)
+                    if failure_settlement == "cost_cap_breached":
+                        summary.errors += 1
+                        summary.add(
+                            "batch_cost_cap_breached",
+                            f"job_id={job_id}",
+                        )
+                    else:
+                        summary.add("batch_result_rejected", exc.code)
                 else:
-                    summary.completed += 1
+                    if settlement == "cost_cap_breached":
+                        summary.failed += 1
+                        summary.errors += 1
+                        summary.add(
+                            "batch_cost_cap_breached",
+                            f"job_id={job_id}",
+                        )
+                    else:
+                        summary.completed += 1
             else:
                 retryable = (
                     outcome.cost_basis == "none"
@@ -425,7 +704,7 @@ class BatchDispatcher:
                     }
                 elif outcome.cost_basis == "reservation":
                     accounting = {"charge_full_reservation": True}
-                await self.repository.fail_job(
+                settlement = await self.repository.fail_job(
                     job_id=job_id,
                     provider_batch_id=snapshot.provider_batch_id,
                     error_code=outcome.error_code or "batch_job_failed",
@@ -438,6 +717,12 @@ class BatchDispatcher:
                     **accounting,
                 )
                 summary.failed += 1
+                if settlement == "cost_cap_breached":
+                    summary.errors += 1
+                    summary.add(
+                        "batch_cost_cap_breached",
+                        f"job_id={job_id}",
+                    )
         missing_count = max(snapshot.request_total - len(outcomes), 0)
         await self.repository.finalize_batch(snapshot.provider_batch_id)
         summary.failed += missing_count
@@ -500,6 +785,20 @@ class BatchDispatcher:
             raise ValueError("dispatcher clock must be timezone-aware")
         return value
 
+    def _canary_submission_active(
+        self,
+        summary: BatchDispatchSummary,
+        *,
+        detail: str,
+    ) -> bool:
+        if not self.single_submission_canary:
+            return True
+        if self.canary_not_after is None or self._now() >= self.canary_not_after:
+            summary.errors += 1
+            summary.add("canary_authorization_expired", detail)
+            return False
+        return True
+
     @staticmethod
     def _custom_id_parts(custom_id: str) -> tuple[str, str, int]:
         parts = custom_id.split(":")
@@ -528,6 +827,14 @@ def build_batch_dispatcher(
     worker_id: str,
     max_claims: int = 100,
     max_requests_per_batch: int = 1,
+    canary_config_subject_sha256: str | None = None,
+    canary_config_approval_id: str | None = None,
+    canary_dispatch_subject_sha256: str | None = None,
+    canary_dispatch_approval_id: str | None = None,
+    canary_job_id: str | None = None,
+    canary_input_sha256: str | None = None,
+    canary_request_sha256: str | None = None,
+    canary_not_after: datetime | None = None,
 ) -> BatchDispatcher:
     return BatchDispatcher(
         repository=repository,
@@ -536,4 +843,12 @@ def build_batch_dispatcher(
         worker_id=worker_id,
         max_claims=max_claims,
         max_requests_per_batch=max_requests_per_batch,
+        canary_config_subject_sha256=canary_config_subject_sha256,
+        canary_config_approval_id=canary_config_approval_id,
+        canary_dispatch_subject_sha256=canary_dispatch_subject_sha256,
+        canary_dispatch_approval_id=canary_dispatch_approval_id,
+        canary_job_id=canary_job_id,
+        canary_input_sha256=canary_input_sha256,
+        canary_request_sha256=canary_request_sha256,
+        canary_not_after=canary_not_after,
     )

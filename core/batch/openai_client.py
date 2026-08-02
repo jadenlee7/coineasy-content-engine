@@ -27,6 +27,8 @@ _BATCH_STATUSES = frozenset({
 })
 _FILE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_BATCH_LIST_PAGES = 100
+BATCH_COMPLETION_WINDOW = "24h"
+BATCH_OUTPUT_RETENTION_SECONDS = _FILE_RETENTION_SECONDS
 
 
 class OpenAIBatchError(RuntimeError):
@@ -151,11 +153,11 @@ class OpenAIBatchClient:
             json={
                 "input_file_id": input_file_id,
                 "endpoint": "/v1/responses",
-                "completion_window": "24h",
+                "completion_window": BATCH_COMPLETION_WINDOW,
                 "metadata": normalized_metadata,
                 "output_expires_after": {
                     "anchor": "created_at",
-                    "seconds": _FILE_RETENTION_SECONDS,
+                    "seconds": BATCH_OUTPUT_RETENTION_SECONDS,
                 },
             },
         )

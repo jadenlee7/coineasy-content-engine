@@ -754,6 +754,8 @@ class OfficialXDailyRunner:
                 budget_window_end=budget_window_end,
                 daily_cap_usd=self.batch_settings.daily_cap_usd,
                 now=now,
+                # A public-job retry can read an exact existing Batch ledger
+                # admission, but it must never create or reserve a new one.
                 allow_existing_readback=job.attempts > 1,
             )
         except BatchRepositoryError as exc:
@@ -1052,6 +1054,7 @@ def build_daily_runner(
         )
     batch_bridge = None
     if batch_settings is not None and batch_settings.mode == "live":
+        batch_settings.assert_canary_config_authorized()
         if (
             batch_settings.supabase_url != settings.supabase_url
             or batch_settings.supabase_service_role_key
