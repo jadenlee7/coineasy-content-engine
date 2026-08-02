@@ -7,6 +7,7 @@ import newsCardHandler, {
   deadlineSignal as newsCardDeadlineSignal,
   MAX_NEWS_CARD_BYTES,
   SQUID_CREATIVE_FAMILY_POLICY_VERSION,
+  SQUID_GENERATED_TEMPLATE_VERSION,
   isOfficialSquidXStatusUrl,
   newsCardRequestHash,
   normalizedFigmaTemplate,
@@ -73,7 +74,7 @@ function squidCreativeMetadata(
     brand_tokens_version: "squid-brand-tokens@1",
     template_version: templateStyle === "remix"
       ? "squid-source-remix@1"
-      : "squid-generated-gtm@2",
+      : SQUID_GENERATED_TEMPLATE_VERSION,
     asset_pack_version: templateStyle === "remix"
       ? "official-source-media@1"
       : "squid-local-approved@1",
@@ -247,6 +248,7 @@ test("news card request hash binds every submitted generation input", () => {
     style_references: [],
     style_reference_pack_hash: "",
     creative_family_policy_version: SQUID_CREATIVE_FAMILY_POLICY_VERSION,
+    template_version: SQUID_GENERATED_TEMPLATE_VERSION,
   }), "utf8").digest("hex");
   assert.equal(newsCardRequestHash(input), policyHash);
   assert.equal(newsCardRequestHash({ ...input, sourceImageUrl: "" }), policyHash);
@@ -518,7 +520,7 @@ test("news card generation persists one immutable PNG before returning", async (
         visual_reference_pack_version: 1,
         channel_profile: "x_square",
         brand_tokens_version: "squid-brand-tokens@1",
-        template_version: "squid-generated-gtm@2",
+        template_version: SQUID_GENERATED_TEMPLATE_VERSION,
         asset_pack_version: "squid-local-approved@1",
         font_status: "pretendard_fallback",
       },

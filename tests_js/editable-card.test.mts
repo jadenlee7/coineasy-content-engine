@@ -20,16 +20,15 @@ const TRANSLATED_SQUID_REQUEST = {
 };
 
 test("selects the contrast-safe Squid logo for each generated family", () => {
-  for (const family of ["editorial_big_type", "status_progress"]) {
+  for (const family of [
+    "editorial_big_type",
+    "milestone_metric",
+    "status_progress",
+    "product_proof",
+  ]) {
     assert.equal(
       requiredOfficialLogoVariant("squid", "classic", { creative_family: family }),
       "light",
-    );
-  }
-  for (const family of ["milestone_metric", "product_proof"]) {
-    assert.equal(
-      requiredOfficialLogoVariant("squid", "classic", { creative_family: family }),
-      "dark",
     );
   }
   assert.equal(requiredOfficialLogoVariant("squid", "classic", {}), "light");
@@ -227,7 +226,7 @@ test("embeds the official Squid world in a classic editable card", async () => {
   }
 });
 
-test("fetches the white Squid logo for a dark generated family", async () => {
+test("fetches the black Squid logo and official stage assets for a generated family", async () => {
   const originalFetch = globalThis.fetch;
   const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
   const requested: string[] = [];
@@ -276,10 +275,16 @@ test("fetches the white Squid logo for a dark generated family", async () => {
     } as never);
 
     assert.equal(response.status, 200);
-    assert.ok(requested.includes("https://console.example/assets/brands/squid-dark.png"));
-    assert.ok(!requested.includes("https://console.example/assets/brands/squid-light.png"));
+    assert.deepEqual(requested.sort(), [
+      "https://console.example/assets/brands/squid-form-language-purple.png",
+      "https://console.example/assets/brands/squid-light.png",
+      "https://console.example/assets/brands/squid-squib-bubbles.png",
+      "https://console.example/assets/brands/squid-squib-token-juggle.png",
+    ]);
     const svg = await response.text();
     assert.match(svg, /id="Squid-Generated-Milestone-Metric"/);
+    assert.match(svg, /data-logo-variant="light"/);
+    assert.match(svg, /id="Squid-Official-Form-Language"/);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalNetlify) Object.defineProperty(globalThis, "Netlify", originalNetlify);

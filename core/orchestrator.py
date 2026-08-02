@@ -87,7 +87,7 @@ NEWS_CARD_TEMPLATES = {
 }
 
 _SQUID_BRAND_TOKENS_VERSION = "squid-brand-tokens@1"
-_SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@2"
+_SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@3"
 _SQUID_SOURCE_TEMPLATE_VERSION = "squid-source-remix@1"
 _SQUID_GENERATED_ASSET_PACK_VERSION = "squid-local-approved@1"
 _SQUID_SOURCE_ASSET_PACK_VERSION = "official-source-media@1"

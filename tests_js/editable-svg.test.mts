@@ -150,67 +150,31 @@ test("renders the four approved generated Squid creative families without publis
   const familyContracts = {
     editorial_big_type: {
       root: "Squid-Generated-Editorial-Big-Type",
-      background: "#BC8EE4",
-      logoVariant: "light",
-      logoHref: SQUID_ASSETS.logoLight,
-      usesFormLanguage: false,
+      frameWord: "UPDATE",
       headline: "체인 사이의 경계를 넘다",
       expectedHeadlineLines: ["체인 사이의 경계를", "넘다"],
-      geometry: [
-        /id="Editorial-Asymmetric-Ring" cx="970" cy="92" r="308"[^>]+stroke-width="104"/,
-        /id="Squid-Official-Bubbles" x="752" y="-54" width="400" height="400"/,
-        /id="Squid-Official-SQUIB" x="638" y="632" width="578" height="578"[^>]+rotate\(-8 927 921\)/,
-        /id="Headline-Line-1"[^>]+x="64" y="342"[^>]+font-size="118"/,
-        /id="Lime-Divider" x="64" y="672" width="320" height="9"/,
-      ],
+      hasMetric: false,
     },
     milestone_metric: {
       root: "Squid-Generated-Milestone-Metric",
-      background: "#1C0F3D",
-      logoVariant: "dark",
-      logoHref: SQUID_ASSETS.logoDark,
-      usesFormLanguage: false,
+      frameWord: "MILESTONE",
       headline: "하나의 흐름으로 이어진 기록",
-      expectedHeadlineLines: ["하나의 흐름으로 이어진", "기록"],
-      geometry: [
-        /id="Lavender-Orbit" cx="360" cy="735" r="407\.5"[^>]+stroke-width="165"/,
-        /id="Squid-Official-Bubbles" x="718" y="-52" width="444" height="444"/,
-        /id="Squid-Official-SQUIB" x="648" y="668" width="520" height="520"[^>]+rotate\(-12 908 928\)/,
-        /id="Metric-Line-1"[^>]+x="64" y="408"[^>]+fill="#E6FA36"[^>]+font-size="270"[^>]*>5M<\/text>/,
-        /id="Lavender-Divider" x="64" y="687" width="320" height="9"/,
-      ],
+      expectedHeadlineLines: ["하나의 흐름으로 이어진 기록"],
+      hasMetric: true,
     },
     status_progress: {
       root: "Squid-Generated-Status-Progress",
-      background: "#F8F5FA",
-      logoVariant: "light",
-      logoHref: SQUID_ASSETS.logoLight,
-      usesFormLanguage: true,
+      frameWord: "STATUS",
       headline: "새로운 단계가 열렸어요",
       expectedHeadlineLines: ["새로운 단계가", "열렸어요"],
-      geometry: [
-        /id="Lime-Side-Field" x="736" y="0" width="344" height="1080"/,
-        /id="Lavender-Field" cx="995" cy="1015" r="301"[^>]+stroke-width="108"/,
-        /id="Squid-Official-Form-Language" x="744" y="308" width="282" height="282"[^>]+rotate\(20 885 449\)/,
-        /id="Squid-Official-SQUIB" x="700" y="704" width="470" height="470"[^>]+rotate\(-9 935 939\)/,
-        /id="Headline-Line-1"[^>]+x="64" y="344"[^>]+font-size="101"/,
-      ],
+      hasMetric: false,
     },
     product_proof: {
       root: "Squid-Generated-Product-Proof",
-      background: "#1C0F3D",
-      logoVariant: "dark",
-      logoHref: SQUID_ASSETS.logoDark,
-      usesFormLanguage: true,
+      frameWord: "ROUTE",
       headline: "한 번의 경로로 더 간단하게",
       expectedHeadlineLines: ["한 번의 경로로 더", "간단하게"],
-      geometry: [
-        /id="Lavender-Field" cx="950" cy="570" r="380"/,
-        /id="Lime-Route" x="64" y="692" width="574" height="8"[^>]+rotate\(-3 64 696\)/,
-        /id="Squid-Official-Form-Language" x="550" y="216" width="610" height="610"[^>]+rotate\(12 855 521\)/,
-        /id="Squid-Official-SQUIB" x="706" y="742" width="430" height="430"[^>]+rotate\(-8 921 957\)/,
-        /id="Headline-Line-1"[^>]+x="64" y="342"[^>]+font-size="98"/,
-      ],
+      hasMetric: false,
     },
   } as const;
 
@@ -227,22 +191,46 @@ test("renders the four approved generated Squid creative families without publis
 
     assert.match(svg, new RegExp(`id="${contract.root}"`));
     assert.match(svg, new RegExp(`data-creative-family="${creativeFamily}"`));
-    assert.match(svg, new RegExp(`id="Canvas-Background"[^>]+fill="${contract.background}"`));
+    assert.match(svg, /id="Canvas-Background"[^>]+fill="#E8E6EA"/);
     assert.match(svg, /#E6FA36/);
     assert.match(svg, /#BC8EE4/);
+    assert.match(svg, /id="Stage-Lavender-Haze"[^>]+url\(#Squid-Stage-Lavender-Halo\)/);
+    assert.match(svg, /id="White-Oval-Halo" cx="540" cy="552" rx="510" ry="278"/);
+    assert.match(svg, /id="White-Oval-Stage" cx="540" cy="552" rx="492" ry="260"[^>]+fill="#FFFFFF"/);
+    assert.match(svg, /id="Stage-Word-Top"[^>]+x="276" y="200"[^>]+textLength="791"[^>]+font-size="180"[^>]*>SQUID<\/text>/);
+    const bottomGeometry = creativeFamily === "milestone_metric"
+      ? { x: -34, textLength: 1148 }
+      : creativeFamily === "product_proof"
+      ? { x: 74, textLength: 948 }
+      : creativeFamily === "status_progress"
+      ? { x: 4, textLength: 1100 }
+      : { x: -3, textLength: 1100 };
     assert.match(
       svg,
-      new RegExp(`id="Brand-Logo" data-logo-variant="${contract.logoVariant}"[^>]+x="64" y="52" width="132" height="74"[^>]+href="${contract.logoHref}"`),
+      new RegExp(`id="Stage-Word-Bottom"[^>]+x="${bottomGeometry.x}" y="1088"[^>]+textLength="${bottomGeometry.textLength}"[^>]*>${contract.frameWord}<\\/text>`),
     );
-    assert.match(svg, /id="Squid-Official-SQUIB"/);
+    assert.match(svg, /id="Squid-Official-Form-Language" x="-352" y="-314" width="1784" height="1784"[^>]+opacity="\.84"[^>]+rotate\(82 540 540\)/);
+    assert.match(svg, /id="Squid-Official-Bubbles" x="708" y="130" width="430" height="430"/);
+    assert.match(svg, /id="Squid-Official-SQUIB" x="716" y="292" width="398" height="398"/);
+    assert.match(
+      svg,
+      new RegExp(`id="Brand-Logo" data-logo-variant="light"[^>]+x="44" y="24" width="148" height="83"[^>]+href="${SQUID_ASSETS.logoLight}"`),
+    );
+    assert.match(svg, /id="Headline-Line-1"[^>]+x="425"[^>]+text-anchor="middle"[^>]+font-family="Pretendard, sans-serif"[^>]+font-weight="650"/);
+    assert.match(svg, /id="Lime-Divider" x="359"[^>]+width="132" height="8"/);
+    assert.match(svg, /id="Support-Line-1"[^>]+x="425"[^>]+text-anchor="middle"[^>]+font-size="24"/);
     assert.match(svg, /id="Public-Source-Metadata"/);
-    assert.match(svg, /id="Source-URL" x="64" y="1038"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
-    assert.match(svg, /id="Date" x="350" y="1038"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
-    for (const geometry of contract.geometry) assert.match(svg, geometry);
+    assert.match(svg, /id="Source-URL" x="90" y="790"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
+    assert.match(svg, /id="Date" x="760" y="790"[^>]+text-anchor="end"[^>]+font-size="14"[^>]+letter-spacing="\.45"/);
+    if (contract.hasMetric) {
+      assert.match(svg, /id="Metric-Line-1"[^>]+x="425" y="500"[^>]+text-anchor="middle"[^>]+font-size="166"[^>]*>5M<\/text>/);
+    } else {
+      assert.doesNotMatch(svg, /id="Metric"/);
+    }
     const assetLayerIds = [
+      "Squid-Official-Form-Language",
       "Squid-Official-Bubbles",
       "Squid-Official-SQUIB",
-      ...(contract.usesFormLanguage ? ["Squid-Official-Form-Language"] : []),
       "Brand-Logo",
     ];
     const assetLayerPositions = assetLayerIds.map((id) => svg.indexOf(`id="${id}"`));
@@ -257,57 +245,73 @@ test("renders the four approved generated Squid creative families without publis
   }
 });
 
-test("requires only the official assets used by each generated Squid family", () => {
-  const common = {
-    squidSquib: SQUID_ASSETS.squidSquib,
-    squidBubbles: SQUID_ASSETS.squidBubbles,
-  };
+test("keeps a brand-QA boundary Squid support line complete", () => {
+  const supportLine = "가".repeat(23);
+  const svg = buildEditableSvg("squid", "classic", {
+    ...SPEC,
+    headline: "한국 이용자를 위한 업데이트",
+    body_lines: [supportLine],
+    render_strategy: "generated_gtm",
+    creative_family: "editorial_big_type",
+  }, SQUID_ASSETS);
+
+  assert.match(svg, new RegExp(`>${supportLine}<\\/text>`));
+  assert.doesNotMatch(svg, /가+…/);
+});
+
+test("requires all four official stage assets for every generated Squid family", () => {
   const generatedSpec = {
     ...SPEC,
     render_strategy: "generated_gtm",
   };
+  const incompleteAssetSets = [
+    {
+      logoDark: SQUID_ASSETS.logoDark,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidSquib: SQUID_ASSETS.squidSquib,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidSquib: SQUID_ASSETS.squidSquib,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidBubbles: SQUID_ASSETS.squidBubbles,
+    },
+    {
+      logoLight: SQUID_ASSETS.logoLight,
+      squidFormLanguage: SQUID_ASSETS.squidFormLanguage,
+      squidSquib: SQUID_ASSETS.squidSquib,
+    },
+  ] as const;
 
-  const editorial = buildEditableSvg("squid", "classic", {
-    ...generatedSpec,
-    creative_family: "editorial_big_type",
-  }, { ...common, logoLight: SQUID_ASSETS.logoLight });
-  assert.match(editorial, /data-logo-variant="light"/);
-  assert.doesNotMatch(editorial, /Squid-Official-Form-Language/);
-
-  const milestone = buildEditableSvg("squid", "classic", {
-    ...generatedSpec,
-    creative_family: "milestone_metric",
-    visual_metric: "5M",
-  }, { ...common, logoDark: SQUID_ASSETS.logoDark });
-  assert.match(milestone, /data-logo-variant="dark"/);
-  assert.doesNotMatch(milestone, /Squid-Official-Form-Language/);
-
-  assert.throws(
-    () => buildEditableSvg("squid", "classic", {
+  for (const creativeFamily of [
+    "editorial_big_type",
+    "milestone_metric",
+    "status_progress",
+    "product_proof",
+  ] as const) {
+    const complete = buildEditableSvg("squid", "classic", {
       ...generatedSpec,
-      creative_family: "editorial_big_type",
-    }, { ...common, logoDark: SQUID_ASSETS.logoDark }),
-    /official_squid_generated_assets_required:editorial_big_type/,
-  );
-  assert.throws(
-    () => buildEditableSvg("squid", "classic", {
-      ...generatedSpec,
-      creative_family: "milestone_metric",
-      visual_metric: "5M",
-    }, { ...common, logoLight: SQUID_ASSETS.logoLight }),
-    /official_squid_generated_assets_required:milestone_metric/,
-  );
-  for (const creativeFamily of ["status_progress", "product_proof"] as const) {
-    const logo = creativeFamily === "status_progress"
-      ? { logoLight: SQUID_ASSETS.logoLight }
-      : { logoDark: SQUID_ASSETS.logoDark };
-    assert.throws(
-      () => buildEditableSvg("squid", "classic", {
-        ...generatedSpec,
-        creative_family: creativeFamily,
-      }, { ...common, ...logo }),
-      new RegExp(`official_squid_generated_assets_required:${creativeFamily}`),
-    );
+      creative_family: creativeFamily,
+      visual_metric: creativeFamily === "milestone_metric" ? "5M" : undefined,
+    }, SQUID_ASSETS);
+    assert.match(complete, /data-logo-variant="light"/);
+    assert.match(complete, /id="Squid-Official-Form-Language"/);
+
+    for (const incompleteAssets of incompleteAssetSets) {
+      assert.throws(
+        () => buildEditableSvg("squid", "classic", {
+          ...generatedSpec,
+          creative_family: creativeFamily,
+          visual_metric: creativeFamily === "milestone_metric" ? "5M" : undefined,
+        }, incompleteAssets),
+        new RegExp(`official_squid_generated_assets_required:${creativeFamily}`),
+      );
+    }
   }
 });
 

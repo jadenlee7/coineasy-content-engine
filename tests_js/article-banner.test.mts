@@ -54,7 +54,7 @@ async function withStudioEnvironment(run: () => Promise<void>): Promise<void> {
   }
 }
 
-test("builds a distinct 1200 by 630 Squid editorial world", () => {
+test("builds the 1200 by 630 Squid Korea Figma stage with official assets", () => {
   const svg = buildArticleBannerSvg("squid", {
     title: "스퀴드가 여는 새로운 크로스체인 유동성 경험",
     lead: "공식 발표를 바탕으로 핵심 변화와 이용자 영향을 짚어봅니다.",
@@ -67,17 +67,32 @@ test("builds a distinct 1200 by 630 Squid editorial world", () => {
   assert.match(svg, /id="Article-Title-Line-1"/);
   assert.match(svg, /id="Article-Lead-Line-1"/);
   assert.match(svg, /id="Brand-Official-Logo"/);
+  assert.doesNotMatch(svg, /id="Squid-Logo-Capsule-/);
   assert.match(svg, /SQUIDROUTER\.COM/);
-  assert.match(svg, /#EFFF5A/);
-  assert.match(svg, /fill="#E6CCFC"/);
+  assert.match(svg, /id="Squid-Pale-Field-Hero"[^>]+fill="#E8E6EA"/);
+  assert.match(svg, /id="Squid-White-Oval-Stage-Hero" cx="600" cy="323" rx="507" ry="153" fill="#FFFFFF"/);
+  assert.match(svg, /data-reference-frame="1920x1080" data-reference-stage="149 308 1621 489"/);
+  assert.match(svg, /#E6FA36/);
+  assert.doesNotMatch(svg, /#EFFF5A/);
   assert.match(svg, /Bagoss Condensed/);
   assert.match(svg, /id="Editorial-Hero-v2"/);
   assert.match(svg, /id="Squid-Hero-Composition-flow"/);
+  assert.match(svg, /id="Squid-Frame-Word-Top-Hero"[^>]*>SQUID<\/text>/);
+  assert.match(svg, /id="Squid-Frame-Word-Bottom-Hero"[^>]*>ARTICLE<\/text>/);
   assert.match(svg, /id="Squid-Official-Form-Language-Hero"/);
   assert.match(svg, /id="Squid-Official-Bubbles-Hero"/);
   assert.match(svg, /id="Squid-Official-SQUIB-Hero"/);
   assert.match(svg, /CROSS-CHAIN × SQUID/);
+  assert.match(svg, /id="Story-Topic" x="600" y="245" text-anchor="middle"/);
   assert.match(svg, /id="Squid-Lime-Divider"/);
+  assert.match(svg, /id="Article-Title-Line-1"[^>]+text-anchor="middle"[^>]+font-family="Pretendard, sans-serif"[^>]+font-size="60"/);
+  assert.equal((svg.match(/id="Article-Title-Line-/g) || []).length, 2);
+  assert.equal((svg.match(/id="Article-Lead-Line-/g) || []).length, 2);
+  assert.doesNotMatch(svg, /id="Article-Lead-Line-[^"]+"[^>]*>[^<]*…<\/text>/);
+  assert.match(svg, /id="Squid-Source-Metadata-Hero"/);
+  assert.match(svg, /id="Squid-Market-Badge-Hero"/);
+  assert.ok(svg.indexOf("Squid-Official-Form-Language-Hero") < svg.indexOf("Squid-White-Oval-Stage-Hero"));
+  assert.ok(svg.indexOf("Squid-White-Oval-Stage-Hero") < svg.indexOf("Squid-Official-SQUIB-Hero"));
   assert.doesNotMatch(svg, /SQUID KOREA \/ NOTE 01/);
   assert.doesNotMatch(svg, /CROSS-CHAIN, MADE HUMAN/);
   assert.doesNotMatch(svg, /id="Editorial-Grid"/);
@@ -106,8 +121,10 @@ test("shrinks and wraps a long unbroken Korean Squid hero before the SQUIB safe 
     .map(match => match[1]);
   assert.deepEqual(lines, ["한국사용자에게정확하고자연스", "럽게전달하는업데이트입니다"]);
   assert.doesNotMatch(lines.join(""), /…/);
-  assert.match(svg, /font-size="56"/);
-  assert.match(svg, /id="Squid-Official-SQUIB-Hero" x="810"/);
+  assert.match(svg, /font-size="48"/);
+  assert.match(svg, /id="Squid-Official-SQUIB-Hero" x="934"/);
+  assert.match(svg, /SOURCE · NOT PROVIDED/);
+  assert.doesNotMatch(svg, /id="Article-Date"/);
 });
 
 test("uses client-specific hero structures and exact reviewed brand tokens", () => {
@@ -126,7 +143,9 @@ test("uses client-specific hero structures and exact reviewed brand tokens", () 
 
   const squid = buildArticleBannerSvg("squid", input, logo, SQUID_HERO_ASSETS);
   assert.match(squid, /id="Squid-Hero-Composition-signal"/);
-  assert.match(squid, /fill="#E6CCFC"/);
+  assert.match(squid, /id="Squid-Pale-Field-Hero"[^>]+fill="#E8E6EA"/);
+  assert.match(squid, /id="Squid-White-Oval-Stage-Hero"/);
+  assert.match(squid, /fill="#E6FA36"/);
   assert.match(squid, /SQUID × KOREA/);
 
   const originTrail = buildArticleBannerSvg("origintrail", input, logo);
@@ -220,18 +239,60 @@ test("renders Squid inline visuals as sparse official worlds, not generic diagra
   assert.match(flow, /id="Squid-Inline-Composition-flow"/);
   assert.match(network, /id="Squid-Inline-Composition-network"/);
   assert.notEqual(flow, network);
+  assert.match(flow, /id="Squid-Pale-Field-Inline"[^>]+fill="#EBEBEB"/);
+  assert.match(flow, /id="Squid-White-Oval-Stage-Inline" cx="600" cy="346" rx="507" ry="153" fill="#FFFFFF"/);
+  assert.match(flow, /id="Squid-Frame-Word-Top-Inline"[^>]*>SQUID<\/text>/);
+  assert.match(flow, /id="Squid-Frame-Word-Bottom-Inline"[^>]*>INSIGHT<\/text>/);
   assert.match(flow, /id="Squid-Official-Form-Language-Inline"/);
   assert.match(flow, /id="Squid-Official-Bubbles-Inline"/);
   assert.match(flow, /id="Squid-Official-SQUIB-Inline"/);
+  assert.match(flow, /id="Squid-Canonical-Lime-Inline"[^>]+fill="#E6FA36"/);
+  assert.doesNotMatch(flow, /#EFFF5A/);
   assert.match(flow, /CANTON × SQUID/);
+  assert.match(flow, /id="Squid-Visual-Topic" x="600" y="245" text-anchor="middle"/);
   assert.match(flow, /id="Squid-Evidence-1"/);
   assert.match(flow, /id="Squid-Evidence-2"/);
   assert.doesNotMatch(flow, /id="Squid-Evidence-3"/);
+  assert.equal((flow.match(/id="Visual-Headline-Line-/g) || []).length, 2);
+  assert.equal((flow.match(/id="Visual-Caption-Line-/g) || []).length, 2);
+  assert.match(flow, /id="Visual-Headline-Line-1"[^>]+text-anchor="middle"[^>]+font-family="Pretendard, sans-serif"/);
+  assert.match(flow, /id="Squid-Source-Label-Inline"[^>]*>SOURCE · SQUIDROUTER\.COM<\/text>/);
+  assert.match(flow, /id="Squid-Market-Badge-Inline"/);
+  assert.ok(flow.indexOf("Squid-Official-Form-Language-Inline") < flow.indexOf("Squid-White-Oval-Stage-Inline"));
+  assert.ok(flow.indexOf("Squid-White-Oval-Stage-Inline") < flow.indexOf("Squid-Official-SQUIB-Inline"));
   assert.doesNotMatch(flow, /id="Grid"/);
   assert.doesNotMatch(flow, /id="Accent-Rail"/);
   assert.doesNotMatch(flow, /id="Diagram-Panel"/);
   assert.doesNotMatch(flow, /id="Visual-Point-1"/);
   assert.doesNotMatch(flow, /foreignObject/);
+});
+
+test("keeps brand-QA boundary copy complete in Squid inline visuals", () => {
+  const caption = "가".repeat(50);
+  const point = "나".repeat(26);
+  const svg = buildArticleInlineVisualSvg(
+    "squid",
+    {
+      visual: {
+        id: "visual-1",
+        after_section_id: "section-1",
+        role: "overview",
+        motif: "flow",
+        eyebrow: "핵심 맥락",
+        headline: "한국 이용자 핵심 정리",
+        caption,
+        points: [point, point],
+      },
+      sourceUrl: "https://www.squidrouter.com/blog/update",
+    },
+    "data:image/png;base64,AQ==",
+    SQUID_HERO_ASSETS,
+  );
+
+  assert.doesNotMatch(svg, /…/);
+  assert.equal((svg.match(/id="Visual-Caption-Line-/g) || []).length, 2);
+  assert.equal((svg.match(/id="Squid-Evidence-1-Line-/g) || []).length, 2);
+  assert.equal((svg.match(/id="Squid-Evidence-2-Line-/g) || []).length, 2);
 });
 
 test("fails closed when a Squid inline visual is missing official assets", () => {

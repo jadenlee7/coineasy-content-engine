@@ -7,6 +7,11 @@
 {% set requested_family = creative_family | default('legacy', true) %}
 {% set family = requested_family if requested_family in ['editorial_big_type', 'milestone_metric', 'status_progress', 'product_proof', 'worldbuilding'] else 'legacy' %}
 {% set variant = family %}
+{% set frame_word = 'UPDATE' %}
+{% if family == 'milestone_metric' %}{% set frame_word = 'MILESTONE' %}{% endif %}
+{% if family == 'status_progress' %}{% set frame_word = 'STATUS' %}{% endif %}
+{% if family == 'product_proof' %}{% set frame_word = 'ROUTE' %}{% endif %}
+{% if family == 'worldbuilding' %}{% set frame_word = 'WORLD' %}{% endif %}
 {% if family == 'worldbuilding' %}{{ squid_worldbuilding_requires_official_source_media() }}{% endif %}
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -18,6 +23,7 @@
     --squid-ink: #000000;
     --squid-purple: #1C0F3D;
     --squid-paper: #F8F5FA;
+    --squid-stage-paper: #E8E6EA;
     --body-font: 'Pretendard Variable', Pretendard, sans-serif;
     --display-font: {% if font_display %}'{{ font_display }}', {% endif %}var(--body-font);
   }
@@ -205,389 +211,214 @@
     letter-spacing: -1px;
   }
 
-  /* Editorial: recent A NEW ERA-style big type with a bold asymmetric crop. */
-  .canvas--editorial_big_type {
-    background:
-      radial-gradient(circle at 24% 92%, rgba(255, 255, 255, .72) 0, rgba(255, 255, 255, .16) 28%, rgba(255, 255, 255, 0) 52%),
-      var(--squid-lavender);
+  /*
+   * Generated Korea stage: a square derivative of the reviewed 1920×1080
+   * Squid Korea Figma family (2910:2690 and its information-card variants).
+   * The content-specific warped Figma lettering is never reused. Generic frame
+   * words carry only the render family while the source-grounded Korean copy
+   * stays readable inside the white oval.
+   */
+  .stage-oval,
+  .stage-word { display: none; }
+
+  .canvas:not(.canvas--legacy) {
+    background: var(--squid-stage-paper);
   }
 
-  .canvas--editorial_big_type::before {
-    right: -250px;
-    top: -268px;
-    width: 720px;
-    height: 720px;
-    border: 104px solid rgba(255, 255, 255, .26);
-    border-radius: 50%;
-  }
-
-  .canvas--editorial_big_type::after {
-    left: -140px;
-    bottom: -170px;
-    width: 760px;
-    height: 270px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, .28);
-    filter: blur(28px);
-  }
-
-  .canvas--editorial_big_type .bubbles {
-    right: -72px;
-    top: -54px;
-    width: 400px;
-    height: 400px;
-    opacity: .68;
-  }
-
-  .canvas--editorial_big_type .squib {
-    right: -136px;
-    bottom: -130px;
-    width: 578px;
-    height: 578px;
-    filter: drop-shadow(0 26px 32px rgba(84, 57, 118, .15));
-    transform: rotate(-8deg);
-  }
-
-  .canvas--editorial_big_type .form-language { display: none; }
-
-  .canvas--editorial_big_type .story {
-    left: 64px;
-    right: 62px;
-    top: 198px;
-  }
-
-  .canvas--editorial_big_type .headline {
-    width: 930px;
-    height: 372px;
-    margin-top: 26px;
-    font-size: 118px;
-    line-height: .96;
-    letter-spacing: -5px;
-    -webkit-line-clamp: 3;
-  }
-
-  .canvas--editorial_big_type .support {
-    left: 64px;
-    right: 392px;
-    top: 672px;
-  }
-
-  .canvas--editorial_big_type .rule { margin-bottom: 25px; }
-
-  .canvas--editorial_big_type .body-lines {
-    gap: 8px;
-    width: 618px;
-    max-height: 112px;
-  }
-
-  .canvas--editorial_big_type .body-line {
-    font-size: 29px;
-    line-height: 1.42;
-    letter-spacing: -.85px;
-  }
-
-  /* Milestone: high-contrast metric treatment inspired by Squid's 5m post. */
-  .canvas--milestone_metric {
-    color: #FFFFFF;
-    background: var(--squid-purple);
-  }
-
-  .canvas--milestone_metric::before {
-    left: -130px;
-    top: 245px;
-    width: 980px;
-    height: 980px;
-    border: 165px solid rgba(188, 142, 228, .48);
-    border-radius: 50%;
-    transform: rotate(-16deg);
-  }
-
-  .canvas--milestone_metric::after {
-    right: -190px;
-    top: -230px;
-    width: 650px;
-    height: 650px;
-    border-radius: 50%;
-    background: rgba(230, 204, 252, .16);
-    filter: blur(8px);
-  }
-
-  .canvas--milestone_metric .brand-logo--light { display: none; }
-  .canvas--milestone_metric .brand-logo--dark { display: block; }
-
-  .canvas--milestone_metric .bubbles {
-    right: -82px;
-    top: -52px;
-    width: 444px;
-    height: 444px;
-    opacity: .92;
-  }
-
-  .canvas--milestone_metric .squib {
-    right: -88px;
-    bottom: -108px;
-    width: 520px;
+  .canvas:not(.canvas--legacy)::before {
+    z-index: 1;
+    left: 48px;
+    top: 292px;
+    width: 984px;
     height: 520px;
-    filter: drop-shadow(0 18px 42px rgba(230, 250, 54, .22));
-    transform: rotate(-12deg);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .97);
+    box-shadow: 0 0 42px 24px rgba(188, 142, 228, .82);
   }
 
-  .canvas--milestone_metric .form-language { display: none; }
-
-  .canvas--milestone_metric .story {
-    left: 64px;
-    right: 64px;
-    top: 210px;
+  .canvas:not(.canvas--legacy)::after {
+    z-index: 0;
+    inset: 0;
+    background:
+      radial-gradient(circle at 50% 43%, rgba(255,255,255,.72) 0 24%, rgba(255,255,255,0) 53%),
+      radial-gradient(circle at 50% 50%, rgba(188,142,228,.68) 0 31%, rgba(188,142,228,0) 67%);
   }
 
-  .canvas--milestone_metric .eyebrow { color: rgba(230, 250, 54, .82); }
+  .canvas:not(.canvas--legacy) .stage-word {
+    position: absolute;
+    z-index: 1;
+    display: block;
+    overflow: hidden;
+    color: #000;
+    font-family: var(--display-font);
+    font-weight: 900;
+    line-height: .78;
+    letter-spacing: -8px;
+    text-align: center;
+    text-transform: uppercase;
+    white-space: nowrap;
+    filter: drop-shadow(0 10px 9px rgba(188, 142, 228, .48));
+    transform-origin: 50% 50%;
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word--top {
+    left: 206px;
+    top: 66px;
+    width: 920px;
+    height: 210px;
+    font-size: 182px;
+    transform: rotate(-3deg) scaleX(1.48);
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word--bottom {
+    left: -34px;
+    bottom: -82px;
+    width: 1148px;
+    height: 205px;
+    font-size: 176px;
+    transform: rotate(2deg) scaleX(1.68);
+  }
+
+  .canvas--milestone_metric .stage-word--bottom { transform: rotate(2deg) scaleX(1.13); }
+  .canvas--product_proof .stage-word--bottom { transform: rotate(2deg) scaleX(2); }
+
+  .canvas:not(.canvas--legacy) .brand-logo {
+    left: 44px;
+    top: 24px;
+    width: 148px;
+    height: 83px;
+  }
+
+  .canvas:not(.canvas--legacy) .brand-logo--dark { display: none; }
+
+  .canvas:not(.canvas--legacy) .form-language {
+    z-index: 0;
+    left: -352px;
+    top: -314px;
+    width: 1784px;
+    height: 1784px;
+    opacity: .84;
+    transform: rotate(82deg);
+  }
+
+  .canvas:not(.canvas--legacy) .bubbles {
+    z-index: 3;
+    right: -58px;
+    top: 130px;
+    width: 430px;
+    height: 430px;
+    opacity: .72;
+  }
+
+  .canvas:not(.canvas--legacy) .squib {
+    z-index: 3;
+    right: -34px;
+    top: 292px;
+    width: 398px;
+    height: 398px;
+    filter: drop-shadow(0 20px 26px rgba(87, 63, 111, .17));
+    transform: none;
+  }
+
+  .canvas:not(.canvas--legacy) .story {
+    left: 90px;
+    top: 354px;
+    width: 670px;
+    text-align: center;
+  }
+
+  .canvas:not(.canvas--legacy) .eyebrow {
+    color: rgba(0, 0, 0, .62);
+    font-size: 19px;
+    font-weight: 760;
+    letter-spacing: 1.1px;
+  }
+
+  .canvas:not(.canvas--legacy) .headline {
+    width: 670px;
+    height: 190px;
+    margin-top: 18px;
+    color: #000;
+    font-family: var(--body-font);
+    font-size: 80px;
+    font-weight: 650;
+    line-height: 1.08;
+    letter-spacing: -3.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas:not(.canvas--legacy) .support {
+    left: 90px;
+    top: 620px;
+    width: 670px;
+    text-align: center;
+  }
+
+  .canvas:not(.canvas--legacy) .rule {
+    width: 132px;
+    height: 8px;
+    margin: 0 auto 18px;
+    background: var(--squid-lime);
+  }
+
+  .canvas:not(.canvas--legacy) .body-lines {
+    gap: 4px;
+    width: 670px;
+    max-height: 74px;
+  }
+
+  .canvas:not(.canvas--legacy) .body-line {
+    color: rgba(0, 0, 0, .72);
+    font-size: 24px;
+    font-weight: 560;
+    line-height: 1.38;
+    letter-spacing: -.55px;
+  }
+
+  .canvas:not(.canvas--legacy) .footer {
+    left: 96px;
+    right: 324px;
+    bottom: 270px;
+    z-index: 5;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .canvas:not(.canvas--legacy) .source {
+    color: rgba(0, 0, 0, .46);
+    font-size: 12px;
+    font-weight: 680;
+    letter-spacing: .35px;
+  }
+
+  .canvas:not(.canvas--legacy) .date-credit { margin-left: 0; }
 
   .metric {
     overflow: hidden;
-    color: var(--squid-lime);
+    color: #000;
     font-family: var(--display-font);
-    font-size: 270px;
+    font-size: 166px;
     font-weight: 900;
-    line-height: .78;
-    letter-spacing: -11px;
+    line-height: .83;
+    letter-spacing: -7px;
     text-transform: uppercase;
     white-space: nowrap;
   }
 
-  .canvas--milestone_metric .headline {
-    width: 940px;
-    height: 386px;
-    margin-top: 22px;
-    color: var(--squid-lime);
-    font-size: 142px;
-    line-height: .91;
-    letter-spacing: -6.5px;
-    -webkit-line-clamp: 3;
-  }
-
-  .canvas--milestone_metric.has-metric .story { top: 183px; }
+  .canvas--milestone_metric.has-metric .story { top: 344px; }
 
   .canvas--milestone_metric.has-metric .headline {
-    width: 670px;
-    height: 170px;
-    margin-top: 38px;
-    color: #FFFFFF;
-    font-size: 68px;
-    line-height: 1.02;
-    letter-spacing: -2.6px;
-    -webkit-line-clamp: 2;
+    height: 74px;
+    margin-top: 18px;
+    font-size: 52px;
+    font-weight: 580;
+    line-height: 1.1;
+    letter-spacing: -2px;
+    -webkit-line-clamp: 1;
   }
 
-  .canvas--milestone_metric .support {
-    left: 64px;
-    right: 390px;
-    top: 687px;
-  }
+  .canvas--milestone_metric.has-metric .support { top: 633px; }
 
-  .canvas--milestone_metric .rule {
-    margin-bottom: 24px;
-    background: var(--squid-lavender);
-  }
-
-  .canvas--milestone_metric .body-lines {
-    gap: 8px;
-    width: 620px;
-    max-height: 111px;
-  }
-
-  .canvas--milestone_metric .body-line {
-    color: rgba(255, 255, 255, .9);
-    font-size: 28px;
-    line-height: 1.42;
-    letter-spacing: -.8px;
-  }
-
-  .canvas--milestone_metric .source { color: rgba(255, 255, 255, .58); }
-
-  /* Status: an editorial information panel; deliberately not product UI. */
-  .canvas--status_progress {
-    background: var(--squid-paper);
-  }
-
-  .canvas--status_progress::before {
-    right: 0;
-    top: 0;
-    width: 344px;
-    height: 1080px;
-    background: var(--squid-lime);
-  }
-
-  .canvas--status_progress::after {
-    right: -270px;
-    bottom: -290px;
-    width: 710px;
-    height: 710px;
-    border: 108px solid var(--squid-lavender);
-    border-radius: 50%;
-    opacity: .9;
-  }
-
-  .canvas--status_progress .bubbles {
-    right: -76px;
-    top: 18px;
-    width: 424px;
-    height: 424px;
-    opacity: .88;
-  }
-
-  .canvas--status_progress .squib {
-    right: -90px;
-    bottom: -94px;
-    width: 470px;
-    height: 470px;
-    filter: drop-shadow(0 22px 30px rgba(84, 57, 118, .15));
-    transform: rotate(-9deg);
-  }
-
-  .canvas--status_progress .form-language {
-    right: 54px;
-    top: 308px;
-    width: 282px;
-    height: 282px;
-    opacity: .88;
-    transform: rotate(20deg);
-  }
-
-  .canvas--status_progress .story {
-    left: 64px;
-    right: 406px;
-    top: 210px;
-  }
-
-  .canvas--status_progress .headline {
-    width: 610px;
-    height: 330px;
-    margin-top: 28px;
-    font-size: 101px;
-    line-height: .98;
-    letter-spacing: -4px;
-    -webkit-line-clamp: 3;
-  }
-
-  .canvas--status_progress .support {
-    left: 64px;
-    right: 408px;
-    top: 670px;
-  }
-
-  .canvas--status_progress .rule {
-    margin-bottom: 26px;
-    background: var(--squid-lavender);
-  }
-
-  .canvas--status_progress .body-lines {
-    gap: 8px;
-    width: 604px;
-    max-height: 124px;
-  }
-
-  .canvas--status_progress .body-line {
-    font-size: 29px;
-    line-height: 1.42;
-    letter-spacing: -.8px;
-  }
-
-  /* Product proof: official form language, never a fabricated app screen. */
-  .canvas--product_proof {
-    color: #FFFFFF;
-    background: var(--squid-purple);
-  }
-
-  .canvas--product_proof::before {
-    right: -250px;
-    top: 190px;
-    width: 760px;
-    height: 760px;
-    border-radius: 50%;
-    background: var(--squid-lavender);
-  }
-
-  .canvas--product_proof::after {
-    left: 64px;
-    top: 692px;
-    width: 574px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--squid-lime);
-    transform: rotate(-3deg);
-    transform-origin: left center;
-  }
-
-  .canvas--product_proof .brand-logo--light { display: none; }
-  .canvas--product_proof .brand-logo--dark { display: block; }
-
-  .canvas--product_proof .bubbles {
-    right: -44px;
-    top: -42px;
-    width: 390px;
-    height: 390px;
-    opacity: .55;
-  }
-
-  .canvas--product_proof .form-language {
-    right: -80px;
-    top: 216px;
-    width: 610px;
-    height: 610px;
-    opacity: .78;
-    transform: rotate(12deg);
-  }
-
-  .canvas--product_proof .squib {
-    right: -56px;
-    bottom: -92px;
-    width: 430px;
-    height: 430px;
-    filter: drop-shadow(0 24px 34px rgba(0, 0, 0, .22));
-    transform: rotate(-8deg);
-  }
-
-  .canvas--product_proof .story {
-    left: 64px;
-    right: 414px;
-    top: 210px;
-  }
-
-  .canvas--product_proof .eyebrow { color: var(--squid-lime); }
-
-  .canvas--product_proof .headline {
-    width: 626px;
-    height: 330px;
-    margin-top: 28px;
-    color: #FFFFFF;
-    font-size: 98px;
-    line-height: .98;
-    letter-spacing: -4px;
-    -webkit-line-clamp: 3;
-  }
-
-  .canvas--product_proof .support {
-    left: 64px;
-    right: 414px;
-    top: 744px;
-  }
-
-  .canvas--product_proof .rule { display: none; }
-
-  .canvas--product_proof .body-lines {
-    gap: 8px;
-    width: 608px;
-    max-height: 124px;
-  }
-
-  .canvas--product_proof .body-line {
-    color: rgba(255, 255, 255, .9);
-    font-size: 28px;
-    line-height: 1.42;
-    letter-spacing: -.8px;
-  }
-
-  .canvas--product_proof .source { color: rgba(255, 255, 255, .6); }
 </style>
 </head>
 <body>
@@ -597,6 +428,8 @@
   <img src="{{ squid_form_language_path }}" class="form-language" alt=""/>
   <img src="{{ logo_light_path }}" class="brand-logo brand-logo--light" alt="Squid"/>
   <img src="{{ logo_dark_path }}" class="brand-logo brand-logo--dark" alt="Squid"/>
+  <div class="stage-word stage-word--top" aria-hidden="true">SQUID</div>
+  <div class="stage-word stage-word--bottom" aria-hidden="true">{{ frame_word }}</div>
 
   <section class="story">
     {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
@@ -624,33 +457,37 @@
   const headline = document.querySelector('.headline');
   if (headline) {
     const initialSizes = {
-      editorial_big_type: 118,
-      milestone_metric: 142,
-      status_progress: 101,
-      product_proof: 98,
+      editorial_big_type: 80,
+      milestone_metric: 80,
+      status_progress: 78,
+      product_proof: 76,
       legacy: 96,
     };
     const minimumSizes = {
-      editorial_big_type: 64,
-      milestone_metric: 70,
-      status_progress: 61,
-      product_proof: 61,
+      editorial_big_type: 54,
+      milestone_metric: 50,
+      status_progress: 52,
+      product_proof: 52,
       legacy: 64,
     };
-    let size = initialSizes[variant] || 96;
+    let size = variant === 'milestone_metric' && canvas?.classList.contains('has-metric')
+      ? 52
+      : (initialSizes[variant] || 80);
     const minimum = minimumSizes[variant] || 64;
-    // Legacy replay kept shrinking while size > 64; family minima may be stricter.
     while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > minimum) {
       size -= 2;
       headline.style.fontSize = `${size}px`;
-      headline.style.letterSpacing = `${Math.max(-6.5, -size * .042)}px`;
+      headline.style.letterSpacing = variant === 'legacy'
+        ? `${Math.max(-6.5, -size * .042)}px`
+        : `${Math.max(-4, -size * .04)}px`;
     }
   }
 
   const body = document.querySelector('.body-lines');
   if (body) {
-    let size = ['milestone_metric', 'product_proof'].includes(variant) ? 28 : 29;
-    while (body.scrollHeight > body.clientHeight && size > 22) {
+    let size = variant === 'legacy' ? 29 : 24;
+    const minimum = variant === 'legacy' ? 22 : 19;
+    while (body.scrollHeight > body.clientHeight && size > minimum) {
       size -= 1;
       for (const line of body.children) line.style.fontSize = `${size}px`;
     }

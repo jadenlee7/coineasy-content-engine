@@ -42,6 +42,31 @@ Legacy `editorial` and `signal` requests are canonicalized to `classic` at the
 renderer, Netlify editable boundary, and Studio UI. The original requested
 style remains audit metadata, but a generic publisher layout is never emitted.
 
+## Squid Korea Figma stage (reference only)
+
+The current Korea-stage treatment was visually reviewed in the CoinEasy
+Management Figma file `hsRSASQjEMxl5NMLH9y5Wm`, Projects nodes `2910:2690`,
+`2910:2700`, `2918:2587`, `2918:2597`, `2918:2616`, `2918:2624`,
+`2918:2631`, `2918:2638`, and `2918:2645`. These nodes are
+`reference_only`: they define composition language, not an approved reusable
+template and not a factual source.
+
+Generated square cards adapt the reviewed 1920×1080 grammar using a pale
+`#E8E6EA` or `#EBEBEB` field, a white oval stage, lavender halo, cropped black
+frame words, official SQUIB/bubbles artwork, and sparse centered Korean set in
+Pretendard. Accent lime is always the canonical `#E6FA36`. The fixed top frame
+word is `SQUID`; the bottom word may describe only a generic render family
+(`UPDATE`, `MILESTONE`, `STATUS`, or `ROUTE`). Neither position may introduce
+a product claim.
+
+Never copy a Projects node's headline, date, figure, event, launch status, or
+other content-specific wording into an output. Every published claim must be
+derived from the current verified official source and pass the normal factual
+review. The approved legacy `[KEEP] Banner_Squid_Sample` registry node
+`1479:1954` remains unchanged. None of the `2910:*` or `2918:*` Projects nodes
+may be added to `config/figma_templates.json` or the Netlify Figma allowlist
+without a separate explicit template approval.
+
 ## Generated-card families
 
 `squid-visual-routing@1` classifies immutable source text on the server. The
@@ -66,12 +91,16 @@ CoinEasy mark. A milestone shows a large number only when the exact scaled
 metric was copied from the source. Product proof uses official form language,
 not a fabricated screen.
 
+The Korea-stage geometry is versioned as `squid-generated-gtm@3`. The version
+is stored in the immutable spec and idempotency inputs so a prior `@2` result
+cannot be replayed as if it used the reviewed stage geometry.
+
 Verified official media always changes the render strategy to `source_remix`,
 regardless of family. Text-only `worldbuilding` fails closed for manual review
 because the approved local asset pack cannot reproduce the official 3D scene.
-The new family layouts deliberately record `figma_template: null`: the one
-legacy Squid frame in the Figma registry is not approval evidence for these new
-variants.
+The generated family layouts deliberately record `figma_template: null`: the
+one legacy Squid frame in the Figma registry is not approval evidence for the
+reference-only Projects variants.
 
 ## Korean voice
 
