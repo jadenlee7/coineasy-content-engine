@@ -9,7 +9,7 @@ const consoleHtml = readFileSync(
 
 test("distinguishes missing copy from a rejected Squid subtitle placement", () => {
   assert.match(consoleHtml, /visual_localization_status === "unsafe_placement"/);
-  assert.match(consoleHtml, /원문 자막을 자연스럽게 교체하기 어려워 원본 비주얼 유지/);
+  assert.match(consoleHtml, /원문 비주얼은 그대로 유지하고 한국어 게시 문구로 보완/);
   assert.match(consoleHtml, /원문 자막을 같은 위치의 한국어로 교체/);
   assert.match(consoleHtml, /번역할 문구가 없어 원본 비주얼 그대로 유지/);
 });
@@ -85,13 +85,75 @@ test("preserves the existing news-card, editable SVG, and channel-copy flow", ()
 
 test("keeps Squid news creation on the reviewed remix or classic visual family", () => {
   assert.match(consoleHtml, /const SQUID_NEWS_TEMPLATES = new Set\(\["remix", "classic"\]\)/);
-  assert.match(consoleHtml, /state\.client === "squid" && !SQUID_NEWS_TEMPLATES\.has\(state\.template\)[\s\S]*state\.template = "classic"/);
+  assert.match(consoleHtml, /state\.client === "squid" && !SQUID_NEWS_TEMPLATES\.has\(state\.template\)[\s\S]*state\.template = "remix"/);
   assert.match(consoleHtml, /item\.disabled = disabled/);
   assert.match(consoleHtml, /if \(!button \|\| button\.disabled\) return/);
   assert.match(consoleHtml, /data-client="squid"\]\[data-template="classic"\][\s\S]*squid-squib-token-juggle\.png/);
   assert.match(consoleHtml, /--brand-primary:#efff5a; --brand-secondary:#e6ccfc; --brand-bg:#e6ccfc/);
   assert.match(consoleHtml, /state\.client === "squid" && state\.template === "classic"[\s\S]*squid-light\.png/);
   assert.match(consoleHtml, /detail\.client_id === "squid" && \["editorial", "signal"\]\.includes\(storedTemplateStyle\)[\s\S]*\? "classic"/);
+  assert.match(consoleHtml, /Squid 원문 우선 · 추천/);
+  assert.match(consoleHtml, /@squidrouter 배너 유지 \+ 한국어 문구/);
+  assert.match(consoleHtml, /Squid 클래식 · fallback/);
+  assert.match(consoleHtml, /const changed = state\.client !== clientId;[\s\S]*if \(changed && clientId === "squid"\) state\.template = "remix"/);
+  assert.match(consoleHtml, /function isOfficialSquidXStatusUrl\(value\)/);
+  assert.match(consoleHtml, /function hasOfficialSquidSource\(contentValue, urlValue\)/);
+  assert.match(consoleHtml, /hasOfficialSquidSource\(requestContext\.sourceContent, payload\.source_url \|\| requestContext\.sourceUrl\)/);
+  assert.match(consoleHtml, /shell\.dataset\.output = "source-native"/);
+  assert.match(consoleHtml, /--source-native-aspect/);
+  assert.match(consoleHtml, /payload\.output_width/);
+  assert.match(consoleHtml, /payload\.output_height/);
+  assert.match(consoleHtml, /aspect-ratio: var\(--asset-aspect, 1\)/);
+  assert.match(consoleHtml, /--asset-aspect:\$\{width\} \/ \$\{height\}/);
+  assert.match(consoleHtml, /\.library-thumb img \{[^}]*object-fit: contain/);
+  assert.match(consoleHtml, /function clearArticleBanner\(\)[\s\S]*shell\.removeAttribute\("data-output"\)[\s\S]*shell\.style\.removeProperty\("--source-native-aspect"\)/);
+  assert.match(consoleHtml, /공식 @squidrouter 원문 배너를 그대로 가져와 한국어 게시 문구와 함께 준비/);
+  assert.match(consoleHtml, /클래식 fallback은 원문 배너를 사용하지 않습니다/);
+  assert.match(consoleHtml, /source_not_official_squid/);
+  assert.match(consoleHtml, /공식 @squidrouter 계정의 원문인지 확인되지 않았습니다/);
+  assert.doesNotMatch(consoleHtml, /sourceUrl\.addEventListener\("blur"[\s\S]{0,300}setStatus/);
+});
+
+test("defaults a newly selected Squid client to remix without overwriting an explicit Squid classic choice", () => {
+  const selectClientSource = consoleHtml.match(
+    /function selectClient\(clientId\) \{[\s\S]*?\n      \}(?=\n\n      function syncTemplateOptions)/,
+  )?.[0];
+  assert.ok(selectClientSource, "selectClient must be present in the console");
+  const state = { client: "yellow", template: "classic" };
+  const clients = { querySelectorAll: () => [] };
+  const selectClient = Function(
+    "state",
+    "clients",
+    `"use strict"; ${selectClientSource}; return selectClient;`,
+  )(state, clients) as (clientId: string) => void;
+
+  selectClient("squid");
+  assert.deepEqual(state, { client: "squid", template: "remix" });
+  state.template = "classic";
+  selectClient("squid");
+  assert.deepEqual(state, { client: "squid", template: "classic" });
+});
+
+test("uses the same X-link priority as the server when identifying an official Squid source", () => {
+  const helperNames = ["normalizeUserUrl", "isXStatusUrl", "isOfficialSquidXStatusUrl", "hasOfficialSquidSource"];
+  const helperSources = helperNames.map((name, index) => {
+    const nextName = helperNames[index + 1];
+    const lookahead = nextName ? `(?=\\n\\n      function ${nextName})` : "(?=\\n\\n      function errorMessage)";
+    const source = consoleHtml.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n      \\}${lookahead}`))?.[0];
+    assert.ok(source, `${name} must be present in the console`);
+    return source;
+  }).join("\n");
+  const hasOfficialSquidSource = Function(
+    `"use strict"; ${helperSources}; return hasOfficialSquidSource;`,
+  )() as (contentValue: string, urlValue: string) => boolean;
+
+  const official = "https://x.com/squidrouter/status/2083266484789514640";
+  assert.equal(hasOfficialSquidSource(official, "https://docs.example.com/story"), true);
+  assert.equal(hasOfficialSquidSource(official, "https://x.com/other/status/2083266484789514640"), false);
+  assert.equal(hasOfficialSquidSource("본문", official), true);
+  assert.equal(hasOfficialSquidSource("본문", `${official}/photo/1`), true);
+  assert.equal(hasOfficialSquidSource("본문", `${official}/arbitrary`), false);
+  assert.equal(hasOfficialSquidSource("본문", "https://x.com/squidrouter/status/208326648478951464012"), false);
 });
 
 test("sends stored results to the private Telegram review flow and opens DM deep links", () => {

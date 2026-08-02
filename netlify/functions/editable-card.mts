@@ -81,7 +81,12 @@ export function requiredOfficialLogoVariant(
     if (clientId === "squid" || spec.source_logo_visible === true) return null;
     return "dark";
   }
-  if (clientId === "squid" && templateStyle === "classic") return "light";
+  if (clientId === "squid" && templateStyle === "classic") {
+    return spec.creative_family === "milestone_metric"
+      || spec.creative_family === "product_proof"
+      ? "dark"
+      : "light";
+  }
   if (templateStyle === "signal") return "dark";
   return spec.theme === "yellow" ? "light" : "dark";
 }

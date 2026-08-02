@@ -36,7 +36,7 @@ coineasy-content-engine/
 │   │   │   ├── edu_p1_3card.html
 │   │   │   ├── edu_p2_bullets.html
 │   │   │   └── ...
-│   │   └── news/                        # 뉴스 카드 (1080×1080 단일 카드)
+│   │   └── news/                        # 생성형 뉴스 카드 (1080×1080)
 │   │       └── news_title_card.html     # D3 신규 (공유 카드 스키마)
 │   ├── orchestrator.py                  # E2E 파이프라인
 │   ├── client_config.py                 # Client 설정 로더
@@ -403,7 +403,7 @@ content-engine이 PNG 생성 → YellowKR 봇 API 호출 → Yellow Korea 텔레
 
 ## 13. News Card Pipeline
 
-`edu_carousel`과 대칭 구조를 갖는 두 번째 콘텐츠 파이프라인. 단일 1080×1080 뉴스 카드를 생성.
+`edu_carousel`과 대칭 구조를 갖는 두 번째 콘텐츠 파이프라인. 생성형 카드군은 단일 1080×1080 카드를 만들고, 공식 Squid `remix`는 검증된 원본 비율을 유지한다.
 
 ### Card Schema (fixed)
 
@@ -419,6 +419,9 @@ content-engine이 PNG 생성 → YellowKR 봇 API 호출 → Yellow Korea 텔레
 ```
 
 LLM 출력이 그대로 Jinja 슬롯이 됨 — 렌더러가 자동 주입하는 브랜드 변수(`brand_primary_color`, `logo_dark_path` 등)와 병합.
+Squid는 예외적으로 LLM 출력 뒤에 서버가 `creative_family`,
+`render_strategy`, 정책/레퍼런스/템플릿/애셋 버전을 덮어쓴다. 이 값은
+원문과 검증된 공식 미디어 유무에서 결정되며 브라우저나 LLM 입력이 아니다.
 
 ### Flow
 
@@ -426,17 +429,23 @@ LLM 출력이 그대로 Jinja 슬롯이 됨 — 렌더러가 자동 주입하는
    소스 콘텐츠를 위 스키마 dict으로 요약. `mock_mode=True`면 `mock_response`를 그대로 반환(스모크용, LLM 호출 없음).
 
 2. **`core/templates/news/news_title_card.html`**  
-   1080×1080 단일 카드 템플릿. 카드 스키마 슬롯 + 브랜드 변수를 렌더.
+   생성형 카드군의 1080×1080 단일 카드 템플릿. Squid override는 같은
+   스키마에서 editorial, milestone, status/product 계열을 렌더하고,
+   승인된 장면 애셋이 없는 worldbuilding 생성은 실패 폐쇄한다. Squid
+   공식 `remix`는 별도 override에서 source-native canvas를 렌더한다.
 
 3. **`core/orchestrator.py::generate_news_card()`**  
-   `feature_flags.news_card` 체크 → spec 생성 → `render_png(..., viewport=NEWS_CARD_1x1)` → manifest 기록. 반환하는 `NewsCardResult.png_path`는 **str 단일**(edu의 `png_paths: list`와 대비).
+   `feature_flags.news_card` 체크 → spec 생성 → Squid 목적별 시각 정책 고정
+   → 생성형 카드에는 `NEWS_CARD_1x1`, Squid 공식 `remix`에는 원본 비율
+   viewport 적용 → manifest 기록. 반환하는 `NewsCardResult.png_path`는
+   **str 단일**(edu의 `png_paths: list`와 대비).
 
 4. **`api/server.py POST /clients/{client_id}/generate/news-card`**  
    orchestrator를 HTTP로 노출. 응답에 `spec`과 `png_path`를 담아 호출자가 manifest 재읽기 없이 카드 내용 확인 가능.
 
 ### Viewport
 
-`core/renderers/playwright_renderer.py::NEWS_CARD_1x1 = (1080, 1080)` — DPR2로 실제 PNG는 **2160×2160**. `NEWS_CARD_16x9 = (1200, 675)`는 예약(현재 미사용).
+생성형 뉴스 카드는 `NEWS_CARD_1x1 = (1080, 1080)`과 DPR2를 사용해 실제 **2160×2160** PNG를 만든다. Squid 공식 `remix`는 원본 비율을 유지하면서 long edge를 최대 1200px로 제한하고 DPR1로 렌더한다. 예를 들어 1600×900 원본은 1200×675가 된다.
 
 ### edu_carousel과의 대칭점
 

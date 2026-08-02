@@ -492,10 +492,30 @@ def test_request_uuid_is_stable_and_bound_to_mode():
         source_item_id="22222222-2222-4222-8222-222222222222",
         content_kind="article",
     )
+    squid = daily_runner._request_id(
+        client_id="squid",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="daily_news",
+    )
+    squid_article = daily_runner._request_id(
+        client_id="squid",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="article",
+    )
 
     assert first == second
     assert first != article
     assert str(uuid.UUID(first)) == first
+    assert squid != str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v1:squid:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
+    ))
+    assert squid_article == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v1:squid:"
+        "22222222-2222-4222-8222-222222222222:article",
+    ))
 
 
 def test_scheduled_runner_rejects_tutorial_auto_generation():
@@ -597,7 +617,110 @@ async def test_squid_photo_daily_news_reaches_generation_as_remix():
     assert summary.generated == 1
     assert generation.calls[0]["client_id"] == "squid"
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"].endswith("/official.jpg")
+    assert generation.calls[0]["source_image_url"].endswith("/official.jpg?name=orig")
+
+
+@pytest.mark.asyncio
+async def test_text_only_squid_worldbuilding_stops_for_manual_visual_review():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending("squid", text="Bouncing through the weekend like SQUIB."),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 0
+    assert summary.skipped >= 1
+    assert repo.queues == []
+    assert generation.calls == []
+    assert {
+        "client_id": "squid",
+        "status": "manual_visual_review_required",
+        "detail": "worldbuilding",
+    } in summary.outcomes
+
+
+@pytest.mark.asyncio
+async def test_text_only_squid_worldbuilding_note_still_queues_as_article():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    article_text = (
+        "Announcing SQUIB, our mascot and guide to the Squid ecosystem. "
+        + "This complete official note explains the story, design, and role " * 8
+    )
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending("squid", text=article_text, note=True),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["content_kind"] == "article"
+    assert generation.calls[0]["content_kind"] == "article"
+    assert not any(
+        item["status"] == "manual_visual_review_required"
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_flag", ["is_retweet", "is_reply"])
+async def test_squid_filters_reply_and_retweet_before_generic_source_rpc(blocked_flag):
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    valid_id = "2082883998829752783"
+    blocked_id = "2082883998829752784"
+    valid = {
+        "id": valid_id,
+        "text": "Squid routing update is now live for users.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/SquidRouter/status/{valid_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": False,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    blocked = {
+        **valid,
+        "id": blocked_id,
+        "url": f"https://x.com/SquidRouter/status/{blocked_id}",
+        blocked_flag: True,
+    }
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[blocked, valid]),
+        FakeGenerationClient(),
+    ).run()
+
+    squid_record = next(
+        item for item in repo.records
+        if item["client_id"] == "squid"
+    )
+    assert [item["external_id"] for item in squid_record["source_items"]] == [valid_id]
+    assert squid_record["source_items"][0]["is_retweet"] is False
+    assert squid_record["source_items"][0]["is_reply"] is False
+    assert squid_record["next_cursor"] == valid_id
+    assert summary.generated == 1
 
 
 @pytest.mark.asyncio
@@ -641,10 +764,12 @@ async def test_fresh_squid_quote_photo_reaches_daily_news_render_path():
         if item["client_id"] == "squid"
     )
     assert squid_record["source_items"][0]["media"] == quote["media"]
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert squid_record["source_items"][0]["is_retweet"] is False
+    assert squid_record["source_items"][0]["is_reply"] is False
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
 
 
 @pytest.mark.asyncio
@@ -688,10 +813,10 @@ async def test_fresh_squid_quote_video_preview_reaches_remix_render_path():
         generation,
     ).run()
 
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
 
 
 @pytest.mark.asyncio
@@ -1064,9 +1189,9 @@ async def test_image_backed_origintrail_source_stays_on_the_sync_plane():
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert generation.calls[0]["client_id"] == "origintrail"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []
@@ -1209,8 +1334,8 @@ async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == preview_url
-    assert generation.calls[0]["source_image_url"] == preview_url
+    assert repo.queues[0]["source_image_url"] == f"{preview_url}?name=orig"
+    assert generation.calls[0]["source_image_url"] == f"{preview_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []

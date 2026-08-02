@@ -1,9 +1,10 @@
 """
 News Card LLM Pipeline (Multi-tenant)
 
-Takes a client's content source (tweet, blog, announcement) and produces a
-single 1080x1080 Korean news card spec: label badge + headline + 1-3 body
-bullets + date + source_url + theme.
+Takes a client's content source (tweet, blog, announcement) and produces one
+Korean news-image spec: label badge + headline + 1-3 body bullets + date +
+source_url + theme. Generated layouts are square; an official Squid source
+creative is a source-native composition with optional in-place Korean copy.
 
 USAGE:
     from core.llm.news_card_pipeline import generate_news_card_spec
@@ -37,7 +38,6 @@ from core.llm.anthropic_compat import create_message, first_text
 from core.sources.source_image import PreparedSourceImage
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
-    crop_confirmed_lower_caption,
     probe_light_lower_caption,
     probe_source_text,
 )
@@ -51,9 +51,11 @@ SYSTEM_PROMPT = """You are the content brain for a Web3 news card system
 serving Korean audiences.
 
 Your job: Take an English source (blog post, tweet, or announcement) about a
-blockchain / Web3 product, and produce a single Korean news card — a tight
-1080x1080 square graphic with: a short label badge, a date, one headline
-sentence, and 1-3 body bullet lines.
+blockchain / Web3 product, and produce a single Korean news image. Generated
+card layouts are tight 1080x1080 square graphics with a short label badge, a
+date, one headline sentence, and 1-3 body bullet lines. Client-specific rules
+may instead declare an attached official creative to be the final source-native
+composition; in that case do not add the generated square-card hierarchy.
 
 Return STRICT JSON ONLY. No markdown fences, no prose, no commentary.
 Do not use em dashes (—) in any output text values. Use commas or periods instead."""
@@ -91,14 +93,11 @@ def _minimum_squid_font_percent(
     source_image_width: int,
     source_image_height: int,
 ) -> float:
-    """Mirror the renderer's max(14px, 2%-of-frame-width) floor."""
+    """Mirror the source-native renderer's max(14px, 2%-of-frame-width) floor."""
     if source_image_width <= 0 or source_image_height <= 0:
         return 2.0
-    frame_width = (
-        1080.0
-        if source_image_width >= source_image_height
-        else 1080.0 * source_image_width / source_image_height
-    )
+    scale = min(1.0, 1200.0 / max(source_image_width, source_image_height))
+    frame_width = source_image_width * scale
     return max(2.0, 14.0 / frame_width * 100.0)
 
 
@@ -124,7 +123,9 @@ BASE_USER_PROMPT = """# News Card Pipeline
 
 ## 1. Your Output
 
-A single JSON object describing one Korean news card (1080x1080 square).
+A single JSON object describing one Korean news image. Generated card families
+use a 1080x1080 square; an official Squid source-creative override keeps the
+source aspect ratio.
 NOT a carousel. NOT multiple slides. One card.
 
 ## 2. Card Design Philosophy
@@ -943,7 +944,6 @@ def _scout_lower_band_caption_anchor(
         dict[str, float],
         dict[str, float],
         tuple[int, tuple[float, float, float, float], str],
-        bool,
     ]
 ]:
     """Recover one lower caption only from a unique bounded-lattice consensus.
@@ -1228,7 +1228,6 @@ def _scout_lower_band_caption_anchor(
             detected_box,
             cleanup_anchor,
             scout_signature,
-            True,
         )
 
     canonical_region = {
@@ -1256,7 +1255,7 @@ def _scout_lower_band_caption_anchor(
         or canonical_signature[1] != scout_signature[1]
     ):
         return None
-    return detected_box, cleanup_anchor, canonical_signature, False
+    return detected_box, cleanup_anchor, canonical_signature
 
 
 def _carve_aggregate_bottom_visual_band(
@@ -1857,7 +1856,6 @@ or:
         required_probe_signature: Optional[
             tuple[int, tuple[float, float, float, float], str]
         ] = None
-        crop_probe_allowed = False
         attempt_number = attempt_index + 1
         attempt_prompt = audit_prompt
         if retry_context:
@@ -2011,7 +2009,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                             recovery_audited_box,
                             recovery_cleanup_anchor,
                             required_probe_signature,
-                            crop_probe_allowed,
                         ) = scout
                         print(
                             "[squid] raster-confirmed lower-band anchor found "
@@ -2033,7 +2030,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                             recovery_audited_box,
                             recovery_cleanup_anchor,
                             required_probe_signature,
-                            crop_probe_allowed,
                         ) = scout
                         print(
                             "[squid] raster-confirmed lower-band anchor found "
@@ -2119,7 +2115,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 probe = probe_source_text(source_image, audited_regions)
                 if (
                     required_probe_signature is not None
-                    and not crop_probe_allowed
                     and _source_text_probe_signature(probe)
                     != required_probe_signature
                 ):
@@ -2131,47 +2126,22 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                     f"{attempt_number}: {probe.masked_pixels} pixels"
                 )
             except SourceTextCleanupError as exc:
-                crop_probe_succeeded = False
-                if crop_probe_allowed:
-                    try:
-                        crop_confirmed_lower_caption(
-                            source_image,
-                            audited_regions,
-                        )
-                    except SourceTextCleanupError:
-                        pass
-                    except Exception:
-                        return _clear_visual_localization(
-                            result,
-                            failure_status="cleanup_failed",
-                        )
-                    else:
-                        crop_probe_succeeded = True
-                        print(
-                            "[squid] protected lower-caption crop validation "
-                            f"accepted on attempt {attempt_number}"
-                        )
-                if crop_probe_succeeded:
-                    # The orchestrator will reproduce the same deterministic
-                    # crop and remap Korean geometry before rendering.
-                    pass
-                else:
-                    terminal_failure_status = "cleanup_failed"
-                    retry_context = (
-                        "deterministic raster probing could not isolate the complete "
-                        "source lettering inside the proposed boxes"
-                    )
-                    print(
-                        "[squid] placement raster probe rejected safely on attempt "
-                        f"{attempt_number}: {exc}"
-                    )
-                    if (
-                        attempt_number < effective_max_calls
-                        and retry_protections is not None
-                    ):
-                        retained_retry_protections = retry_protections
-                        continue
-                    break
+                terminal_failure_status = "cleanup_failed"
+                retry_context = (
+                    "deterministic raster probing could not isolate the complete "
+                    "source lettering inside the proposed boxes"
+                )
+                print(
+                    "[squid] placement raster probe rejected safely on attempt "
+                    f"{attempt_number}: {exc}"
+                )
+                if (
+                    attempt_number < effective_max_calls
+                    and retry_protections is not None
+                ):
+                    retained_retry_protections = retry_protections
+                    continue
+                break
             except Exception as exc:
                 print(
                     "[squid] placement raster probe failed closed on attempt "

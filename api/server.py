@@ -274,10 +274,12 @@ class NewsCardResponse(BaseModel):
     client_id: str
     content_type: str
     spec: dict          # localized card copy + source_logo_visible placement signal
-    png_path: str       # single 1080×1080 card, not a list
+    png_path: str       # one card; Squid official remix keeps source aspect ratio
     template_style: str
     requested_template_style: str
     source_image_used: bool
+    source_image_url: str
+    source_image_sha256: str = Field(pattern=r"^(?:|[a-f0-9]{64})$")
     source_visual_path: Optional[str] = None
     figma_template: Optional[dict] = None
     manifest_path: str
@@ -642,7 +644,7 @@ async def generate_news(
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(default=""),
 ):
-    """Generate a single 1080×1080 news card for a client."""
+    """Generate one news image; official Squid remixes keep source aspect."""
     authenticated_client = _check_client_auth(x_api_key, client_id)
     if (
         (req.style_references or req.style_reference_pack_hash)
@@ -700,6 +702,8 @@ async def generate_news(
         template_style=result.template_style,
         requested_template_style=result.requested_template_style,
         source_image_used=result.source_image_used,
+        source_image_url=result.source_image_url,
+        source_image_sha256=result.source_image_sha256,
         source_visual_path=result.source_visual_path,
         figma_template=result.figma_template,
         manifest_path=result.manifest_path,
