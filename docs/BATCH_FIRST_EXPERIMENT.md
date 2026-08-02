@@ -225,11 +225,18 @@ price table, a conservative serialized-input token bound, and
 `max_output_tokens`. They do not transmit a dollar ceiling with the provider
 request and cannot guarantee the final provider invoice. Price changes,
 provider-side accounting, or an incorrect token bound can differ from this
-model. [OpenAI project monthly budgets](https://help.openai.com/en/articles/9186755-managing-projects-in-the-api-platform)
-are soft alerts: requests continue after the threshold and they are not a hard
-cap. A dedicated project key, the
-narrowest model/rate permissions, low budget alerts, and a fresh official-price
-check are independent promotion blockers. If approval requires a guaranteed
+model. At the official 2026-08-03 Batch rates, this exact Luna profile can admit
+at most 272,000 conservatively bounded input tokens; with its 2,000-token output
+cap, the model-token charge is at most `$0.0284`. Crossing the 272,000-token
+long-context boundary would exceed the internal `$0.05` gate and is rejected.
+
+[OpenAI project spend limits](https://developers.openai.com/api/docs/guides/spend-limits)
+now support both soft alerts and an enforceable monthly hard limit. The hard
+limit returns `429` after tracked spend reaches the configured amount, but
+enforcement is not instantaneous and recorded spend can slightly exceed it.
+Use a dedicated project key, the narrowest model/rate permissions, the lowest
+practical project hard limit, lower alert thresholds, and a fresh official-price
+check as independent promotion blockers. If approval requires a penny-exact
 maximum provider invoice, this canary must remain HOLD.
 
 ## Durable flow
@@ -398,8 +405,10 @@ OPENAI_API_KEY
 
 Never put `OPENAI_API_KEY` on the Official X producer, in Netlify, in browser
 code, or in a client configuration file. Use a dedicated OpenAI project key
-with narrow model/rate permissions and soft budget alerts in addition to the
-database cap; the project budget does not stop requests at its threshold.
+with narrow model/rate permissions, a project hard spend limit, and lower spend
+alerts in addition to the database cap. The hard limit blocks later requests
+with `429`, but its non-instantaneous enforcement is not a penny-exact invoice
+guarantee for this one request.
 
 Do not set only one service to `live`. The config subject must be identical on
 producer and dispatcher. The producer never receives the dispatch receipt or
@@ -491,8 +500,10 @@ The staging gate is:
    `$0.05`. This is an authorization limit, not proof that the database can cap
    the provider invoice. Re-verify official model pricing and the serialized
    worst-case token bound immediately before proceeding. Use a dedicated
-   project key, narrow model/rate permissions, and low soft-budget alerts, and
-   explicitly acknowledge that the project budget is not a hard cap.
+   project key, narrow model/rate permissions, the lowest practical project hard
+   spend limit, and lower spend alerts. Explicitly acknowledge that hard-limit
+   enforcement is not instantaneous and may slightly exceed the configured
+   amount.
    Generate the exact-job dispatch subject offline, record its two-hour receipt
    on the dispatcher only, and run `--preflight-live`. It must report the exact
    job/input/request binding plus `ready_to_submit:true` with zero external calls.
@@ -549,8 +560,8 @@ migration and its security smoke, exact
 `RAILWAY_ENVIRONMENT_NAME=staging`, and the runtime/deployed release-SHA match
 must pass in disposable staging before live submission; immediate receipt
 removal, poll-only follow-up, and the dedicated project key, restrictions, and
-soft alerts remain promotion blockers. A new config subject is a new experiment
-and requires separate explicit approval.
+project hard spend limit plus lower alerts remain promotion blockers. A new
+config subject is a new experiment and requires separate explicit approval.
 
 A broader 14-day profile is not currently accepted by live startup. Enabling
 one requires a code change, a new config subject and receipt, reviewed staging
