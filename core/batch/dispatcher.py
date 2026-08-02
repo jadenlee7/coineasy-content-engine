@@ -469,10 +469,29 @@ class BatchDispatcher:
                 ):
                     return
                 payload = self.provider.build_jsonl(items)
-                input_file_id = await self.provider.upload_input_file(
-                    payload=payload,
-                    bundle_id=bundle_id,
-                )
+                try:
+                    input_file_id = await self.provider.upload_input_file(
+                        payload=payload,
+                        bundle_id=bundle_id,
+                    )
+                except OpenAIBatchError as exc:
+                    # An upload can leave an orphan input file when its response
+                    # is lost, but it cannot create a billable Batch. Settle the
+                    # one-shot canary terminally (its consumed grant is not
+                    # restored) instead of forcing a provider-Batch lookup that
+                    # can only miss. Generic workloads may safely retry only a
+                    # provider-declared transient upload failure.
+                    summary.errors += 1
+                    summary.add("input_upload_failed", exc.code)
+                    await self._fail_submission_items(
+                        items,
+                        error_code="batch_input_upload_failed",
+                        retryable=(
+                            exc.retryable
+                            and not self.single_submission_canary
+                        ),
+                    )
+                    return
                 if not self._canary_submission_active(
                     summary,
                     detail="before_create",
@@ -543,10 +562,10 @@ class BatchDispatcher:
             summary.add("provider_create_authorization_failed", exc.code)
             return
         except OpenAIBatchError as exc:
-            # Any provider error after entering the upload/create path is
-            # ambiguous: a file or billable Batch may already exist even when
-            # the response is malformed or non-2xx. Preserve this attempt and
-            # let the expired lease use metadata recovery before doing more.
+            # A recovery lookup failure or any create response failure is
+            # ambiguous: a billable Batch may already exist even when the
+            # response is malformed or non-2xx. Preserve this attempt and let
+            # the expired lease use metadata recovery before doing more.
             summary.errors += 1
             summary.add("submit_failed", exc.code)
             return

@@ -535,11 +535,15 @@ count, structured-output result, and absence of external side effects and
 explicitly approves that specific promotion.
 
 Fresh authorized attempt-one claims submit directly. Only a stale lease from
-an ambiguous upload/create/register attempt searches provider history, bounded
+an ambiguous create/register attempt searches provider history, bounded
 by that attempt's original start time. For the first canary, a recovery lookup
 miss or attempt two stops before upload/create and cannot be unlocked by merely
 replacing the receipt. This keeps an ambiguous response from creating a second
 billable Batch; a retry belongs to a separately approved future experiment.
+An input-file upload failure is different: it may leave an orphan file but it
+cannot create a billable Batch. The one-shot canary therefore settles that job
+terminally, releases its reservation, and does not restore the consumed grant;
+another provider attempt requires a newly approved experiment.
 
 The first live profile accepts exactly 48 hours between KST midnights. Before
 the start it makes no database or provider call. At and after the end it polls
@@ -578,10 +582,10 @@ the live window continues through the pre-existing synchronous workflow.
 
 The expired dispatcher also releases only definitively unsubmitted
 `queued`/`retry_wait` jobs. An expired `claimed` row is not released because an
-upload/create response may have been commit-unknown; it remains conservatively
-held and is reported as `ambiguous_claimed_manual_recovery` for operator
-reconciliation. Keep the cron running in expired mode until active Batches and
-that alert count are both zero.
+create/register response or the terminal upload-failure settlement may have
+been commit-unknown; it remains conservatively held and is reported as
+`ambiguous_claimed_manual_recovery` for operator reconciliation. Keep the cron
+running in expired mode until active Batches and that alert count are both zero.
 
 Keep `BATCH_EXPERIMENT_MODE=dry_run` until the migration and security smoke pass
 and the applicable staging approval is recorded. No deployment or billable

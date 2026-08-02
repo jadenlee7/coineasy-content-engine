@@ -642,6 +642,78 @@ async def test_exact_canary_job_and_input_submit_once():
 
 
 @pytest.mark.asyncio
+async def test_canary_upload_failure_settles_without_lookup_or_create():
+    class UploadFailureProvider(FakeProvider):
+        async def upload_input_file(self, **kwargs):
+            self.events.append("upload")
+            self.uploads.append(kwargs)
+            from core.batch.openai_client import OpenAIBatchError
+
+            raise OpenAIBatchError(
+                "openai_batch_unavailable",
+                retryable=True,
+            )
+
+    item = _origintrail_item()
+    repo = FakeRepository(claimed=(item,))
+    provider = UploadFailureProvider()
+
+    summary = await _canary_dispatcher(repo, provider, item).submit_once()
+
+    assert summary.errors == 1
+    assert len(provider.uploads) == 1
+    assert provider.recovery_calls == []
+    assert provider.created == []
+    assert repo.authorizations == []
+    assert repo.canary_registered == []
+    assert repo.failed == [{
+        "job_id": item.job_id,
+        "provider_batch_id": None,
+        "error_code": "batch_input_upload_failed",
+        "retryable": False,
+        "available_at": None,
+    }]
+    assert summary.outcomes[-1] == {
+        "status": "input_upload_failed",
+        "detail": "openai_batch_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retryable", [True, False])
+async def test_generic_upload_failure_retries_only_transient_errors(retryable):
+    class UploadFailureProvider(FakeProvider):
+        async def upload_input_file(self, **kwargs):
+            self.events.append("upload")
+            self.uploads.append(kwargs)
+            from core.batch.openai_client import OpenAIBatchError
+
+            raise OpenAIBatchError(
+                "openai_batch_unavailable",
+                retryable=retryable,
+            )
+
+    item = _item()
+    repo = FakeRepository(claimed=(item,))
+    provider = UploadFailureProvider()
+
+    summary = await _dispatcher(repo, provider).submit_once()
+
+    assert summary.errors == 1
+    assert provider.recovery_calls == []
+    assert provider.created == []
+    assert repo.failed == [{
+        "job_id": item.job_id,
+        "provider_batch_id": None,
+        "error_code": "batch_input_upload_failed",
+        "retryable": retryable,
+        "available_at": (
+            NOW + timedelta(minutes=15) if retryable else None
+        ),
+    }]
+
+
+@pytest.mark.asyncio
 async def test_canary_create_intent_commit_unknown_never_calls_provider_create():
     item = _origintrail_item()
     repo = FakeRepository(claimed=(item,))
