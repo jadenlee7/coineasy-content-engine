@@ -237,6 +237,28 @@ test("flags unsafe Squid subtitle placement and missing remix source imagery", (
   assert.equal(check?.severity, "critical");
 });
 
+test("fails closed on every unsafe Squid copy-localization result", () => {
+  for (const visualLocalizationStatus of ["unsafe_placement", "cleanup_failed"]) {
+    const report = evaluateBrandQuality({
+      clientId: "squid",
+      contentKind: "daily_news",
+      sourceText: "Squid가 공식 크로스체인 업데이트를 공개했습니다.",
+      headline: "크로스체인 업데이트",
+      bodyLines: ["공식 원문 기준 핵심 내용"],
+      channelCopy: { telegram: "Squid 업데이트", x: "Squid 업데이트" },
+      templateStyle: "remix",
+      sourceImageUsed: true,
+      sourceLogoVisible: true,
+      visualLocalizationStatus,
+    });
+    const check = report.checks.find((item) => item.id === "visual_integrity");
+    assert.equal(check?.status, "review", visualLocalizationStatus);
+    assert.equal(check?.severity, "critical", visualLocalizationStatus);
+    assert.equal(report.status, "review", visualLocalizationStatus);
+    assert.equal(report.human_review_required, true, visualLocalizationStatus);
+  }
+});
+
 test("flags channel copy that exceeds X weighted limits", () => {
   const report = evaluateBrandQuality({
     clientId: "origintrail",

@@ -2301,6 +2301,7 @@ def _normalize_visual_localization(
     source_image_height: int = 1080,
     *,
     require_audit_metadata: bool = False,
+    approved_geometry: bool = False,
 ) -> dict:
     """Keep Squid visual translation regions bounded and renderer-safe."""
     enabled = (
@@ -2413,15 +2414,27 @@ def _normalize_visual_localization(
 
             raw_x = target_box["x"]
             raw_y = target_box["y"]
-            font_size = max(2.8, min(12.0, _number(raw.get("font_size"), 5.2)))
+            font_size = max(
+                2.8,
+                min(
+                    20.0 if approved_geometry else 12.0,
+                    _number(raw.get("font_size"), 5.2),
+                ),
+            )
             raw_width = target_box["width"]
             raw_height = target_box["height"]
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
-            scale_x = 1.0
-            translation_units = _text_width_units(text.strip())
-            if translation_units > 0:
-                estimated_width = max(0.1, translation_units * font_size * 0.60)
-                scale_x = max(0.9, min(1.35, raw_width * 0.96 / estimated_width))
+            if approved_geometry:
+                scale_x = max(
+                    0.8,
+                    min(1.4, _number(raw.get("scale_x"), 1.0)),
+                )
+            else:
+                scale_x = 1.0
+                translation_units = _text_width_units(text.strip())
+                if translation_units > 0:
+                    estimated_width = max(0.1, translation_units * font_size * 0.60)
+                    scale_x = max(0.9, min(1.35, raw_width * 0.96 / estimated_width))
 
             # Match the renderer's 2%-of-image-width minimum font and reject
             # regions that could still disappear after its deterministic shrink.
@@ -2547,6 +2560,9 @@ def generate_news_card_spec(
     mock_response: Optional[dict] = None,
     source_image: Optional[PreparedSourceImage] = None,
     cached_visual_localization: Optional[list[dict]] = None,
+    approved_visual_localization: Optional[
+        Sequence[Mapping[str, object]]
+    ] = None,
     style_references: Sequence[Mapping[str, str]] = (),
     brand_review_guidance: Mapping[str, object] | None = None,
 ) -> dict:
@@ -2569,6 +2585,11 @@ def generate_news_card_spec(
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
         result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+        if approved_visual_localization is not None:
+            result["source_text_visible"] = True
+            result["translation_regions"] = copy.deepcopy(
+                list(approved_visual_localization)
+            )
         had_detected_copy = (
             result.get("source_text_visible") is True
             and isinstance(result.get("translation_regions"), list)
@@ -2580,6 +2601,7 @@ def generate_news_card_spec(
             source_image is not None,
             source_image.width if source_image is not None else 1080,
             source_image.height if source_image is not None else 1080,
+            approved_geometry=approved_visual_localization is not None,
         )
         result = _stamp_visual_localization_status(
             result,
@@ -2655,6 +2677,16 @@ def generate_news_card_spec(
 
     result = _parse_json_response(response, "news card generation")
     result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+    if approved_visual_localization is not None:
+        # The orchestrator can supply this only after the source digest,
+        # dimensions, clean-plate digest, and reviewed regions have all been
+        # verified by the internal approval registry.  Keep the creative-model
+        # call for factual card copy, but never let sampled visual OCR replace
+        # immutable human-approved geometry.
+        result["source_text_visible"] = True
+        result["translation_regions"] = copy.deepcopy(
+            list(approved_visual_localization)
+        )
     had_detected_copy = (
         result.get("source_text_visible") is True
         and isinstance(result.get("translation_regions"), list)
@@ -2665,6 +2697,7 @@ def generate_news_card_spec(
     if (
         client_id == "squid"
         and source_image is not None
+        and approved_visual_localization is None
         and isinstance(cached_visual_localization, list)
         and cached_visual_localization
     ):
@@ -2687,7 +2720,12 @@ def generate_news_card_spec(
             cache_hit = True
             print("[squid] validated visual localization cache hit; placement audit skipped")
 
-    if client_id == "squid" and source_image is not None and not cache_hit:
+    if (
+        client_id == "squid"
+        and source_image is not None
+        and approved_visual_localization is None
+        and not cache_hit
+    ):
         # The sampled creative-writing model never owns destructive image
         # geometry. A temperature-zero, image-only pass always replaces its
         # visual OCR so a valid-but-partial first answer cannot make cold
@@ -2728,7 +2766,12 @@ def generate_news_card_spec(
         source_image is not None,
         source_image.width if source_image is not None else 1080,
         source_image.height if source_image is not None else 1080,
-        require_audit_metadata=(client_id == "squid" and source_image is not None),
+        require_audit_metadata=(
+            client_id == "squid"
+            and source_image is not None
+            and approved_visual_localization is None
+        ),
+        approved_geometry=approved_visual_localization is not None,
     )
     result = _stamp_visual_localization_status(
         result,
