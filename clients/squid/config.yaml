@@ -117,6 +117,7 @@ llm:
       generic publisher language.
     preserve_terms:
       - "Squid"
+      - "Telegram"
       - "Axelar"
       - "ITS"
       - "GMP"

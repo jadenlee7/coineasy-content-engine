@@ -348,6 +348,9 @@ _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _HANGUL = re.compile(r"[가-힣]")
 _REGION_ALIGNMENTS = {"left", "center", "right"}
 _REGION_FONT_ROLES = {"display", "body"}
+_MAX_DISCOVERY_PHRASE_WIDTH = 96.0
+_MAX_DISCOVERY_PHRASE_HEIGHT = 45.0
+_MAX_DISCOVERY_PHRASE_AREA = 4_000.0
 
 
 def _number(value: object, default: float) -> float:
@@ -377,6 +380,15 @@ def _text_width_units(text: str) -> float:
                 units += 0.45
         line_units.append(units)
     return max(line_units, default=1.0)
+
+
+def _plausible_discovery_phrase_box(box: dict[str, float]) -> bool:
+    """Reject a scene-wide OCR anchor before it can own destructive cleanup."""
+    return (
+        box["width"] <= _MAX_DISCOVERY_PHRASE_WIDTH
+        and box["height"] <= _MAX_DISCOVERY_PHRASE_HEIGHT
+        and box["width"] * box["height"] <= _MAX_DISCOVERY_PHRASE_AREA
+    )
 
 
 def _canonicalize_translation_rows(text: str, row_count: int) -> str:
@@ -448,12 +460,18 @@ def _discover_visual_copy(
 
 Protected terms that may remain Latin: {protected}
 
-Find up to four complete, meaningful source-language captions or headlines.
+Find up to four compact visual-copy blocks in reading order. Blocks from one
+headline may be grammatical fragments, but their Korean plus any intentionally
+preserved Latin row must form one complete, natural message.
 - Read only visible image pixels. Never infer copy from post context.
 - Include short meme/slang captions such as "chillin'".
 - Ignore logos, wordmarks, handles, URLs, watermarks, decorative shapes, and tiny product/UI labels.
 - Transcribe source_text exactly and translate its meaning into concise natural Korean containing Hangul.
 - Use image-relative percentage coordinates around the complete phrase, including every visible row and outline/shadow.
+- Never merge a slogan spanning more than two visible rows into one region. Split it into tight reading-order blocks of at most two adjacent rows each.
+- A prominent standalone protected platform or product name may remain untouched when it carries the visual rhythm. Do not return that untouched row as a translation region. In a stack shaped like "SUBJECT IS / ON / PLATFORM", localize the compact subject and connector blocks while preserving the protected PLATFORM row when the combined result remains natural Korean.
+- Exact Squid Telegram poster rule: when the visible rows are "SQUID IS / ON / TELEGRAM", return only `SQUID IS` -> `SQUID가` and `ON` -> `있는 곳`; leave the giant `TELEGRAM` row untouched and do not return it as a region.
+- Keep every returned region at width <= 96%, height <= 45%, and area <= 40% of the image. These are hard cleanup-safety limits, not layout suggestions.
 - text must contain at most two non-empty lines. Never add a caption panel.
 - Return found=false when no meaningful translatable copy is visibly present.
 
@@ -480,6 +498,12 @@ or:
 """
     no_text_votes = 0
     calls_used = 0
+    retry_stacked_layout = False
+    protected_identities = {
+        _normalized_source_identity(term)
+        for term in preserve_terms
+        if _normalized_source_identity(term)
+    }
     for attempt in range(2):
         try:
             timeout = _remaining_llm_timeout(
@@ -488,6 +512,19 @@ or:
                 reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS,
             )
             calls_used += 1
+            attempt_prompt = prompt
+            if retry_stacked_layout:
+                attempt_prompt = f"""Reinspect the same creative from scratch.
+
+The previous pass merged a stacked, multi-row slogan into one scene-wide phrase box. That geometry is unsafe for source cleanup.
+- Split a slogan spanning more than two visible rows into two or more reading-order regions.
+- Keep each region tight to at most two adjacent visual rows.
+- A standalone protected platform/product row may stay untouched when it carries the source's visual rhythm. A connector such as "ON" may be its own compact localization block only when the Korean blocks plus that preserved Latin row form one complete natural message.
+- The Korean texts plus any intentionally preserved Latin row must read as one complete natural message without repeating or omitting meaning.
+- Every source_text must still transcribe only the exact visible words inside that region.
+- Never return a region wider than 96%, taller than 45%, or covering more than 40% of the image area.
+
+{prompt}"""
             response = create_message(
                 api_client,
                 model=model,
@@ -506,7 +543,7 @@ or:
                                 "data": source_image.base64_data,
                             },
                         },
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": attempt_prompt},
                     ],
                 }],
             )
@@ -531,6 +568,21 @@ or:
                     raise ValueError("visual copy discovery region must be an object")
                 source_text = raw_region.get("source_text")
                 text = raw_region.get("text")
+                # A protected Latin platform/product row is part of the source
+                # rhythm, not a destructive cleanup target. Some models still
+                # echo it as an unchanged region despite the prompt; omit that
+                # exact identity deterministically while keeping the Korean
+                # blocks around it bound to their audited pixels.
+                if (
+                    isinstance(source_text, str)
+                    and isinstance(text, str)
+                    and not _HANGUL.search(text)
+                    and _normalized_source_identity(source_text)
+                    in protected_identities
+                    and _normalized_source_identity(text)
+                    == _normalized_source_identity(source_text)
+                ):
+                    continue
                 box = _strict_percent_box(
                     raw_region,
                     minimum_width=6.0,
@@ -546,6 +598,11 @@ or:
                     or box is None
                 ):
                     raise ValueError("visual copy discovery region is invalid")
+                if not _plausible_discovery_phrase_box(box):
+                    retry_stacked_layout = True
+                    raise ValueError(
+                        "visual copy discovery merged a stacked phrase into an unsafe scene-wide box"
+                    )
                 font_size = max(2.8, min(12.0, _number(raw_region.get("font_size"), 5.2)))
                 text_color = raw_region.get("text_color")
                 regions.append({
@@ -563,6 +620,8 @@ or:
                     if isinstance(text_color, str) and _HEX_COLOR.match(text_color)
                     else "#FFFFFF",
                 })
+            if not regions:
+                return _clear_visual_localization(result), calls_used
             result["source_text_visible"] = True
             result["translation_regions"] = regions
             discovery_anchors = [
@@ -1820,8 +1879,9 @@ Rules:
 - Every coordinate in protected_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates.
 - Independently transcribe each complete source phrase into verified_source_texts. After case, whitespace, and punctuation normalization it must still exactly match the supplied source_text for that source_index. Return safe=false if the pixels do not corroborate that phrase.
 - Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
-- Map one tight protected_regions box per contiguous source-language phrase or important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
+- Map one tight protected_regions box per contiguous source-language phrase. Map one or more tight boxes around the occupied pixels of each important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
 - Every other_visual box must tightly isolate one important ambiguous object. Never use an edge-to-edge top/bottom band or a scene-wide background box as other_visual; map the distinct character, product, logo, or other object instead.
+- When a non-rectangular object sits close to source lettering, approximate its occupied silhouette with multiple non-overlapping tight boxes instead of one broad enclosing rectangle full of empty pixels. Every returned box remains fully protected.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Every visible text row MUST use its own tight source_text box with the same source_index; never wrap two or more rows in one box. Same-row phrase fragments may use separate boxes. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow while staying bound to source_phrase_box. Never move it to unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
