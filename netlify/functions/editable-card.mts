@@ -82,10 +82,10 @@ export function requiredOfficialLogoVariant(
     return "dark";
   }
   if (clientId === "squid" && templateStyle === "classic") {
-    return spec.creative_family === "milestone_metric"
-      || spec.creative_family === "product_proof"
-      ? "dark"
-      : "light";
+    // Legacy classic and every generated Korea-stage family now use a pale
+    // field. The official black mark is the contrast-safe light-background
+    // asset for all of them.
+    return "light";
   }
   if (templateStyle === "signal") return "dark";
   return spec.theme === "yellow" ? "light" : "dark";

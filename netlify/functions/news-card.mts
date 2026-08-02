@@ -94,6 +94,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
 export const SQUID_CREATIVE_FAMILY_POLICY_VERSION = "squid-visual-routing@1";
+export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@3";
 const SQUID_VISUAL_REFERENCE_PACKS = {
   editorial_big_type: {
     id: "squid/editorial-big-type",
@@ -240,6 +241,11 @@ function buildNewsCardRequestHash(
   // be silently reused after the deterministic policy changes.
   if (input.clientId === "squid" && includeSquidCreativePolicy) {
     payload.creative_family_policy_version = SQUID_CREATIVE_FAMILY_POLICY_VERSION;
+    // A generated-stage geometry change must not replay a durable PNG rendered
+    // with an older template. Remix keeps its separate source-native contract.
+    if (input.templateStyle !== "remix") {
+      payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION;
+    }
   }
   // The automation-only pinned URL extends the idempotency identity when it
   // is present. Non-Squid requests retain their pre-pinning hash contract.
@@ -322,7 +328,7 @@ export function validSquidCreativeMetadata(
     : "";
   const expectedTemplateVersion = templateStyle === "remix"
     ? "squid-source-remix@1"
-    : "squid-generated-gtm@2";
+    : SQUID_GENERATED_TEMPLATE_VERSION;
   const expectedAssetPackVersion = templateStyle === "remix"
     ? "official-source-media@1"
     : "squid-local-approved@1";

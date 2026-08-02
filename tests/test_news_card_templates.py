@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader, UndefinedError
 
 from core.orchestrator import (
     NEWS_CARD_TEMPLATES,
+    _SQUID_GENERATED_TEMPLATE_VERSION,
     _align_regions_to_detected_text,
     generate_news_card,
 )
@@ -107,7 +108,22 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "main-card" not in classic_html
     assert "body-item" not in classic_html
     assert "coineasy" not in classic_html.lower()
-    assert "size > 64" in classic_html
+    assert "size > minimum" in classic_html
+    assert ".canvas--legacy" in classic_html
+    assert "#E8E6EA" in classic_html
+    assert ".canvas:not(.canvas--legacy)::before" in classic_html
+    assert "background: rgba(255, 255, 255, .97)" in classic_html
+    assert 'class="stage-word stage-word--top"' in classic_html
+    assert 'class="stage-word stage-word--bottom"' in classic_html
+
+
+def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():
+    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@3"
+
+    netlify_source = Path("netlify/functions/news-card.mts").read_text()
+    assert '"squid-generated-gtm@3"' in netlify_source
+    assert '"squid-generated-gtm@2"' not in netlify_source
+    assert "payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION" in netlify_source
 
 
 def test_squid_remix_preserves_the_full_latest_official_landscape_composition():
@@ -177,12 +193,13 @@ def test_squid_generated_html_routes_the_same_four_public_families_as_editable_s
         "brand_font_links": "",
     }
 
-    for family in (
-        "editorial_big_type",
-        "milestone_metric",
-        "status_progress",
-        "product_proof",
-    ):
+    safe_frame_words = {
+        "editorial_big_type": "UPDATE",
+        "milestone_metric": "MILESTONE",
+        "status_progress": "STATUS",
+        "product_proof": "ROUTE",
+    }
+    for family, frame_word in safe_frame_words.items():
         html = template.render(
             **common,
             creative_family=family,
@@ -193,6 +210,16 @@ def test_squid_generated_html_routes_the_same_four_public_families_as_editable_s
         assert "COINEASY / KOREA" not in html
         assert "#E6FA36" in html
         assert "#BC8EE4" in html
+        assert "#E8E6EA" in html
+        assert (
+            '<div class="stage-word stage-word--top" aria-hidden="true">SQUID</div>'
+            in html
+        )
+        assert (
+            '<div class="stage-word stage-word--bottom" aria-hidden="true">'
+            f"{frame_word}</div>"
+            in html
+        )
         if family == "product_proof":
             assert "canvas--status_progress" not in html.split("<main", 1)[1].split(">", 1)[0]
             assert 'class="form-language"' in html
@@ -404,7 +431,7 @@ async def test_squid_generic_template_requests_use_the_official_classic(
     assert result.spec["render_strategy"] == "generated_gtm"
     assert result.spec["channel_profile"] == "x_square"
     assert result.spec["creative_family_policy_version"] == "squid-visual-routing@1"
-    assert result.spec["template_version"] == "squid-generated-gtm@2"
+    assert result.spec["template_version"] == "squid-generated-gtm@3"
     assert result.spec["asset_pack_version"] == "squid-local-approved@1"
     display_font_path = get_client_config("squid").font_display_file_path
     assert result.spec["font_status"] == (
