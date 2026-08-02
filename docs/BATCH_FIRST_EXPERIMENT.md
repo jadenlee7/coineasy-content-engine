@@ -91,13 +91,28 @@ therefore an operational alert, not a reason to clear or bypass the intent.
 - Creating a disposable Supabase branch, applying a remote migration, creating
   a Railway service, or making an OpenAI API call requires explicit operator
   approval because each can create cost or mutate external state.
-- Production migration, production cron activation, and production Batch spend
-  remain **HOLD** even after a staging smoke test. Production requires a
-  separate promotion approval.
-- Do not push this migration directly to a production database with unresolved
-  local/remote migration-history drift. If the Batch ledger migration has
-  already been applied in an environment, use a new forward migration instead
-  of editing the applied migration in place.
+- Production schema-only promotion was separately approved and completed on
+  2026-08-02. Production cron activation, application deployment, and Batch
+  spend remain **HOLD** and require their own promotion decisions.
+- Do not replay or edit an applied migration when local and remote timestamps
+  differ. Production records `origintrail_batch_canary_grant` as
+  `20260802190633` and `batch_cost_overage_incidents` as `20260802190754`;
+  preserve that name/version mapping and use a new forward migration for every
+  later schema change.
+
+Production schema receipt: the runner was `dry_run`, had no OpenAI key, and had
+no active Batch jobs or provider runs before promotion. Both migrations ran in
+their own transactions with a five-second lock timeout and 110-second statement
+timeout. Postflight confirmed three forced-RLS tables, four enabled safety
+triggers, service-role-only public RPCs, no direct private-table grants, no
+invalid indexes, and zero grant/intent/incident rows, jobs, runs, reservations,
+spend, or actual cost. No application, worker, provider, relay, publication, or
+approval action was part of this schema rollout. One read-only intermediate
+catalog query used the wrong function signature and logged SQLSTATE 42883; the
+corrected signature check passed, with no migration, lock, or application error.
+A 10+ minute post-deploy watch found no later ERROR/FATAL/PANIC, lock timeout,
+deadlock, new runtime row, Batch cost, or provider activity; the Railway
+deployment and no-OpenAI-key state remained unchanged.
 
 The shared data model and bridge recognize these workloads for later expansion:
 
@@ -425,7 +440,8 @@ The staging gate is:
    staging Railway/OpenAI cost.
 2. Confirm the target is disposable staging, inspect its migration history,
    apply every migration in order, and run the Batch ledger security smoke.
-   Do not apply the Batch migration directly to production.
+   Treat this only as evidence for a separately approved production promotion;
+   never use staging success as implicit production permission.
 3. Verify that the staging workspace has an active OriginTrail client and
    official `@origin_trail` source feed. As the migration owner, inventory the
    automatically quarantined pre-cutover pending rows; the result is allowed
@@ -500,10 +516,12 @@ The staging gate is:
     clear it, settle around it, or submit again. Keep the workspace on manual
     HOLD until an operator audit and separately reviewed forward resolution.
 
-A successful staging job is evidence for a later production decision, not
-permission to deploy production. Production remains **HOLD** until an operator
-reviews the staging receipt, spend, duplicate count, structured-output result,
-and absence of external side effects and explicitly approves promotion.
+A successful staging job is evidence for a later production application or
+provider decision, not permission to deploy either. The schema-only layer has
+been promoted separately; application rollout and billable Batch execution
+remain **HOLD** until an operator reviews the staging receipt, spend, duplicate
+count, structured-output result, and absence of external side effects and
+explicitly approves that specific promotion.
 
 Fresh authorized attempt-one claims submit directly. Only a stale lease from
 an ambiguous upload/create/register attempt searches provider history, bounded
