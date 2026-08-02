@@ -2,17 +2,22 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>Squid Korea · Daily News</title>
+<title>Squid · Korea GTM</title>
 {{ brand_font_links | default('') | safe }}
+{% set requested_family = creative_family | default('legacy', true) %}
+{% set family = requested_family if requested_family in ['editorial_big_type', 'milestone_metric', 'status_progress', 'product_proof', 'worldbuilding'] else 'legacy' %}
+{% set variant = family %}
+{% if family == 'worldbuilding' %}{{ squid_worldbuilding_requires_official_source_media() }}{% endif %}
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --squid-lavender: #E6CCFC;
-    --squid-lime: #EFFF5A;
+    --squid-lavender: #BC8EE4;
+    --squid-lavender-soft: #E6CCFC;
+    --squid-lime: #E6FA36;
     --squid-ink: #000000;
     --squid-purple: #1C0F3D;
-    --squid-muted: rgba(61, 46, 92, .84);
+    --squid-paper: #F8F5FA;
     --body-font: 'Pretendard Variable', Pretendard, sans-serif;
     --display-font: {% if font_display %}'{{ font_display }}', {% endif %}var(--body-font);
   }
@@ -27,157 +32,575 @@
 
   .canvas {
     position: relative;
+    isolation: isolate;
     width: 1080px;
     height: 1080px;
     overflow: hidden;
     color: var(--squid-ink);
-    background:
-      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
-      var(--squid-lavender);
+    background: var(--squid-lavender);
   }
 
-  .bubbles {
+  .canvas::before,
+  .canvas::after {
     position: absolute;
-    right: 8px;
-    top: 8px;
-    width: 420px;
-    height: 420px;
-    object-fit: contain;
-    opacity: .46;
-  }
-
-  .squib {
-    position: absolute;
-    right: -70px;
-    top: -116px;
-    width: 720px;
-    height: 720px;
-    object-fit: contain;
-    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+    z-index: -2;
+    display: block;
+    content: '';
+    pointer-events: none;
   }
 
   .brand-logo {
     position: absolute;
-    left: 60px;
-    top: 44px;
-    width: 148px;
-    height: 59px;
+    z-index: 8;
+    left: 64px;
+    top: 52px;
+    width: 132px;
+    height: 74px;
     object-fit: contain;
     object-position: left center;
   }
 
-  .story {
+  .brand-logo--dark { display: none; }
+
+  .bubbles,
+  .squib,
+  .form-language {
     position: absolute;
-    left: 60px;
-    right: 40px;
-    top: 438px;
+    z-index: -1;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
   }
 
+  .story,
+  .support,
+  .footer { position: absolute; z-index: 4; }
+
   .eyebrow {
-    min-height: 29px;
-    color: rgba(28, 15, 61, .74);
+    color: rgba(28, 15, 61, .72);
     font-family: Inter, var(--body-font);
-    font-size: 22px;
-    font-weight: 800;
-    line-height: 1.2;
-    letter-spacing: 1.8px;
+    font-size: 21px;
+    font-weight: 850;
+    line-height: 1.25;
+    letter-spacing: 1.7px;
     text-transform: uppercase;
   }
 
   .headline {
-    width: 980px;
-    height: 204px;
-    margin-top: 22px;
     overflow: hidden;
     color: var(--squid-ink);
     font-family: var(--display-font);
-    font-size: 96px;
     font-weight: 900;
-    line-height: 1.02;
-    letter-spacing: -3.2px;
     word-break: keep-all;
     overflow-wrap: break-word;
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  .support {
-    position: absolute;
-    left: 60px;
-    right: 40px;
-    top: 770px;
   }
 
   .rule {
     width: 320px;
-    height: 8px;
-    margin-bottom: 24px;
-    border-radius: 4px;
+    height: 9px;
+    border-radius: 999px;
     background: var(--squid-lime);
   }
 
   .body-lines {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    width: 930px;
-    max-height: 96px;
     overflow: hidden;
   }
 
   .body-line {
     color: var(--squid-purple);
-    font-size: 32px;
-    font-weight: 560;
-    line-height: 1.36;
-    letter-spacing: -1px;
+    font-weight: 570;
     word-break: keep-all;
   }
 
   .footer {
-    position: absolute;
-    left: 60px;
-    right: 40px;
-    bottom: 38px;
+    left: 64px;
+    right: 64px;
+    bottom: 42px;
     display: flex;
     align-items: center;
-    gap: 34px;
+    gap: 24px;
     min-width: 0;
-  }
-
-  .coineasy {
-    flex: 0 0 auto;
-    color: rgba(28, 15, 61, .56);
-    font-family: Inter, var(--body-font);
-    font-size: 15px;
-    font-weight: 750;
-    letter-spacing: 1.2px;
   }
 
   .source {
     min-width: 0;
     overflow: hidden;
-    color: rgba(28, 15, 61, .62);
+    color: rgba(28, 15, 61, .58);
     font-family: Inter, var(--body-font);
-    font-size: 15px;
-    font-weight: 650;
-    letter-spacing: .2px;
+    font-size: 14px;
+    font-weight: 720;
+    letter-spacing: .45px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .date-credit { margin-left: auto; }
+
+  .canvas:not(.canvas--legacy) .date-credit {
+    margin-left: 4px;
+  }
+
+  /* Legacy replay: retained for stored specs that predate creative_family. */
+  .canvas--legacy {
+    background:
+      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
+      var(--squid-lavender-soft);
+  }
+
+  .canvas--legacy .bubbles {
+    right: 8px;
+    top: 8px;
+    width: 420px;
+    height: 420px;
+    opacity: .46;
+  }
+
+  .canvas--legacy .squib {
+    right: -70px;
+    top: -116px;
+    width: 720px;
+    height: 720px;
+    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+  }
+
+  .canvas--legacy .form-language { display: none; }
+
+  .canvas--legacy .story {
+    left: 60px;
+    right: 40px;
+    top: 438px;
+  }
+
+  .canvas--legacy .headline {
+    width: 980px;
+    height: 204px;
+    margin-top: 22px;
+    font-size: 96px;
+    line-height: 1.02;
+    letter-spacing: -3.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas--legacy .support {
+    left: 60px;
+    right: 40px;
+    top: 770px;
+  }
+
+  .canvas--legacy .rule { margin-bottom: 24px; }
+
+  .canvas--legacy .body-lines {
+    gap: 7px;
+    width: 930px;
+    max-height: 96px;
+  }
+
+  .canvas--legacy .body-line {
+    font-size: 32px;
+    line-height: 1.36;
+    letter-spacing: -1px;
+  }
+
+  /* Editorial: recent A NEW ERA-style big type with a bold asymmetric crop. */
+  .canvas--editorial_big_type {
+    background:
+      radial-gradient(circle at 24% 92%, rgba(255, 255, 255, .72) 0, rgba(255, 255, 255, .16) 28%, rgba(255, 255, 255, 0) 52%),
+      var(--squid-lavender);
+  }
+
+  .canvas--editorial_big_type::before {
+    right: -250px;
+    top: -268px;
+    width: 720px;
+    height: 720px;
+    border: 104px solid rgba(255, 255, 255, .26);
+    border-radius: 50%;
+  }
+
+  .canvas--editorial_big_type::after {
+    left: -140px;
+    bottom: -170px;
+    width: 760px;
+    height: 270px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .28);
+    filter: blur(28px);
+  }
+
+  .canvas--editorial_big_type .bubbles {
+    right: -72px;
+    top: -54px;
+    width: 400px;
+    height: 400px;
+    opacity: .68;
+  }
+
+  .canvas--editorial_big_type .squib {
+    right: -136px;
+    bottom: -130px;
+    width: 578px;
+    height: 578px;
+    filter: drop-shadow(0 26px 32px rgba(84, 57, 118, .15));
+    transform: rotate(-8deg);
+  }
+
+  .canvas--editorial_big_type .form-language { display: none; }
+
+  .canvas--editorial_big_type .story {
+    left: 64px;
+    right: 62px;
+    top: 198px;
+  }
+
+  .canvas--editorial_big_type .headline {
+    width: 930px;
+    height: 372px;
+    margin-top: 26px;
+    font-size: 118px;
+    line-height: .96;
+    letter-spacing: -5px;
+    -webkit-line-clamp: 3;
+  }
+
+  .canvas--editorial_big_type .support {
+    left: 64px;
+    right: 392px;
+    top: 672px;
+  }
+
+  .canvas--editorial_big_type .rule { margin-bottom: 25px; }
+
+  .canvas--editorial_big_type .body-lines {
+    gap: 8px;
+    width: 618px;
+    max-height: 112px;
+  }
+
+  .canvas--editorial_big_type .body-line {
+    font-size: 29px;
+    line-height: 1.42;
+    letter-spacing: -.85px;
+  }
+
+  /* Milestone: high-contrast metric treatment inspired by Squid's 5m post. */
+  .canvas--milestone_metric {
+    color: #FFFFFF;
+    background: var(--squid-purple);
+  }
+
+  .canvas--milestone_metric::before {
+    left: -130px;
+    top: 245px;
+    width: 980px;
+    height: 980px;
+    border: 165px solid rgba(188, 142, 228, .48);
+    border-radius: 50%;
+    transform: rotate(-16deg);
+  }
+
+  .canvas--milestone_metric::after {
+    right: -190px;
+    top: -230px;
+    width: 650px;
+    height: 650px;
+    border-radius: 50%;
+    background: rgba(230, 204, 252, .16);
+    filter: blur(8px);
+  }
+
+  .canvas--milestone_metric .brand-logo--light { display: none; }
+  .canvas--milestone_metric .brand-logo--dark { display: block; }
+
+  .canvas--milestone_metric .bubbles {
+    right: -82px;
+    top: -52px;
+    width: 444px;
+    height: 444px;
+    opacity: .92;
+  }
+
+  .canvas--milestone_metric .squib {
+    right: -88px;
+    bottom: -108px;
+    width: 520px;
+    height: 520px;
+    filter: drop-shadow(0 18px 42px rgba(230, 250, 54, .22));
+    transform: rotate(-12deg);
+  }
+
+  .canvas--milestone_metric .form-language { display: none; }
+
+  .canvas--milestone_metric .story {
+    left: 64px;
+    right: 64px;
+    top: 210px;
+  }
+
+  .canvas--milestone_metric .eyebrow { color: rgba(230, 250, 54, .82); }
+
+  .metric {
+    overflow: hidden;
+    color: var(--squid-lime);
+    font-family: var(--display-font);
+    font-size: 270px;
+    font-weight: 900;
+    line-height: .78;
+    letter-spacing: -11px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .canvas--milestone_metric .headline {
+    width: 940px;
+    height: 386px;
+    margin-top: 22px;
+    color: var(--squid-lime);
+    font-size: 142px;
+    line-height: .91;
+    letter-spacing: -6.5px;
+    -webkit-line-clamp: 3;
+  }
+
+  .canvas--milestone_metric.has-metric .story { top: 183px; }
+
+  .canvas--milestone_metric.has-metric .headline {
+    width: 670px;
+    height: 170px;
+    margin-top: 38px;
+    color: #FFFFFF;
+    font-size: 68px;
+    line-height: 1.02;
+    letter-spacing: -2.6px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas--milestone_metric .support {
+    left: 64px;
+    right: 390px;
+    top: 687px;
+  }
+
+  .canvas--milestone_metric .rule {
+    margin-bottom: 24px;
+    background: var(--squid-lavender);
+  }
+
+  .canvas--milestone_metric .body-lines {
+    gap: 8px;
+    width: 620px;
+    max-height: 111px;
+  }
+
+  .canvas--milestone_metric .body-line {
+    color: rgba(255, 255, 255, .9);
+    font-size: 28px;
+    line-height: 1.42;
+    letter-spacing: -.8px;
+  }
+
+  .canvas--milestone_metric .source { color: rgba(255, 255, 255, .58); }
+
+  /* Status: an editorial information panel; deliberately not product UI. */
+  .canvas--status_progress {
+    background: var(--squid-paper);
+  }
+
+  .canvas--status_progress::before {
+    right: 0;
+    top: 0;
+    width: 344px;
+    height: 1080px;
+    background: var(--squid-lime);
+  }
+
+  .canvas--status_progress::after {
+    right: -270px;
+    bottom: -290px;
+    width: 710px;
+    height: 710px;
+    border: 108px solid var(--squid-lavender);
+    border-radius: 50%;
+    opacity: .9;
+  }
+
+  .canvas--status_progress .bubbles {
+    right: -76px;
+    top: 18px;
+    width: 424px;
+    height: 424px;
+    opacity: .88;
+  }
+
+  .canvas--status_progress .squib {
+    right: -90px;
+    bottom: -94px;
+    width: 470px;
+    height: 470px;
+    filter: drop-shadow(0 22px 30px rgba(84, 57, 118, .15));
+    transform: rotate(-9deg);
+  }
+
+  .canvas--status_progress .form-language {
+    right: 54px;
+    top: 308px;
+    width: 282px;
+    height: 282px;
+    opacity: .88;
+    transform: rotate(20deg);
+  }
+
+  .canvas--status_progress .story {
+    left: 64px;
+    right: 406px;
+    top: 210px;
+  }
+
+  .canvas--status_progress .headline {
+    width: 610px;
+    height: 330px;
+    margin-top: 28px;
+    font-size: 101px;
+    line-height: .98;
+    letter-spacing: -4px;
+    -webkit-line-clamp: 3;
+  }
+
+  .canvas--status_progress .support {
+    left: 64px;
+    right: 408px;
+    top: 670px;
+  }
+
+  .canvas--status_progress .rule {
+    margin-bottom: 26px;
+    background: var(--squid-lavender);
+  }
+
+  .canvas--status_progress .body-lines {
+    gap: 8px;
+    width: 604px;
+    max-height: 124px;
+  }
+
+  .canvas--status_progress .body-line {
+    font-size: 29px;
+    line-height: 1.42;
+    letter-spacing: -.8px;
+  }
+
+  /* Product proof: official form language, never a fabricated app screen. */
+  .canvas--product_proof {
+    color: #FFFFFF;
+    background: var(--squid-purple);
+  }
+
+  .canvas--product_proof::before {
+    right: -250px;
+    top: 190px;
+    width: 760px;
+    height: 760px;
+    border-radius: 50%;
+    background: var(--squid-lavender);
+  }
+
+  .canvas--product_proof::after {
+    left: 64px;
+    top: 692px;
+    width: 574px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--squid-lime);
+    transform: rotate(-3deg);
+    transform-origin: left center;
+  }
+
+  .canvas--product_proof .brand-logo--light { display: none; }
+  .canvas--product_proof .brand-logo--dark { display: block; }
+
+  .canvas--product_proof .bubbles {
+    right: -44px;
+    top: -42px;
+    width: 390px;
+    height: 390px;
+    opacity: .55;
+  }
+
+  .canvas--product_proof .form-language {
+    right: -80px;
+    top: 216px;
+    width: 610px;
+    height: 610px;
+    opacity: .78;
+    transform: rotate(12deg);
+  }
+
+  .canvas--product_proof .squib {
+    right: -56px;
+    bottom: -92px;
+    width: 430px;
+    height: 430px;
+    filter: drop-shadow(0 24px 34px rgba(0, 0, 0, .22));
+    transform: rotate(-8deg);
+  }
+
+  .canvas--product_proof .story {
+    left: 64px;
+    right: 414px;
+    top: 210px;
+  }
+
+  .canvas--product_proof .eyebrow { color: var(--squid-lime); }
+
+  .canvas--product_proof .headline {
+    width: 626px;
+    height: 330px;
+    margin-top: 28px;
+    color: #FFFFFF;
+    font-size: 98px;
+    line-height: .98;
+    letter-spacing: -4px;
+    -webkit-line-clamp: 3;
+  }
+
+  .canvas--product_proof .support {
+    left: 64px;
+    right: 414px;
+    top: 744px;
+  }
+
+  .canvas--product_proof .rule { display: none; }
+
+  .canvas--product_proof .body-lines {
+    gap: 8px;
+    width: 608px;
+    max-height: 124px;
+  }
+
+  .canvas--product_proof .body-line {
+    color: rgba(255, 255, 255, .9);
+    font-size: 28px;
+    line-height: 1.42;
+    letter-spacing: -.8px;
+  }
+
+  .canvas--product_proof .source { color: rgba(255, 255, 255, .6); }
 </style>
 </head>
 <body>
-<main class="canvas" data-client="squid">
+<main class="canvas canvas--{{ variant }}{% if visual_metric | default('', true) and variant == 'milestone_metric' %} has-metric{% endif %}" data-client="squid" data-creative-family="{{ family }}" data-render-variant="{{ variant }}">
   <img src="{{ squid_bubbles_path }}" class="bubbles" alt=""/>
   <img src="{{ squid_squib_path }}" class="squib" alt=""/>
-  <img src="{{ logo_light_path }}" class="brand-logo" alt="Squid"/>
+  <img src="{{ squid_form_language_path }}" class="form-language" alt=""/>
+  <img src="{{ logo_light_path }}" class="brand-logo brand-logo--light" alt="Squid"/>
+  <img src="{{ logo_dark_path }}" class="brand-logo brand-logo--dark" alt="Squid"/>
 
   <section class="story">
     {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if visual_metric | default('', true) and variant == 'milestone_metric' %}<div class="metric">{{ visual_metric }}</div>{% endif %}
     {% if headline %}<h1 class="headline">{{ headline | safe }}</h1>{% endif %}
   </section>
 
@@ -191,26 +614,43 @@
   </section>
 
   <footer class="footer">
-    <div class="coineasy">COINEASY / KOREA</div>
-    <div class="source" data-source-url>{{ source_url | default('') }}</div>
-    <div class="source date-credit">{{ date | default('') }}</div>
+    {% if source_url %}<div class="source" data-source-url>{{ source_url }}</div>{% endif %}
+    {% if date %}<div class="source date-credit">{{ date }}</div>{% endif %}
   </footer>
 </main>
 <script>
+  const canvas = document.querySelector('.canvas');
+  const variant = canvas?.dataset.renderVariant || 'legacy';
   const headline = document.querySelector('.headline');
   if (headline) {
-    let size = 96;
-    while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > 64) {
+    const initialSizes = {
+      editorial_big_type: 118,
+      milestone_metric: 142,
+      status_progress: 101,
+      product_proof: 98,
+      legacy: 96,
+    };
+    const minimumSizes = {
+      editorial_big_type: 64,
+      milestone_metric: 70,
+      status_progress: 61,
+      product_proof: 61,
+      legacy: 64,
+    };
+    let size = initialSizes[variant] || 96;
+    const minimum = minimumSizes[variant] || 64;
+    // Legacy replay kept shrinking while size > 64; family minima may be stricter.
+    while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > minimum) {
       size -= 2;
       headline.style.fontSize = `${size}px`;
-      headline.style.letterSpacing = `${Math.max(-3.2, -size * .034)}px`;
+      headline.style.letterSpacing = `${Math.max(-6.5, -size * .042)}px`;
     }
   }
 
   const body = document.querySelector('.body-lines');
   if (body) {
-    let size = 32;
-    while (body.scrollHeight > body.clientHeight && size > 23) {
+    let size = ['milestone_metric', 'product_proof'].includes(variant) ? 28 : 29;
+    while (body.scrollHeight > body.clientHeight && size > 22) {
       size -= 1;
       for (const line of body.children) line.style.fontSize = `${size}px`;
     }

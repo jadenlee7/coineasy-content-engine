@@ -32,6 +32,15 @@ NEWS_CARD_16x9 = (1200, 675)         # 16:9 for X, Telegram (reserved, unused)
 NEWS_CARD_1x1 = (1080, 1080)         # square — primary news card viewport
 
 
+class TranslationLayoutError(RuntimeError):
+    """The browser rejected an in-place translated-text layout.
+
+    This is distinct from a Chromium/runtime failure: callers can safely retry
+    with the untouched source creative instead of publishing a cleaned raster
+    whose replacement text was not rendered.
+    """
+
+
 async def render_png(
     client_id: str,
     template_path: str,
@@ -95,6 +104,27 @@ async def render_png(
                 else:
                     await page.set_content(html, wait_until="networkidle")
                 await page.wait_for_timeout(wait_ms)
+                expects_translation_layout = (
+                    client_id == "squid"
+                    and slots.get("source_text_visible") is True
+                    and isinstance(slots.get("translation_regions"), list)
+                    and bool(slots["translation_regions"])
+                )
+                if expects_translation_layout:
+                    layout_status = await page.evaluate(
+                        "window.__evaluateSquidTranslationLayout "
+                        "? window.__evaluateSquidTranslationLayout() : null"
+                    )
+                    expected_regions = len(slots["translation_regions"])
+                    if (
+                        not isinstance(layout_status, dict)
+                        or layout_status.get("safe") is not True
+                        or layout_status.get("expected") != expected_regions
+                        or layout_status.get("rendered") != expected_regions
+                    ):
+                        raise TranslationLayoutError(
+                            "Squid Korean replacement text did not pass browser layout"
+                        )
                 await page.screenshot(
                     path=str(output_path),
                     clip={"x": 0, "y": 0, "width": width, "height": height},

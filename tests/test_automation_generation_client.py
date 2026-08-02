@@ -16,6 +16,8 @@ REQUEST_ID = "11111111-1111-4111-8111-111111111111"
 VERSION_ID = "22222222-2222-4222-8222-222222222222"
 ASSET_ID = "33333333-3333-4333-8333-333333333333"
 AUTOMATION_TOKEN = "automation-token-that-is-longer-than-32-bytes"
+SOURCE_IMAGE_URL = "https://pbs.twimg.com/media/source.jpg?name=orig"
+SOURCE_IMAGE_SHA256 = "a" * 64
 
 
 @pytest.mark.asyncio
@@ -70,6 +72,12 @@ async def test_squid_remix_forwards_only_the_official_x_image():
             "asset_ids": [ASSET_ID],
             "storage_backend": "supabase",
             "reused": False,
+            "requested_template_style": "remix",
+            "template_style": "remix",
+            "source_image_used": True,
+            "source_image_url": SOURCE_IMAGE_URL,
+            "source_media_status": "present",
+            "source_image_sha256": SOURCE_IMAGE_SHA256,
         })
 
     client = StudioGenerationClient(
@@ -88,7 +96,42 @@ async def test_squid_remix_forwards_only_the_official_x_image():
     )
 
     assert captured["template_style"] == "remix"
-    assert captured["source_image_url"] == "https://pbs.twimg.com/media/source.jpg"
+    assert captured["source_image_url"] == SOURCE_IMAGE_URL
+
+
+@pytest.mark.asyncio
+async def test_squid_remix_rejects_a_result_without_the_pinned_source_proof():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+            "requested_template_style": "remix",
+            "template_style": "remix",
+            "source_image_used": False,
+            "source_image_url": SOURCE_IMAGE_URL,
+            "source_media_status": "present",
+            "source_image_sha256": SOURCE_IMAGE_SHA256,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(GenerationRequestError, match="studio_generation_invalid_response") as error:
+        await client.generate(
+            client_id="squid",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="Squid official product update",
+            source_url="https://x.com/SquidRouter/status/123",
+            source_image_url=SOURCE_IMAGE_URL,
+            template_style="remix",
+        )
+    assert error.value.retryable is True
 
 
 @pytest.mark.asyncio

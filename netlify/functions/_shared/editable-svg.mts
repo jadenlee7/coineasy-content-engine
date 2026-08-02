@@ -1,5 +1,11 @@
 export type EditableClientId = "yellow" | "origintrail" | "squid" | "babylon";
 export type EditableTemplateStyle = "remix" | "classic" | "editorial" | "signal";
+export type SquidCreativeFamily =
+  | "editorial_big_type"
+  | "milestone_metric"
+  | "status_progress"
+  | "product_proof"
+  | "worldbuilding";
 
 export function effectiveEditableTemplateStyle(
   clientId: EditableClientId,
@@ -32,6 +38,13 @@ type EditableSpec = {
   source_crop_bottom?: unknown;
   source_image_width?: unknown;
   source_image_height?: unknown;
+  source_background_color?: unknown;
+  output_width?: unknown;
+  output_height?: unknown;
+  output_policy?: unknown;
+  render_strategy?: unknown;
+  creative_family?: unknown;
+  visual_metric?: unknown;
 };
 
 type NormalizedTranslationRegion = {
@@ -65,6 +78,13 @@ type NormalizedSpec = {
   translationRegions: NormalizedTranslationRegion[];
   sourceImageWidth: number;
   sourceImageHeight: number;
+  sourceBackgroundColor: string;
+  outputWidth: number;
+  outputHeight: number;
+  outputPolicy: "official_source_native_v1" | "legacy_square";
+  renderStrategy: "source_remix" | "generated_gtm" | "";
+  creativeFamily: string;
+  visualMetric: string;
 };
 
 type Brand = {
@@ -120,6 +140,16 @@ const BRANDS: Record<EditableClientId, Brand> = {
     displayFont: "Inter",
   },
 };
+
+const SQUID_GENERATED_TOKENS = {
+  lime: "#E6FA36",
+  lavender: "#BC8EE4",
+  lavenderLight: "#E6CCFC",
+  deepPurple: "#1C0F3D",
+  paper: "#F8F5FA",
+  black: "#000000",
+  white: "#FFFFFF",
+} as const;
 
 export function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -239,6 +269,18 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     }
   }
   if (invalidTranslationRegions) translationRegions.length = 0;
+  const sourceImageWidth = boundedNumber(spec.source_image_width, 1080, 1, 10_000);
+  const sourceImageHeight = boundedNumber(spec.source_image_height, 1080, 1, 10_000);
+  const submittedOutputWidth = Math.round(boundedNumber(spec.output_width, 1080, 1, 1_800));
+  const submittedOutputHeight = Math.round(boundedNumber(spec.output_height, 1080, 1, 1_800));
+  const nativeScale = Math.min(1, 1_200 / Math.max(sourceImageWidth, sourceImageHeight));
+  const sourceNativeOutput = spec.output_policy === "official_source_native_v1"
+    && Number.isSafeInteger(sourceImageWidth)
+    && Number.isSafeInteger(sourceImageHeight)
+    && sourceImageWidth <= 1_800
+    && sourceImageHeight <= 1_800
+    && submittedOutputWidth === Math.max(1, Math.round(sourceImageWidth * nativeScale))
+    && submittedOutputHeight === Math.max(1, Math.round(sourceImageHeight * nativeScale));
   return {
     label: cleanText(spec.label, 40) || "업데이트",
     headline: cleanText(spec.headline, 280) || "새로운 소식을 전합니다",
@@ -249,8 +291,19 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     sourceLogoVisible: spec.source_logo_visible === true,
     sourceTextVisible: translationRegions.length > 0,
     translationRegions,
-    sourceImageWidth: boundedNumber(spec.source_image_width, 1080, 1, 10_000),
-    sourceImageHeight: boundedNumber(spec.source_image_height, 1080, 1, 10_000),
+    sourceImageWidth,
+    sourceImageHeight,
+    sourceBackgroundColor: normalizedColor(spec.source_background_color, "#1A0E2E"),
+    outputWidth: sourceNativeOutput ? submittedOutputWidth : 1080,
+    outputHeight: sourceNativeOutput ? submittedOutputHeight : 1080,
+    outputPolicy: sourceNativeOutput
+      ? "official_source_native_v1"
+      : "legacy_square",
+    renderStrategy: spec.render_strategy === "source_remix" || spec.render_strategy === "generated_gtm"
+      ? spec.render_strategy
+      : "",
+    creativeFamily: cleanText(spec.creative_family, 40),
+    visualMetric: cleanText(spec.visual_metric, 32),
   };
 }
 
@@ -549,6 +602,280 @@ function squidClassicSvg(
   </g>`;
 }
 
+type SquidGeneratedBaseAssets = Required<Pick<
+  EditableCardAssets,
+  "squidSquib" | "squidBubbles"
+>>;
+
+type SquidGeneratedAssets = SquidGeneratedBaseAssets & (
+  | {
+    family: "editorial_big_type";
+    logo: string;
+    logoVariant: "light";
+  }
+  | {
+    family: "milestone_metric";
+    logo: string;
+    logoVariant: "dark";
+  }
+  | {
+    family: "status_progress";
+    logo: string;
+    logoVariant: "light";
+    squidFormLanguage: string;
+  }
+  | {
+    family: "product_proof";
+    logo: string;
+    logoVariant: "dark";
+    squidFormLanguage: string;
+  }
+);
+
+function requiredSquidGeneratedAssets(
+  assets: EditableCardAssets,
+  family: Exclude<SquidCreativeFamily, "worldbuilding">,
+): SquidGeneratedAssets {
+  if (!assets.squidSquib || !assets.squidBubbles) {
+    throw new Error(`official_squid_generated_assets_required:${family}`);
+  }
+  if (family === "editorial_big_type") {
+    if (!assets.logoLight) throw new Error(`official_squid_generated_assets_required:${family}`);
+    return {
+      family,
+      logo: assets.logoLight,
+      logoVariant: "light",
+      squidSquib: assets.squidSquib,
+      squidBubbles: assets.squidBubbles,
+    };
+  }
+  if (family === "milestone_metric") {
+    if (!assets.logoDark) throw new Error(`official_squid_generated_assets_required:${family}`);
+    return {
+      family,
+      logo: assets.logoDark,
+      logoVariant: "dark",
+      squidSquib: assets.squidSquib,
+      squidBubbles: assets.squidBubbles,
+    };
+  }
+  if (family === "status_progress") {
+    if (!assets.logoLight || !assets.squidFormLanguage) {
+      throw new Error(`official_squid_generated_assets_required:${family}`);
+    }
+    return {
+      family,
+      logo: assets.logoLight,
+      logoVariant: "light",
+      squidFormLanguage: assets.squidFormLanguage,
+      squidSquib: assets.squidSquib,
+      squidBubbles: assets.squidBubbles,
+    };
+  }
+  if (!assets.logoDark || !assets.squidFormLanguage) {
+    throw new Error(`official_squid_generated_assets_required:${family}`);
+  }
+  return {
+    family,
+    logo: assets.logoDark,
+    logoVariant: "dark",
+    squidFormLanguage: assets.squidFormLanguage,
+    squidSquib: assets.squidSquib,
+    squidBubbles: assets.squidBubbles,
+  };
+}
+
+function squidGeneratedFooter(spec: NormalizedSpec, color: string): string {
+  return `<g id="Public-Source-Metadata">
+    <text id="Source-URL" x="64" y="1038" fill="${color}" fill-opacity=".62" font-family="Inter, Pretendard, sans-serif" font-size="14" font-weight="720" letter-spacing=".45">${escapeXml(compactSourceLabel(spec.sourceUrl))}</text>
+    <text id="Date" x="350" y="1038" fill="${color}" fill-opacity=".56" font-family="Inter, Pretendard, sans-serif" font-size="14" font-weight="720" letter-spacing=".45">${escapeXml(spec.date)}</text>
+  </g>`;
+}
+
+function squidGeneratedBody(
+  spec: NormalizedSpec,
+  x: number,
+  y: number,
+  color: string,
+  maxUnits: number,
+  fontSize: number,
+  lineHeight: number,
+): string {
+  const lines = spec.bodyLines.slice(0, 2).flatMap((line) => wrapSvgText(line, maxUnits, 1));
+  return textLayers(
+    "Support",
+    lines,
+    x,
+    y,
+    lineHeight,
+    `fill="${color}" font-family="Pretendard, sans-serif" font-size="${fontSize}" font-weight="570" letter-spacing="-.8"`,
+  );
+}
+
+function squidEditorialBigTypeSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: Extract<SquidGeneratedAssets, { family: "editorial_big_type" }>,
+): string {
+  const headline = fitSvgText(spec.headline, {
+    // fitSvgText's conservative Hangul width model needs a family-specific
+    // calibration to match the browser's 930px Bagoss/Pretendard text box.
+    maxWidth: 1080,
+    maxLines: 3,
+    maxFontSize: 118,
+    minFontSize: 64,
+    lineHeightRatio: 0.96,
+  });
+  return `<defs>
+    <radialGradient id="Editorial-Lavender-Haze" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(245 935) rotate(-82) scale(470 540)">
+      <stop stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity=".72"/>
+      <stop offset="1" stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="Editorial-Bottom-Haze-Blur" x="-20%" y="-80%" width="140%" height="260%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+  </defs>
+  <g id="Squid-Generated-Editorial-Big-Type" data-creative-family="editorial_big_type">
+    <rect id="Canvas-Background" width="1080" height="1080" fill="${SQUID_GENERATED_TOKENS.lavender}"/>
+    <rect id="Lavender-Haze" width="1080" height="1080" fill="url(#Editorial-Lavender-Haze)"/>
+    <circle id="Editorial-Asymmetric-Ring" cx="970" cy="92" r="308" fill="none" stroke="${SQUID_GENERATED_TOKENS.white}" stroke-opacity=".26" stroke-width="104"/>
+    <ellipse id="Editorial-Bottom-Haze" cx="240" cy="1115" rx="380" ry="135" fill="${SQUID_GENERATED_TOKENS.white}" fill-opacity=".28" filter="url(#Editorial-Bottom-Haze-Blur)"/>
+    <image id="Squid-Official-Bubbles" x="752" y="-54" width="400" height="400" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".68"/>
+    <image id="Squid-Official-SQUIB" x="638" y="632" width="578" height="578" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" transform="rotate(-8 927 921)"/>
+    <image id="Brand-Logo" data-logo-variant="${assets.logoVariant}" x="64" y="52" width="132" height="74" href="${escapeXml(assets.logo)}" preserveAspectRatio="xMinYMid meet"/>
+    <text id="Eyebrow" x="64" y="219" fill="${SQUID_GENERATED_TOKENS.deepPurple}" fill-opacity=".72" font-family="Inter, Pretendard, sans-serif" font-size="21" font-weight="850" letter-spacing="1.7">${escapeXml(spec.label.toUpperCase())}</text>
+    <g id="Headline">${textLayers("Headline", headline.lines, 64, 342, headline.lineHeight, `fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-5"`)}</g>
+    <rect id="Lime-Divider" x="64" y="672" width="320" height="9" rx="4.5" fill="${SQUID_GENERATED_TOKENS.lime}"/>
+    <g id="Support-Copy">${squidGeneratedBody(spec, 64, 731, SQUID_GENERATED_TOKENS.deepPurple, 39, 29, 41)}</g>
+    ${squidGeneratedFooter(spec, SQUID_GENERATED_TOKENS.deepPurple)}
+  </g>`;
+}
+
+function squidMilestoneMetricSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: Extract<SquidGeneratedAssets, { family: "milestone_metric" }>,
+): string {
+  const hasMetric = Boolean(spec.visualMetric);
+  const metric = spec.visualMetric || spec.headline;
+  const context = spec.visualMetric
+    ? fitSvgText(spec.headline, {
+      // Equivalent to the browser template's 670px condensed display box.
+      maxWidth: 770,
+      maxLines: 2,
+      maxFontSize: 68,
+      minFontSize: 68,
+      lineHeightRatio: 1.02,
+    })
+    : fitSvgText(spec.headline, {
+      maxWidth: 940,
+      maxLines: 3,
+      maxFontSize: 142,
+      minFontSize: 70,
+      lineHeightRatio: 0.91,
+    });
+  return `<defs>
+    <filter id="Milestone-Glow-Blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+  <g id="Squid-Generated-Milestone-Metric" data-creative-family="milestone_metric">
+    <rect id="Canvas-Background" width="1080" height="1080" fill="${SQUID_GENERATED_TOKENS.deepPurple}"/>
+    <circle id="Lavender-Orbit" cx="360" cy="735" r="407.5" fill="none" stroke="${SQUID_GENERATED_TOKENS.lavender}" stroke-opacity=".48" stroke-width="165"/>
+    <circle id="Milestone-Glow" cx="945" cy="95" r="325" fill="${SQUID_GENERATED_TOKENS.lavenderLight}" fill-opacity=".16" filter="url(#Milestone-Glow-Blur)"/>
+    <image id="Squid-Official-Bubbles" x="718" y="-52" width="444" height="444" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".92"/>
+    <image id="Squid-Official-SQUIB" x="648" y="668" width="520" height="520" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" transform="rotate(-12 908 928)"/>
+    <image id="Brand-Logo" data-logo-variant="${assets.logoVariant}" x="64" y="52" width="132" height="74" href="${escapeXml(assets.logo)}" preserveAspectRatio="xMinYMid meet"/>
+    <text id="Eyebrow" x="64" y="${hasMetric ? 204 : 231}" fill="${SQUID_GENERATED_TOKENS.lime}" fill-opacity=".82" font-family="Inter, Pretendard, sans-serif" font-size="21" font-weight="850" letter-spacing="1.7">${escapeXml(spec.label.toUpperCase())}</text>
+    ${hasMetric ? `<g id="Metric">${textLayers("Metric", [metric], 64, 408, 211, `fill="${SQUID_GENERATED_TOKENS.lime}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="270" font-weight="900" letter-spacing="-11"`)}</g>` : ""}
+    <g id="Headline">${textLayers("Headline", context.lines, 64, hasMetric ? 514 : 371, context.lineHeight, `fill="${hasMetric ? SQUID_GENERATED_TOKENS.white : SQUID_GENERATED_TOKENS.lime}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${context.fontSize}" font-weight="900" letter-spacing="${hasMetric ? -2.6 : -6.5}"`)}</g>
+    <rect id="Lavender-Divider" x="64" y="687" width="320" height="9" rx="4.5" fill="${SQUID_GENERATED_TOKENS.lavender}"/>
+    <g id="Support-Copy">${squidGeneratedBody(spec, 64, 750, SQUID_GENERATED_TOKENS.white, 39, 28, 40)}</g>
+    ${squidGeneratedFooter(spec, SQUID_GENERATED_TOKENS.white)}
+  </g>`;
+}
+
+function squidStatusProgressSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: Extract<SquidGeneratedAssets, { family: "status_progress" }>,
+): string {
+  const headline = fitSvgText(spec.headline, {
+    // Equivalent to the browser template's 610px condensed display box.
+    maxWidth: 680,
+    maxLines: 3,
+    maxFontSize: 101,
+    minFontSize: 61,
+    lineHeightRatio: 0.98,
+  });
+  return `<g id="Squid-Generated-Status-Progress" data-creative-family="status_progress">
+    <rect id="Canvas-Background" width="1080" height="1080" fill="${SQUID_GENERATED_TOKENS.paper}"/>
+    <rect id="Lime-Side-Field" x="736" y="0" width="344" height="1080" fill="${SQUID_GENERATED_TOKENS.lime}"/>
+    <circle id="Lavender-Field" cx="995" cy="1015" r="301" fill="none" stroke="${SQUID_GENERATED_TOKENS.lavender}" stroke-opacity=".9" stroke-width="108"/>
+    <image id="Squid-Official-Bubbles" x="732" y="18" width="424" height="424" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".88"/>
+    <image id="Squid-Official-SQUIB" x="700" y="704" width="470" height="470" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" transform="rotate(-9 935 939)"/>
+    <image id="Squid-Official-Form-Language" x="744" y="308" width="282" height="282" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".88" transform="rotate(20 885 449)"/>
+    <image id="Brand-Logo" data-logo-variant="${assets.logoVariant}" x="64" y="52" width="132" height="74" href="${escapeXml(assets.logo)}" preserveAspectRatio="xMinYMid meet"/>
+    <text id="Eyebrow" x="64" y="231" fill="${SQUID_GENERATED_TOKENS.deepPurple}" fill-opacity=".72" font-family="Inter, Pretendard, sans-serif" font-size="21" font-weight="850" letter-spacing="1.7">${escapeXml(spec.label.toUpperCase())}</text>
+    <g id="Headline">${textLayers("Headline", headline.lines, 64, 344, headline.lineHeight, `fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-4"`)}</g>
+    <rect id="Lavender-Divider" x="64" y="670" width="320" height="9" rx="4.5" fill="${SQUID_GENERATED_TOKENS.lavender}"/>
+    <g id="Support-Copy">${squidGeneratedBody(spec, 64, 729, SQUID_GENERATED_TOKENS.deepPurple, 38, 29, 41)}</g>
+    ${squidGeneratedFooter(spec, SQUID_GENERATED_TOKENS.deepPurple)}
+  </g>`;
+}
+
+function squidProductProofSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: Extract<SquidGeneratedAssets, { family: "product_proof" }>,
+): string {
+  const headline = fitSvgText(spec.headline, {
+    // Equivalent to the browser template's 626px condensed display box.
+    maxWidth: 825,
+    maxLines: 3,
+    maxFontSize: 98,
+    minFontSize: 61,
+    lineHeightRatio: 0.98,
+  });
+  return `<g id="Squid-Generated-Product-Proof" data-creative-family="product_proof">
+    <rect id="Canvas-Background" width="1080" height="1080" fill="${SQUID_GENERATED_TOKENS.deepPurple}"/>
+    <circle id="Lavender-Field" cx="950" cy="570" r="380" fill="${SQUID_GENERATED_TOKENS.lavender}"/>
+    <rect id="Lime-Route" x="64" y="692" width="574" height="8" rx="4" fill="${SQUID_GENERATED_TOKENS.lime}" transform="rotate(-3 64 696)"/>
+    <image id="Squid-Official-Bubbles" x="734" y="-42" width="390" height="390" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".55"/>
+    <image id="Squid-Official-SQUIB" x="706" y="742" width="430" height="430" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" transform="rotate(-8 921 957)"/>
+    <image id="Squid-Official-Form-Language" x="550" y="216" width="610" height="610" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".78" transform="rotate(12 855 521)"/>
+    <image id="Brand-Logo" data-logo-variant="${assets.logoVariant}" x="64" y="52" width="132" height="74" href="${escapeXml(assets.logo)}" preserveAspectRatio="xMinYMid meet"/>
+    <text id="Eyebrow" x="64" y="231" fill="${SQUID_GENERATED_TOKENS.lime}" font-family="Inter, Pretendard, sans-serif" font-size="21" font-weight="850" letter-spacing="1.7">${escapeXml(spec.label.toUpperCase())}</text>
+    <g id="Headline">${textLayers("Headline", headline.lines, 64, 342, headline.lineHeight, `fill="${SQUID_GENERATED_TOKENS.white}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-4"`)}</g>
+    <g id="Support-Copy">${squidGeneratedBody(spec, 64, 767, SQUID_GENERATED_TOKENS.white, 38, 28, 40)}</g>
+    ${squidGeneratedFooter(spec, SQUID_GENERATED_TOKENS.white)}
+  </g>`;
+}
+
+function squidGeneratedSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: EditableCardAssets,
+): string {
+  if (spec.creativeFamily === "worldbuilding") {
+    throw new Error("approved_squid_worldbuilding_assets_required");
+  }
+  const family = spec.creativeFamily as Exclude<SquidCreativeFamily, "worldbuilding">;
+  const officialAssets = requiredSquidGeneratedAssets(assets, family);
+  switch (officialAssets.family) {
+    case "editorial_big_type":
+      return squidEditorialBigTypeSvg(brand, spec, officialAssets);
+    case "milestone_metric":
+      return squidMilestoneMetricSvg(brand, spec, officialAssets);
+    case "status_progress":
+      return squidStatusProgressSvg(brand, spec, officialAssets);
+    case "product_proof":
+      return squidProductProofSvg(brand, spec, officialAssets);
+    default:
+      throw new Error("invalid_squid_creative_family");
+  }
+}
+
 function editorialSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
   const isYellow = spec.theme === "yellow";
   const background = isYellow ? brand.accent : brand.dark;
@@ -628,13 +955,26 @@ function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets
 
 function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
   const sourceRatio = spec.sourceImageWidth / spec.sourceImageHeight;
-  const frame = sourceRatio >= 1
-    ? { x: 0, y: (1080 - 1080 / sourceRatio) / 2, width: 1080, height: 1080 / sourceRatio }
-    : { x: (1080 - 1080 * sourceRatio) / 2, y: 0, width: 1080 * sourceRatio, height: 1080 };
+  const canvasRatio = spec.outputWidth / spec.outputHeight;
+  const frame = spec.outputPolicy === "official_source_native_v1"
+    ? { x: 0, y: 0, width: spec.outputWidth, height: spec.outputHeight }
+    : sourceRatio >= canvasRatio
+    ? {
+      x: 0,
+      y: (spec.outputHeight - spec.outputWidth / sourceRatio) / 2,
+      width: spec.outputWidth,
+      height: spec.outputWidth / sourceRatio,
+    }
+    : {
+      x: (spec.outputWidth - spec.outputHeight * sourceRatio) / 2,
+      y: 0,
+      width: spec.outputHeight * sourceRatio,
+      height: spec.outputHeight,
+    };
   const localized = Boolean(assets.sourceImage) && spec.sourceTextVisible && spec.translationRegions.length > 0;
   const visual = assets.sourceImage
     ? imageLayer("Source-Visual", assets.sourceImage, frame.x, frame.y, frame.width, frame.height)
-    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="1080" fill="${brand.dark}"/>`;
+    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="${spec.outputWidth}" height="${spec.outputHeight}" fill="${brand.dark}"/>`;
   const replacementLayers = localized
     ? spec.translationRegions.map((region, index) => {
       const x = frame.x + frame.width * region.x / 100;
@@ -691,7 +1031,7 @@ function squidTranslationSvg(brand: Brand, spec: NormalizedSpec, assets: Editabl
   const translations = completeReplacement
     ? replacementLayers.join("\n")
     : "";
-  return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
+  return `<rect id="Canvas-Background" width="${spec.outputWidth}" height="${spec.outputHeight}" fill="${spec.sourceBackgroundColor}"/>
   <g id="Source-Visual-Layer">${visual}</g>
   <g id="Korean-Translation-Layer">${translations}</g>`;
 }
@@ -705,7 +1045,16 @@ export function buildEditableSvg(
   const brand = BRANDS[clientId];
   const spec = normalizeSpec(rawSpec);
   const effectiveTemplateStyle = effectiveEditableTemplateStyle(clientId, templateStyle);
-  const content = effectiveTemplateStyle === "editorial"
+  const sourceNativeSquid = clientId === "squid" && effectiveTemplateStyle === "remix";
+  const generatedSquidFamily = clientId === "squid"
+    && effectiveTemplateStyle === "classic"
+    && spec.renderStrategy === "generated_gtm"
+    && Boolean(spec.creativeFamily);
+  const canvasWidth = sourceNativeSquid ? spec.outputWidth : 1080;
+  const canvasHeight = sourceNativeSquid ? spec.outputHeight : 1080;
+  const content = generatedSquidFamily
+    ? squidGeneratedSvg(brand, spec, assets)
+    : effectiveTemplateStyle === "editorial"
     ? editorialSvg(brand, spec, assets)
     : effectiveTemplateStyle === "signal"
       ? signalSvg(brand, spec, assets)
@@ -717,7 +1066,7 @@ export function buildEditableSvg(
           ? squidClassicSvg(brand, spec, assets)
           : classicSvg(brand, spec, assets);
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-labelledby="Title Description">
+<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" role="img" aria-labelledby="Title Description">
   <title id="Title">${escapeXml(brand.name)} editable Korean news card</title>
   <desc id="Description">Figma-editable localized news card. Text, shapes, official logo, and source image are separate named layers.</desc>
   <metadata>Localized News Card · Figma Editable · ${effectiveTemplateStyle}</metadata>

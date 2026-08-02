@@ -5,40 +5,73 @@ the official source as the factual and visual boundary.
 
 ## Source-first routing
 
-1. Use media attached directly to the official `@SquidRouter` post.
+1. Use media attached directly to the official `@SquidRouter` post. For a
+   video, use its canonical official poster frame for the static card; never
+   present that frame as if the output retained the source animation.
 2. If the post is a quote with no direct media, inherit media only when the
    quoted post resolves to the same verified X account identity.
-3. A source creative enters `remix`: preserve its crop, character, logo, product
-   UI, and hierarchy. Translate only meaningful copy in its audited footprint.
+3. A source creative enters `remix`: preserve its complete aspect ratio and
+   crop, character, logo, product UI, and hierarchy. Translate only meaningful
+   copy in its audited footprint. Failed cleanup must keep the full untouched
+   source, never crop away the original caption as a recovery shortcut.
+   The primary Squid X asset uses the source-native aspect ratio (bounded to a
+   1200 px long edge) instead of shrinking a landscape poster into a square
+   letterbox. A square version is a separate channel derivative, never the
+   authoritative remix.
 4. Use `classic` only when no trustworthy official source visual exists.
 5. Never borrow media from a partner or community quote merely because it is
    visually relevant.
+
+The Studio defaults Squid news creation to `원문 우선`. Scheduled automation
+pins the already-selected official X media URL through the automation-only
+boundary, binds that normalized URL to the idempotency hash, and stores its
+media-resolution status with the immutable result. Railway echoes the exact
+validated URL and SHA-256 of the prepared source bytes; Netlify rejects a
+mismatch before durable storage. The server does not perform a second media
+selection that could swap the creative between intake and render. If X media
+lookup is unavailable, `remix` fails closed; an explicit `classic` request
+remains the image-free fallback.
+
+The durable asset is currently the final PNG, not a private copy of the raw X
+image. The URL and prepared-byte digest prove what the first render consumed,
+while a future editable regeneration still depends on the external source (and,
+for translated creatives, the temporary cleaned source). Persisting a private
+source asset is a separate retention upgrade.
 
 Legacy `editorial` and `signal` requests are canonicalized to `classic` at the
 renderer, Netlify editable boundary, and Studio UI. The original requested
 style remains audit metadata, but a generic publisher layout is never emitted.
 
-## Generated-card family
+## Generated-card families
 
-The default 1080×1080 Korean card follows the approved CoinEasy Management
-Squid frame geometry but uses current official Squid visual tokens:
+`squid-visual-routing@1` classifies immutable source text on the server. The
+browser and LLM cannot select or override the family. New results store the
+family, policy version, reviewed reference-pack ID/version, channel profile,
+template/asset/token versions, and font status in the immutable spec. PNG and
+editable SVG consume that same contract.
 
-- light lavender `#E6CCFC`, acid lime `#EFFF5A`, white haze, and black;
-- one official SQUIB as the dominant visual, optionally with official bubbles;
-- 60–72 px outer safe area;
-- one topic eyebrow, one normally 84–108 px headline of at most two lines
-  (64 px floor at the length boundary), one or two 28–34 px supporting lines,
-  and tiny source metadata;
-- headline copy is limited to 28 characters; each supporting line is limited
-  to 23 characters so PNG and editable SVG stay visually identical;
-- no white news panel, bullet cards, generic CTA pill, dark analytics grid, or
-  duplicate logo;
-- total visible Korean copy should normally stay below about 70 characters.
+| Family | Use | Reviewed official reference |
+|---|---|---|
+| `editorial_big_type` | announcements and articles | [A NEW ERA](https://x.com/squidrouter/status/2079999207956500971) |
+| `milestone_metric` | a source-verifiable scaled metric | [5m milestone](https://x.com/squidrouter/status/2082889008385044897) |
+| `status_progress` | bounded status, phase, eligibility, or product explanation | [TGE status](https://x.com/squidrouter/status/2080668216792129968) |
+| `product_proof` | a concrete product action without invented UI | [MiniPay product proof](https://x.com/squidrouter/status/2079628218403803481) |
+| `worldbuilding` | mascot, mood, or meme | [SQUIB world](https://x.com/squidrouter/status/2083583547353501977) |
 
-If the source is a mood post, preserve it with no added explainer. A milestone
-may use a single large verified number and one label. Product-proof creatives
-must retain the real UI or partner mark from the source rather than drawing a
-generic diagram.
+Generated cards use the canonical config tokens lavender `#BC8EE4`, acid lime
+`#E6FA36`, black/white, approved local Squid assets, and Korean-safe Pretendard
+spacing. The layouts use one strong hierarchy, generous negative space, and no
+publisher panel, generic CTA, duplicate logo, fake product UI, or public
+CoinEasy mark. A milestone shows a large number only when the exact scaled
+metric was copied from the source. Product proof uses official form language,
+not a fabricated screen.
+
+Verified official media always changes the render strategy to `source_remix`,
+regardless of family. Text-only `worldbuilding` fails closed for manual review
+because the approved local asset pack cannot reproduce the official 3D scene.
+The new family layouts deliberately record `figma_template: null`: the one
+legacy Squid frame in the Figma registry is not approval evidence for these new
+variants.
 
 ## Korean voice
 

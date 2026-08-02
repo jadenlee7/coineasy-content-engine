@@ -280,6 +280,12 @@
       border-radius: 14px;
       background: var(--brand-bg);
     }
+    .preview-shell[data-output="source-native"] {
+      width: min(100%, 1000px);
+      aspect-ratio: var(--source-native-aspect, 16 / 9);
+      border-radius: 14px;
+      background: var(--brand-bg);
+    }
 
     .mock-card { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 4.45%; font-family: var(--brand-font); }
     .mock-top { min-height: 5.4%; display: flex; align-items: center; justify-content: flex-end; margin-bottom: 2.4%; }
@@ -479,7 +485,7 @@
     .library-card:hover, .library-card.active { border-color: var(--outline); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 rgba(35,35,35,.14); }
     .library-card.active { box-shadow: inset 4px 0 0 var(--accent), 4px 4px 0 rgba(35,35,35,.14); }
     .library-thumb { display: grid; place-items: center; width: 96px; aspect-ratio: 1; overflow: hidden; border-radius: 9px; color: #776f68; background: linear-gradient(135deg, #ffe2d1, #fff4ec 58%, #eafcff); font-size: 23px; font-weight: 850; }
-    .library-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .library-thumb img { width: 100%; height: 100%; object-fit: contain; }
     .library-card-copy { min-width: 0; padding: 3px 3px 2px 0; }
     .library-card-meta, .library-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .library-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; color: #5d5650; background: var(--surface-soft); font-size: 9px; font-weight: 750; }
@@ -500,7 +506,7 @@
     .library-article-visual { overflow: hidden; border: 1.5px solid var(--outline); border-radius: 12px; background: #111; box-shadow: 4px 4px 0 rgba(35,35,35,.1); }
     .library-article-visual img { display: block; width: 100%; height: auto; background: #111; }
     .library-asset { display: block; overflow: hidden; border: 1.5px solid var(--line); border-radius: 11px; color: var(--ink); background: #fff; text-decoration: none; }
-    .library-asset img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #f4f4f4; }
+    .library-asset img { display: block; width: 100%; aspect-ratio: var(--asset-aspect, 1); object-fit: contain; background: #f4f4f4; }
     .library-asset span { display: block; padding: 9px 10px; overflow: hidden; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
     .library-content { margin-top: 22px; padding-top: 20px; border-top: 1.5px solid var(--line); }
     .library-content h3 { margin: 0 0 10px; font-size: 15px; }
@@ -1790,9 +1796,14 @@
           return { ...item, url: safeWebUrl(item.figma_url || item.url) || figmaBrowserUrl(item.file_key, item.node_id) };
         }).filter(link => link.url);
         const assetMarkup = assets.length ? `<div class="library-assets">${assets.map((asset, index) => {
-          const dimensions = asset.width && asset.height ? `${asset.width}×${asset.height}` : "";
+          const width = Number(asset.width);
+          const height = Number(asset.height);
+          const hasDimensions = Number.isSafeInteger(width) && Number.isSafeInteger(height)
+            && width > 0 && height > 0 && width <= 10000 && height <= 10000;
+          const dimensions = hasDimensions ? `${width}×${height}` : "";
           const metadata = [asset.filename || `${index + 1}번 이미지`, dimensions, formatFileSize(asset.byte_size)].filter(Boolean).join(" · ");
-          return `<a class="library-asset" href="${escapeHtml(asset.signed_url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(asset.signed_url)}" alt="${escapeHtml(asset.filename || `저장 이미지 ${index + 1}`)}" loading="lazy"><span>${escapeHtml(metadata)}</span></a>`;
+          const aspectStyle = hasDimensions ? ` style="--asset-aspect:${width} / ${height}"` : "";
+          return `<a class="library-asset"${aspectStyle} href="${escapeHtml(asset.signed_url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(asset.signed_url)}" alt="${escapeHtml(asset.filename || `저장 이미지 ${index + 1}`)}" loading="lazy"><span>${escapeHtml(metadata)}</span></a>`;
         }).join("")}</div>` : "";
         const articleVisuals = contentKind === "article"
           ? articleVisualBriefs({
@@ -2639,6 +2650,7 @@
         state.articleBannerPngUrl = "";
         state.imageUrl = "";
         shell.removeAttribute("data-output");
+        shell.style.removeProperty("--source-native-aspect");
         resultImage.hidden = true;
         resultImage.removeAttribute("src");
         resultImage.alt = "생성된 브랜드 뉴스 카드";
@@ -2994,13 +3006,15 @@
       }
 
       function selectClient(clientId) {
+        const changed = state.client !== clientId;
         state.client = clientId;
+        if (changed && clientId === "squid") state.template = "remix";
         clients.querySelectorAll(".client").forEach(item => item.classList.toggle("active", item.dataset.client === clientId));
       }
 
       function syncTemplateOptions() {
         if (state.client === "squid" && !SQUID_NEWS_TEMPLATES.has(state.template)) {
-          state.template = "classic";
+          state.template = "remix";
         }
         templates.querySelectorAll(".template-option").forEach(item => {
           const disabled = state.client === "squid" && !SQUID_NEWS_TEMPLATES.has(item.dataset.template);
@@ -3010,8 +3024,36 @@
           if (disabled) item.title = "Squid는 공식 브랜드 비주얼 또는 클래식 구도만 사용합니다.";
           else item.removeAttribute("title");
         });
+        const remixOption = templates.querySelector('[data-template="remix"]');
+        const classicOption = templates.querySelector('[data-template="classic"]');
+        if (remixOption) {
+          remixOption.querySelector("strong").textContent = state.client === "squid"
+            ? "Squid 원문 우선 · 추천"
+            : "브랜드 비주얼 · 추천";
+          remixOption.querySelector("small").textContent = state.client === "squid"
+            ? "@squidrouter 배너 유지 + 한국어 문구"
+            : "원본 배너 + 한국 현지화";
+        }
+        if (classicOption) {
+          classicOption.querySelector("strong").textContent = state.client === "squid"
+            ? "Squid 클래식 · fallback"
+            : "클래식";
+          classicOption.querySelector("small").textContent = state.client === "squid"
+            ? "원문 배너 대신 요약 카드"
+            : "뉴스 요약 카드";
+        }
         const templateHint = templateField.querySelector(".field-label .optional");
-        if (templateHint) templateHint.textContent = state.client === "squid" ? "브랜드 비주얼·클래식" : "4가지";
+        if (templateHint) templateHint.textContent = state.client === "squid" ? "원문 우선·fallback" : "4가지";
+        if (state.mode === "news") {
+          const officialSource = hasOfficialSquidSource(sourceContent.value.trim(), sourceUrl.value);
+          sourceUrlHelp.textContent = state.client === "squid" && state.template === "remix"
+            ? officialSource
+              ? "공식 @squidrouter 원문을 확인했습니다. 원본 배너를 유지하고 한국어 게시 문구를 함께 만듭니다."
+              : "공식 @squidrouter X 링크는 원문 배너를 그대로 유지하고 한국어 게시 문구를 함께 만듭니다."
+            : state.client === "squid"
+              ? "클래식 fallback은 원문 배너를 사용하지 않습니다. 원문 그대로 만들려면 ‘Squid 원문 우선’을 선택하세요."
+            : "공개 X 게시물은 링크만 넣어도 본문을 자동으로 불러옵니다.";
+        }
       }
 
       function renderMode() {
@@ -3225,10 +3267,31 @@
         try {
           const url = new URL(normalizeUserUrl(value));
           const host = url.hostname.toLowerCase().replace(/^www\./, "");
-          return (host === "x.com" || host === "twitter.com") && /\/status\/\d+/.test(url.pathname);
+          return (host === "x.com" || host === "twitter.com")
+            && (
+              /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,20}(?:\/(?:photo|video)\/\d+)?\/?$/.test(url.pathname)
+              || /^\/i\/web\/status\/\d{1,20}(?:\/(?:photo|video)\/\d+)?\/?$/.test(url.pathname)
+            );
         } catch {
           return false;
         }
+      }
+
+      function isOfficialSquidXStatusUrl(value) {
+        try {
+          const url = new URL(normalizeUserUrl(value));
+          const host = url.hostname.toLowerCase().replace(/^www\./, "");
+          return (host === "x.com" || host === "twitter.com")
+            && /^\/squidrouter\/status\/\d{1,20}(?:\/(?:photo|video)\/\d+)?\/?$/i.test(url.pathname);
+        } catch {
+          return false;
+        }
+      }
+
+      function hasOfficialSquidSource(contentValue, urlValue) {
+        const normalizedUrl = normalizeUserUrl(urlValue || "");
+        if (isXStatusUrl(normalizedUrl)) return isOfficialSquidXStatusUrl(normalizedUrl);
+        return isOfficialSquidXStatusUrl(contentValue || "");
       }
 
       function errorMessage(payload, status, requestMode = state.mode) {
@@ -3244,6 +3307,9 @@
         if (payload?.error === "durable_catalog_lookup_failed") return "팀 보관함에서 기존 생성 결과를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.";
         if (payload?.error === "invalid_source_url") return "원문 링크 형식을 확인해주세요. https://로 시작하는 주소를 입력해주세요.";
         if (payload?.error === "source_fetch_failed") return "X 게시물을 읽지 못했습니다. 공개 게시물인지 확인하거나 원문 본문을 붙여넣어주세요.";
+        if (payload?.error === "source_media_unavailable") return "Squid 공식 원문 배너를 안전하게 확인하지 못했습니다. 원본을 임의로 대체하지 않았으니 잠시 후 다시 시도해주세요.";
+        if (payload?.error === "source_not_official_squid") return "해당 X 게시물이 공식 @squidrouter 계정의 원문인지 확인되지 않았습니다. 공식 게시물 링크를 사용해주세요.";
+        if (payload?.error === "source_image_required") return "이 Squid 원문에는 재사용할 공식 배너가 없습니다. ‘Squid 클래식 · fallback’을 선택해주세요.";
         if (payload?.error === "source_content_must_be_10_to_20000_chars") return "원문 본문을 10자 이상 입력하거나 공개 X 게시물 링크를 넣어주세요.";
         if (payload?.error === "source_content_must_be_300_to_60000_chars") return "아티클 초안을 만들려면 사실 근거가 충분한 원문 본문을 300자 이상 붙여넣어주세요.";
         if (payload?.error === "tutorial_not_enabled") return "튜토리얼 생성은 현재 Yellow와 Squid만 지원합니다.";
@@ -3421,7 +3487,9 @@
         if (!confirmResultReset()) return;
         selectClient(button.dataset.client);
         renderBrand();
-        setStatus(`${BRAND[state.client].name} 브랜딩이 선택되었습니다.`);
+        setStatus(state.mode === "news" && state.client === "squid"
+          ? "Squid 브랜딩이 선택되었습니다. 공식 @squidrouter 원문 배너 우선 모드가 기본입니다."
+          : `${BRAND[state.client].name} 브랜딩이 선택되었습니다.`);
       });
 
       templates.addEventListener("click", event => {
@@ -3438,10 +3506,12 @@
 
       sourceContent.addEventListener("input", () => {
         charCount.textContent = `${sourceContent.value.length.toLocaleString("ko-KR")}자`;
+        if (state.mode === "news" && state.client === "squid") syncTemplateOptions();
       });
 
       sourceUrl.addEventListener("blur", () => {
         sourceUrl.value = normalizeUserUrl(sourceUrl.value);
+        if (state.mode === "news" && state.client === "squid") syncTemplateOptions();
       });
 
       telegramCopy.addEventListener("input", updateCopyCounts);
@@ -3565,6 +3635,8 @@
           ? requestContext.mockMode ? "샘플 문구로 튜토리얼 캐러셀을 렌더링하고 있습니다…" : "원문을 학습 순서로 구성하고 튜토리얼 캐러셀을 만들고 있습니다…"
           : requestContext.mode === "article"
             ? "원문 근거를 확인하고 한국어 아티클 초안과 채널 문구를 만들고 있습니다…"
+          : requestContext.client === "squid" && requestContext.template === "remix" && hasOfficialSquidSource(content, normalizedUrl)
+            ? "공식 @squidrouter 원문 배너를 그대로 가져와 한국어 게시 문구와 함께 준비하고 있습니다…"
           : contentIsXLink || (content.length < 10 && isXStatusUrl(normalizedUrl))
             ? "X 게시물을 불러와 카드로 만들고 있습니다…"
             : requestContext.mockMode ? "브랜딩 테스트 카드를 렌더링하고 있습니다…" : "원문을 요약하고 고해상도 카드를 생성하고 있습니다…");
@@ -3686,6 +3758,21 @@
           state.imageUrl = payload.image_data_url;
           state.hasResult = true;
           markLibraryStale();
+          const outputWidth = Number(payload.output_width);
+          const outputHeight = Number(payload.output_height);
+          const sourceNativeSquid = requestContext.client === "squid"
+            && payload.template_style === "remix"
+            && Number.isSafeInteger(outputWidth)
+            && Number.isSafeInteger(outputHeight)
+            && outputWidth > 0
+            && outputHeight > 0;
+          if (sourceNativeSquid) {
+            shell.dataset.output = "source-native";
+            shell.style.setProperty("--source-native-aspect", `${outputWidth} / ${outputHeight}`);
+          } else {
+            shell.removeAttribute("data-output");
+            shell.style.removeProperty("--source-native-aspect");
+          }
           resultImage.src = state.imageUrl;
           resultImage.hidden = false;
           mockCard.hidden = true;
@@ -3695,7 +3782,9 @@
           tutorialMockWarning.hidden = !isMockNews;
           const sourceNote = ["x_import", "x_oembed"].includes(payload.source_mode) ? " · X 원문 자동 불러오기" : "";
           const remixNote = payload.source_image_used
-            ? " · 원본 배너 반영"
+            ? requestContext.client === "squid" && hasOfficialSquidSource(requestContext.sourceContent, payload.source_url || requestContext.sourceUrl)
+              ? " · 공식 원문 배너 그대로 반영"
+              : " · 원문 배너 기반"
             : payload.requested_template_style === "remix" && payload.template_style !== "remix"
               ? " · 원본 배너가 없어 클래식으로 자동 전환"
               : "";
@@ -3704,7 +3793,7 @@
               ? payload.spec?.source_text_visible === true
                 ? " · 원문 자막을 같은 위치의 한국어로 교체"
                 : payload.spec?.visual_localization_status === "unsafe_placement"
-                  ? " · 원문 자막을 자연스럽게 교체하기 어려워 원본 비주얼 유지"
+                  ? " · 원문 비주얼은 그대로 유지하고 한국어 게시 문구로 보완"
                   : payload.spec?.visual_localization_status === "cleanup_failed"
                     ? " · 원문 자막 픽셀을 깔끔하게 지우기 어려워 원본 비주얼 유지"
                   : " · 번역할 문구가 없어 원본 비주얼 그대로 유지"

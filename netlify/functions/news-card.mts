@@ -1,6 +1,9 @@
 import type { Config, Context } from "@netlify/functions";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  canonicalXStatusUrl,
+  hasVerifiedOfficialSquidXProvenance,
+  normalizeXImageUrl,
   resolveSourceInput,
   SourceInputError,
   type ResolvedSource,
@@ -29,6 +32,7 @@ import {
   ContentCatalogError,
   downloadCatalogPng,
   findGeneratedContent,
+  pngDimensions,
   recordGeneratedContent,
   removeContentAssets,
   type ContentCatalogClient,
@@ -44,6 +48,7 @@ type NewsCardRequest = {
   source_url?: unknown;
   mock_mode?: unknown;
   template_style?: unknown;
+  source_image_url?: unknown;
   style_references?: unknown;
   style_reference_pack_hash?: unknown;
 };
@@ -56,6 +61,8 @@ type RailwayNewsCardResponse = {
   template_style: string;
   requested_template_style?: string;
   source_image_used?: boolean;
+  source_image_url?: unknown;
+  source_image_sha256?: unknown;
   source_visual_path?: unknown;
   figma_template?: unknown;
   manifest_path: string;
@@ -81,6 +88,33 @@ const ALLOWED_CLIENTS = new Set<ContentCatalogClient>([
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
+export const SQUID_CREATIVE_FAMILY_POLICY_VERSION = "squid-visual-routing@1";
+const SQUID_VISUAL_REFERENCE_PACKS = {
+  editorial_big_type: {
+    id: "squid/editorial-big-type",
+    statusUrls: ["https://x.com/squidrouter/status/2079999207956500971"],
+  },
+  milestone_metric: {
+    id: "squid/milestone-metric",
+    statusUrls: ["https://x.com/squidrouter/status/2082889008385044897"],
+  },
+  status_progress: {
+    id: "squid/status-progress",
+    statusUrls: ["https://x.com/squidrouter/status/2080668216792129968"],
+  },
+  product_proof: {
+    id: "squid/product-proof",
+    statusUrls: ["https://x.com/squidrouter/status/2079628218403803481"],
+  },
+  worldbuilding: {
+    id: "squid/worldbuilding",
+    statusUrls: [
+      "https://x.com/squidrouter/status/2083583547353501977",
+      "https://x.com/squidrouter/status/2073032336384356666",
+    ],
+  },
+} as const;
 const NETLIFY_REQUEST_BUDGET_MS = 58_000;
 const RAILWAY_GENERATION_BUDGET_MS = 38_000;
 // A 3 MB PNG expands to roughly 4 MB when embedded as base64 in JSON. Keep the
@@ -171,17 +205,23 @@ export function normalizedFigmaTemplate(
   return reference as FigmaTemplateReference;
 }
 
-export function newsCardRequestHash(input: {
+type NewsCardRequestHashInput = {
   clientId: string;
   sourceContent: string;
   sourceType: string;
   sourceUrl: string;
   mockMode: boolean;
   templateStyle: string;
+  sourceImageUrl?: string;
   styleReferences?: StyleReference[];
   styleReferencePackHash?: string;
-}): string {
-  return createHash("sha256").update(JSON.stringify({
+};
+
+function buildNewsCardRequestHash(
+  input: NewsCardRequestHashInput,
+  includeSquidCreativePolicy: boolean,
+): string {
+  const payload: Record<string, unknown> = {
     client_id: input.clientId,
     source_content: input.sourceContent,
     source_type: input.sourceType,
@@ -190,7 +230,133 @@ export function newsCardRequestHash(input: {
     template_style: input.templateStyle,
     style_references: input.styleReferences || [],
     style_reference_pack_hash: input.styleReferencePackHash || "",
-  }), "utf8").digest("hex");
+  };
+  // The Squid generated visual is server-routed from immutable source text.
+  // Bind the routing policy to idempotency so a reviewed older family cannot
+  // be silently reused after the deterministic policy changes.
+  if (input.clientId === "squid" && includeSquidCreativePolicy) {
+    payload.creative_family_policy_version = SQUID_CREATIVE_FAMILY_POLICY_VERSION;
+  }
+  // The automation-only pinned URL extends the idempotency identity when it
+  // is present. Non-Squid requests retain their pre-pinning hash contract.
+  if (input.sourceImageUrl) payload.source_image_url = input.sourceImageUrl;
+  return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+}
+
+export function newsCardRequestHash(input: NewsCardRequestHashInput): string {
+  return buildNewsCardRequestHash(input, true);
+}
+
+function legacySquidNewsCardRequestHash(input: NewsCardRequestHashInput): string {
+  return buildNewsCardRequestHash(input, false);
+}
+
+function isLegacySquidCreativeRecord(existing: ContentCatalogLookup): boolean {
+  const spec = objectValue(existing.content.spec);
+  return !Object.hasOwn(spec, "creative_family_policy_version")
+    && !Object.hasOwn(spec, "creative_family");
+}
+
+export function isOfficialSquidXStatusUrl(value: string): boolean {
+  const canonical = canonicalXStatusUrl(value);
+  if (!canonical) return false;
+  return /^\/squidrouter\/status\/\d+$/i.test(new URL(canonical).pathname);
+}
+
+export function validSquidNativeOutputSpec(
+  spec: Record<string, unknown>,
+  dimensions: { width: number; height: number },
+): boolean {
+  const sourceWidth = spec.source_image_width;
+  const sourceHeight = spec.source_image_height;
+  const outputWidth = spec.output_width;
+  const outputHeight = spec.output_height;
+  if (
+    spec.output_policy !== SQUID_SOURCE_NATIVE_POLICY
+    || typeof sourceWidth !== "number"
+    || !Number.isSafeInteger(sourceWidth)
+    || typeof sourceHeight !== "number"
+    || !Number.isSafeInteger(sourceHeight)
+    || typeof outputWidth !== "number"
+    || !Number.isSafeInteger(outputWidth)
+    || typeof outputHeight !== "number"
+    || !Number.isSafeInteger(outputHeight)
+  ) return false;
+  const sourceW = sourceWidth;
+  const sourceH = sourceHeight;
+  const outputW = outputWidth;
+  const outputH = outputHeight;
+  if (
+    sourceW < 1 || sourceW > 1_800
+    || sourceH < 1 || sourceH > 1_800
+    || outputW < 1 || outputW > 1_200
+    || outputH < 1 || outputH > 1_200
+  ) return false;
+  const scale = Math.min(1, 1_200 / Math.max(sourceW, sourceH));
+  return outputW === Math.max(1, Math.round(sourceW * scale))
+    && outputH === Math.max(1, Math.round(sourceH * scale))
+    && dimensions.width === outputW
+    && dimensions.height === outputH;
+}
+
+export function validSquidCreativeMetadata(
+  spec: Record<string, unknown>,
+  templateStyle: string,
+): boolean {
+  const family = spec.creative_family;
+  if (
+    typeof family !== "string"
+    || !(family in SQUID_VISUAL_REFERENCE_PACKS)
+  ) return false;
+  const reference = SQUID_VISUAL_REFERENCE_PACKS[
+    family as keyof typeof SQUID_VISUAL_REFERENCE_PACKS
+  ];
+  const expectedStrategy = templateStyle === "remix"
+    ? "source_remix"
+    : templateStyle === "classic"
+    ? "generated_gtm"
+    : "";
+  const expectedTemplateVersion = templateStyle === "remix"
+    ? "squid-source-remix@1"
+    : "squid-generated-gtm@2";
+  const expectedAssetPackVersion = templateStyle === "remix"
+    ? "official-source-media@1"
+    : "squid-local-approved@1";
+  if (
+    !expectedStrategy
+    || spec.render_strategy !== expectedStrategy
+    || spec.creative_family_policy_version !== SQUID_CREATIVE_FAMILY_POLICY_VERSION
+    || spec.visual_reference_pack_id !== reference.id
+    || spec.visual_reference_pack_version !== 1
+    || spec.visual_automatic !== true
+    || spec.brand_tokens_version !== "squid-brand-tokens@1"
+    || spec.template_version !== expectedTemplateVersion
+    || spec.asset_pack_version !== expectedAssetPackVersion
+    || ![
+      "bagoss_condensed_licensed",
+      "pretendard_fallback",
+    ].includes(String(spec.font_status || ""))
+    || (templateStyle === "classic" && family === "worldbuilding")
+  ) return false;
+  if (
+    !Array.isArray(spec.visual_reference_status_urls)
+    || spec.visual_reference_status_urls.length !== reference.statusUrls.length
+    || spec.visual_reference_status_urls.some(
+      (value, index) => value !== reference.statusUrls[index],
+    )
+  ) return false;
+  const expectedProfile = templateStyle === "remix" ? "source_native" : "x_square";
+  if (spec.channel_profile !== expectedProfile) return false;
+  if (
+    spec.visual_metric !== undefined
+    && (
+      typeof spec.visual_metric !== "string"
+      || !spec.visual_metric.trim()
+      || spec.visual_metric.length > 32
+      || family !== "milestone_metric"
+    )
+  ) return false;
+  return true;
 }
 
 function catalogRequestHash(existing: ContentCatalogLookup): string | null {
@@ -280,6 +446,7 @@ async function catalogRetryResponse(
   storageConfig: NonNullable<ReturnType<typeof contentCatalogConfig>>,
   clientId: ContentCatalogClient,
   deadline: number,
+  expectedVerifiedSourceImageUrl = "",
 ): Promise<Record<string, unknown>> {
   if (existing.assets.length !== 1) {
     throw new ContentCatalogError("durable_storage_invalid_response");
@@ -303,6 +470,27 @@ async function catalogRetryResponse(
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
   const { actualTemplateStyle, requestedTemplateStyle } = templatePair;
+  const storedSourceImageUrl = typeof source.image_url === "string" ? source.image_url : "";
+  const storedSourceImageSha256 = typeof source.prepared_sha256 === "string"
+    && SHA256_PATTERN.test(source.prepared_sha256)
+    ? source.prepared_sha256
+    : "";
+  const isSquidRemix = clientId === "squid" && actualTemplateStyle === "remix";
+  const isLegacySquidSquare = isSquidRemix && !Object.hasOwn(spec, "output_policy");
+  if (
+    isSquidRemix
+    && (
+      !expectedVerifiedSourceImageUrl
+      || render.source_image_used !== true
+      || storedSourceImageUrl !== expectedVerifiedSourceImageUrl
+      || (!isLegacySquidSquare && source.media_status !== "present")
+      || (!isLegacySquidSquare && !storedSourceImageSha256)
+      || (isLegacySquidSquare && source.media_status != null && source.media_status !== "present")
+      || (isLegacySquidSquare && source.prepared_sha256 != null && !storedSourceImageSha256)
+    )
+  ) {
+    throw new ContentCatalogError("durable_storage_invalid_response");
+  }
   const figmaTemplate = normalizedFigmaTemplate(
     render.figma_template,
     clientId,
@@ -321,13 +509,34 @@ async function catalogRetryResponse(
   if (imageBytes.byteLength > MAX_NEWS_CARD_BYTES) {
     throw new ContentCatalogError("generated_image_too_large");
   }
+  const replayDimensions = pngDimensions(imageBytes);
+  if (!replayDimensions) {
+    throw new ContentCatalogError("durable_asset_invalid");
+  }
+  if (
+    isSquidRemix
+    && !isLegacySquidSquare
+    && !validSquidNativeOutputSpec(spec, replayDimensions)
+  ) {
+    throw new ContentCatalogError("durable_storage_invalid_response");
+  }
+  if (
+    isLegacySquidSquare
+    && replayDimensions.width !== replayDimensions.height
+  ) {
+    throw new ContentCatalogError("durable_storage_invalid_response");
+  }
   const duration = existing.generationMeta.duration_ms;
   return {
     client_id: clientId,
     content_type: "news_card",
     spec,
     source_mode: source.mode === "x_import" ? "x_import" : "provided",
-    source_image_url: typeof source.image_url === "string" ? source.image_url : "",
+    source_image_url: storedSourceImageUrl,
+    source_image_sha256: storedSourceImageSha256,
+    source_media_status: ["not_requested", "present", "absent", "unavailable"].includes(String(source.media_status))
+      ? source.media_status
+      : "not_requested",
     source_visual_file: typeof render.source_visual_file === "string" ? render.source_visual_file : null,
     source_image_detected: Boolean(source.image_url),
     source_image_used: render.source_image_used === true,
@@ -338,6 +547,8 @@ async function catalogRetryResponse(
     mock_mode: existing.generationMeta.mock_mode === true,
     channel_copy: existing.channelCopy,
     brand_qa: existing.generationMeta.brand_qa || null,
+    output_width: replayDimensions.width,
+    output_height: replayDimensions.height,
     image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
     filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
     storage_backend: "supabase",
@@ -432,6 +643,27 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!allowedTemplateStyles.has(templateStyle)) {
     return json({ error: "invalid_template_style" }, 400);
   }
+  if (body.source_image_url !== undefined && typeof body.source_image_url !== "string") {
+    return json({ error: "invalid_source_image_url" }, 422);
+  }
+  const sourceImageCandidate = typeof body.source_image_url === "string"
+    ? body.source_image_url.trim()
+    : "";
+  let pinnedSourceImageUrl = "";
+  if (sourceImageCandidate) {
+    if (!hasValidStudioAutomationAccess(req)) {
+      return json({ error: "source_image_url_automation_only" }, 403);
+    }
+    pinnedSourceImageUrl = normalizeXImageUrl(sourceImageCandidate);
+    if (
+      !pinnedSourceImageUrl
+      || clientId !== "squid"
+      || templateStyle !== "remix"
+      || !isOfficialSquidXStatusUrl(sourceUrl)
+    ) {
+      return json({ error: "invalid_source_image_url" }, 422);
+    }
+  }
   const submittedStyleReferences = body.style_references !== undefined
     || body.style_reference_pack_hash !== undefined;
   if (submittedStyleReferences && !hasValidStudioAutomationAccess(req)) {
@@ -450,16 +682,19 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return json({ error: code }, 422);
   }
   const mockMode = body.mock_mode === true;
-  const requestHash = newsCardRequestHash({
+  const requiresVerifiedSquidSource = clientId === "squid" && templateStyle === "remix";
+  const requestHashInput = {
     clientId,
     sourceContent,
     sourceType,
     sourceUrl,
     mockMode,
     templateStyle,
+    sourceImageUrl: pinnedSourceImageUrl,
     styleReferences: styleReferencePack.references,
     styleReferencePackHash: styleReferencePack.packHash,
-  });
+  };
+  const requestHash = newsCardRequestHash(requestHashInput);
 
   let existingGeneration: ContentCatalogLookup | null;
   try {
@@ -493,28 +728,35 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, deadlineExceeded ? 504 : 503);
   }
   if (existingGeneration) {
-    if (catalogRequestHash(existingGeneration) !== requestHash) {
+    const storedRequestHash = catalogRequestHash(existingGeneration);
+    const isCompatibleLegacySquidRetry = clientId === "squid"
+      && isLegacySquidCreativeRecord(existingGeneration)
+      && storedRequestHash === legacySquidNewsCardRequestHash(requestHashInput);
+    if (storedRequestHash !== requestHash && !isCompatibleLegacySquidRetry) {
       return json({ error: "news_card_idempotency_conflict" }, 409);
     }
-    try {
-      return json(await catalogRetryResponse(
-        existingGeneration,
-        storageConfig,
-        clientId,
-        requestDeadline,
-      ));
-    } catch (error) {
-      const code = error instanceof ContentCatalogError
-        ? error.code
-        : "durable_asset_unavailable";
-      const deadlineExceeded = code === "news_card_deadline_exceeded"
-        || Date.now() >= requestDeadline - 100;
-      const status = deadlineExceeded
-        ? 504
-        : code === "generated_image_too_large"
-          ? 502
-          : 503;
-      return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
+    if (!requiresVerifiedSquidSource || pinnedSourceImageUrl) {
+      try {
+        return json(await catalogRetryResponse(
+          existingGeneration,
+          storageConfig,
+          clientId,
+          requestDeadline,
+          pinnedSourceImageUrl,
+        ));
+      } catch (error) {
+        const code = error instanceof ContentCatalogError
+          ? error.code
+          : "durable_asset_unavailable";
+        const deadlineExceeded = code === "news_card_deadline_exceeded"
+          || Date.now() >= requestDeadline - 100;
+        const status = deadlineExceeded
+          ? 504
+          : code === "generated_image_too_large"
+            ? 502
+            : 503;
+        return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
+      }
     }
   }
 
@@ -547,6 +789,53 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: error.code, detail: error.message }, error.status);
     }
     return json({ error: "source_fetch_failed" }, 422);
+  }
+  if (requiresVerifiedSquidSource && !hasVerifiedOfficialSquidXProvenance(resolvedSource)) {
+    return resolvedSource.mediaStatus === "unavailable"
+      ? json({ error: "source_media_unavailable" }, 422)
+      : json({ error: "source_not_official_squid" }, 422);
+  }
+  if (
+    pinnedSourceImageUrl
+    && !resolvedSource.xProvenance?.mediaUrls.includes(pinnedSourceImageUrl)
+  ) {
+    return json({ error: "invalid_source_image_url" }, 422);
+  }
+  if (pinnedSourceImageUrl) {
+    resolvedSource = {
+      ...resolvedSource,
+      imageUrl: pinnedSourceImageUrl,
+      mediaStatus: "present",
+    };
+  }
+  if (requiresVerifiedSquidSource && !resolvedSource.imageUrl) {
+    return resolvedSource.mediaStatus === "unavailable"
+      ? json({ error: "source_media_unavailable" }, 422)
+      : json({ error: "source_image_required" }, 422);
+  }
+
+  if (existingGeneration) {
+    try {
+      return json(await catalogRetryResponse(
+        existingGeneration,
+        storageConfig,
+        clientId,
+        requestDeadline,
+        requiresVerifiedSquidSource ? resolvedSource.imageUrl : "",
+      ));
+    } catch (error) {
+      const code = error instanceof ContentCatalogError
+        ? error.code
+        : "durable_asset_unavailable";
+      const deadlineExceeded = code === "news_card_deadline_exceeded"
+        || Date.now() >= requestDeadline - 100;
+      const status = deadlineExceeded
+        ? 504
+        : code === "generated_image_too_large"
+          ? 502
+          : 503;
+      return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
+    }
   }
 
   const railwayUrl = cleanBaseUrl(
@@ -623,9 +912,39 @@ export default async (req: Request, context: Context): Promise<Response> => {
     ) {
       return json({ error: "invalid_generation_response" }, 502);
     }
+    const preparedSourceImageSha256 = typeof result.source_image_sha256 === "string"
+      && SHA256_PATTERN.test(result.source_image_sha256)
+      ? result.source_image_sha256
+      : "";
+    if (
+      clientId === "squid"
+      && actualTemplateStyle === "remix"
+      && (
+        result.source_image_used !== true
+        || result.source_image_url !== resolvedSource.imageUrl
+        || !preparedSourceImageSha256
+      )
+    ) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
     const sourceVisualFile = normalizedSourceVisualFile(result.source_visual_path, clientId);
     if (needsCleanedSquidVisual(clientId, actualTemplateStyle, result.spec) && !sourceVisualFile) {
       return json({ error: "cleaned_source_unavailable" }, 502);
+    }
+    if (
+      clientId === "squid"
+      && !validSquidCreativeMetadata(result.spec, actualTemplateStyle)
+    ) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    if (
+      clientId === "squid"
+      && actualTemplateStyle === "classic"
+      && result.figma_template != null
+    ) {
+      // Family variants are not represented by the one legacy approved
+      // Squid frame. Do not label a new layout as Figma-approved by proxy.
+      return json({ error: "invalid_generation_response" }, 502);
     }
     const figmaTemplate = normalizedFigmaTemplate(
       result.figma_template,
@@ -659,9 +978,35 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (imageBytes.byteLength > MAX_NEWS_CARD_BYTES) {
       return json({ error: "generated_image_too_large" }, 502);
     }
+    const imageDimensions = pngDimensions(imageBytes);
+    if (!imageDimensions) {
+      return json({ error: "invalid_generated_png" }, 502);
+    }
+    if (
+      clientId === "squid"
+      && actualTemplateStyle === "remix"
+      && !validSquidNativeOutputSpec(result.spec, imageDimensions)
+    ) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    const resultSpec = result.spec;
+    const squidCreativeAudit = clientId === "squid"
+      ? {
+        creative_family: resultSpec.creative_family,
+        render_strategy: resultSpec.render_strategy,
+        creative_family_policy_version: resultSpec.creative_family_policy_version,
+        visual_reference_pack_id: resultSpec.visual_reference_pack_id,
+        visual_reference_pack_version: resultSpec.visual_reference_pack_version,
+        channel_profile: resultSpec.channel_profile,
+        brand_tokens_version: resultSpec.brand_tokens_version,
+        template_version: resultSpec.template_version,
+        asset_pack_version: resultSpec.asset_pack_version,
+        font_status: resultSpec.font_status,
+      }
+      : {};
     const channelCopy = buildChannelCopy(
       clientId,
-      result.spec,
+      resultSpec,
       resolvedSource.content,
       resolvedSource.url,
     );
@@ -669,13 +1014,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
       clientId,
       contentKind: "daily_news",
       sourceText: resolvedSource.content,
-      headline: result.spec.headline,
-      bodyLines: result.spec.body_lines,
+      headline: resultSpec.headline,
+      bodyLines: resultSpec.body_lines,
       channelCopy,
       templateStyle: actualTemplateStyle,
       sourceImageUsed: result.source_image_used,
-      sourceLogoVisible: result.spec.source_logo_visible,
-      visualLocalizationStatus: result.spec.visual_localization_status,
+      sourceLogoVisible: resultSpec.source_logo_visible,
+      visualLocalizationStatus: resultSpec.visual_localization_status,
     });
     const referenceAudit = styleReferenceAudit(styleReferencePack);
     const reviewGuidanceAudit = {
@@ -706,12 +1051,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
         requestId,
         clientId,
         contentKind: "daily_news",
-        title: typeof result.spec.headline === "string" && result.spec.headline.trim()
-          ? result.spec.headline.trim().slice(0, 200)
+        title: typeof resultSpec.headline === "string" && resultSpec.headline.trim()
+          ? resultSpec.headline.trim().slice(0, 200)
           : `${clientId} 데일리 뉴스`,
         content: {
           request_hash: requestHash,
-          spec: result.spec,
+          spec: resultSpec,
           source: {
             submitted_content: sourceContent,
             resolved_content: resolvedSource.content,
@@ -719,6 +1064,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
             url: resolvedSource.url,
             mode: resolvedSource.mode,
             image_url: resolvedSource.imageUrl,
+            media_status: resolvedSource.mediaStatus,
+            ...(preparedSourceImageSha256
+              ? { prepared_sha256: preparedSourceImageSha256 }
+              : {}),
           },
           render: {
             requested_template_style: reportedRequestedTemplateStyle,
@@ -726,6 +1075,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
             source_image_used: result.source_image_used === true,
             source_visual_file: sourceVisualFile,
             figma_template: figmaTemplate,
+            ...squidCreativeAudit,
           },
         },
         channelCopy,
@@ -738,18 +1088,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...referenceAudit,
           ...reviewGuidanceAudit,
           figma_template_version: figmaTemplate?.version || null,
+          ...squidCreativeAudit,
           brand_qa: brandQa,
         },
         asset: storedAsset,
-        promptVersion: "news-card@2",
+        promptVersion: clientId === "squid" ? "news-card@3" : "news-card@2",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       catalogCommitted = true;
       return json({
         client_id: result.client_id,
         content_type: result.content_type,
-        spec: result.spec,
+        spec: resultSpec,
         source_mode: resolvedSource.mode,
         source_image_url: resolvedSource.imageUrl,
+        source_image_sha256: preparedSourceImageSha256,
+        source_media_status: resolvedSource.mediaStatus,
         source_visual_file: sourceVisualFile,
         source_image_detected: Boolean(resolvedSource.imageUrl),
         source_image_used: result.source_image_used === true,
@@ -760,6 +1113,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
         mock_mode: mockMode,
         channel_copy: channelCopy,
         brand_qa: brandQa,
+        output_width: imageDimensions.width,
+        output_height: imageDimensions.height,
         image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
         filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
         storage_backend: "supabase",
@@ -808,6 +1163,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
               storageConfig,
               clientId,
               requestDeadline,
+              requiresVerifiedSquidSource ? resolvedSource.imageUrl : "",
             ));
           }
           return json({ error: "news_card_idempotency_conflict" }, 409);

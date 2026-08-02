@@ -4,9 +4,10 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from urllib.parse import urlsplit
 
 import httpx
+
+from core.sources.x_media_url import is_allowed_x_media_url
 
 X_API_BASE = "https://api.x.com/2"
 _MAX_PAGES = 2
@@ -560,16 +561,4 @@ class XClient:
 
     @staticmethod
     def _allowed_media_url(value: object) -> bool:
-        if not isinstance(value, str) or len(value) > 2_048:
-            return False
-        try:
-            parsed = urlsplit(value)
-        except ValueError:
-            return False
-        return (
-            parsed.scheme == "https"
-            and parsed.hostname is not None
-            and parsed.hostname.lower() == "pbs.twimg.com"
-            and parsed.username is None
-            and parsed.password is None
-        )
+        return is_allowed_x_media_url(value)

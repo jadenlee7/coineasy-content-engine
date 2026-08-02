@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from core.automation.models import StyleReference
+from core.sources.x_media_url import normalize_x_media_url
 
 
 _UUID_PATTERN = re.compile(
@@ -15,6 +16,7 @@ _UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,119}$")
+_SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _X_STATUS_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$")
 _ALLOWED_PRODUCTION_HOST = "coineasy-newscard.netlify.app"
 
@@ -110,6 +112,10 @@ class StudioGenerationClient:
             raise ValueError("unsupported automation client")
         source_content = source_content.strip()
         source_url = _validated_source_url(source_url)
+        if source_image_url and template_style == "remix":
+            source_image_url = normalize_x_media_url(source_image_url)
+            if not source_image_url:
+                raise ValueError("automation source_image_url is invalid")
         if len(style_references) > 3:
             raise ValueError("style_references must contain at most 3 items")
         if (style_references or style_reference_pack_hash) and not re.fullmatch(
@@ -225,6 +231,24 @@ class StudioGenerationClient:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         if content_kind == "daily_news" and len(raw_asset_ids) != 1:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
+        if (
+            content_kind == "daily_news"
+            and client_id == "squid"
+            and template_style == "remix"
+            and (
+                not source_image_url
+                or body.get("requested_template_style") != "remix"
+                or body.get("template_style") != "remix"
+                or body.get("source_image_used") is not True
+                or body.get("source_image_url") != source_image_url
+                or body.get("source_media_status") != "present"
+                or not isinstance(body.get("source_image_sha256"), str)
+                or not _SHA256_PATTERN.fullmatch(body["source_image_sha256"])
+            )
+        ):
+            # A staggered Netlify/Railway rollout can briefly omit the proof.
+            # Keep the durable job retryable; never complete it without proof.
+            raise GenerationRequestError("studio_generation_invalid_response", retryable=True)
         if content_kind == "article" and raw_asset_ids:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         if content_kind == "tutorial" and not 1 <= len(raw_asset_ids) <= 12:
