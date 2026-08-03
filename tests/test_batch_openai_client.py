@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -80,6 +81,19 @@ def test_jsonl_uses_unique_custom_ids_and_responses_endpoint():
     assert lines[1]["custom_id"] != lines[0]["custom_id"]
 
 
+def test_request_fingerprint_contains_the_exact_serialized_provider_request():
+    item = _item()
+    [line] = [
+        json.loads(value)
+        for value in OpenAIBatchClient.build_jsonl((item,)).decode().splitlines()
+    ]
+
+    assert item.request_fingerprint_subject()["provider_request"] == line
+    assert replace(item, max_output_tokens=1_999).request_sha256 != (
+        item.request_sha256
+    )
+
+
 def test_jsonl_rejects_duplicate_custom_ids():
     with pytest.raises(ValueError, match="unique"):
         OpenAIBatchClient.build_jsonl((_item(), _item()))
@@ -140,6 +154,7 @@ async def test_create_batch_pins_responses_24h_metadata_and_output_expiry():
 
     assert captured["endpoint"] == "/v1/responses"
     assert captured["completion_window"] == "24h"
+    assert captured["output_expires_after"]["anchor"] == "created_at"
     assert captured["output_expires_after"]["seconds"] == 604800
     assert snapshot.provider_batch_id == "batch_abc123"
 

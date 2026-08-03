@@ -1012,6 +1012,12 @@
       const initialReviewContentId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initialQuery.get("content") || "")
         ? initialQuery.get("content").toLowerCase()
         : "";
+      const initialBatchReviewJobId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initialQuery.get("batch") || "")
+        ? initialQuery.get("batch").toLowerCase()
+        : "";
+      const initialBatchReviewRef = initialBatchReviewJobId
+        ? `batch:${initialBatchReviewJobId}`
+        : "";
       let initialReviewLinkOpened = false;
       const accessGate = document.getElementById("access-gate");
       const accessForm = document.getElementById("access-form");
@@ -2690,11 +2696,18 @@
       }
 
       function openInitialReviewLink() {
-        if (!initialReviewContentId || initialReviewLinkOpened) return;
+        const initialReviewRef = initialBatchReviewRef || initialReviewContentId;
+        if (!initialReviewRef || initialReviewLinkOpened) return;
         initialReviewLinkOpened = true;
+        if (initialBatchReviewRef) {
+          libraryState.source = "batch";
+          libraryState.loaded = false;
+          libraryState.stale = true;
+          syncLibrarySourceControls();
+        }
         selectStudioView("library", false);
         loadLibrary({ reset: true });
-        loadLibraryDetail(initialReviewContentId);
+        loadLibraryDetail(initialReviewRef);
       }
 
       function showStudioAccess(message = "팀 접근 코드를 입력해주세요.", configured = true) {

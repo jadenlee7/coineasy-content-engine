@@ -29,6 +29,11 @@ from core.automation.models import (
 from core.automation.repository import AutomationRepositoryError
 from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
 from core.batch.bridge import BatchQueueBridge
+from core.batch.canary import (
+    CanaryConfigApproval,
+    canonical_sha256,
+    config_subject,
+)
 from core.batch.policy import BatchPolicy
 from core.batch.repository import BatchRepositoryError
 from core.batch.settings import BatchSettings
@@ -40,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 VERSION_ID = "99999999-9999-4999-8999-999999999999"
 NOW = datetime(2026, 7, 22, 0, 10, tzinfo=timezone.utc)
+CANARY_KST_DAY_START = datetime(2026, 7, 21, 15, tzinfo=timezone.utc)
 
 
 def settings(**overrides):
@@ -929,15 +935,55 @@ class FakeBatchQueueRepository:
         return kwargs["item"].job_id
 
 
-def active_batch_settings(*, start_offset_days=-1, end_offset_days=4):
+def canary_batch_settings(*, experiment_start_at, experiment_end_at):
+    subject = config_subject(
+        environment="staging",
+        release_sha="a" * 40,
+        supabase_url="https://project-ref.supabase.co",
+        workspace_id=WORKSPACE_ID,
+        allowed_clients=frozenset({"origintrail"}),
+        daily_cap_usd=Decimal("0.05"),
+        max_claims=1,
+        max_requests_per_batch=1,
+        experiment_start_at=experiment_start_at,
+        experiment_end_at=experiment_end_at,
+        timezone_name="Asia/Seoul",
+    )
+    subject_sha256 = canonical_sha256(subject)
     return BatchSettings(
         mode="live",
         allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
+        daily_cap_usd=Decimal("0.05"),
+        max_claims=1,
         max_requests_per_batch=1,
-        experiment_start_at=NOW + timedelta(days=start_offset_days),
-        experiment_end_at=NOW + timedelta(days=end_offset_days),
+        supabase_url="https://project-ref.supabase.co",
+        supabase_service_role_key="s" * 64,
+        workspace_id=WORKSPACE_ID,
+        experiment_start_at=experiment_start_at,
+        experiment_end_at=experiment_end_at,
+        canary_environment="staging",
+        runtime_environment="staging",
+        canary_release_sha="a" * 40,
+        runtime_release_sha="a" * 40,
+        canary_subject_sha256=subject_sha256,
+        canary_approval=CanaryConfigApproval(
+            approval_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            approved_by="operator:test",
+            approved_at=NOW - timedelta(hours=1),
+            expires_at=NOW + timedelta(hours=1),
+            subject_sha256=subject_sha256,
+        ),
+    )
+
+
+def active_batch_settings(*, start_offset_days=0, end_offset_days=2):
+    return canary_batch_settings(
+        experiment_start_at=(
+            CANARY_KST_DAY_START + timedelta(days=start_offset_days)
+        ),
+        experiment_end_at=(
+            CANARY_KST_DAY_START + timedelta(days=end_offset_days)
+        ),
     )
 
 
@@ -1143,7 +1189,7 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
             15,
             tzinfo=timezone.utc,
         ),
-        "limit_usd": Decimal("6.00"),
+        "limit_usd": Decimal("0.05"),
     }
     queued = batch_repository.calls[0]
     item = queued["item"]
@@ -1157,7 +1203,7 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
     assert item.approval_required is True
     assert item.max_cost_usd == Decimal("0.05")
     assert item.max_output_tokens == 2_000
-    assert item.deadline_at.isoformat() == "2026-07-25T00:00:00+09:00"
+    assert item.deadline_at.isoformat() == "2026-07-23T15:00:00+00:00"
     assert "visual" not in item.output_schema["properties"]
     assert {
         name: field["pattern"]
@@ -1458,14 +1504,13 @@ async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
-    ending_soon = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=NOW + timedelta(hours=25),
+    ending_soon = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 20, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 22, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -1499,16 +1544,8 @@ async def test_batch_deadline_is_clamped_to_the_experiment_end():
     )
     repo = FakeRepository(states)
     batch_repository = FakeBatchQueueRepository()
-    experiment_end = NOW + timedelta(hours=30)
-    clamped = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=experiment_end,
-    )
+    clamped = active_batch_settings()
+    experiment_end = clamped.experiment_end_at
 
     await runner(
         repo,
@@ -1522,7 +1559,8 @@ async def test_batch_deadline_is_clamped_to_the_experiment_end():
 
 
 @pytest.mark.asyncio
-async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
+@pytest.mark.parametrize("deadline_window", ["open", "drain"])
+async def test_retry_always_uses_replay_only_without_new_budget(deadline_window):
     states = {
         client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
@@ -1547,21 +1585,24 @@ async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
         origintrail_batch_eligible=True,
     ))
     batch_repository = FakeBatchQueueRepository()
-    ending_soon = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=NOW + timedelta(hours=25),
+    batch_window = (
+        active_batch_settings()
+        if deadline_window == "open"
+        else canary_batch_settings(
+            experiment_start_at=datetime(
+                2026, 7, 20, 15, tzinfo=timezone.utc
+            ),
+            experiment_end_at=datetime(
+                2026, 7, 22, 15, tzinfo=timezone.utc
+            ),
+        )
     )
 
     summary = await runner(
         repo,
         FakeXClient(),
         FakeGenerationClient(),
-        batch_settings=ending_soon,
+        batch_settings=batch_window,
         batch_bridge=batch_bridge(batch_repository),
     ).run()
 
@@ -1600,14 +1641,13 @@ async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
     repo.execution_planes[job_id] = "openai_batch"
     repo.batch_recovery_result = True
     batch_repository = FakeBatchQueueRepository()
-    expired = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=2),
-        experiment_end_at=NOW - timedelta(hours=1),
+    expired = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 19, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 21, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -1658,14 +1698,13 @@ async def test_max_attempt_claim_uses_stored_receipt_without_admission():
     repo.batch_recovery_result = True
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
-    expired = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=2),
-        experiment_end_at=NOW - timedelta(hours=1),
+    expired = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 19, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 21, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -2027,7 +2066,7 @@ async def test_origintrail_uses_existing_sync_path_outside_experiment_window():
         generation,
         batch_settings=active_batch_settings(
             start_offset_days=1,
-            end_offset_days=2,
+            end_offset_days=3,
         ),
         batch_bridge=batch_bridge(batch_repository),
     ).run()
@@ -2057,7 +2096,7 @@ async def test_new_origintrail_job_resumes_sync_after_experiment_expiry():
         FakeXClient(),
         generation,
         batch_settings=active_batch_settings(
-            start_offset_days=-2,
+            start_offset_days=-3,
             end_offset_days=-1,
         ),
         batch_bridge=batch_bridge(batch_repository),

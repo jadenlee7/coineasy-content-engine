@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Mapping
 
@@ -46,6 +46,8 @@ _BATCH_STATUSES = _TERMINAL_BATCH_STATUSES | frozenset({
     "cancelling",
 })
 
+_REQUEST_FINGERPRINT_SCHEMA = "coineasy.batch.request.v1"
+
 
 def canonical_input_sha256(
     *,
@@ -65,6 +67,18 @@ def canonical_input_sha256(
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_decimal_text(value: Decimal) -> str:
+    """Return one representation for numerically equivalent Decimal values."""
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _utc_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _uuid(value: str, name: str) -> str:
@@ -208,6 +222,58 @@ class BatchWorkItem:
             "url": "/v1/responses",
             "body": self.response_body(),
         }
+
+    def request_fingerprint_subject(self) -> dict[str, object]:
+        """Build the immutable dispatch authorization subject for one request.
+
+        The provider JSON is bound alongside the job, deadline, cost, and safety
+        controls that decide whether the request may be submitted. Mutable
+        recovery bookkeeping is intentionally excluded so an already-authorized
+        attempt can be reconciled without changing its identity.
+        """
+        return {
+            "schema": _REQUEST_FINGERPRINT_SCHEMA,
+            "provider_request": self.batch_request(),
+            "job": {
+                "job_id": self.job_id,
+                "client_id": self.client_id,
+                "agent_id": self.agent_id,
+                "workflow_kind": self.workflow_kind,
+                "stage": self.stage,
+                "attempt": self.attempt,
+                "priority": self.priority,
+                "risk_tier": self.risk_tier,
+                "input_sha256": self.input_sha256,
+            },
+            "dispatch_constraints": {
+                "deadline_at": _utc_text(self.deadline_at),
+                "model_tier": self.model_tier,
+                "estimated_input_tokens": self.estimated_input_tokens,
+                "estimated_output_tokens": self.estimated_output_tokens,
+                "max_output_tokens": self.max_output_tokens,
+                "max_cost_usd": _canonical_decimal_text(self.max_cost_usd),
+                "remaining_batch_stages": self.remaining_batch_stages,
+            },
+            "safety_controls": {
+                "approval_required": self.approval_required,
+                "interactive": self.interactive,
+                "incident_or_release_blocker": self.incident_or_release_blocker,
+                "live_tools_required": self.live_tools_required,
+                "source_snapshot_complete": self.source_snapshot_complete,
+                "input_immutable": self.input_immutable,
+                "retry_idempotent": self.retry_idempotent,
+            },
+        }
+
+    @property
+    def request_sha256(self) -> str:
+        encoded = json.dumps(
+            self.request_fingerprint_subject(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)

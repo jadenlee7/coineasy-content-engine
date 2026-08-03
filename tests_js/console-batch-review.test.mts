@@ -33,6 +33,14 @@ test("loads paginated Batch reviews only through authenticated GET routes", () =
   assert.match(consoleHtml, /result_code !== "needs_review"/);
 });
 
+test("opens a Buzz shadow review link directly in the read-only Batch source", () => {
+  assert.match(consoleHtml, /initialQuery\.get\("batch"\)/);
+  assert.match(consoleHtml, /initialBatchReviewRef = initialBatchReviewJobId/);
+  assert.match(consoleHtml, /libraryState\.source = "batch"/);
+  assert.match(consoleHtml, /initialReviewRef = initialBatchReviewRef \|\| initialReviewContentId/);
+  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewRef\)/);
+});
+
 test("Batch list normalization accepts only the OriginTrail canary identity", () => {
   const functionSource = consoleHtml.match(
     /function normalizeBatchReviewItem\(value\) \{[\s\S]*?\n      \}(?=\n\n      function libraryCardMarkup)/,

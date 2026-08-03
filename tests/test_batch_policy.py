@@ -220,3 +220,40 @@ def test_batch_request_disables_cache_writes_tools_and_storage():
     assert "prompt_cache_breakpoint" not in json.dumps(body, sort_keys=True)
     assert body["text"]["format"]["strict"] is True
     assert "tools" not in body
+
+
+def test_request_sha256_binds_provider_cost_deadline_and_job_controls():
+    item = _item()
+    equivalent = _item(
+        deadline_at=item.deadline_at.astimezone(timezone(timedelta(hours=9))),
+        max_cost_usd=Decimal("0.0500"),
+        output_schema={
+            "required": ["draft"],
+            "properties": {"draft": {"type": "string"}},
+            "type": "object",
+            "additionalProperties": False,
+        },
+    )
+
+    assert item.request_sha256 == equivalent.request_sha256
+    assert item.request_sha256 == (
+        "5f36f8c2da03cbd45a13078e3d1770fa20075a6cb77b239c40498a00ac35cbe1"
+    )
+
+    changed_items = (
+        _item(max_output_tokens=1_999),
+        _item(estimated_input_tokens=9_999),
+        _item(estimated_output_tokens=999),
+        _item(max_cost_usd=Decimal("0.04")),
+        _item(deadline_at=item.deadline_at + timedelta(seconds=1)),
+        _item(priority="P1"),
+        _item(
+            model_tier="M",
+            model="gpt-5.6-terra",
+            max_cost_usd=Decimal("0.50"),
+        ),
+    )
+    assert all(
+        changed.request_sha256 != item.request_sha256
+        for changed in changed_items
+    )

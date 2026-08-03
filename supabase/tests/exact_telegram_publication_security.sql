@@ -992,6 +992,7 @@ begin
         version_id,
         'd4000000-0000-4000-8000-000000000009'
     );
+    perform set_config('storage.allow_delete_query', 'true', true);
     delete from storage.objects
     where bucket_id = 'content-studio'
       and name =
@@ -1001,6 +1002,7 @@ begin
         'content-studio',
         'd0000000-0000-4000-8000-000000000001/squid/d3000000-0000-4000-8000-000000000008/news-card.png'
     );
+    perform set_config('storage.allow_delete_query', 'false', true);
     claim := public.claim_exact_telegram_publication_job(
         'd0000000-0000-4000-8000-000000000001',
         'worker-smoke-06',
