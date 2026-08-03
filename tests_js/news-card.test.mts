@@ -7,7 +7,10 @@ import newsCardHandler, {
   deadlineSignal as newsCardDeadlineSignal,
   MAX_NEWS_CARD_BYTES,
   SQUID_CREATIVE_FAMILY_POLICY_VERSION,
+  SQUID_GENERATED_DESIGN_PROFILE_ID,
+  SQUID_GENERATED_DESIGN_PROFILE_VERSION,
   SQUID_GENERATED_TEMPLATE_VERSION,
+  SQUID_VISUAL_REFERENCE_PACK_VERSION,
   isOfficialSquidXStatusUrl,
   newsCardRequestHash,
   normalizedFigmaTemplate,
@@ -56,7 +59,10 @@ function squidCreativeMetadata(
     editorial_big_type: ["https://x.com/squidrouter/status/2079999207956500971"],
     milestone_metric: ["https://x.com/squidrouter/status/2082889008385044897"],
     status_progress: ["https://x.com/squidrouter/status/2080668216792129968"],
-    product_proof: ["https://x.com/squidrouter/status/2079628218403803481"],
+    product_proof: [
+      "https://x.com/squidrouter/status/2079628218403803481",
+      "https://x.com/squidrouter/status/2083266484789514640",
+    ],
     worldbuilding: [
       "https://x.com/squidrouter/status/2083583547353501977",
       "https://x.com/squidrouter/status/2073032336384356666",
@@ -67,7 +73,7 @@ function squidCreativeMetadata(
     render_strategy: templateStyle === "remix" ? "source_remix" : "generated_gtm",
     creative_family_policy_version: SQUID_CREATIVE_FAMILY_POLICY_VERSION,
     visual_reference_pack_id: `squid/${family.replaceAll("_", "-")}`,
-    visual_reference_pack_version: 1,
+    visual_reference_pack_version: SQUID_VISUAL_REFERENCE_PACK_VERSION,
     visual_reference_status_urls: references[family],
     visual_automatic: true,
     channel_profile: templateStyle === "remix" ? "source_native" : "x_square",
@@ -79,6 +85,10 @@ function squidCreativeMetadata(
       ? "official-source-media@1"
       : "squid-local-approved@1",
     font_status: "pretendard_fallback",
+    ...(templateStyle === "classic" ? {
+      visual_design_profile_id: SQUID_GENERATED_DESIGN_PROFILE_ID,
+      visual_design_profile_version: SQUID_GENERATED_DESIGN_PROFILE_VERSION,
+    } : {}),
   };
 }
 
@@ -248,7 +258,10 @@ test("news card request hash binds every submitted generation input", () => {
     style_references: [],
     style_reference_pack_hash: "",
     creative_family_policy_version: SQUID_CREATIVE_FAMILY_POLICY_VERSION,
+    visual_reference_pack_version: SQUID_VISUAL_REFERENCE_PACK_VERSION,
     template_version: SQUID_GENERATED_TEMPLATE_VERSION,
+    visual_design_profile_id: SQUID_GENERATED_DESIGN_PROFILE_ID,
+    visual_design_profile_version: SQUID_GENERATED_DESIGN_PROFILE_VERSION,
   }), "utf8").digest("hex");
   assert.equal(newsCardRequestHash(input), policyHash);
   assert.equal(newsCardRequestHash({ ...input, sourceImageUrl: "" }), policyHash);
@@ -310,6 +323,16 @@ test("accepts only a matching server-routed Squid creative family contract", () 
     visual_reference_pack_id: "squid/worldbuilding",
   }, "classic"), false);
   assert.equal(validSquidCreativeMetadata({
+    ...generated,
+    visual_design_profile_id: "squid/older-profile",
+  }, "classic"), false);
+  const generatedWithoutDesignProfile = { ...generated };
+  delete generatedWithoutDesignProfile.visual_design_profile_id;
+  assert.equal(
+    validSquidCreativeMetadata(generatedWithoutDesignProfile, "classic"),
+    false,
+  );
+  assert.equal(validSquidCreativeMetadata({
     ...squidCreativeMetadata("classic", "worldbuilding"),
   }, "classic"), false);
 
@@ -318,6 +341,11 @@ test("accepts only a matching server-routed Squid creative family contract", () 
   assert.equal(validSquidCreativeMetadata({
     ...remix,
     channel_profile: "x_square",
+  }, "remix"), false);
+  assert.equal(validSquidCreativeMetadata({
+    ...remix,
+    visual_design_profile_id: SQUID_GENERATED_DESIGN_PROFILE_ID,
+    visual_design_profile_version: SQUID_GENERATED_DESIGN_PROFILE_VERSION,
   }, "remix"), false);
 });
 
@@ -517,12 +545,14 @@ test("news card generation persists one immutable PNG before returning", async (
         render_strategy: "generated_gtm",
         creative_family_policy_version: SQUID_CREATIVE_FAMILY_POLICY_VERSION,
         visual_reference_pack_id: "squid/editorial-big-type",
-        visual_reference_pack_version: 1,
+        visual_reference_pack_version: SQUID_VISUAL_REFERENCE_PACK_VERSION,
         channel_profile: "x_square",
         brand_tokens_version: "squid-brand-tokens@1",
         template_version: SQUID_GENERATED_TEMPLATE_VERSION,
         asset_pack_version: "squid-local-approved@1",
         font_status: "pretendard_fallback",
+        visual_design_profile_id: SQUID_GENERATED_DESIGN_PROFILE_ID,
+        visual_design_profile_version: SQUID_GENERATED_DESIGN_PROFILE_VERSION,
       },
     );
   });

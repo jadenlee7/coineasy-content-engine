@@ -110,19 +110,32 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "coineasy" not in classic_html.lower()
     assert "size > minimum" in classic_html
     assert ".canvas--legacy" in classic_html
-    assert "#E8E6EA" in classic_html
-    assert ".canvas:not(.canvas--legacy)::before" in classic_html
-    assert "background: rgba(255, 255, 255, .97)" in classic_html
+    assert "linear-gradient(132deg, #C99AF0" in classic_html
+    assert "width: 1200px" in classic_html
+    assert "top: -40px" in classic_html
+    assert "white oval" not in classic_html.lower()
     assert 'class="stage-word stage-word--top"' in classic_html
-    assert 'class="stage-word stage-word--bottom"' in classic_html
+    assert 'class="stage-word stage-word--bottom"' not in classic_html
+    assert "window.__evaluateSquidGeneratedHeadlineLayout = async () =>" in classic_html
+    assert "await document.fonts.ready" in classic_html
+    assert "if (!generatedFamilies.has(variant))" in classic_html
+    assert "headline.style.lineHeight = size >= 150 ? '1.04' : '.82'" in classic_html
+    legacy_fit_branch = classic_html.split("if (!generatedFamilies.has(variant))", 1)[1].split(
+        "headline.style.fontSize = `${size}px`;", 1
+    )[0]
+    assert "headline.style.lineHeight" not in legacy_fit_branch
+
+    renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
+    assert "window.__evaluateSquidGeneratedHeadlineLayout()" in renderer_source
+    assert "Squid generated headline did not pass browser layout" in renderer_source
 
 
 def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():
-    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@3"
+    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@4"
 
     netlify_source = Path("netlify/functions/news-card.mts").read_text()
-    assert '"squid-generated-gtm@3"' in netlify_source
-    assert '"squid-generated-gtm@2"' not in netlify_source
+    assert '"squid-generated-gtm@4"' in netlify_source
+    assert '"squid-generated-gtm@3"' not in netlify_source
     assert "payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION" in netlify_source
 
 
@@ -193,13 +206,13 @@ def test_squid_generated_html_routes_the_same_four_public_families_as_editable_s
         "brand_font_links": "",
     }
 
-    safe_frame_words = {
-        "editorial_big_type": "UPDATE",
-        "milestone_metric": "MILESTONE",
-        "status_progress": "STATUS",
-        "product_proof": "ROUTE",
-    }
-    for family, frame_word in safe_frame_words.items():
+    safe_families = (
+        "editorial_big_type",
+        "milestone_metric",
+        "status_progress",
+        "product_proof",
+    )
+    for family in safe_families:
         html = template.render(
             **common,
             creative_family=family,
@@ -210,16 +223,20 @@ def test_squid_generated_html_routes_the_same_four_public_families_as_editable_s
         assert "COINEASY / KOREA" not in html
         assert "#E6FA36" in html
         assert "#BC8EE4" in html
-        assert "#E8E6EA" in html
+        assert "linear-gradient(132deg, #C99AF0" in html
+        assert "left: -110px" in html
+        assert "width: 1200px" in html
+        assert "font-size: 168px" in html
         assert (
-            '<div class="stage-word stage-word--top" aria-hidden="true">SQUID</div>'
+            '<div class="stage-word stage-word--top" aria-hidden="true">Squid</div>'
             in html
         )
-        assert (
-            '<div class="stage-word stage-word--bottom" aria-hidden="true">'
-            f"{frame_word}</div>"
-            in html
-        )
+        assert 'stage-word--bottom' not in html
+        assert 'class="eyebrow"' not in html
+        assert '<section class="support">' not in html
+        assert '<footer class="footer">' not in html
+        assert 'class="brand-logo' not in html
+        assert "background: rgba(255, 255, 255, .97)" not in html
         if family == "product_proof":
             assert "canvas--status_progress" not in html.split("<main", 1)[1].split(">", 1)[0]
             assert 'class="form-language"' in html
@@ -431,7 +448,13 @@ async def test_squid_generic_template_requests_use_the_official_classic(
     assert result.spec["render_strategy"] == "generated_gtm"
     assert result.spec["channel_profile"] == "x_square"
     assert result.spec["creative_family_policy_version"] == "squid-visual-routing@1"
-    assert result.spec["template_version"] == "squid-generated-gtm@3"
+    assert result.spec["visual_reference_pack_version"] == 2
+    assert (
+        result.spec["visual_design_profile_id"]
+        == "squid/full-bleed-character-type"
+    )
+    assert result.spec["visual_design_profile_version"] == 1
+    assert result.spec["template_version"] == "squid-generated-gtm@4"
     assert result.spec["asset_pack_version"] == "squid-local-approved@1"
     display_font_path = get_client_config("squid").font_display_file_path
     assert result.spec["font_status"] == (
@@ -551,6 +574,8 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
         mock_mode=True,
         mock_response={
             **MOCK_SPEC,
+            "visual_design_profile_id": "rogue/llm-profile",
+            "visual_design_profile_version": 999,
             "source_logo_visible": True,
             "source_text_visible": True,
             "translation_regions": [{
@@ -597,6 +622,9 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
     assert result.source_image_sha256 == hashlib.sha256(b"image").hexdigest()
     assert result.spec["render_strategy"] == "source_remix"
     assert result.spec["channel_profile"] == "source_native"
+    assert result.spec["visual_reference_pack_version"] == 2
+    assert "visual_design_profile_id" not in result.spec
+    assert "visual_design_profile_version" not in result.spec
     assert result.spec["template_version"] == "squid-source-remix@1"
     assert result.spec["asset_pack_version"] == "official-source-media@1"
     assert result.source_visual_path == str(tmp_path / "source_visual_cleaned.jpg")

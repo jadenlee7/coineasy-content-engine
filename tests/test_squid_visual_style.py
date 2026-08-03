@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from core.squid_visual_style import (
+    SQUID_GENERATED_DESIGN_PROFILE_ID,
+    SQUID_GENERATED_DESIGN_PROFILE_VERSION,
     SQUID_VISUAL_POLICY_VERSION,
     SQUID_VISUAL_REFERENCE_PACK_VERSION,
     classify_squid_visual_style,
@@ -144,6 +146,8 @@ def test_audit_metadata_contains_stable_policy_pack_and_channel_fields():
         "visual_automatic": True,
         "channel_profile": "x_square",
         "visual_metric": "5 million",
+        "visual_design_profile_id": SQUID_GENERATED_DESIGN_PROFILE_ID,
+        "visual_design_profile_version": SQUID_GENERATED_DESIGN_PROFILE_VERSION,
     }
 
 
@@ -189,6 +193,10 @@ def test_every_family_has_a_versioned_official_reference_pack(family: str):
             "product_proof",
         ),
         (
+            "https://x.com/squidrouter/status/2083266484789514640",
+            "product_proof",
+        ),
+        (
             "https://x.com/squidrouter/status/2083583547353501977",
             "worldbuilding",
         ),
@@ -215,6 +223,26 @@ def test_non_milestone_metadata_never_invents_a_metric():
 
     assert decision.verified_metric is None
     assert "visual_metric" not in decision.as_spec_metadata()
+
+
+def test_design_profile_is_bound_only_to_generated_gtm():
+    generated = classify_squid_visual_style(
+        "A factual ecosystem announcement with enough detail for an editorial."
+    )
+    source_remix = classify_squid_visual_style(
+        "Squid is live on Telegram.",
+        source_url="https://x.com/squidrouter/status/2083266484789514640",
+        has_official_media=True,
+    )
+
+    assert generated.as_spec_metadata()["visual_design_profile_id"] == (
+        SQUID_GENERATED_DESIGN_PROFILE_ID
+    )
+    assert generated.as_spec_metadata()["visual_design_profile_version"] == (
+        SQUID_GENERATED_DESIGN_PROFILE_VERSION
+    )
+    assert "visual_design_profile_id" not in source_remix.as_spec_metadata()
+    assert "visual_design_profile_version" not in source_remix.as_spec_metadata()
 
 
 def test_metric_is_copied_from_source_without_synthesizing_a_number():

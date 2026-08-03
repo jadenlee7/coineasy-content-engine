@@ -239,8 +239,35 @@ def test_approved_copy_must_preserve_the_reviewed_visual_line_count(
         resolve_approved_clean_plate("squid", STATUS_URL, MEDIA_URL, source)
 
 
-def test_production_registry_has_no_synthesized_telegram_override():
-    assert dict(clean_plate_registry._APPROVED_CLEAN_PLATES) == {}
+def test_production_registry_has_only_the_reviewed_telegram_clean_plate():
+    entries = dict(clean_plate_registry._APPROVED_CLEAN_PLATES)
+
+    assert set(entries) == {(
+        "squid",
+        "https://x.com/squidrouter/status/2083266484789514640",
+        "https://pbs.twimg.com/media/HOk_0-FakAAENyq.jpg?name=orig",
+    )}
+    entry = next(iter(entries.values()))
+    assert entry.source_sha256 == (
+        "e6f4047e165cf5d72f59ba4676234acafb86b1b61ee0954352bd578fd5ddec1e"
+    )
+    assert entry.clean_plate_sha256 == (
+        "098218f108c6c669e9bccae7c26c26100cd135f5fb7f49fa6c0bbddd97cfaadd"
+    )
+    assert entry.approval_version == "squid-telegram-launch-ko@1"
+    assert [region.text for region in entry.translation_regions] == [
+        "Squid가",
+        "텔레그램에\n왔어요",
+    ]
+    clean_plate = (
+        Path(clean_plate_registry.__file__).resolve().parents[2]
+        / entry.clean_plate_relative_path
+    )
+    clean_plate_raw = clean_plate.read_bytes()
+    assert hashlib.sha256(clean_plate_raw).hexdigest() == entry.clean_plate_sha256
+    with Image.open(BytesIO(clean_plate_raw)) as image:
+        assert image.format == "JPEG"
+        assert image.size == (entry.width, entry.height)
 
 
 def test_approved_visual_override_skips_sampled_discovery_and_audit(monkeypatch):

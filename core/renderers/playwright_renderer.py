@@ -101,6 +101,26 @@ async def render_png(
                         "document.fonts.status === 'loaded'",
                         timeout=2_500,
                     )
+                    headline_layout_status = await page.evaluate(
+                        "window.__evaluateSquidGeneratedHeadlineLayout "
+                        "? window.__evaluateSquidGeneratedHeadlineLayout() : null"
+                    )
+                    generated_families = {
+                        "editorial_big_type",
+                        "milestone_metric",
+                        "status_progress",
+                        "product_proof",
+                    }
+                    if slots.get("creative_family") in generated_families and (
+                        not isinstance(headline_layout_status, dict)
+                        or headline_layout_status.get("safe") is not True
+                        or headline_layout_status.get("variant")
+                        != slots.get("creative_family")
+                        or not 1 <= headline_layout_status.get("renderedLines", 0) <= 2
+                    ):
+                        raise TranslationLayoutError(
+                            "Squid generated headline did not pass browser layout"
+                        )
                 else:
                     await page.set_content(html, wait_until="networkidle")
                 await page.wait_for_timeout(wait_ms)

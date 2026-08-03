@@ -94,7 +94,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
 export const SQUID_CREATIVE_FAMILY_POLICY_VERSION = "squid-visual-routing@1";
-export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@3";
+export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@4";
+export const SQUID_VISUAL_REFERENCE_PACK_VERSION = 2;
+export const SQUID_GENERATED_DESIGN_PROFILE_ID = "squid/full-bleed-character-type";
+export const SQUID_GENERATED_DESIGN_PROFILE_VERSION = 1;
 const SQUID_VISUAL_REFERENCE_PACKS = {
   editorial_big_type: {
     id: "squid/editorial-big-type",
@@ -110,7 +113,10 @@ const SQUID_VISUAL_REFERENCE_PACKS = {
   },
   product_proof: {
     id: "squid/product-proof",
-    statusUrls: ["https://x.com/squidrouter/status/2079628218403803481"],
+    statusUrls: [
+      "https://x.com/squidrouter/status/2079628218403803481",
+      "https://x.com/squidrouter/status/2083266484789514640",
+    ],
   },
   worldbuilding: {
     id: "squid/worldbuilding",
@@ -241,10 +247,13 @@ function buildNewsCardRequestHash(
   // be silently reused after the deterministic policy changes.
   if (input.clientId === "squid" && includeSquidCreativePolicy) {
     payload.creative_family_policy_version = SQUID_CREATIVE_FAMILY_POLICY_VERSION;
+    payload.visual_reference_pack_version = SQUID_VISUAL_REFERENCE_PACK_VERSION;
     // A generated-stage geometry change must not replay a durable PNG rendered
     // with an older template. Remix keeps its separate source-native contract.
     if (input.templateStyle !== "remix") {
       payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION;
+      payload.visual_design_profile_id = SQUID_GENERATED_DESIGN_PROFILE_ID;
+      payload.visual_design_profile_version = SQUID_GENERATED_DESIGN_PROFILE_VERSION;
     }
   }
   // The automation-only pinned URL extends the idempotency identity when it
@@ -337,7 +346,7 @@ export function validSquidCreativeMetadata(
     || spec.render_strategy !== expectedStrategy
     || spec.creative_family_policy_version !== SQUID_CREATIVE_FAMILY_POLICY_VERSION
     || spec.visual_reference_pack_id !== reference.id
-    || spec.visual_reference_pack_version !== 1
+    || spec.visual_reference_pack_version !== SQUID_VISUAL_REFERENCE_PACK_VERSION
     || spec.visual_automatic !== true
     || spec.brand_tokens_version !== "squid-brand-tokens@1"
     || spec.template_version !== expectedTemplateVersion
@@ -357,6 +366,16 @@ export function validSquidCreativeMetadata(
   ) return false;
   const expectedProfile = templateStyle === "remix" ? "source_native" : "x_square";
   if (spec.channel_profile !== expectedProfile) return false;
+  const hasDesignProfileId = Object.hasOwn(spec, "visual_design_profile_id");
+  const hasDesignProfileVersion = Object.hasOwn(spec, "visual_design_profile_version");
+  if (templateStyle === "classic") {
+    if (
+      spec.visual_design_profile_id !== SQUID_GENERATED_DESIGN_PROFILE_ID
+      || spec.visual_design_profile_version !== SQUID_GENERATED_DESIGN_PROFILE_VERSION
+    ) return false;
+  } else if (hasDesignProfileId || hasDesignProfileVersion) {
+    return false;
+  }
   if (
     spec.visual_metric !== undefined
     && (
@@ -1021,6 +1040,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
         template_version: resultSpec.template_version,
         asset_pack_version: resultSpec.asset_pack_version,
         font_status: resultSpec.font_status,
+        visual_design_profile_id: resultSpec.visual_design_profile_id,
+        visual_design_profile_version: resultSpec.visual_design_profile_version,
       }
       : {};
     const channelCopy = buildChannelCopy(
