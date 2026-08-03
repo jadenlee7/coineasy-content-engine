@@ -33,6 +33,8 @@ class OriginTrailBuzzDeliveryMigrationTests(unittest.TestCase):
     def test_event_id_is_recomputed_from_workspace_and_job(self):
         claim = _function("claim_origintrail_buzz_delivery")
         self.assertIn("private.origintrail_buzz_event_id", claim)
+        self.assertIn("extensions.digest", SQL)
+        self.assertNotIn("public.digest", SQL)
         self.assertIn("OriginTrail Buzz event identity does not match", claim)
         self.assertIn("review_job.input ->> 'source_url'", claim)
         self.assertIn("origin_trail/status", claim)

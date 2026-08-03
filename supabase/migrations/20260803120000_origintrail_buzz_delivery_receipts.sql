@@ -117,7 +117,7 @@ immutable
 strict
 set search_path = ''
 as $$
-    select encode(public.digest(
+    select encode(extensions.digest(
         convert_to('coineasy-buzz-shadow', 'UTF8') || decode('00', 'hex')
         || convert_to('1.0', 'UTF8') || decode('00', 'hex')
         || convert_to(target_workspace_id::text, 'UTF8') || decode('00', 'hex')
