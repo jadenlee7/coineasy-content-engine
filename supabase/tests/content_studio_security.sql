@@ -484,12 +484,15 @@ begin
         raise exception 'editor looked up a server-only tutorial generation';
     exception when insufficient_privilege then null;
     end;
-    delete from storage.objects
-    where bucket_id = 'content-studio';
-    get diagnostics deleted_count = row_count;
-    if deleted_count <> 0 then
-        raise exception 'editor deleted an immutable storage object';
-    end if;
+    begin
+        delete from storage.objects
+        where bucket_id = 'content-studio';
+        get diagnostics deleted_count = row_count;
+        if deleted_count <> 0 then
+            raise exception 'editor deleted an immutable storage object';
+        end if;
+    exception when insufficient_privilege then null;
+    end;
 end
 $test$;
 
@@ -965,6 +968,7 @@ begin
     exception when check_violation then null;
     end;
     begin
+        perform set_config('storage.allow_delete_query', 'true', true);
         delete from storage.objects
         where bucket_id = 'content-studio'
           and name = '20000000-0000-0000-0000-000000000001/squid/91000000-0000-4000-8000-000000000001/lesson_01.png';
@@ -1015,9 +1019,7 @@ begin
     end if;
     delete from public.assets
     where id = '91000000-0000-4000-8000-000000000002';
-    delete from storage.objects
-    where bucket_id = 'content-studio'
-      and name = '20000000-0000-0000-0000-000000000001/squid/91000000-0000-4000-8000-000000000002/lesson_02.png';
+    -- The outer transaction rollback removes the matching Storage fixture.
 end
 $test$;
 

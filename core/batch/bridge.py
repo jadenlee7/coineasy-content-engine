@@ -48,19 +48,11 @@ class BatchQueueBridge:
     ) -> BatchAdmission:
         if not isinstance(allow_existing_readback, bool):
             raise ValueError("allow_existing_readback must be a boolean")
-        decision = self.policy.route(item, now=now)
-        replay_only = (
-            allow_existing_readback
-            and decision.mode == "manual_sync"
-            and decision.reason == "batch_deadline_too_close"
-        )
-        if decision.mode != "batch" and not replay_only:
-            return BatchAdmission(
-                mode=decision.mode,
-                reason=decision.reason,
-                job_id=None,
-            )
-        if replay_only:
+        # A producer retry may only recover the exact admission already stored
+        # under this idempotency key. This branch intentionally runs before
+        # policy routing: current deadline or budget state must never turn an
+        # uncertain prior handoff into a fresh queue admission.
+        if allow_existing_readback:
             job_id = await self.repository.queue_job(
                 item=item,
                 idempotency_key=idempotency_key,
@@ -71,6 +63,13 @@ class BatchQueueBridge:
                 mode="batch",
                 reason="batch_idempotent_readback",
                 job_id=job_id,
+            )
+        decision = self.policy.route(item, now=now)
+        if decision.mode != "batch":
+            return BatchAdmission(
+                mode=decision.mode,
+                reason=decision.reason,
+                job_id=None,
             )
         self._validate_budget_window(
             budget_key=budget_key,

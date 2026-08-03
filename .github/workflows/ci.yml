@@ -47,11 +47,109 @@ jobs:
           .
       - name: Run the built image without DB or provider calls
         run: |
-          docker run --rm \
+          docker run --rm --network none \
             --env BATCH_EXPERIMENT_MODE=dry_run \
             coineasy-batch-ci \
             python -m scripts.run_batch_dispatcher --dry-run \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result["ok"] is True; assert result["mode"] == "dry_run"; assert result["provider_calls"] is False'
+      - name: Preflight the live canary with networking disabled
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          from decimal import Decimal
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          from core.batch.canary import (
+              CONFIG_SCHEMA,
+              DISPATCH_SCHEMA,
+              canonical_sha256,
+              config_subject,
+              dispatch_subject,
+          )
+
+          now = datetime.now(timezone.utc)
+          start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(
+              hour=0, minute=0, second=0, microsecond=0
+          )
+          end = start + timedelta(hours=48)
+          approved_at = now - timedelta(minutes=5)
+          expires_at = now + timedelta(hours=1)
+          utc_text = lambda value: value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+          values = {
+              "BATCH_EXPERIMENT_MODE": "live",
+              "BATCH_ALLOWED_CLIENTS": "origintrail",
+              "BATCH_DAILY_CAP_USD": "0.05",
+              "BATCH_MAX_CLAIMS": "1",
+              "BATCH_MAX_REQUESTS_PER_BATCH": "1",
+              "BATCH_TIMEZONE": "Asia/Seoul",
+              "BATCH_EXPERIMENT_START_AT": start.isoformat(),
+              "BATCH_EXPERIMENT_END_AT": end.isoformat(),
+              "BATCH_CANARY_ENABLED": "true",
+              "BATCH_CANARY_ENVIRONMENT": "staging",
+              "RAILWAY_ENVIRONMENT_NAME": "staging",
+              "BATCH_CANARY_RELEASE_SHA": "a" * 40,
+              "RAILWAY_GIT_COMMIT_SHA": "a" * 40,
+              "SUPABASE_URL": "https://ci.supabase.co",
+              "SUPABASE_SERVICE_ROLE_KEY": "s" * 40,
+              "CONTENT_STUDIO_WORKSPACE_ID": "11111111-1111-4111-8111-111111111111",
+              "OPENAI_API_KEY": "sk-ci-key-that-is-long-enough",
+          }
+          digest = canonical_sha256(config_subject(
+              environment=values["BATCH_CANARY_ENVIRONMENT"],
+              release_sha=values["BATCH_CANARY_RELEASE_SHA"],
+              supabase_url=values["SUPABASE_URL"],
+              workspace_id=values["CONTENT_STUDIO_WORKSPACE_ID"],
+              allowed_clients=frozenset({"origintrail"}),
+              daily_cap_usd=Decimal(values["BATCH_DAILY_CAP_USD"]),
+              max_claims=int(values["BATCH_MAX_CLAIMS"]),
+              max_requests_per_batch=int(
+                  values["BATCH_MAX_REQUESTS_PER_BATCH"]
+              ),
+              experiment_start_at=datetime.fromisoformat(
+                  values["BATCH_EXPERIMENT_START_AT"]
+              ),
+              experiment_end_at=datetime.fromisoformat(
+                  values["BATCH_EXPERIMENT_END_AT"]
+              ),
+              timezone_name=values["BATCH_TIMEZONE"],
+          ))
+          values["BATCH_CANARY_APPROVAL_RECEIPT"] = json.dumps({
+              "version": CONFIG_SCHEMA,
+              "approval_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "approved_by": "operator:ci",
+              "approved_at": utc_text(approved_at),
+              "expires_at": utc_text(expires_at),
+              "subject_sha256": digest,
+          }, separators=(",", ":"))
+          dispatch = dispatch_subject(
+              config_subject_sha256=digest,
+              config_approval_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              job_id="22222222-2222-4222-8222-222222222222",
+              input_sha256="c" * 64,
+              request_sha256="d" * 64,
+          )
+          values["BATCH_CANARY_DISPATCH_RECEIPT"] = json.dumps({
+              "version": DISPATCH_SCHEMA,
+              "dispatch_approval_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "approved_by": "operator:ci",
+              "approved_at": utc_text(approved_at),
+              "expires_at": utc_text(expires_at),
+              "job_id": "22222222-2222-4222-8222-222222222222",
+              "input_sha256": "c" * 64,
+              "request_sha256": "d" * 64,
+              "subject_sha256": canonical_sha256(dispatch),
+          }, separators=(",", ":"))
+          Path("/tmp/coineasy-batch-preflight.env").write_text(
+              "".join(f"{name}={value}\n" for name, value in values.items())
+          )
+          PY
+          docker run --rm --network none \
+            --env-file /tmp/coineasy-batch-preflight.env \
+            coineasy-batch-ci \
+            python -m scripts.run_batch_dispatcher --preflight-live \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result["ok"] is True; assert result["config_approval_phase"] == "active"; assert result["dispatch_phase"] == "active"; assert result["canary_dispatch"]["request_sha256"] == "d" * 64; assert result["runtime_environment_verified"] is True; assert result["runtime_release_verified"] is True; assert result["database_calls"] is False; assert result["provider_calls"] is False; assert result["submissions_enabled"] is False'
 
   publication-image:
     runs-on: ubuntu-latest
