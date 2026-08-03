@@ -17,6 +17,7 @@ from core.llm.news_card_pipeline import _minimum_squid_font_percent
 from core.renderers.playwright_renderer import (
     TranslationLayoutError,
     _build_font_head,
+    _expects_squid_generated_headline_layout,
     _inject_brand_slots,
 )
 from core.sources.source_image import PreparedSourceImage, SourceImageError
@@ -128,6 +129,17 @@ def test_news_card_templates_are_allowlisted_and_present():
     renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
     assert "window.__evaluateSquidGeneratedHeadlineLayout()" in renderer_source
     assert "Squid generated headline did not pass browser layout" in renderer_source
+
+
+def test_squid_generated_headline_guard_excludes_source_remix_audit_family():
+    assert _expects_squid_generated_headline_layout({
+        "creative_family": "product_proof",
+        "render_strategy": "source_remix",
+    }) is False
+    assert _expects_squid_generated_headline_layout({
+        "creative_family": "product_proof",
+        "render_strategy": "generated_gtm",
+    }) is True
 
 
 def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():
