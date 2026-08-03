@@ -31,6 +31,13 @@ EDU_CAROUSEL_SIZE = (1080, 1080)     # square for Instagram/X carousel
 NEWS_CARD_16x9 = (1200, 675)         # 16:9 for X, Telegram (reserved, unused)
 NEWS_CARD_1x1 = (1080, 1080)         # square — primary news card viewport
 
+_SQUID_GENERATED_HEADLINE_FAMILIES = frozenset({
+    "editorial_big_type",
+    "milestone_metric",
+    "status_progress",
+    "product_proof",
+})
+
 
 class TranslationLayoutError(RuntimeError):
     """The browser rejected an in-place translated-text layout.
@@ -39,6 +46,19 @@ class TranslationLayoutError(RuntimeError):
     with the untouched source creative instead of publishing a cleaned raster
     whose replacement text was not rendered.
     """
+
+
+def _expects_squid_generated_headline_layout(slots: dict[str, Any]) -> bool:
+    """Return whether this render owns a generated Squid headline.
+
+    Source-remix specs retain ``creative_family`` as audit metadata, but their
+    headline lives inside ``translation_regions`` on the official creative.
+    Only the generated-GTM render strategy uses the title-card headline guard.
+    """
+    return (
+        slots.get("render_strategy") == "generated_gtm"
+        and slots.get("creative_family") in _SQUID_GENERATED_HEADLINE_FAMILIES
+    )
 
 
 async def render_png(
@@ -105,13 +125,7 @@ async def render_png(
                         "window.__evaluateSquidGeneratedHeadlineLayout "
                         "? window.__evaluateSquidGeneratedHeadlineLayout() : null"
                     )
-                    generated_families = {
-                        "editorial_big_type",
-                        "milestone_metric",
-                        "status_progress",
-                        "product_proof",
-                    }
-                    if slots.get("creative_family") in generated_families and (
+                    if _expects_squid_generated_headline_layout(slots) and (
                         not isinstance(headline_layout_status, dict)
                         or headline_layout_status.get("safe") is not True
                         or headline_layout_status.get("variant")
