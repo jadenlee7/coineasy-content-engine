@@ -15,6 +15,9 @@ _FALSE_VALUES = frozenset({"false", ""})
 _TOKEN_INVALID = re.compile(r"[^\x21-\x7e]")
 _HEX_KEY = re.compile(r"^[a-fA-F0-9]{64}$")
 _NSEC_KEY = re.compile(r"^nsec1[023456789acdefghjklmnpqrstuvwxyz]{20,120}$")
+_LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+_LOWER_HEX_128 = re.compile(r"^[0-9a-f]{128}$")
+_CANONICAL_DECIMAL = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _RESERVED_SECRET_NAMES = (
     "SUPABASE_SERVICE_ROLE_KEY",
     "STUDIO_ACCESS_TOKEN",
@@ -83,6 +86,44 @@ def _bounded_int(
         raise ValueError(f"{name} must be an integer") from exc
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _nip_oa_auth_tag(value: object) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(isinstance(item, str) for item in value)
+    ):
+        raise ValueError("BUZZ_AUTH_TAG must be a four-string NIP-OA auth tag")
+
+    tag_name, owner_pubkey, conditions, signature = value
+    if tag_name != "auth":
+        raise ValueError("BUZZ_AUTH_TAG must be a NIP-OA auth tag")
+    if not _LOWER_HEX_64.fullmatch(owner_pubkey):
+        raise ValueError("BUZZ_AUTH_TAG owner pubkey is invalid")
+    if not _LOWER_HEX_128.fullmatch(signature):
+        raise ValueError("BUZZ_AUTH_TAG signature is invalid")
+
+    if conditions:
+        for clause in conditions.split("&"):
+            if clause.startswith("kind="):
+                raw_value = clause.removeprefix("kind=")
+                maximum = 65_535
+            elif clause.startswith("created_at<"):
+                raw_value = clause.removeprefix("created_at<")
+                maximum = 4_294_967_295
+            elif clause.startswith("created_at>"):
+                raw_value = clause.removeprefix("created_at>")
+                maximum = 4_294_967_295
+            else:
+                raise ValueError("BUZZ_AUTH_TAG conditions are invalid")
+            if (
+                not _CANONICAL_DECIMAL.fullmatch(raw_value)
+                or int(raw_value) > maximum
+            ):
+                raise ValueError("BUZZ_AUTH_TAG conditions are invalid")
+
     return value
 
 
@@ -168,9 +209,10 @@ class BuzzDeliverySettings:
                 decoded = json.loads(raw_auth)
             except ValueError as exc:
                 raise ValueError("BUZZ_AUTH_TAG must be JSON") from exc
-            if not isinstance(decoded, dict):
-                raise ValueError("BUZZ_AUTH_TAG must be a JSON object")
-            auth_tag = json.dumps(decoded, separators=(",", ":"), sort_keys=True)
+            auth_tag = json.dumps(
+                _nip_oa_auth_tag(decoded),
+                separators=(",", ":"),
+            )
         try:
             channel_id = str(uuid.UUID(env.get("BUZZ_CHANNEL_ID", "").strip()))
         except (ValueError, AttributeError) as exc:

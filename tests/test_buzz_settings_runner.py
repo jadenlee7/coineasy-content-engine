@@ -25,6 +25,10 @@ def _env(*, enabled: str = "false") -> dict[str, str]:
     }
 
 
+def _auth_tag(conditions: str = "") -> str:
+    return json.dumps(["auth", "a" * 64, conditions, "b" * 128])
+
+
 class BuzzSettingsRunnerTests(unittest.TestCase):
     def test_validation_mode_constructs_no_io_worker(self):
         with patch.dict(os.environ, _env(), clear=True), patch.object(
@@ -81,6 +85,42 @@ class BuzzSettingsRunnerTests(unittest.TestCase):
         values["BUZZ_DELIVERY_ALLOWED_CLIENTS"] = "origintrail,squid"
         with self.assertRaisesRegex(ValueError, "must be origintrail"):
             BuzzDeliverySettings.from_env_for_validation(values)
+
+    def test_settings_accept_exact_nip_oa_auth_tag(self):
+        values = _env()
+        values["BUZZ_AUTH_TAG"] = _auth_tag(
+            "kind=65535&created_at<4294967295&created_at>0"
+        )
+        settings = BuzzDeliverySettings.from_env_for_validation(values)
+        self.assertEqual(
+            settings.auth_tag,
+            '["auth","' + ("a" * 64) + '",'
+            '"kind=65535&created_at<4294967295&created_at>0","'
+            + ("b" * 128) + '"]',
+        )
+
+    def test_settings_reject_legacy_object_auth_tag(self):
+        values = _env()
+        values["BUZZ_AUTH_TAG"] = json.dumps({"auth": ["a" * 64]})
+        with self.assertRaisesRegex(ValueError, "four-string NIP-OA"):
+            BuzzDeliverySettings.from_env_for_validation(values)
+
+    def test_settings_reject_malformed_nip_oa_auth_tags(self):
+        malformed = (
+            json.dumps(["delegation", "a" * 64, "", "b" * 128]),
+            json.dumps(["auth", "A" * 64, "", "b" * 128]),
+            json.dumps(["auth", "a" * 64, "kind=01", "b" * 128]),
+            json.dumps(["auth", "a" * 64, "kind=65536", "b" * 128]),
+            json.dumps(["auth", "a" * 64, "created_at<4294967296", "b" * 128]),
+            json.dumps(["auth", "a" * 64, "kind=1&", "b" * 128]),
+            json.dumps(["auth", "a" * 64, "", "B" * 128]),
+        )
+        for auth_tag in malformed:
+            with self.subTest(auth_tag_length=len(auth_tag)):
+                values = _env()
+                values["BUZZ_AUTH_TAG"] = auth_tag
+                with self.assertRaisesRegex(ValueError, "BUZZ_AUTH_TAG"):
+                    BuzzDeliverySettings.from_env_for_validation(values)
 
 
 if __name__ == "__main__":
