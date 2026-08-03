@@ -7,6 +7,27 @@ export type SquidCreativeFamily =
   | "product_proof"
   | "worldbuilding";
 
+export const SQUID_GENERATED_EDITABLE_TEMPLATE_VERSION = "squid-generated-gtm@4";
+export const SQUID_GENERATED_EDITABLE_PROFILE_ID = "squid/full-bleed-character-type";
+export const SQUID_GENERATED_EDITABLE_PROFILE_VERSION = 1;
+
+const SQUID_GENERATED_EDITABLE_FAMILIES = new Set<string>([
+  "editorial_big_type",
+  "milestone_metric",
+  "status_progress",
+  "product_proof",
+]);
+
+export function isSupportedSquidGeneratedEditableSpec(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const spec = value as Record<string, unknown>;
+  return spec.render_strategy === "generated_gtm"
+    && SQUID_GENERATED_EDITABLE_FAMILIES.has(String(spec.creative_family || ""))
+    && spec.template_version === SQUID_GENERATED_EDITABLE_TEMPLATE_VERSION
+    && spec.visual_design_profile_id === SQUID_GENERATED_EDITABLE_PROFILE_ID
+    && spec.visual_design_profile_version === SQUID_GENERATED_EDITABLE_PROFILE_VERSION;
+}
+
 export function effectiveEditableTemplateStyle(
   clientId: EditableClientId,
   templateStyle: EditableTemplateStyle,
@@ -142,11 +163,8 @@ const BRANDS: Record<EditableClientId, Brand> = {
 };
 
 const SQUID_GENERATED_TOKENS = {
-  lime: "#E6FA36",
   lavender: "#BC8EE4",
   lavenderLight: "#E6CCFC",
-  deepPurple: "#1C0F3D",
-  paper: "#E8E6EA",
   black: "#000000",
   white: "#FFFFFF",
 } as const;
@@ -609,8 +627,6 @@ type SquidGeneratedAssets = Required<Pick<
   "squidFormLanguage" | "squidSquib" | "squidBubbles"
 >> & {
   family: SquidGeneratedFamily;
-  logo: string;
-  logoVariant: "light";
 };
 
 const SQUID_GENERATED_ROOT_IDS: Record<SquidGeneratedFamily, string> = {
@@ -620,30 +636,12 @@ const SQUID_GENERATED_ROOT_IDS: Record<SquidGeneratedFamily, string> = {
   product_proof: "Squid-Generated-Product-Proof",
 };
 
-const SQUID_GENERATED_FRAME_WORDS: Record<SquidGeneratedFamily, string> = {
-  editorial_big_type: "UPDATE",
-  milestone_metric: "MILESTONE",
-  status_progress: "STATUS",
-  product_proof: "ROUTE",
-};
-
-const SQUID_GENERATED_BOTTOM_FRAME_GEOMETRY: Record<
-  SquidGeneratedFamily,
-  { x: number; textLength: number }
-> = {
-  editorial_big_type: { x: -3, textLength: 1100 },
-  milestone_metric: { x: -34, textLength: 1148 },
-  status_progress: { x: 4, textLength: 1100 },
-  product_proof: { x: 74, textLength: 948 },
-};
-
 function requiredSquidGeneratedAssets(
   assets: EditableCardAssets,
   family: SquidGeneratedFamily,
 ): SquidGeneratedAssets {
   if (
-    !assets.logoLight
-    || !assets.squidFormLanguage
+    !assets.squidFormLanguage
     || !assets.squidSquib
     || !assets.squidBubbles
   ) {
@@ -651,36 +649,10 @@ function requiredSquidGeneratedAssets(
   }
   return {
     family,
-    logo: assets.logoLight,
-    logoVariant: "light",
     squidFormLanguage: assets.squidFormLanguage,
     squidSquib: assets.squidSquib,
     squidBubbles: assets.squidBubbles,
   };
-}
-
-function squidGeneratedFooter(spec: NormalizedSpec): string {
-  return `<g id="Public-Source-Metadata">
-    <text id="Source-URL" x="90" y="790" fill="${SQUID_GENERATED_TOKENS.deepPurple}" fill-opacity=".58" font-family="Inter, Pretendard, sans-serif" font-size="14" font-weight="720" letter-spacing=".45">${escapeXml(compactSourceLabel(spec.sourceUrl))}</text>
-    <text id="Date" x="760" y="790" text-anchor="end" fill="${SQUID_GENERATED_TOKENS.deepPurple}" fill-opacity=".52" font-family="Inter, Pretendard, sans-serif" font-size="14" font-weight="720" letter-spacing=".45">${escapeXml(spec.date)}</text>
-  </g>`;
-}
-
-function squidGeneratedBody(
-  spec: NormalizedSpec,
-  y: number,
-): string {
-  // Brand QA permits up to 23 Korean characters per support line. At 24px,
-  // 44 conservative units keeps that complete line inside the 670px story box.
-  const lines = spec.bodyLines.slice(0, 2).flatMap((line) => wrapSvgText(line, 44, 1));
-  return textLayers(
-    "Support",
-    lines,
-    425,
-    y,
-    34,
-    `text-anchor="middle" fill="${SQUID_GENERATED_TOKENS.deepPurple}" font-family="Pretendard, sans-serif" font-size="24" font-weight="560" letter-spacing="-1"`,
-  );
 }
 
 function squidGeneratedStageSvg(
@@ -689,69 +661,67 @@ function squidGeneratedStageSvg(
   assets: SquidGeneratedAssets,
 ): string {
   const hasMetric = assets.family === "milestone_metric" && Boolean(spec.visualMetric);
-  const maximumHeadlineSize = hasMetric
-    ? 52
-    : assets.family === "status_progress"
-    ? 78
-    : assets.family === "product_proof"
-    ? 76
-    : 80;
-  const minimumHeadlineSize = hasMetric ? 40 : assets.family === "editorial_big_type" ? 54 : 52;
+  const maximumHeadlineSize = hasMetric ? 160 : 168;
   const headline = fitSvgText(spec.headline, {
-    // fitSvgText's conservative Hangul model needs a slightly wider measured
-    // width to reproduce the browser's 670px Pretendard story box.
-    maxWidth: hasMetric ? 720 : assets.family === "editorial_big_type" ? 760 : 650,
+    // The v4 composition treats the Korean headline as the lower display
+    // object. Its tight leading and overlap with SQUIB are intentional.
+    // This is a virtual measurement width calibrated against the HTML
+    // renderer's condensed display face and negative tracking. It keeps the
+    // common two-line composition at 126px while the 24-character QA boundary
+    // still fits without an ellipsis.
+    maxWidth: 1200,
     maxLines: 2,
     maxFontSize: maximumHeadlineSize,
-    minFontSize: minimumHeadlineSize,
-    lineHeightRatio: 1.08,
+    minFontSize: 74,
+    lineHeightRatio: .82,
   });
   const metric = hasMetric
     ? fitSvgText(spec.visualMetric, {
-      maxWidth: 560,
+      maxWidth: 440,
       maxLines: 1,
-      maxFontSize: 166,
-      minFontSize: 96,
-      lineHeightRatio: .94,
+      maxFontSize: 184,
+      minFontSize: 104,
+      lineHeightRatio: .83,
     })
     : null;
-  const headlineY = hasMetric ? 575 : 470;
-  const dividerY = hasMetric ? 633 : 620;
-  const bodyY = hasMetric ? 679 : 666;
-  const bottomWord = SQUID_GENERATED_FRAME_WORDS[assets.family];
-  const bottomFrame = SQUID_GENERATED_BOTTOM_FRAME_GEOMETRY[assets.family];
+  const headlineX = headline.fontSize >= 150 ? 120 : 68;
+  const headlineLineHeight = headline.fontSize >= 150
+    ? Math.round(headline.fontSize * 1.04)
+    : headline.lineHeight;
   return `<defs>
-    <radialGradient id="Squid-Stage-Lavender-Halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(540 544) rotate(90) scale(520 650)">
-      <stop stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity=".9"/>
-      <stop offset=".5" stop-color="${SQUID_GENERATED_TOKENS.lavenderLight}" stop-opacity=".52"/>
-      <stop offset="1" stop-color="${SQUID_GENERATED_TOKENS.lavender}" stop-opacity="0"/>
+    <linearGradient id="Squid-Base-Lavender" x1="-26.75" y1="29.70" x2="1106.75" y2="1050.30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C99AF0"/>
+      <stop offset=".54" stop-color="${SQUID_GENERATED_TOKENS.lavender}"/>
+      <stop offset="1" stop-color="${SQUID_GENERATED_TOKENS.lavenderLight}"/>
+    </linearGradient>
+    <radialGradient id="Squid-Full-Bleed-Lavender-Halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(756 421.2) rotate(90) scale(1069.15 931.68)">
+      <stop stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity=".98"/>
+      <stop offset=".18" stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity=".76"/>
+      <stop offset=".5" stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity="0"/>
     </radialGradient>
+    <radialGradient id="Squid-Lower-White-Bloom" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(378 928.8) rotate(90) scale(1092.06 1549.95)">
+      <stop stop-color="${SQUID_GENERATED_TOKENS.white}" stop-opacity=".9"/>
+      <stop offset=".29" stop-color="${SQUID_GENERATED_TOKENS.lavenderLight}" stop-opacity=".42"/>
+      <stop offset=".66" stop-color="${SQUID_GENERATED_TOKENS.lavender}" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="Squid-SQUIB-Shadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="26" stdDeviation="15" flood-color="#573F6F" flood-opacity=".2"/>
+    </filter>
   </defs>
   <g id="${SQUID_GENERATED_ROOT_IDS[assets.family]}" data-creative-family="${assets.family}">
-    <rect id="Canvas-Background" width="1080" height="1080" fill="${SQUID_GENERATED_TOKENS.paper}"/>
-    <image id="Squid-Official-Form-Language" x="-352" y="-314" width="1784" height="1784" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".84" transform="rotate(82 540 540)"/>
-    <rect id="Stage-Lavender-Haze" width="1080" height="1080" fill="url(#Squid-Stage-Lavender-Halo)"/>
-    <g id="Decorative-Frame-Words" aria-hidden="true">
-      <text id="Stage-Word-Top-Shadow" x="276" y="200" textLength="791" lengthAdjust="spacingAndGlyphs" fill="${SQUID_GENERATED_TOKENS.lavender}" fill-opacity=".5" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="180" font-weight="900" transform="translate(0 11) rotate(-3 666 160)">SQUID</text>
-      <text id="Stage-Word-Top" x="276" y="200" textLength="791" lengthAdjust="spacingAndGlyphs" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="180" font-weight="900" transform="rotate(-3 666 160)">SQUID</text>
-      <text id="Stage-Word-Bottom-Shadow" x="${bottomFrame.x}" y="1088" textLength="${bottomFrame.textLength}" lengthAdjust="spacingAndGlyphs" fill="${SQUID_GENERATED_TOKENS.lavender}" fill-opacity=".5" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="176" font-weight="900" transform="translate(0 -10) rotate(2 540 1010)">${bottomWord}</text>
-      <text id="Stage-Word-Bottom" x="${bottomFrame.x}" y="1088" textLength="${bottomFrame.textLength}" lengthAdjust="spacingAndGlyphs" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="176" font-weight="900" transform="rotate(2 540 1010)">${bottomWord}</text>
+    <rect id="Canvas-Background" width="1080" height="1080" fill="url(#Squid-Base-Lavender)"/>
+    <rect id="Lower-White-Bloom" width="1080" height="1080" fill="url(#Squid-Lower-White-Bloom)"/>
+    <rect id="Full-Bleed-Lavender-Halo" width="1080" height="1080" fill="url(#Squid-Full-Bleed-Lavender-Halo)"/>
+    <image id="Squid-Official-Form-Language" x="-340" y="-360" width="1760" height="1760" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".24" transform="rotate(74 540 520)"/>
+    <image id="Squid-Official-Bubbles" x="690" y="220" width="520" height="520" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".88"/>
+    <g id="Oversized-Brand-Type" aria-hidden="true">
+      <text id="Stage-Word-Top" x="170" y="206" transform="translate(170 0) scale(1.48 1) translate(-170 0)" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="220" font-weight="900" letter-spacing="-10">Squid</text>
     </g>
-    <ellipse id="White-Oval-Halo" cx="540" cy="552" rx="510" ry="278" fill="${SQUID_GENERATED_TOKENS.lavender}" fill-opacity=".24"/>
-    <ellipse id="White-Oval-Stage" cx="540" cy="552" rx="492" ry="260" fill="${SQUID_GENERATED_TOKENS.white}" fill-opacity=".97"/>
-    <image id="Squid-Official-Bubbles" x="708" y="130" width="430" height="430" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".72"/>
-    <image id="Squid-Official-SQUIB" x="716" y="292" width="398" height="398" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet"/>
-    <image id="Brand-Logo" data-logo-variant="${assets.logoVariant}" x="44" y="24" width="148" height="83" href="${escapeXml(assets.logo)}" preserveAspectRatio="xMinYMid meet"/>
+    <image id="Squid-Official-SQUIB" x="-110" y="-40" width="1200" height="1200" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Squid-SQUIB-Shadow)"/>
     <g id="Story">
-      <text id="Eyebrow" x="425" y="${hasMetric ? 362 : 372}" text-anchor="middle" fill="${SQUID_GENERATED_TOKENS.deepPurple}" fill-opacity=".7" font-family="Inter, Pretendard, sans-serif" font-size="18" font-weight="800" letter-spacing="1.2">${escapeXml(spec.label.toUpperCase())}</text>
-      ${metric ? `<g id="Metric">${textLayers("Metric", metric.lines, 425, 500, metric.lineHeight, `text-anchor="middle" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${metric.fontSize}" font-weight="900" letter-spacing="-6"`)}</g>` : ""}
-      <g id="Headline">${textLayers("Headline", headline.lines, 425, headlineY, headline.lineHeight, `text-anchor="middle" fill="${SQUID_GENERATED_TOKENS.black}" font-family="Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="650" letter-spacing="-3.2"`)}</g>
+      ${metric ? `<g id="Metric">${textLayers("Metric", metric.lines, 1020, 360, metric.lineHeight, `text-anchor="end" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${metric.fontSize}" font-weight="900" letter-spacing="-8"`)}</g>` : ""}
+      <g id="Headline">${textLayers("Headline", headline.lines, headlineX, 704 + Math.round(headline.fontSize * .76), headlineLineHeight, `fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-5.2"`)}</g>
     </g>
-    <g id="Support-Copy">
-      <rect id="Lime-Divider" x="359" y="${dividerY}" width="132" height="8" rx="4" fill="${SQUID_GENERATED_TOKENS.lime}"/>
-      ${squidGeneratedBody(spec, bodyY)}
-    </g>
-    ${squidGeneratedFooter(spec)}
   </g>`;
 }
 
@@ -981,10 +951,14 @@ export function buildEditableSvg(
   const spec = normalizeSpec(rawSpec);
   const effectiveTemplateStyle = effectiveEditableTemplateStyle(clientId, templateStyle);
   const sourceNativeSquid = clientId === "squid" && effectiveTemplateStyle === "remix";
-  const generatedSquidFamily = clientId === "squid"
+  const requestedGeneratedSquid = clientId === "squid"
     && effectiveTemplateStyle === "classic"
-    && spec.renderStrategy === "generated_gtm"
-    && Boolean(spec.creativeFamily);
+    && spec.renderStrategy === "generated_gtm";
+  const generatedSquidFamily = requestedGeneratedSquid
+    && isSupportedSquidGeneratedEditableSpec(rawSpec);
+  if (requestedGeneratedSquid && !generatedSquidFamily) {
+    throw new Error("unsupported_squid_generated_profile");
+  }
   const canvasWidth = sourceNativeSquid ? spec.outputWidth : 1080;
   const canvasHeight = sourceNativeSquid ? spec.outputHeight : 1080;
   const content = generatedSquidFamily

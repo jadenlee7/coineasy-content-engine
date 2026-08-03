@@ -19,7 +19,9 @@ SquidVisualChannel = Literal[
 ]
 
 SQUID_VISUAL_POLICY_VERSION = "squid-visual-routing@1"
-SQUID_VISUAL_REFERENCE_PACK_VERSION = 1
+SQUID_VISUAL_REFERENCE_PACK_VERSION = 2
+SQUID_GENERATED_DESIGN_PROFILE_ID = "squid/full-bleed-character-type"
+SQUID_GENERATED_DESIGN_PROFILE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,13 @@ class SquidVisualDecision:
         }
         if self.verified_metric is not None:
             metadata["visual_metric"] = self.verified_metric
+        if self.channel == "generated_gtm":
+            metadata.update({
+                "visual_design_profile_id": SQUID_GENERATED_DESIGN_PROFILE_ID,
+                "visual_design_profile_version": (
+                    SQUID_GENERATED_DESIGN_PROFILE_VERSION
+                ),
+            })
         return metadata
 
 
@@ -95,6 +104,7 @@ _REFERENCE_PACKS: dict[SquidVisualFamily, SquidVisualReferencePack] = {
         version=SQUID_VISUAL_REFERENCE_PACK_VERSION,
         representative_status_urls=(
             "https://x.com/squidrouter/status/2079628218403803481",
+            "https://x.com/squidrouter/status/2083266484789514640",
         ),
     ),
     "worldbuilding": SquidVisualReferencePack(

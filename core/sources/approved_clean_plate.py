@@ -125,12 +125,60 @@ class ApprovedCleanPlate:
 
 
 # Production entries are added only after a designer-reviewed clean plate is
-# licensed, checked into clients/<client>/assets, and its exact digest is
-# reviewed in code.  In particular, there is deliberately no synthesized
-# Telegram-poster entry here.
+# approved for this client, checked into clients/<client>/assets, and its exact
+# digest is reviewed in code. Runtime callers cannot select or replace them.
 _APPROVED_CLEAN_PLATES: Mapping[
     tuple[str, str, str], ApprovedCleanPlateEntry
-] = MappingProxyType({})
+] = MappingProxyType({
+    (
+        "squid",
+        "https://x.com/squidrouter/status/2083266484789514640",
+        "https://pbs.twimg.com/media/HOk_0-FakAAENyq.jpg?name=orig",
+    ): ApprovedCleanPlateEntry(
+        client_id="squid",
+        source_url="https://x.com/squidrouter/status/2083266484789514640",
+        source_image_url="https://pbs.twimg.com/media/HOk_0-FakAAENyq.jpg?name=orig",
+        source_sha256="e6f4047e165cf5d72f59ba4676234acafb86b1b61ee0954352bd578fd5ddec1e",
+        width=1080,
+        height=1080,
+        clean_plate_relative_path=(
+            "clients/squid/assets/approved-clean-plates/"
+            "telegram-launch-textless-v1.jpg"
+        ),
+        clean_plate_sha256="098218f108c6c669e9bccae7c26c26100cd135f5fb7f49fa6c0bbddd97cfaadd",
+        approval_version="squid-telegram-launch-ko@1",
+        translation_regions=(
+            ApprovedTranslationRegion(
+                source_text="SQUID IS",
+                text="Squid가",
+                x=6.0,
+                y=0.0,
+                width=88.0,
+                height=20.0,
+                align="center",
+                font_role="display",
+                font_size=20.0,
+                text_color="#000000",
+                scale_x=1.4,
+                source_line_count=1,
+            ),
+            ApprovedTranslationRegion(
+                source_text="ON\nTELEGRAM",
+                text="텔레그램에\n왔어요",
+                x=4.0,
+                y=61.0,
+                width=92.0,
+                height=36.0,
+                align="center",
+                font_role="display",
+                font_size=20.0,
+                text_color="#000000",
+                scale_x=1.35,
+                source_line_count=2,
+            ),
+        ),
+    ),
+})
 
 
 def _canonical_official_x_status_url(value: object, client_id: str) -> str:

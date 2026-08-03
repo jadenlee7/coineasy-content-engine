@@ -55,6 +55,8 @@ brand_voice:
       lettering pixels inside the audited phrase box and reconstruct that small area from the
       surrounding visual, then place clear Korean on a transparent text layer with no panel,
       rectangle, scrim, tint, gradient, blur patch, separate footer, or unrelated headline panel.
+      Preserve intentionally tight leading, edge crops, and existing type-to-character overlap;
+      do not "improve spacing" by shrinking the display copy or separating it from the character.
       If the cleanup would obscure a logo, character, face,
       product UI, token icon, or unrelated text, or Korean cannot fit the same area, preserve
       the official creative untouched. A character, limb, or product already directly behind

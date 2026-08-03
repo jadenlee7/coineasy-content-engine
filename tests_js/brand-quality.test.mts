@@ -153,13 +153,13 @@ test("aligns Squid QA density with the classic PNG and editable SVG geometry", (
   };
   const safe = evaluateBrandQuality({
     ...base,
-    headline: "가".repeat(28),
+    headline: "가".repeat(24),
     bodyLines: ["나".repeat(21), "다".repeat(21)],
   });
   assert.equal(safe.checks.find((item) => item.id === "text_density")?.status, "pass");
 
   for (const input of [
-    { headline: "가".repeat(29), bodyLines: ["짧은본문"] },
+    { headline: "가".repeat(25), bodyLines: ["짧은본문"] },
     { headline: "짧은제목", bodyLines: ["나".repeat(24)] },
   ]) {
     const report = evaluateBrandQuality({ ...base, ...input });

@@ -313,7 +313,7 @@ def _build_user_prompt(
 - Keep the official Squid rhythm: a short question or human one-line hook, then one product answer and at most one verified supporting fact.
 - Natural 해요체 is allowed for the banner hook. Do not force 합니다/됩니다 when it makes a short official post sound corporate.
 - label: 2-18 characters. Prefer a topic-specific lockup such as "CANTON × SQUID", "XRP × SQUID", or "$QUID" instead of generic labels like "공식 업데이트".
-- headline: 14-28 Korean characters where possible, maximum two visual lines. Preserve the source's question, wit, and brevity.
+- headline: 14-24 Korean characters where possible, maximum two visual lines. Preserve the source's question, wit, and brevity.
 - body_lines: 1-2 concise lines, 10-23 characters each where possible. Include only source-verified facts; do not repeat the headline.
 - Avoid "간편하게 탐색할 수 있습니다", "소식을 전합니다", "소개합니다", "핵심 변화", "최신 소식", and "전체 맥락".
 - Use display name "Squid" and the correct Korean particles: Squid가/는/를/와/로.

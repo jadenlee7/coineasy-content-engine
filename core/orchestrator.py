@@ -92,7 +92,7 @@ NEWS_CARD_TEMPLATES = {
 }
 
 _SQUID_BRAND_TOKENS_VERSION = "squid-brand-tokens@1"
-_SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@3"
+_SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@4"
 _SQUID_SOURCE_TEMPLATE_VERSION = "squid-source-remix@1"
 _SQUID_GENERATED_ASSET_PACK_VERSION = "squid-local-approved@1"
 _SQUID_SOURCE_ASSET_PACK_VERSION = "official-source-media@1"
@@ -699,6 +699,11 @@ async def generate_news_card(
         )
         if squid_visual.channel != expected_strategy:
             raise ValueError("Squid visual routing is inconsistent with the render path")
+        # Visual routing metadata is server-owned. Discard any profile fields
+        # supplied by the LLM before applying the classified Squid metadata so
+        # a source remix cannot inherit a generated-card design profile.
+        spec.pop("visual_design_profile_id", None)
+        spec.pop("visual_design_profile_version", None)
         spec.update(squid_visual.as_spec_metadata())
         licensed_display_font = config.font_display_file_path
         spec.update({

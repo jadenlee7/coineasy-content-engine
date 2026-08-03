@@ -237,7 +237,7 @@ function densityCheck(input: BrandQualityInput): BrandQaCheck {
     const lines = stringArray(input.bodyLines);
     const totalLength = headline.length + lines.reduce((total, line) => total + line.length, 0);
     const squid = input.clientId === "squid";
-    const headlineLimit = squid ? 28 : 72;
+    const headlineLimit = squid ? 24 : 72;
     const totalLimit = squid ? 70 : 240;
     const valid = Boolean(headline)
       && headline.length <= headlineLimit

@@ -10,6 +10,12 @@ import {
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
 
+const SQUID_GENERATED_PROFILE = {
+  template_version: "squid-generated-gtm@4",
+  visual_design_profile_id: "squid/full-bleed-character-type",
+  visual_design_profile_version: 1,
+} as const;
+
 const TRANSLATED_SQUID_REQUEST = {
   template_style: "remix",
   source_visual_file: "squid/news_1784567890/source_visual_cleaned.jpg",
@@ -19,7 +25,7 @@ const TRANSLATED_SQUID_REQUEST = {
   },
 };
 
-test("selects the contrast-safe Squid logo for each generated family", () => {
+test("does not fetch a publisher logo for generated Squid v4", () => {
   for (const family of [
     "editorial_big_type",
     "milestone_metric",
@@ -27,10 +33,15 @@ test("selects the contrast-safe Squid logo for each generated family", () => {
     "product_proof",
   ]) {
     assert.equal(
-      requiredOfficialLogoVariant("squid", "classic", { creative_family: family }),
-      "light",
+      requiredOfficialLogoVariant("squid", "classic", {
+        render_strategy: "generated_gtm",
+        creative_family: family,
+        ...SQUID_GENERATED_PROFILE,
+      }),
+      null,
     );
   }
+  // Field-absent legacy replay retains its original logo contract.
   assert.equal(requiredOfficialLogoVariant("squid", "classic", {}), "light");
 });
 
@@ -226,7 +237,7 @@ test("embeds the official Squid world in a classic editable card", async () => {
   }
 });
 
-test("fetches the black Squid logo and official stage assets for a generated family", async () => {
+test("fetches the reviewed Squid asset pack without rendering publisher chrome", async () => {
   const originalFetch = globalThis.fetch;
   const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
   const requested: string[] = [];
@@ -266,6 +277,7 @@ test("fetches the black Squid logo and official stage assets for a generated fam
             render_strategy: "generated_gtm",
             creative_family: "milestone_metric",
             visual_metric: "5M",
+            ...SQUID_GENERATED_PROFILE,
           },
         }),
       },
@@ -277,14 +289,72 @@ test("fetches the black Squid logo and official stage assets for a generated fam
     assert.equal(response.status, 200);
     assert.deepEqual(requested.sort(), [
       "https://console.example/assets/brands/squid-form-language-purple.png",
-      "https://console.example/assets/brands/squid-light.png",
       "https://console.example/assets/brands/squid-squib-bubbles.png",
       "https://console.example/assets/brands/squid-squib-token-juggle.png",
     ]);
     const svg = await response.text();
     assert.match(svg, /id="Squid-Generated-Milestone-Metric"/);
-    assert.match(svg, /data-logo-variant="light"/);
     assert.match(svg, /id="Squid-Official-Form-Language"/);
+    assert.match(svg, /id="Squid-Official-SQUIB"/);
+    assert.doesNotMatch(svg, /data-logo-variant|Brand-Logo/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNetlify) Object.defineProperty(globalThis, "Netlify", originalNetlify);
+    else Reflect.deleteProperty(globalThis, "Netlify");
+  }
+});
+
+test("rejects stale generated Squid specs before fetching any assets", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(new Uint8Array([1]), {
+      status: 200,
+      headers: { "content-type": "image/png", "content-length": "1" },
+    });
+  };
+  Object.defineProperty(globalThis, "Netlify", {
+    configurable: true,
+    value: {
+      env: {
+        get(name: string): string | undefined {
+          return name === "STUDIO_ACCESS_TOKEN" ? "editable-studio-access-token" : undefined;
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await editableCardHandler(new Request(
+      "https://console.example/api/editable-card/squid",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("editable-studio-access-token")}`,
+        },
+        body: JSON.stringify({
+          template_style: "classic",
+          spec: {
+            headline: "과거 저장본",
+            render_strategy: "generated_gtm",
+            creative_family: "editorial_big_type",
+            template_version: "squid-generated-gtm@3",
+            visual_design_profile_id: "squid/figma-korea-stage",
+            visual_design_profile_version: 1,
+          },
+        }),
+      },
+    ), {
+      params: { clientId: "squid" },
+      site: { url: "https://console.example" },
+    } as never);
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "unsupported_squid_generated_profile" });
+    assert.equal(fetchCount, 0);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalNetlify) Object.defineProperty(globalThis, "Netlify", originalNetlify);
