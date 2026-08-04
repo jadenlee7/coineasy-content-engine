@@ -49,6 +49,7 @@ function detailItem(overrides: Record<string, unknown> = {}) {
   return {
     ...listItem(),
     result_payload: resultPayload(),
+    source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_000,
     actual_output_tokens: 220,
@@ -149,6 +150,7 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
   });
   assert.equal(item?.ref, `batch:${JOB_ID}`);
   assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
+  assert.equal(item?.source_content, "OriginTrail이 공식 업데이트를 발표했습니다.");
   assert.equal(item?.actual_output_tokens, 220);
 
   for (const invalid of [
@@ -159,6 +161,8 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
     detailItem({ stage: "review" }),
     detailItem({ status: "failed" }),
     detailItem({ result_code: "approved" }),
+    detailItem({ source_content: "" }),
+    detailItem({ source_content: "x".repeat(60_001) }),
     detailItem({ result_payload: resultPayload({ headline_ko: "" }) }),
     detailItem({ result_payload: resultPayload({ body_ko: "" }) }),
     detailItem({ result_payload: resultPayload({ x_copy_ko: "" }) }),

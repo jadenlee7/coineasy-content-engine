@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
@@ -56,6 +57,7 @@ from core.squid_visual_style import (
 _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
 _FACT_CHECK_GENERATION_POLICY_VERSION = "double-fact-check@1"
+_SOURCE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -879,6 +881,10 @@ class OfficialXDailyRunner:
             or job.source_image_url.strip()
         ):
             raise ValueError("OriginTrail Batch handoff received unsupported evidence")
+        if not _SOURCE_URL_RE.sub("", job.source_content).strip():
+            raise ValueError(
+                "OriginTrail Batch handoff requires substantive source evidence"
+            )
         evidence = {
             "client_id": job.client_id,
             "content_kind": job.content_kind,
