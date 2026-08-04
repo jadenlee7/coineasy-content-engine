@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -364,6 +364,72 @@ async def test_canary_grant_receipt_mismatch_fails_closed():
 
     assert caught.value.code == "invalid_batch_canary_grant_response"
     assert caught.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_candidate_is_read_only_and_exact():
+    captured = {}
+
+    def handler(request):
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=[{
+            "kst_date": "2026-07-31",
+            "job_id": JOB_ID,
+            "input_sha256": "d" * 64,
+            "request_sha256": "e" * 64,
+        }])
+
+    candidate = await _repository(handler).peek_origintrail_shadow_candidate(
+        pilot_subject_sha256="f" * 64,
+        pilot_approval_id=CONFIG_APPROVAL_ID,
+        experiment_start_at=NOW,
+        experiment_end_at=NOW + timedelta(days=7),
+    )
+
+    assert captured["path"].endswith(
+        "/rpc/peek_origintrail_batch_shadow_candidate"
+    )
+    assert captured["body"]["target_workspace_id"] == WORKSPACE_ID
+    assert candidate == {
+        "kst_date": "2026-07-31",
+        "job_id": JOB_ID,
+        "input_sha256": "d" * 64,
+        "request_sha256": "e" * 64,
+    }
+
+
+@pytest.mark.asyncio
+async def test_shadow_day_wraps_exact_one_shot_grant():
+    item = _origintrail_item()
+    captured = {}
+    receipt = _canary_receipt(item)
+    receipt.update({
+        "pilot_subject_sha256": "f" * 64,
+        "pilot_approval_id": CONFIG_APPROVAL_ID,
+        "pilot_kst_date": "2026-07-31",
+    })
+
+    def handler(request):
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=receipt)
+
+    await _repository(handler).configure_origintrail_shadow_day(
+        kst_date=date(2026, 7, 31),
+        pilot_subject_sha256="f" * 64,
+        pilot_approval_id=CONFIG_APPROVAL_ID,
+        experiment_start_at=NOW,
+        experiment_end_at=NOW + timedelta(days=7),
+        **_canary_binding(item),
+    )
+
+    assert captured["path"].endswith(
+        "/rpc/configure_origintrail_batch_shadow_day"
+    )
+    assert captured["body"]["target_kst_date"] == "2026-07-31"
+    assert captured["body"]["target_hard_limit_microusd"] == 50_000
+    assert captured["body"]["target_max_provider_batches"] == 1
 
 
 @pytest.mark.asyncio

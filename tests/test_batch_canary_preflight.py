@@ -175,6 +175,50 @@ def test_live_preflight_constructs_no_database_or_provider_client(
     assert values["SUPABASE_SERVICE_ROLE_KEY"] not in output
 
 
+def test_seven_day_shadow_preflight_needs_no_exact_dispatch_receipt(
+    monkeypatch,
+    capsys,
+):
+    now = datetime.now(timezone.utc)
+    values = _live_env(now)
+    start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    values.update({
+        "BATCH_EXPERIMENT_START_AT": start.isoformat(),
+        "BATCH_EXPERIMENT_END_AT": (start + timedelta(days=7)).isoformat(),
+        "BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH": "true",
+        "BATCH_CANARY_APPROVAL_RECEIPT": "",
+        "BATCH_CANARY_DISPATCH_RECEIPT": "",
+    })
+    _subject, digest = BatchSettings.canary_subject_from_env(values)
+    values["BATCH_CANARY_APPROVAL_RECEIPT"] = json.dumps({
+        "version": CONFIG_SCHEMA,
+        "approval_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "approved_by": "coineasy-owner:test",
+        "approved_at": (now - timedelta(minutes=5)).isoformat(),
+        "expires_at": (start + timedelta(days=7)).isoformat(),
+        "subject_sha256": digest,
+    })
+    _install_env(monkeypatch, values)
+    monkeypatch.setattr(sys, "argv", ["run_batch_dispatcher", "--preflight-live"])
+
+    assert batch_script.main() == 0
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["ready_to_submit"] is True
+    assert result["dispatch_phase"] == "active"
+    assert result["canary_dispatch_configured"] is False
+    assert result["production_shadow_auto_dispatch"] is True
+    assert result["authorized_provider_batches"] == 7
+    assert result["auto_publish"] is False
+    assert result["database_calls"] is False
+    assert result["provider_calls"] is False
+
+
 def test_approval_subject_is_a_hold_receipt_and_never_loads_openai_key(
     monkeypatch,
     capsys,
