@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -21,6 +22,7 @@ _MAX_SOURCE_CONTENT_LENGTH = 60_000
 _MAX_LINK_TITLE_LENGTH = 500
 _MAX_LINK_DESCRIPTION_LENGTH = 5_000
 _MAX_ARTICLE_TEXT_LENGTH = 55_000
+_X_ARTICLE_PATH_RE = re.compile(r"^/i/article/([0-9]{1,19})$")
 _EXPECTED_UNAVAILABLE_REFERENCE_ERRORS = {
     "https://api.x.com/2/problems/not-authorized-for-resource",
     "https://api.x.com/2/problems/resource-not-found",
@@ -236,6 +238,7 @@ class XClient:
             )
 
         data = data[:total_limit]
+        article_lookup_ids = await self._rehydrate_missing_x_articles(data)
 
         media_by_key: dict[str, dict] = {}
         media_page_by_key: dict[str, int] = {}
@@ -408,8 +411,21 @@ class XClient:
                 note_tweet.get("entities") if is_note_tweet else None,
                 raw_article=t.get("article"),
             )
+            article_evidence = self._article_evidence(
+                source_content=source_content,
+                raw_article=t.get("article"),
+                raw_entities=(
+                    t.get("entities"),
+                    note_tweet.get("entities") if is_note_tweet else None,
+                ),
+                retrieval_method=(
+                    "x_api_post_lookup"
+                    if post_id in article_lookup_ids
+                    else "x_api_timeline"
+                ),
+            )
             photo = next((item for item in media if item.get("type") == "photo"), None)
-            results.append({
+            result = {
                 "id": post_id,
                 "text": source_content,
                 "created_at": created_at,
@@ -421,8 +437,128 @@ class XClient:
                 "media": media,
                 "source_image_url": photo["url"] if photo else "",
                 "is_note_tweet": is_note_tweet,
-            })
+            }
+            if article_evidence is not None:
+                result["article_evidence"] = article_evidence
+            results.append(result)
         return results
+
+    async def _rehydrate_missing_x_articles(
+        self,
+        data: list[dict],
+    ) -> set[str]:
+        """Re-fetch posts whose timeline row omitted an attached X Article.
+
+        X's user timeline can omit ``article`` even when ``tweet.fields`` asks
+        for it. The canonical post lookup returns the provider-owned Article
+        object, so use one bounded lookup instead of dereferencing an arbitrary
+        web URL. A missing or partial lookup fails closed before the feed cursor
+        or immutable source row can advance.
+        """
+        missing: dict[str, dict] = {}
+        for item in data:
+            post_id = item.get("id")
+            note_tweet = item.get("note_tweet")
+            note_entities = (
+                note_tweet.get("entities")
+                if isinstance(note_tweet, dict)
+                else None
+            )
+            if (
+                item.get("article") is None
+                and isinstance(post_id, str)
+                and self._x_article_identity(
+                    item.get("entities"),
+                    note_entities,
+                ) is not None
+            ):
+                missing[post_id] = item
+        if not missing:
+            return set()
+
+        payload = await self._request_json(
+            f"{X_API_BASE}/tweets",
+            params={
+                "ids": ",".join(missing),
+                "tweet.fields": "article,entities",
+            },
+            timeout=20.0,
+        )
+        lookup_data = payload.get("data")
+        if not isinstance(lookup_data, list) or any(
+            not isinstance(item, dict) for item in lookup_data
+        ):
+            raise XTransientError("X Article lookup returned invalid data")
+        hydrated: dict[str, dict] = {}
+        for item in lookup_data:
+            post_id = item.get("id")
+            if (
+                not isinstance(post_id, str)
+                or post_id not in missing
+                or post_id in hydrated
+            ):
+                raise XTransientError("X Article lookup returned invalid data")
+            hydrated[post_id] = item
+        if set(hydrated) != set(missing):
+            raise XTransientError("X Article lookup returned incomplete data")
+
+        for post_id, timeline_item in missing.items():
+            article = hydrated[post_id].get("article")
+            if not isinstance(article, dict):
+                raise XTransientError("X Article lookup returned incomplete data")
+            timeline_note = timeline_item.get("note_tweet")
+            timeline_identity = self._x_article_identity(
+                timeline_item.get("entities"),
+                (
+                    timeline_note.get("entities")
+                    if isinstance(timeline_note, dict)
+                    else None
+                ),
+            )
+            lookup_identity = self._x_article_identity(
+                hydrated[post_id].get("entities"),
+            )
+            if lookup_identity is not None and lookup_identity != timeline_identity:
+                raise XTransientError("X Article lookup identity does not match")
+            timeline_item["article"] = article
+        return set(missing)
+
+    @classmethod
+    def _article_evidence(
+        cls,
+        *,
+        source_content: str,
+        raw_article: object,
+        raw_entities: tuple[object, ...],
+        retrieval_method: str,
+    ) -> dict[str, str] | None:
+        if raw_article is None:
+            return None
+        identity = cls._x_article_identity(*raw_entities)
+        if identity is None:
+            return None
+        if not isinstance(raw_article, dict):
+            raise XTransientError("X API timeline contains invalid article evidence")
+        title = cls._entity_text(
+            raw_article.get("title"),
+            maximum=_MAX_LINK_TITLE_LENGTH,
+            error="X API timeline contains invalid article evidence",
+        )
+        if not title or retrieval_method not in {
+            "x_api_timeline",
+            "x_api_post_lookup",
+        }:
+            raise XTransientError("X API timeline contains incomplete article evidence")
+        article_id, article_url = identity
+        return {
+            "article_id": article_id,
+            "article_url": article_url,
+            "title": title,
+            "source_content_sha256": hashlib.sha256(
+                source_content.encode("utf-8")
+            ).hexdigest(),
+            "retrieval_method": retrieval_method,
+        }
 
     @classmethod
     def _source_content(
@@ -553,6 +689,53 @@ class XClient:
                 )
             return value
         return None
+
+    @classmethod
+    def _x_article_identity(
+        cls,
+        *raw_entities: object,
+    ) -> tuple[str, str] | None:
+        identities: set[tuple[str, str]] = set()
+        for entities in raw_entities:
+            if entities is None:
+                continue
+            if not isinstance(entities, dict):
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            raw_urls = entities.get("urls")
+            if raw_urls is None:
+                continue
+            if (
+                not isinstance(raw_urls, list)
+                or len(raw_urls) > _MAX_LINK_ENTITIES
+                or any(not isinstance(item, dict) for item in raw_urls)
+            ):
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            for item in raw_urls:
+                resolved_url = cls._resolved_entity_url(item)
+                if resolved_url is None:
+                    continue
+                parsed = urlsplit(resolved_url)
+                match = _X_ARTICLE_PATH_RE.fullmatch(parsed.path)
+                if (
+                    parsed.hostname in {"x.com", "www.x.com"}
+                    and match is not None
+                    and not parsed.query
+                    and not parsed.fragment
+                ):
+                    article_id = match.group(1)
+                    identities.add((
+                        article_id,
+                        f"https://x.com/i/article/{article_id}",
+                    ))
+        if len(identities) > 1:
+            raise XTransientError(
+                "X API timeline contains ambiguous article evidence"
+            )
+        return next(iter(identities), None)
 
     @staticmethod
     def _entity_text(
