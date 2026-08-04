@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -111,6 +113,34 @@ def test_squid_photo_news_uses_original_visual_localization_only():
         content_kind="daily_news",
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
+
+
+def test_origintrail_source_payload_preserves_x_article_evidence():
+    article_evidence = {
+        "article_id": "2084276731330936832",
+        "article_url": "https://x.com/i/article/2084276731330936832",
+        "title": "July 2026 OriginTrail recap",
+        "source_content_sha256": "a" * 64,
+        "retrieval_method": "x_api_post_lookup",
+    }
+    payload = OfficialXDailyRunner._source_payload(
+        {
+            "id": "2084283287518798116",
+            "text": "Pinned X Article body.",
+            "url": (
+                "https://x.com/origin_trail/status/2084283287518798116"
+            ),
+            "created_at": "2026-07-22T00:00:00Z",
+            "is_retweet": False,
+            "is_reply": False,
+            "is_quote": False,
+            "article_evidence": article_evidence,
+        },
+        include_standalone_signals=True,
+    )
+
+    assert payload["article_evidence"] == article_evidence
+    assert payload["article_evidence"] is not article_evidence
 
 
 class FakeRepository:
@@ -1227,6 +1257,10 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
     assert item.max_cost_usd == Decimal("0.05")
     assert item.max_output_tokens == 2_000
     assert item.deadline_at.isoformat() == "2026-07-23T15:00:00+00:00"
+    evidence = json.loads(item.input_text)
+    assert evidence["source"]["content_sha256"] == hashlib.sha256(
+        evidence["source"]["content"].encode("utf-8")
+    ).hexdigest()
     assert "visual" not in item.output_schema["properties"]
     assert {
         name: field["pattern"]

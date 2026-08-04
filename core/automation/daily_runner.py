@@ -891,6 +891,9 @@ class OfficialXDailyRunner:
             "request_id": job.request_id,
             "source": {
                 "content": job.source_content,
+                "content_sha256": hashlib.sha256(
+                    job.source_content.encode("utf-8")
+                ).hexdigest(),
                 "url": job.source_url,
             },
             "style_reference_pack": {
@@ -1048,6 +1051,9 @@ class OfficialXDailyRunner:
                 "is_retweet": post.get("is_retweet") is True,
                 "is_reply": post.get("is_reply") is True,
             })
+        article_evidence = post.get("article_evidence")
+        if isinstance(article_evidence, Mapping):
+            payload["article_evidence"] = dict(article_evidence)
         return payload
 
     @staticmethod

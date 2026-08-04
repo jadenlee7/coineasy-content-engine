@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from core.sources.x_client import (
@@ -214,6 +216,128 @@ async def test_recent_tweets_enrich_x_article_source(monkeypatch):
         "industrial provenance."
     )
     assert tweets[0]["is_note_tweet"] is False
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_rehydrates_omitted_x_article_from_post_lookup(
+    monkeypatch,
+):
+    calls: list[tuple[str, dict | None]] = []
+    article_url = "https://x.com/i/article/2084276731330936832"
+    article_title = "July 2026 OriginTrail recap"
+    article_text = (
+        "DKG V10 moved into production across agent swarms and industrial "
+        "provenance."
+    )
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            calls.append((url, params))
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            if url.endswith("/users/42/tweets"):
+                return _Response({
+                    "data": [{
+                        "id": "2084283287518798116",
+                        "text": "https://t.co/BFl2YSh2VB",
+                        "created_at": "2026-07-22T08:00:00Z",
+                        "referenced_tweets": [],
+                        "entities": {"urls": [{
+                            "url": "https://t.co/BFl2YSh2VB",
+                            "expanded_url": (
+                                "http://x.com/i/article/2084276731330936832"
+                            ),
+                            "unwound_url": article_url,
+                        }]},
+                    }],
+                    "meta": {},
+                })
+            assert url == "https://api.x.com/2/tweets"
+            assert params == {
+                "ids": "2084283287518798116",
+                "tweet.fields": "article,entities",
+            }
+            return _Response({
+                "data": [{
+                    "id": "2084283287518798116",
+                    "entities": {"urls": [{
+                        "unwound_url": article_url,
+                    }]},
+                    "article": {
+                        "title": article_title,
+                        "plain_text": article_text,
+                    },
+                }],
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("origin_trail")
+
+    assert len(calls) == 3
+    assert article_text in tweets[0]["text"]
+    assert tweets[0]["article_evidence"] == {
+        "article_id": "2084276731330936832",
+        "article_url": article_url,
+        "title": article_title,
+        "source_content_sha256": hashlib.sha256(
+            tweets[0]["text"].encode("utf-8")
+        ).hexdigest(),
+        "retrieval_method": "x_api_post_lookup",
+    }
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_fail_closed_when_x_article_lookup_is_incomplete(
+    monkeypatch,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            if url.endswith("/users/42/tweets"):
+                return _Response({
+                    "data": [{
+                        "id": "2084283287518798116",
+                        "text": "https://t.co/BFl2YSh2VB",
+                        "created_at": "2026-07-22T08:00:00Z",
+                        "referenced_tweets": [],
+                        "entities": {"urls": [{
+                            "unwound_url": (
+                                "https://x.com/i/article/2084276731330936832"
+                            ),
+                        }]},
+                    }],
+                    "meta": {},
+                })
+            return _Response({
+                "data": [{"id": "2084283287518798116"}],
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="Article lookup.*incomplete"):
+        await XClient("x-token").get_recent_tweets("origin_trail")
 
 
 @pytest.mark.asyncio
