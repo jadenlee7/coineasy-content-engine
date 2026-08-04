@@ -30,7 +30,7 @@ from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
 )
-from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
+from core.automation.settings import AutomationSettings
 from core.batch.bridge import BatchQueueBridge
 from core.batch.models import BatchWorkItem, canonical_input_sha256
 from core.batch.policy import BatchPolicy
@@ -246,7 +246,7 @@ class OfficialXDailyRunner:
         if not dry_run:
             await self._drain_jobs(worker_id, summary)
 
-        for client_id in AUTOMATION_CLIENTS:
+        for client_id in self.settings.allowed_clients:
             try:
                 await self._intake_client(
                     client_id=client_id,
