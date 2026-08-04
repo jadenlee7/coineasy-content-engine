@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping, Sequence
 
@@ -181,6 +181,157 @@ class SupabaseBatchRepository:
             "target_period_end": window_end.isoformat(),
             "target_hard_limit_microusd": _microusd(limit_usd),
         })
+
+    async def peek_origintrail_shadow_candidate(
+        self,
+        *,
+        pilot_subject_sha256: str,
+        pilot_approval_id: str,
+        experiment_start_at: datetime,
+        experiment_end_at: datetime,
+    ) -> Mapping[str, str] | None:
+        if (
+            experiment_start_at.tzinfo is None
+            or experiment_end_at.tzinfo is None
+            or experiment_end_at - experiment_start_at != timedelta(days=7)
+        ):
+            raise ValueError("Production Shadow window is invalid")
+        raw = await self._rpc(
+            "peek_origintrail_batch_shadow_candidate",
+            {
+                "target_workspace_id": self.workspace_id,
+                "target_pilot_subject_sha256": _sha256_argument(
+                    pilot_subject_sha256,
+                    "pilot_subject_sha256",
+                ),
+                "target_pilot_approval_id": _uuid_argument(
+                    pilot_approval_id,
+                    "pilot_approval_id",
+                ),
+                "target_experiment_start_at": (
+                    experiment_start_at.isoformat()
+                ),
+                "target_experiment_end_at": experiment_end_at.isoformat(),
+            },
+        )
+        if raw is None or raw == []:
+            return None
+        if not isinstance(raw, list) or len(raw) != 1:
+            raise BatchRepositoryError(
+                "invalid_batch_shadow_candidate_response",
+                retryable=False,
+            )
+        candidate = raw[0]
+        if not isinstance(candidate, Mapping):
+            raise BatchRepositoryError(
+                "invalid_batch_shadow_candidate_response",
+                retryable=False,
+            )
+        try:
+            kst_date = date.fromisoformat(_text(
+                candidate.get("kst_date"),
+                "kst_date",
+                maximum=10,
+            ))
+            normalized = {
+                "kst_date": kst_date.isoformat(),
+                "job_id": _uuid_argument(candidate.get("job_id"), "job_id"),
+                "input_sha256": _sha256_argument(
+                    candidate.get("input_sha256"),
+                    "input_sha256",
+                ),
+                "request_sha256": _sha256_argument(
+                    candidate.get("request_sha256"),
+                    "request_sha256",
+                ),
+            }
+        except (TypeError, ValueError, BatchRepositoryError) as exc:
+            raise BatchRepositoryError(
+                "invalid_batch_shadow_candidate_response",
+                retryable=False,
+            ) from exc
+        return normalized
+
+    async def configure_origintrail_shadow_day(
+        self,
+        *,
+        kst_date: date,
+        pilot_subject_sha256: str,
+        pilot_approval_id: str,
+        experiment_start_at: datetime,
+        experiment_end_at: datetime,
+        config_subject_sha256: str,
+        config_approval_id: str,
+        dispatch_subject_sha256: str,
+        dispatch_approval_id: str,
+        job_id: str,
+        input_sha256: str,
+        request_sha256: str,
+        expires_at: datetime,
+        hard_limit_usd: Decimal,
+    ) -> None:
+        if not isinstance(kst_date, date) or isinstance(kst_date, datetime):
+            raise ValueError("kst_date must be a date")
+        if (
+            experiment_start_at.tzinfo is None
+            or experiment_end_at.tzinfo is None
+            or experiment_end_at - experiment_start_at != timedelta(days=7)
+        ):
+            raise ValueError("Production Shadow window is invalid")
+        binding = self._canary_binding(
+            config_subject_sha256=config_subject_sha256,
+            config_approval_id=config_approval_id,
+            dispatch_subject_sha256=dispatch_subject_sha256,
+            dispatch_approval_id=dispatch_approval_id,
+            job_id=job_id,
+            input_sha256=input_sha256,
+            request_sha256=request_sha256,
+            expires_at=expires_at,
+            hard_limit_usd=hard_limit_usd,
+        )
+        raw = await self._rpc(
+            "configure_origintrail_batch_shadow_day",
+            {
+                "target_workspace_id": self.workspace_id,
+                "target_kst_date": kst_date.isoformat(),
+                "target_pilot_subject_sha256": _sha256_argument(
+                    pilot_subject_sha256,
+                    "pilot_subject_sha256",
+                ),
+                "target_pilot_approval_id": _uuid_argument(
+                    pilot_approval_id,
+                    "pilot_approval_id",
+                ),
+                "target_experiment_start_at": (
+                    experiment_start_at.isoformat()
+                ),
+                "target_experiment_end_at": experiment_end_at.isoformat(),
+                **binding,
+                "target_max_provider_batches": 1,
+            },
+        )
+        self._validate_canary_receipt(
+            raw,
+            binding=binding,
+            require_consumed=False,
+            response_code="invalid_batch_shadow_day_response",
+        )
+        expected_pilot = {
+            "pilot_subject_sha256": _sha256_argument(
+                pilot_subject_sha256,
+                "pilot_subject_sha256",
+            ),
+            "pilot_approval_id": _uuid_argument(
+                pilot_approval_id,
+                "pilot_approval_id",
+            ),
+            "pilot_kst_date": kst_date.isoformat(),
+        }
+        if any(raw.get(key) != value for key, value in expected_pilot.items()):
+            raise BatchRepositoryError(
+                "invalid_batch_shadow_day_response",
+                retryable=False,
+            )
 
     async def configure_canary_grant(
         self,

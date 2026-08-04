@@ -582,11 +582,39 @@ removal, poll-only follow-up, and the dedicated project key, restrictions, and
 project hard spend limit plus lower alerts remain promotion blockers. A new
 config subject is a new experiment and requires separate explicit approval.
 
-A broader 14-day profile is not currently accepted by live startup. Enabling
-one requires a code change, a new config subject and receipt, reviewed staging
-evidence, and a separate spend approval. The generic ledger ceiling of `$6`
-per day is defense-in-depth for a future promotion, not permission to use an
-`$84` 14-day envelope.
+## Approved seven-day Production Shadow Pilot
+
+The promoted profile is separately gated by
+`BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH=true`. It accepts exactly seven KST
+midnights, OriginTrail only, a `$0.05` daily ledger ceiling, one claim and one
+request per provider Batch, and at most one durably admitted provider Batch per
+KST date. Its config subject records seven authorized provider Batches, the
+one-per-day fence, review-only output, and `automatic_external_effects:false`.
+The dedicated OpenAI project has a separate `$1` monthly hard limit; this is
+defense in depth above the pilot's internal maximum of `$0.35`.
+
+The hourly dispatcher runs with `--submit-once`, but this flag alone grants no
+authority. During the active seven-day window it first polls registered work,
+then asks a read-only RPC for one immutable current-day candidate. The worker
+deterministically derives that day's exact config and dispatch binding from the
+approved pilot subject. A forward-only RPC atomically records the KST-day fence
+and wraps the existing exact one-shot grant. The existing provider-create
+intent, attempt-one claim, request hash, `$0.05` cap, and lookup-only ambiguous
+recovery rules remain unchanged. A second job on the same KST date cannot be
+admitted even if the cron runs again.
+
+No exact candidate means a successful no-op. After the seventh KST midnight,
+new admission stops while polling and reconciliation continue. Generated
+content remains in Studio/Buzz review; no publish, approve, outreach, visual,
+or deploy adapter is present in the dispatcher image. Emergency stop order is:
+set `BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH=false` or pause the cron, preserve a
+poll-only reconciler for active provider Batches, and investigate any ambiguous
+claimed row before removing credentials.
+
+A profile longer than seven days is not accepted by the Production Shadow
+subject. Extending it requires another code/config review and explicit spend
+approval; the generic ledger ceiling of `$6` per day is not permission to use
+it.
 
 A previously uncertain OriginTrail handoff is still recovered after the
 experiment end by consuming the already-durable same-UUID ledger receipt and

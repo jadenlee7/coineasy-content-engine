@@ -12,6 +12,7 @@ from core.automation.settings import _supabase_url
 from core.batch.canary import (
     CanaryConfigApproval,
     CanaryDispatchApproval,
+    PRODUCTION_SHADOW_APPROVAL_TTL,
     canonical_sha256,
     config_subject,
 )
@@ -84,6 +85,7 @@ class BatchSettings:
     canary_subject_sha256: str | None = None
     canary_approval: CanaryConfigApproval | None = None
     canary_dispatch_approval: CanaryDispatchApproval | None = None
+    production_shadow_auto_dispatch: bool = False
 
     @classmethod
     def from_env(
@@ -155,6 +157,19 @@ class BatchSettings:
         if timezone_name != "Asia/Seoul":
             raise ValueError("BATCH_TIMEZONE must be Asia/Seoul")
         values["timezone"] = timezone_name
+
+        raw_auto_dispatch = env.get(
+            "BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH",
+            "false",
+        )
+        if raw_auto_dispatch not in {"true", "false"}:
+            raise ValueError(
+                "BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH must be true or false"
+            )
+        production_shadow_auto_dispatch = raw_auto_dispatch == "true"
+        values["production_shadow_auto_dispatch"] = (
+            production_shadow_auto_dispatch
+        )
 
         if mode == "live":
             if env.get("BATCH_CANARY_ENABLED", "false") != "true":
@@ -276,6 +291,9 @@ class BatchSettings:
                 experiment_start_at=experiment_start_at,
                 experiment_end_at=experiment_end_at,
                 timezone_name=timezone_name,
+                production_shadow_auto_dispatch=(
+                    production_shadow_auto_dispatch
+                ),
             )
             subject_sha256 = canonical_sha256(subject)
             approval = None
@@ -288,6 +306,11 @@ class BatchSettings:
                         maximum=8_192,
                     ),
                     expected_subject_sha256=subject_sha256,
+                    maximum_ttl=(
+                        PRODUCTION_SHADOW_APPROVAL_TTL
+                        if production_shadow_auto_dispatch
+                        else timedelta(hours=2)
+                    ),
                 )
             raw_dispatch_receipt = env.get(
                 "BATCH_CANARY_DISPATCH_RECEIPT",
@@ -353,6 +376,9 @@ class BatchSettings:
             experiment_start_at=self.experiment_start_at,
             experiment_end_at=self.experiment_end_at,
             timezone_name=self.timezone,
+            production_shadow_auto_dispatch=(
+                self.production_shadow_auto_dispatch
+            ),
         )
 
     def assert_canary_config_authorized(self) -> None:
@@ -404,7 +430,11 @@ class BatchSettings:
         if config_phase != "active":
             return f"config_authorization_{config_phase}"
         if self.canary_dispatch_approval is None:
-            return "not_configured"
+            return (
+                "active"
+                if self.production_shadow_auto_dispatch
+                else "not_configured"
+            )
         approval_phase = self.canary_dispatch_approval.phase(now)
         return (
             "active"
@@ -415,17 +445,35 @@ class BatchSettings:
     def submission_not_after(self) -> datetime:
         """Return the earliest hard boundary for creating a provider Batch."""
         self.assert_canary_config_authorized()
+        if self.experiment_end_at is None or self.canary_approval is None:
+            raise ValueError("live Batch dispatch approval is incomplete")
         if (
-            self.experiment_end_at is None
-            or self.canary_approval is None
-            or self.canary_dispatch_approval is None
+            self.production_shadow_auto_dispatch
+            and self.canary_dispatch_approval is None
         ):
+            return min(
+                self.experiment_end_at,
+                self.canary_approval.expires_at,
+            )
+        if self.canary_dispatch_approval is None:
             raise ValueError("live Batch dispatch approval is incomplete")
         return min(
             self.experiment_end_at - timedelta(hours=26),
             self.canary_approval.expires_at,
             self.canary_dispatch_approval.expires_at,
         )
+
+    def submission_deadline_safe(self, now: datetime) -> bool:
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("Batch submission clock must be timezone-aware")
+        if self.experiment_end_at is None:
+            raise ValueError("live Batch experiment window is incomplete")
+        required_slack = (
+            timedelta(0)
+            if self.production_shadow_auto_dispatch
+            else timedelta(hours=26)
+        )
+        return self.experiment_end_at - now > required_slack
 
     @staticmethod
     def budget_key(kst_date: date) -> str:
@@ -470,6 +518,13 @@ class BatchSettings:
                 "canary_approval_id": self.canary_approval.approval_id,
                 "canary_dispatch_configured": (
                     self.canary_dispatch_approval is not None
+                ),
+                "production_shadow_auto_dispatch": (
+                    self.production_shadow_auto_dispatch
+                ),
+                "max_provider_batches_per_kst_day": 1,
+                "authorized_provider_batches": (
+                    7 if self.production_shadow_auto_dispatch else 1
                 ),
             })
         return summary

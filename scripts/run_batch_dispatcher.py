@@ -7,7 +7,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from core.batch.canary import canonical_sha256, dispatch_subject
+from core.batch.canary import (
+    canonical_sha256,
+    dispatch_subject,
+    pilot_day_authorization,
+)
 from core.batch.dispatcher import build_batch_dispatcher
 from core.batch.repository import SupabaseBatchRepository
 from core.batch.settings import BatchSettings
@@ -50,6 +54,7 @@ async def _run_live(
         workspace_id=settings.workspace_id,
     )
     dispatch_approval = settings.canary_dispatch_approval
+    worker_id = f"batch:{uuid.uuid4()}"
     dispatcher_options: dict[str, object] = {}
     if dispatch_approval is not None:
         dispatcher_options.update({
@@ -72,7 +77,7 @@ async def _run_live(
         repository=repository,
         api_key=settings.openai_api_key,
         allowed_clients=settings.allowed_clients,
-        worker_id=f"batch:{uuid.uuid4()}",
+        worker_id=worker_id,
         max_claims=settings.max_claims,
         max_requests_per_batch=settings.max_requests_per_batch,
         **dispatcher_options,
@@ -92,10 +97,7 @@ async def _run_live(
     summary = await dispatcher.poll_once()
     after_poll = datetime.now(timezone.utc)
     dispatch_phase = settings.dispatch_phase(after_poll)
-    deadline_safe = (
-        settings.experiment_end_at is not None
-        and settings.experiment_end_at - after_poll >= timedelta(hours=26)
-    )
+    deadline_safe = settings.submission_deadline_safe(after_poll)
     if (
         poll_only
         or summary.errors != 0
@@ -124,7 +126,10 @@ async def _run_live(
         })
         return result
 
-    if dispatch_approval is None:
+    if (
+        dispatch_approval is None
+        and not settings.production_shadow_auto_dispatch
+    ):
         raise ValueError("live Batch dispatch approval is incomplete")
     not_after = settings.submission_not_after()
     kst_now = after_poll.astimezone(_KST)
@@ -137,17 +142,95 @@ async def _run_live(
         window_end=window_end_kst.astimezone(timezone.utc),
         limit_usd=settings.daily_cap_usd,
     )
-    await repository.configure_canary_grant(
-        config_subject_sha256=settings.canary_subject_sha256,
-        config_approval_id=settings.canary_approval.approval_id,
-        dispatch_subject_sha256=dispatch_approval.subject_sha256,
-        dispatch_approval_id=dispatch_approval.dispatch_approval_id,
-        job_id=dispatch_approval.job_id,
-        input_sha256=dispatch_approval.input_sha256,
-        request_sha256=dispatch_approval.request_sha256,
-        expires_at=not_after,
-        hard_limit_usd=settings.daily_cap_usd,
-    )
+    pilot_day = None
+    if dispatch_approval is not None:
+        await repository.configure_canary_grant(
+            config_subject_sha256=settings.canary_subject_sha256,
+            config_approval_id=settings.canary_approval.approval_id,
+            dispatch_subject_sha256=dispatch_approval.subject_sha256,
+            dispatch_approval_id=dispatch_approval.dispatch_approval_id,
+            job_id=dispatch_approval.job_id,
+            input_sha256=dispatch_approval.input_sha256,
+            request_sha256=dispatch_approval.request_sha256,
+            expires_at=not_after,
+            hard_limit_usd=settings.daily_cap_usd,
+        )
+    else:
+        if (
+            settings.canary_subject_sha256 is None
+            or settings.canary_approval is None
+            or settings.experiment_start_at is None
+            or settings.experiment_end_at is None
+        ):
+            raise ValueError("Production Shadow approval is incomplete")
+        candidate = await repository.peek_origintrail_shadow_candidate(
+            pilot_subject_sha256=settings.canary_subject_sha256,
+            pilot_approval_id=settings.canary_approval.approval_id,
+            experiment_start_at=settings.experiment_start_at,
+            experiment_end_at=settings.experiment_end_at,
+        )
+        if candidate is None:
+            result = summary.as_dict()
+            result.update({
+                "mode": "live",
+                "experiment_phase": phase,
+                "dispatch_phase": dispatch_phase,
+                "submissions_enabled": True,
+                "budget_key": budget_key,
+                "detail": "batch_shadow_no_daily_candidate",
+            })
+            return result
+        pilot_day = datetime.fromisoformat(
+            candidate["kst_date"]
+        ).date()
+        daily = pilot_day_authorization(
+            pilot_subject_sha256=settings.canary_subject_sha256,
+            pilot_approval_id=settings.canary_approval.approval_id,
+            kst_date=pilot_day,
+            job_id=candidate["job_id"],
+            input_sha256=candidate["input_sha256"],
+            request_sha256=candidate["request_sha256"],
+        )
+        daily_not_after = min(
+            not_after,
+            after_poll + timedelta(minutes=110),
+        )
+        await repository.configure_origintrail_shadow_day(
+            kst_date=pilot_day,
+            pilot_subject_sha256=settings.canary_subject_sha256,
+            pilot_approval_id=settings.canary_approval.approval_id,
+            experiment_start_at=settings.experiment_start_at,
+            experiment_end_at=settings.experiment_end_at,
+            config_subject_sha256=daily["config_subject_sha256"],
+            config_approval_id=daily["config_approval_id"],
+            dispatch_subject_sha256=daily["dispatch_subject_sha256"],
+            dispatch_approval_id=daily["dispatch_approval_id"],
+            job_id=daily["job_id"],
+            input_sha256=daily["input_sha256"],
+            request_sha256=daily["request_sha256"],
+            expires_at=daily_not_after,
+            hard_limit_usd=settings.daily_cap_usd,
+        )
+        dispatcher = build_batch_dispatcher(
+            repository=repository,
+            api_key=settings.openai_api_key,
+            allowed_clients=settings.allowed_clients,
+            worker_id=worker_id,
+            max_claims=settings.max_claims,
+            max_requests_per_batch=settings.max_requests_per_batch,
+            canary_config_subject_sha256=daily[
+                "config_subject_sha256"
+            ],
+            canary_config_approval_id=daily["config_approval_id"],
+            canary_dispatch_subject_sha256=daily[
+                "dispatch_subject_sha256"
+            ],
+            canary_dispatch_approval_id=daily["dispatch_approval_id"],
+            canary_job_id=daily["job_id"],
+            canary_input_sha256=daily["input_sha256"],
+            canary_request_sha256=daily["request_sha256"],
+            canary_not_after=daily_not_after,
+        )
     before_claim = datetime.now(timezone.utc)
     if (
         settings.dispatch_phase(before_claim) != "active"
@@ -169,6 +252,8 @@ async def _run_live(
     result["experiment_phase"] = phase
     result["submissions_enabled"] = True
     result["budget_key"] = budget_key
+    if pilot_day is not None:
+        result["pilot_kst_date"] = pilot_day.isoformat()
     return result
 
 
@@ -269,10 +354,7 @@ def main() -> int:
             experiment_phase = settings.experiment_window_phase(now)
             config_phase = settings.canary_approval.phase(now)
             dispatch_phase = settings.dispatch_phase(now)
-            deadline_safe = (
-                settings.experiment_end_at is not None
-                and settings.experiment_end_at - now >= timedelta(hours=26)
-            )
+            deadline_safe = settings.submission_deadline_safe(now)
             result = {
                 "ok": True,
                 **settings.public_summary(),
