@@ -435,7 +435,7 @@ environment, and deployed release SHA are active. Its summary must also say
 `runtime_environment_verified:true` and `runtime_release_verified:true`. It
 still does not authorize or execute a submission.
 
-The default live command and the Railway cron are poll-only. The only local
+The default live command and the hourly Railway cron are poll-only. The only local
 process flag that enables the exact claim/create path is billable and remains
 HOLD until the separate approval gate:
 
@@ -508,7 +508,7 @@ The staging gate is:
    on the dispatcher only, and run `--preflight-live`. It must report the exact
    job/input/request binding plus `ready_to_submit:true` with zero external calls.
 10. Run the dispatcher once manually with `--submit-once`, never on its
-    ten-minute cron. The scheduled/default command is poll-only and cannot
+    hourly cron. The scheduled/default command is poll-only and cannot
     submit without that explicit process flag.
     Immediately remove the dispatch receipt and use `--poll-only` for later
     reconciliation. The live pass must register the immutable grant and consume
@@ -533,6 +533,21 @@ been promoted separately; application rollout and billable Batch execution
 remain **HOLD** until an operator reviews the staging receipt, spend, duplicate
 count, structured-output result, and absence of external side effects and
 explicitly approves that specific promotion.
+
+## Production shadow one-shot
+
+After the staging evidence and production application release are explicitly
+approved, the same fail-closed profile may bind to `production`. This is not a
+general production mode: `BATCH_CANARY_ENVIRONMENT=production` must exactly
+match `RAILWAY_ENVIRONMENT_NAME=production`, the deployed 40-hex release SHA,
+the short-lived config receipt, and a separate exact-job dispatch receipt.
+OriginTrail remains the only client, the database and OpenAI project limits
+remain `$0.05`, only one request and one provider Batch are authorized, and all
+outputs remain review-only with no publish, approval, outreach, visual, or
+deploy adapter. The dispatcher still defaults to hourly poll-only operation;
+one billable submission additionally requires an explicit manual
+`--submit-once` process invocation. Remove the dispatch receipt immediately
+after that invocation and keep only polling active until reconciliation.
 
 Fresh authorized attempt-one claims submit directly. Only a stale lease from
 an ambiguous create/register attempt searches provider history, bounded

@@ -133,6 +133,17 @@ def test_live_mode_requires_separate_provider_and_ledger_credentials():
     )
 
 
+def test_live_mode_accepts_exact_production_runtime_binding():
+    settings = BatchSettings.from_env(_live_env(
+        BATCH_CANARY_ENVIRONMENT="production",
+        RAILWAY_ENVIRONMENT_NAME="production",
+    ))
+
+    assert settings.canary_environment == "production"
+    assert settings.runtime_environment == "production"
+    assert settings.public_summary()["runtime_environment_verified"] is True
+
+
 def test_live_producer_parses_without_loading_openai_api_key():
     env = _live_env()
     env.pop("OPENAI_API_KEY")
@@ -441,7 +452,7 @@ def test_live_receipt_is_required_even_when_all_credentials_exist():
         ),
         ({"BATCH_CANARY_ENABLED": "false"}, "CANARY_ENABLED"),
         ({"BATCH_CANARY_ENABLED": "TRUE"}, "CANARY_ENABLED"),
-        ({"BATCH_CANARY_ENVIRONMENT": "production"}, "must be staging"),
+        ({"BATCH_CANARY_ENVIRONMENT": "preview"}, "staging or production"),
         ({"RAILWAY_ENVIRONMENT_NAME": "production"}, "ENVIRONMENT_NAME"),
         ({"RAILWAY_GIT_COMMIT_SHA": ""}, "RAILWAY_GIT_COMMIT_SHA"),
         ({"OPENAI_API_KEY": "short"}, "OPENAI_API_KEY"),

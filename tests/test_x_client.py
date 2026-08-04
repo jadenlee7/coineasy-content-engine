@@ -102,6 +102,234 @@ async def test_recent_tweets_include_only_allowlisted_x_media(monkeypatch):
     )
     assert "author_id" in timeline_params["tweet.fields"]
     assert "note_tweet" in timeline_params["tweet.fields"]
+    assert "entities" in timeline_params["tweet.fields"]
+    assert "article" in timeline_params["tweet.fields"]
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_enrich_url_only_source_from_x_entities(monkeypatch):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2084283287518798116",
+                    "text": "https://t.co/BFl2YSh2VB",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "entities": {
+                        "urls": [{
+                            "url": "https://t.co/BFl2YSh2VB",
+                            "expanded_url": "https://origintrail.io/blog/dkg-update",
+                            "unwound_url": "https://origintrail.io/blog/dkg-update",
+                            "title": "OriginTrail DKG network update",
+                            "description": (
+                                "A new Decentralized Knowledge Graph release "
+                                "is available for builders."
+                            ),
+                        }],
+                    },
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("origin_trail")
+
+    assert tweets[0]["text"] == (
+        "https://t.co/BFl2YSh2VB\n\n"
+        "[X-provided link metadata]\n\n"
+        "URL: https://origintrail.io/blog/dkg-update\n"
+        "Title: OriginTrail DKG network update\n"
+        "Description: A new Decentralized Knowledge Graph release is "
+        "available for builders."
+    )
+    assert tweets[0]["is_note_tweet"] is False
+    assert tweets[0]["media"] == []
+
+
+@pytest.mark.asyncio
+async def test_recent_tweets_enrich_x_article_source(monkeypatch):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2084283287518798116",
+                    "text": "https://t.co/BFl2YSh2VB",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "entities": {"urls": [{
+                        "url": "https://t.co/BFl2YSh2VB",
+                        "expanded_url": (
+                            "http://x.com/i/article/2084276731330936832"
+                        ),
+                        "unwound_url": (
+                            "https://x.com/i/article/2084276731330936832"
+                        ),
+                    }]},
+                    "article": {
+                        "title": "July 2026 OriginTrail recap",
+                        "plain_text": (
+                            "DKG V10 moved into production across agent "
+                            "swarms and industrial provenance."
+                        ),
+                    },
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("origin_trail")
+
+    assert tweets[0]["text"] == (
+        "https://t.co/BFl2YSh2VB\n\n"
+        "[X Article]\n\n"
+        "Title: July 2026 OriginTrail recap\n"
+        "Plain text: DKG V10 moved into production across agent swarms and "
+        "industrial provenance."
+    )
+    assert tweets[0]["is_note_tweet"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entities",
+    [
+        [],
+        {"urls": ["not-an-object"]},
+        {"urls": [{"expanded_url": "http://origintrail.io/news"}]},
+        {"urls": [{"expanded_url": "https://user@origintrail.io/news"}]},
+        {"urls": [{"expanded_url": "https://origintrail.io:444/news"}]},
+        {"urls": [{"expanded_url": "x" * 2_049}]},
+        {"urls": [{
+            "expanded_url": "https://origintrail.io/news",
+            "title": "x" * 501,
+        }]},
+    ],
+    ids=[
+        "entities-not-object",
+        "url-not-object",
+        "non-https",
+        "userinfo",
+        "custom-port",
+        "oversized-url",
+        "oversized-title",
+    ],
+)
+async def test_recent_tweets_fail_closed_on_invalid_url_evidence(
+    monkeypatch,
+    entities,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2084283287518798116",
+                    "text": "https://t.co/BFl2YSh2VB",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "entities": entities,
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(XTransientError, match="invalid URL evidence"):
+        await XClient("x-token").get_recent_tweets("origin_trail")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "article",
+    [
+        [],
+        {"title": "Missing plain text"},
+        {"plain_text": "Missing title"},
+        {"title": "x" * 501, "plain_text": "Body"},
+        {"title": "Title", "plain_text": "x" * 55_001},
+    ],
+    ids=[
+        "not-object",
+        "missing-text",
+        "missing-title",
+        "oversized-title",
+        "oversized-text",
+    ],
+)
+async def test_recent_tweets_fail_closed_on_invalid_article_evidence(
+    monkeypatch,
+    article,
+):
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2084283287518798116",
+                    "text": "https://t.co/BFl2YSh2VB",
+                    "created_at": "2026-07-22T08:00:00Z",
+                    "referenced_tweets": [],
+                    "article": article,
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    with pytest.raises(
+        XTransientError,
+        match="(invalid|incomplete) article evidence",
+    ):
+        await XClient("x-token").get_recent_tweets("origin_trail")
 
 
 @pytest.mark.asyncio

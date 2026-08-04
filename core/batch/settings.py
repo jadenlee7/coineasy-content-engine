@@ -232,9 +232,9 @@ class BatchSettings:
                 minimum=3,
                 maximum=32,
             )
-            if canary_environment != "staging":
+            if canary_environment not in {"staging", "production"}:
                 raise ValueError(
-                    "BATCH_CANARY_ENVIRONMENT must be staging"
+                    "BATCH_CANARY_ENVIRONMENT must be staging or production"
                 )
             runtime_environment = _secret(
                 env,

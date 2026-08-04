@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 CONFIG_SCHEMA = "coineasy.batch.canary.config.v1"
 DISPATCH_SCHEMA = "coineasy.batch.canary.dispatch.v1"
-CANARY_ENVIRONMENT = "staging"
+CANARY_ENVIRONMENTS = frozenset({"staging", "production"})
 CANARY_CLIENT = "origintrail"
 CANARY_DAILY_CAP_USD = Decimal("0.05")
 CANARY_WINDOW = timedelta(hours=48)
@@ -99,8 +99,10 @@ def config_subject(
     experiment_end_at: datetime,
     timezone_name: str,
 ) -> dict[str, object]:
-    if environment != CANARY_ENVIRONMENT:
-        raise ValueError("BATCH_CANARY_ENVIRONMENT must be staging")
+    if environment not in CANARY_ENVIRONMENTS:
+        raise ValueError(
+            "BATCH_CANARY_ENVIRONMENT must be staging or production"
+        )
     if _RELEASE_SHA_RE.fullmatch(release_sha) is None:
         raise ValueError("BATCH_CANARY_RELEASE_SHA must be 40 lowercase hex")
     parsed_supabase_url = urlsplit(supabase_url)

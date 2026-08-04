@@ -45,7 +45,7 @@ def test_batch_dispatcher_is_short_lived_and_uses_small_worker_image():
     assert config["build"]["dockerfilePath"] == "Dockerfile.batch"
     assert config["deploy"] == {
         "startCommand": "python -m scripts.run_batch_dispatcher",
-        "cronSchedule": "*/10 * * * *",
+        "cronSchedule": "0 * * * *",
         "restartPolicyType": "NEVER",
     }
     assert "--submit-once" not in config["deploy"]["startCommand"]
