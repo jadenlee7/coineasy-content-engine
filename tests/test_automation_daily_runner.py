@@ -1379,6 +1379,7 @@ def test_origintrail_batch_item_rejects_article_work():
         attempts=1,
         max_attempts=3,
         locked_by="official-x:test",
+        origintrail_batch_eligible=True,
     )
     reference_pack = StyleReferencePack(
         request_id=job.request_id,
@@ -1388,6 +1389,38 @@ def test_origintrail_batch_item_rejects_article_work():
     )
 
     with pytest.raises(ValueError, match="unsupported evidence"):
+        OfficialXDailyRunner._origintrail_batch_item(
+            job=job,
+            reference_pack=reference_pack,
+            experiment_end_at=None,
+        )
+
+
+def test_origintrail_batch_item_rejects_url_only_source_evidence():
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="https://t.co/BFl2YSh2VB",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="official-x:test",
+        origintrail_batch_eligible=True,
+    )
+    reference_pack = StyleReferencePack(
+        request_id=job.request_id,
+        primary_source_item_id=job.primary_source_item_id,
+        reference_pack_hash="a" * 32,
+        references=(),
+    )
+
+    with pytest.raises(ValueError, match="substantive source evidence"):
         OfficialXDailyRunner._origintrail_batch_item(
             job=job,
             reference_pack=reference_pack,
