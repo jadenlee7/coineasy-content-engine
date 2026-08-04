@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from core.buzz.cli import (
+    BUZZ_CLI_RELEASE,
     BuzzCliConfig,
     BuzzCliError,
     BuzzCliPublisher,
@@ -61,6 +62,9 @@ def _publisher(runner: FakeRunner) -> BuzzCliPublisher:
 
 
 class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
+    def test_request_fingerprint_is_bound_to_reviewed_cli_release(self):
+        self.assertEqual(BUZZ_CLI_RELEASE, "desktop-v0.5.4")
+
     def test_fixed_message_contains_metadata_only_and_no_mentions(self):
         message = format_origintrail_message(
             _event(), studio_origin="https://console.example"

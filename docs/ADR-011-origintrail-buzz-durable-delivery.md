@@ -104,7 +104,7 @@ token.
 1. Add the private receipt ledger, RLS, exact OriginTrail constraints, and
    transactional security smoke.
 2. Add the dedicated Netlify transition endpoint and scoped token.
-3. Add the one-shot worker, strict v0.5.3 CLI adapter, and no-I/O validation
+3. Add the one-shot worker, strict v0.5.4 CLI adapter, and no-I/O validation
    mode.
 4. Prove fresh-attempt-only send, unknown-outcome hold, and no credential
    leakage with unit and integration tests.

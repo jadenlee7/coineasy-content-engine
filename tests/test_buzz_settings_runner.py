@@ -58,8 +58,24 @@ class BuzzSettingsRunnerTests(unittest.TestCase):
         self.assertFalse(result["database_calls"])
         self.assertFalse(result["shadow_calls"])
 
-    def test_send_once_requires_literal_enabled_before_building_worker(self):
+    def test_disabled_scheduled_send_is_a_successful_no_io_hold(self):
         with patch.dict(os.environ, _env(enabled="false"), clear=True), patch.object(
+            runner, "_build_worker", side_effect=AssertionError("must not build")
+        ), patch("builtins.print") as output:
+            self.assertEqual(runner.main(["--send-once"]), 0)
+        self.assertEqual(json.loads(output.call_args.args[0]), {
+            "ok": True,
+            "enabled": False,
+            "mode": "hold",
+            "reason": "buzz_delivery_disabled",
+            "provider_calls": False,
+            "database_calls": False,
+            "shadow_calls": False,
+        })
+
+    def test_send_once_rejects_nonliteral_enabled_before_building_worker(self):
+        values = _env(enabled="TRUE")
+        with patch.dict(os.environ, values, clear=True), patch.object(
             runner, "_build_worker", side_effect=AssertionError("must not build")
         ), patch("builtins.print") as output:
             self.assertEqual(runner.main(["--send-once"]), 1)

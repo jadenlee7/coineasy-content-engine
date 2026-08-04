@@ -91,6 +91,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
+        enabled = buzz_delivery_enabled()
+    except ValueError:
+        enabled = None
+    if enabled is False:
+        print(json.dumps({
+            "ok": True,
+            "enabled": False,
+            "mode": "hold",
+            "reason": "buzz_delivery_disabled",
+            "provider_calls": False,
+            "database_calls": False,
+            "shadow_calls": False,
+        }, separators=(",", ":")))
+        return 0
+
+    try:
         result = asyncio.run(_send_once(BuzzDeliverySettings.from_env()))
     except (RuntimeError, ValueError):
         result = {
