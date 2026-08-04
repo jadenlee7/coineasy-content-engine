@@ -461,6 +461,29 @@ async def test_dry_run_reads_and_plans_but_never_writes_or_generates():
 
 
 @pytest.mark.asyncio
+async def test_allowed_clients_scope_prevents_other_client_intake():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    x_client = FakeXClient()
+
+    summary = await runner(
+        FakeRepository(states),
+        x_client,
+        FakeGenerationClient(),
+        allowed_clients=("origintrail",),
+    ).run(dry_run=True)
+
+    assert [call[0][0].lstrip("@") for call in x_client.calls] == [
+        "origin_trail",
+    ]
+    assert {item["client_id"] for item in summary.outcomes} <= {
+        "origintrail",
+    }
+
+
+@pytest.mark.asyncio
 async def test_catalog_completion_failure_leaves_lease_for_idempotent_retry():
     states = {
         client_id: AutomationState(None, client_id != "yellow", ())
