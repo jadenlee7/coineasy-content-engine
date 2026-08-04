@@ -15,6 +15,7 @@ from core.buzz.models import BuzzRelayReceipt, BuzzShadowEvent
 _EVENT_ID = re.compile(r"^[a-f0-9]{64}$")
 _MAX_PROCESS_OUTPUT = 65_536
 _MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@1"
+BUZZ_CLI_RELEASE = "desktop-v0.5.4"
 
 
 class BuzzCliError(RuntimeError):
@@ -91,7 +92,7 @@ def buzz_message_fingerprints(
     message_sha = hashlib.sha256(message.encode("utf-8")).hexdigest()
     request_sha = hashlib.sha256(
         (
-            "coineasy-buzz-delivery\0desktop-v0.5.3\0"
+            f"coineasy-buzz-delivery\0{BUZZ_CLI_RELEASE}\0"
             f"{relay_url.rstrip('/')}\0{channel_id}\0{message_sha}"
         ).encode("utf-8")
     ).hexdigest()
@@ -174,6 +175,7 @@ __all__ = [
     "BuzzCliConfig",
     "BuzzCliError",
     "BuzzCliPublisher",
+    "BUZZ_CLI_RELEASE",
     "CommandResult",
     "buzz_message_fingerprints",
     "format_origintrail_message",

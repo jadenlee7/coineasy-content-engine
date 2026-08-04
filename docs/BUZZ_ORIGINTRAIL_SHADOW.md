@@ -3,7 +3,7 @@
 ## Current state
 
 The local build provides the first safe seam between CoinEasy's existing
-execution plane and Buzz desktop v0.5.3:
+execution plane and Buzz desktop v0.5.4:
 
 ```text
 OriginTrail Official X
@@ -12,17 +12,17 @@ OriginTrail Official X
   -> existing OpenAI Batch dispatcher
   -> existing read-only Batch Review RPC
   -> Netlify GET /api/buzz-shadow/origintrail/batch
-  -> durable Supabase receipt + scoped Netlify control    [BUILT / NOT DEPLOYED]
-  -> deterministic one-shot delivery worker               [BUILT / HOLD]
+  -> durable Supabase receipt + scoped Netlify control    [PRODUCTION ACTIVE]
+  -> deterministic one-shot delivery worker               [DEPLOYABLE / HOLD]
   -> official `buzz messages send` CLI
   -> dedicated #origintrail-shadow channel
 ```
 
-The read endpoint and authenticated Studio deep link are production active. The
-durable receipt migration, separate control endpoint, and one-shot worker are
-implemented on the feature branch but are not applied or deployed. No Buzz
-relay write, channel creation, OpenAI call, or publication is part of this
-build.
+The read endpoint, authenticated Studio deep link, durable receipt migration,
+and separate control endpoint are production active. The Railway worker image
+is pinned to the official v0.5.4 Linux package and remains fail-closed while
+`BUZZ_DELIVERY_ENABLED=false`. No Buzz relay write, channel creation, OpenAI
+call, or publication is part of this build.
 
 ## Cost boundary
 
@@ -84,7 +84,7 @@ prompt, input hash, provider IDs, token counts, workspace ID, database
 credential, or a mutation URL. A team member must authenticate to Studio before
 the deep link opens the read-only result.
 
-## Buzz v0.5.3 execution choice
+## Buzz v0.5.4 execution choice
 
 For proactive status delivery, use a short-lived deterministic poller and the
 official CLI, not a model heartbeat. The CLI's supported outbound boundary is:
@@ -96,7 +96,7 @@ printf '%s' "$CONTENT" |
 
 The worker invokes the program with an argv array and passes content through
 stdin; it never constructs a shell command. It accepts a success only when the
-v0.5.3 JSON response has `accepted=true`, a lowercase 64-hex `event_id`, and an
+v0.5.4 JSON response has `accepted=true`, a lowercase 64-hex `event_id`, and an
 empty `mention_pubkeys` array. Buzz has no dry-run flag for `messages send`, so
 local and staging tests stop before this command.
 
@@ -141,6 +141,6 @@ outreach, and OpenAI calls remain outside this adapter. See
 
 Official Buzz references:
 
-- [desktop v0.5.3 release](https://github.com/block/buzz/releases/tag/desktop-v0.5.3)
-- [`buzz-acp` configuration](https://github.com/block/buzz/blob/desktop-v0.5.3/crates/buzz-acp/README.md)
-- [`buzz` CLI](https://github.com/block/buzz/blob/desktop-v0.5.3/crates/buzz-cli/README.md)
+- [desktop v0.5.4 release](https://github.com/block/buzz/releases/tag/desktop-v0.5.4)
+- [`buzz-acp` configuration](https://github.com/block/buzz/blob/desktop-v0.5.4/crates/buzz-acp/README.md)
+- [`buzz` CLI](https://github.com/block/buzz/blob/desktop-v0.5.4/crates/buzz-cli/README.md)

@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+FROM debian:bookworm-slim AS buzz-cli
+
+ADD --checksum=sha256:9c2f0df4589c08698dd940e09d911884a5468c35169d1068fc6ccc93012bfeff \
+    https://github.com/block/buzz/releases/download/desktop-v0.5.4/Buzz_0.5.4_amd64.deb \
+    /tmp/buzz.deb
+RUN dpkg-deb --extract /tmp/buzz.deb /tmp/buzz-package \
+    && test -x /tmp/buzz-package/usr/bin/buzz
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-automation.txt .
+RUN pip install --no-cache-dir -r requirements-automation.txt \
+    && useradd --create-home --uid 10001 coineasy
+
+COPY --from=buzz-cli /tmp/buzz-package/usr/bin/buzz /opt/coineasy/bin/buzz
+COPY core/__init__.py ./core/__init__.py
+COPY core/buzz ./core/buzz
+COPY scripts/run_origintrail_buzz_delivery.py ./scripts/run_origintrail_buzz_delivery.py
+
+RUN chmod 0555 /opt/coineasy/bin/buzz \
+    && chown -R coineasy:coineasy /app
+
+ENV BUZZ_CLI_PATH=/opt/coineasy/bin/buzz \
+    PYTHONUNBUFFERED=1
+
+USER 10001:10001
+
+CMD ["python", "-m", "scripts.run_origintrail_buzz_delivery"]
