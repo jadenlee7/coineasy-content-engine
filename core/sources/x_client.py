@@ -4,6 +4,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -14,6 +15,12 @@ _MAX_PAGES = 2
 _MAX_RESULTS = 200
 _TRANSIENT_DELAYS = (0.0, 0.25, 1.0)
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_WHITESPACE_RE = re.compile(r"\s+")
+_MAX_LINK_ENTITIES = 16
+_MAX_SOURCE_CONTENT_LENGTH = 60_000
+_MAX_LINK_TITLE_LENGTH = 500
+_MAX_LINK_DESCRIPTION_LENGTH = 5_000
+_MAX_ARTICLE_TEXT_LENGTH = 55_000
 _EXPECTED_UNAVAILABLE_REFERENCE_ERRORS = {
     "https://api.x.com/2/problems/not-authorized-for-resource",
     "https://api.x.com/2/problems/resource-not-found",
@@ -140,7 +147,10 @@ class XClient:
         url = f"{X_API_BASE}/users/{user_id}/tweets"
         total_limit = min(max(max_results, 5), _MAX_RESULTS)
         base_params = {
-            "tweet.fields": "author_id,created_at,referenced_tweets,public_metrics,attachments,note_tweet",
+            "tweet.fields": (
+                "author_id,created_at,referenced_tweets,public_metrics,"
+                "attachments,note_tweet,entities,article"
+            ),
             "expansions": (
                 "attachments.media_keys,referenced_tweets.id,"
                 "referenced_tweets.id.attachments.media_keys"
@@ -392,10 +402,16 @@ class XClient:
             text = (note_tweet["text"] if is_note_tweet else short_text).strip()
             if not text:
                 raise XTransientError("X API timeline contains an empty post")
+            source_content = self._source_content(
+                text,
+                t.get("entities"),
+                note_tweet.get("entities") if is_note_tweet else None,
+                raw_article=t.get("article"),
+            )
             photo = next((item for item in media if item.get("type") == "photo"), None)
             results.append({
                 "id": post_id,
-                "text": text,
+                "text": source_content,
                 "created_at": created_at,
                 "url": f"https://x.com/{username}/status/{post_id}",
                 "is_retweet": is_retweet,
@@ -407,6 +423,149 @@ class XClient:
                 "is_note_tweet": is_note_tweet,
             })
         return results
+
+    @classmethod
+    def _source_content(
+        cls,
+        text: str,
+        *raw_entities: object,
+        raw_article: object = None,
+    ) -> str:
+        """Attach bounded, provider-returned link metadata to an X source.
+
+        The worker deliberately does not fetch expanded URLs. X already returns
+        the resolved URL and optional card title/description inside
+        ``entities.urls``; persisting that immutable response is enough to make
+        link-only official posts useful without adding an SSRF-capable crawler.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise XTransientError("X API timeline contains an empty post")
+        sections = [text.strip()]
+        if raw_article is not None:
+            if not isinstance(raw_article, dict):
+                raise XTransientError(
+                    "X API timeline contains invalid article evidence"
+                )
+            article_title = cls._entity_text(
+                raw_article.get("title"),
+                maximum=_MAX_LINK_TITLE_LENGTH,
+                error="X API timeline contains invalid article evidence",
+            )
+            article_text = cls._entity_text(
+                raw_article.get("plain_text"),
+                maximum=_MAX_ARTICLE_TEXT_LENGTH,
+                error="X API timeline contains invalid article evidence",
+            )
+            if not article_title or not article_text:
+                raise XTransientError(
+                    "X API timeline contains incomplete article evidence"
+                )
+            sections.extend([
+                "[X Article]",
+                f"Title: {article_title}\nPlain text: {article_text}",
+            ])
+
+        links: list[tuple[str, str, str]] = []
+        seen_urls: set[str] = set()
+        for entities in raw_entities:
+            if entities is None:
+                continue
+            if not isinstance(entities, dict):
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            raw_urls = entities.get("urls")
+            if raw_urls is None:
+                continue
+            if (
+                not isinstance(raw_urls, list)
+                or len(raw_urls) > _MAX_LINK_ENTITIES
+                or any(not isinstance(item, dict) for item in raw_urls)
+            ):
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            for item in raw_urls:
+                resolved_url = cls._resolved_entity_url(item)
+                if resolved_url is None or resolved_url in seen_urls:
+                    continue
+                title = cls._entity_text(
+                    item.get("title"),
+                    maximum=_MAX_LINK_TITLE_LENGTH,
+                )
+                description = cls._entity_text(
+                    item.get("description"),
+                    maximum=_MAX_LINK_DESCRIPTION_LENGTH,
+                )
+                # Plain media/status links add no copy evidence. Keep a link
+                # only when X supplied card text or it points outside X.
+                host = urlsplit(resolved_url).hostname or ""
+                if not title and not description and host in {
+                    "x.com",
+                    "www.x.com",
+                    "twitter.com",
+                    "www.twitter.com",
+                }:
+                    continue
+                seen_urls.add(resolved_url)
+                links.append((resolved_url, title, description))
+
+        if links:
+            sections.append("[X-provided link metadata]")
+            for resolved_url, title, description in links:
+                fields = [f"URL: {resolved_url}"]
+                if title:
+                    fields.append(f"Title: {title}")
+                if description:
+                    fields.append(f"Description: {description}")
+                sections.append("\n".join(fields))
+        enriched = "\n\n".join(sections)
+        if len(enriched) > _MAX_SOURCE_CONTENT_LENGTH:
+            raise XTransientError("X API URL evidence exceeds the source limit")
+        return enriched
+
+    @staticmethod
+    def _resolved_entity_url(item: dict) -> str | None:
+        for name in ("unwound_url", "expanded_url"):
+            value = item.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or len(value) > 2_048:
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            try:
+                parsed = urlsplit(value)
+                port = parsed.port
+            except ValueError as exc:
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                ) from exc
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or port not in {None, 443}
+            ):
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
+            return value
+        return None
+
+    @staticmethod
+    def _entity_text(
+        value: object,
+        *,
+        maximum: int,
+        error: str = "X API timeline contains invalid URL evidence",
+    ) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str) or len(value) > maximum:
+            raise XTransientError(error)
+        return _WHITESPACE_RE.sub(" ", value).strip()
 
     @staticmethod
     def _expected_unavailable_quote_ids(
