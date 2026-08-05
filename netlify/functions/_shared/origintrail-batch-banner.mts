@@ -19,6 +19,20 @@ import {
 const BANNER_WIDTH = 1_200;
 const BANNER_HEIGHT = 630;
 const MAX_BANNER_BYTES = 4 * 1_024 * 1_024;
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+const BUZZ_ALLOWED_PNG_ANCILLARY_CHUNKS = new Set([
+  "cHRM",
+  "gAMA",
+  "sBIT",
+  "sRGB",
+  "bKGD",
+  "hIST",
+  "tRNS",
+  "sPLT",
+  "acTL",
+  "fcTL",
+  "fdAT",
+]);
 
 export type OriginTrailBatchBanner = {
   bytes: Buffer;
@@ -35,6 +49,41 @@ export class OriginTrailBatchBannerError extends Error {
     this.name = "OriginTrailBatchBannerError";
     this.code = code;
   }
+}
+
+function canonicalBuzzPng(input: Buffer): Buffer {
+  if (!input.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    throw new OriginTrailBatchBannerError("origintrail_batch_banner_render_invalid");
+  }
+
+  const chunks: Buffer[] = [input.subarray(0, PNG_SIGNATURE.length)];
+  let offset = PNG_SIGNATURE.length;
+  let sawIend = false;
+  while (offset < input.length) {
+    if (offset + 12 > input.length) {
+      throw new OriginTrailBatchBannerError("origintrail_batch_banner_render_invalid");
+    }
+    const length = input.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    if (!Number.isSafeInteger(end) || end > input.length) {
+      throw new OriginTrailBatchBannerError("origintrail_batch_banner_render_invalid");
+    }
+    const kind = input.subarray(offset + 4, offset + 8);
+    const kindName = kind.toString("ascii");
+    const critical = (kind[0] & 0x20) === 0;
+    if (critical || BUZZ_ALLOWED_PNG_ANCILLARY_CHUNKS.has(kindName)) {
+      chunks.push(input.subarray(offset, end));
+    }
+    offset = end;
+    if (kindName === "IEND") {
+      sawIend = true;
+      break;
+    }
+  }
+  if (!sawIend || offset !== input.length) {
+    throw new OriginTrailBatchBannerError("origintrail_batch_banner_render_invalid");
+  }
+  return Buffer.concat(chunks);
 }
 
 export function hasStandaloneOriginTrailEvidence(sourceContent: string): boolean {
@@ -123,13 +172,14 @@ export async function renderOriginTrailBatchBanner(
 
   let bytes: Buffer;
   try {
-    bytes = await sharp(Buffer.from(svg, "utf8"), {
+    const rendered = await sharp(Buffer.from(svg, "utf8"), {
       density: 144,
       limitInputPixels: BANNER_WIDTH * BANNER_HEIGHT * 4,
     })
       .resize(BANNER_WIDTH, BANNER_HEIGHT, { fit: "fill" })
       .png({ compressionLevel: 9, progressive: false })
       .toBuffer();
+    bytes = canonicalBuzzPng(rendered);
   } catch {
     throw new OriginTrailBatchBannerError("origintrail_batch_banner_render_failed");
   }
@@ -137,7 +187,7 @@ export async function renderOriginTrailBatchBanner(
   if (
     bytes.length < 24
     || bytes.length > MAX_BANNER_BYTES
-    || !bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))
+    || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)
     || bytes.readUInt32BE(16) !== BANNER_WIDTH
     || bytes.readUInt32BE(20) !== BANNER_HEIGHT
   ) {

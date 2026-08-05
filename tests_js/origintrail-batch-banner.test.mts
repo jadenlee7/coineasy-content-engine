@@ -91,6 +91,20 @@ function environment() {
   };
 }
 
+function pngChunkTypes(bytes: Buffer): string[] {
+  const chunks: string[] = [];
+  let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const kind = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    chunks.push(kind);
+    offset += 12 + length;
+    if (kind === "IEND") break;
+  }
+  assert.equal(offset, bytes.length);
+  return chunks;
+}
+
 test("Studio and Buzz receive the same evidence-bound 1200x630 PNG", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
@@ -135,6 +149,11 @@ test("Studio and Buzz receive the same evidence-bound 1200x630 PNG", async () =>
       assert.deepEqual([...studioBytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
       assert.equal(studioBytes.readUInt32BE(16), 1_200);
       assert.equal(studioBytes.readUInt32BE(20), 630);
+      const chunkTypes = pngChunkTypes(studioBytes);
+      assert.equal(chunkTypes[0], "IHDR");
+      assert.equal(chunkTypes.at(-1), "IEND");
+      assert.equal(chunkTypes.includes("pHYs"), false);
+      assert.equal(chunkTypes.some((kind) => ["tEXt", "zTXt", "iTXt", "iCCP", "eXIf"].includes(kind)), false);
       assert.match(studio.headers.get("x-coineasy-content-sha256") || "", /^[a-f0-9]{64}$/);
       assert.equal(
         studio.headers.get("x-coineasy-content-sha256"),
