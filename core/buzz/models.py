@@ -23,6 +23,14 @@ class BuzzShadowEvent:
 
 
 @dataclass(frozen=True)
+class BuzzAttachment:
+    filename: str
+    media_type: str
+    content_sha256: str
+    content: bytes
+
+
+@dataclass(frozen=True)
 class BuzzDeliveryClaim:
     event_id: str
     job_id: str

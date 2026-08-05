@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 import unittest
 from pathlib import Path
 
@@ -12,7 +14,7 @@ from core.buzz.cli import (
     buzz_message_fingerprints,
     format_origintrail_message,
 )
-from core.buzz.models import BuzzShadowEvent
+from core.buzz.models import BuzzAttachment, BuzzShadowEvent
 
 
 CHANNEL_ID = "33333333-3333-4333-8333-333333333333"
@@ -40,6 +42,21 @@ def _event() -> BuzzShadowEvent:
             "DKG V10과 Buzz 통합, 검증 가능한 출처의 핵심 내용을 "
             "정리했습니다."
         ),
+    )
+
+
+def _attachment(content: bytes | None = None) -> BuzzAttachment:
+    job_id = "22222222-2222-4222-8222-222222222222"
+    png = content or (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\rIHDR"
+        + struct.pack(">II", 1_200, 630)
+    )
+    return BuzzAttachment(
+        filename=f"origintrail-review-{job_id}.png",
+        media_type="image/png",
+        content_sha256=hashlib.sha256(png).hexdigest(),
+        content=png,
     )
 
 
@@ -116,16 +133,30 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             relay_url="https://buzz.example",
             channel_id=CHANNEL_ID,
             message=message,
+            attachment=_attachment(),
         )
         self.assertEqual(first, buzz_message_fingerprints(
             relay_url="https://buzz.example/",
             channel_id=CHANNEL_ID,
             message=message,
+            attachment=_attachment(),
         ))
         self.assertNotEqual(first, buzz_message_fingerprints(
             relay_url="https://other.example",
             channel_id=CHANNEL_ID,
             message=message,
+            attachment=_attachment(),
+        ))
+        self.assertNotEqual(first, buzz_message_fingerprints(
+            relay_url="https://buzz.example",
+            channel_id=CHANNEL_ID,
+            message=message,
+            attachment=_attachment(
+                b"\x89PNG\r\n\x1a\n"
+                + b"\x00\x00\x00\rIHDR"
+                + struct.pack(">II", 1_200, 630)
+                + b"changed"
+            ),
         ))
 
     async def test_send_uses_exact_argv_stdin_and_minimal_secret_environment(self):
@@ -138,13 +169,17 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             b"",
         )])
         publisher = _publisher(runner)
-        receipt = await publisher.send_once("fixed message")
+        receipt = await publisher.send_once("fixed message", _attachment())
 
         self.assertEqual(receipt.event_id, EVENT_ID)
         argv, stdin, env = runner.calls[0]
-        self.assertEqual(argv, (
+        self.assertEqual(argv[:7], (
             "/opt/coineasy/bin/buzz", "messages", "send", "--channel",
             CHANNEL_ID, "--content", "-",
+        ))
+        self.assertEqual(argv[7], "--file")
+        self.assertTrue(argv[8].endswith(
+            "/origintrail-review-22222222-2222-4222-8222-222222222222.png"
         ))
         self.assertEqual(stdin, b"fixed message")
         self.assertEqual(set(env), {"LANG", "BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"})
@@ -161,12 +196,26 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             b"",
         )])
         with self.assertRaisesRegex(BuzzCliError, "buzz_delivery_unknown"):
-            await _publisher(runner).send_once("fixed message")
+            await _publisher(runner).send_once("fixed message", _attachment())
 
     async def test_nonzero_send_is_unknown_even_for_write_conflict(self):
         runner = FakeRunner([CommandResult(5, b"", b'{"error":"conflict"}')])
         with self.assertRaisesRegex(BuzzCliError, "buzz_delivery_unknown"):
-            await _publisher(runner).send_once("fixed message")
+            await _publisher(runner).send_once("fixed message", _attachment())
+
+    async def test_invalid_attachment_fails_before_invoking_buzz(self):
+        runner = FakeRunner([])
+        invalid = BuzzAttachment(
+            filename="banner.svg",
+            media_type="image/svg+xml",
+            content_sha256="a" * 64,
+            content=b"<svg/>",
+        )
+        with self.assertRaisesRegex(
+            BuzzCliError, "buzz_delivery_attachment_invalid"
+        ):
+            await _publisher(runner).send_once("fixed message", invalid)
+        self.assertEqual(runner.calls, [])
 
     async def test_read_only_preflight_uses_exact_channel(self):
         runner = FakeRunner([CommandResult(0, b'{"id":"channel"}', b"")])
