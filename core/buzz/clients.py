@@ -146,13 +146,18 @@ class BuzzShadowClient:
                         raise BuzzAdapterError(
                             "buzz_banner_unavailable", retryable_before_attempt=True
                         )
-                    declared = response.headers.get("content-length", "")
+                    declared = response.headers.get("content-length")
                     if (
                         response.headers.get("content-type") != "image/png"
                         or response.headers.get("content-disposition")
                         != f'inline; filename="{filename}"'
-                        or not declared.isdigit()
-                        or not 24 <= int(declared) <= _MAX_BANNER_BYTES
+                        or (
+                            declared is not None
+                            and (
+                                not declared.isdigit()
+                                or not 24 <= int(declared) <= _MAX_BANNER_BYTES
+                            )
+                        )
                     ):
                         raise BuzzAdapterError("buzz_banner_invalid_response")
                     chunks: list[bytes] = []
@@ -175,7 +180,7 @@ class BuzzShadowClient:
 
         content_sha = hashlib.sha256(content).hexdigest()
         if (
-            len(content) != int(declared)
+            (declared is not None and len(content) != int(declared))
             or not content.startswith(_PNG_SIGNATURE)
             or content[12:16] != b"IHDR"
             or struct.unpack(">II", content[16:24]) != (1_200, 630)
