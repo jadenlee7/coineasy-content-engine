@@ -5,19 +5,26 @@ import hashlib
 import json
 import os
 import re
+import struct
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from core.buzz.models import BuzzRelayReceipt, BuzzShadowEvent
+from core.buzz.models import BuzzAttachment, BuzzRelayReceipt, BuzzShadowEvent
 
 
 _EVENT_ID = re.compile(r"^[a-f0-9]{64}$")
 _MAX_PROCESS_OUTPUT = 65_536
-_MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@2"
+_MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@3"
 _PROCESS_TIMEOUT_SECONDS = 30.0
 BUZZ_CLI_RELEASE = "desktop-v0.5.4"
 _MAX_MESSAGE_BYTES = 1_024
+_ATTACHMENT_FILENAME = re.compile(
+    r"^origintrail-review-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[.]png$"
+)
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_ATTACHMENT_BYTES = 4 * 1_024 * 1_024
 
 
 class BuzzCliError(RuntimeError):
@@ -123,6 +130,7 @@ def format_origintrail_message(event: BuzzShadowEvent, *, studio_origin: str) ->
         f"완료: {event.finished_at}\n"
         f"원문: {event.source_url}\n"
         f"검토: {studio_origin.rstrip('/')}{event.studio_review_path}\n"
+        "검토 배너: 첨부됨\n"
         "자동 발행: OFF"
     )
     fixed_bytes = len((prefix + suffix).encode("utf-8"))
@@ -134,16 +142,33 @@ def format_origintrail_message(event: BuzzShadowEvent, *, studio_origin: str) ->
 
 
 def buzz_message_fingerprints(
-    *, relay_url: str, channel_id: str, message: str
+    *, relay_url: str, channel_id: str, message: str, attachment: BuzzAttachment
 ) -> tuple[str, str]:
+    _validate_attachment(attachment)
     message_sha = hashlib.sha256(message.encode("utf-8")).hexdigest()
     request_sha = hashlib.sha256(
         (
-            f"coineasy-buzz-delivery\0{BUZZ_CLI_RELEASE}\0"
-            f"{relay_url.rstrip('/')}\0{channel_id}\0{message_sha}"
+            f"coineasy-buzz-delivery\0{_MESSAGE_TEMPLATE_VERSION}\0"
+            f"{BUZZ_CLI_RELEASE}\0{relay_url.rstrip('/')}\0{channel_id}\0"
+            f"{message_sha}\0{attachment.filename}\0{attachment.media_type}\0"
+            f"{attachment.content_sha256}"
         ).encode("utf-8")
     ).hexdigest()
     return message_sha, request_sha
+
+
+def _validate_attachment(attachment: BuzzAttachment) -> None:
+    if (
+        attachment.media_type != "image/png"
+        or not _ATTACHMENT_FILENAME.fullmatch(attachment.filename)
+        or not 24 <= len(attachment.content) <= _MAX_ATTACHMENT_BYTES
+        or not attachment.content.startswith(_PNG_SIGNATURE)
+        or attachment.content[12:16] != b"IHDR"
+        or struct.unpack(">II", attachment.content[16:24]) != (1_200, 630)
+        or hashlib.sha256(attachment.content).hexdigest()
+        != attachment.content_sha256
+    ):
+        raise BuzzCliError("buzz_delivery_attachment_invalid")
 
 
 class BuzzCliPublisher:
@@ -185,20 +210,29 @@ class BuzzCliPublisher:
         if not isinstance(parsed, (dict, list)):
             raise BuzzCliError("buzz_cli_preflight_failed")
 
-    async def send_once(self, message: str) -> BuzzRelayReceipt:
-        result = await self.runner(
-            (
-                str(self.config.cli_path),
-                "messages",
-                "send",
-                "--channel",
-                self.config.channel_id,
-                "--content",
-                "-",
-            ),
-            stdin=message.encode("utf-8"),
-            env=self._env(),
-        )
+    async def send_once(
+        self, message: str, attachment: BuzzAttachment
+    ) -> BuzzRelayReceipt:
+        _validate_attachment(attachment)
+        with tempfile.TemporaryDirectory(prefix="coineasy-buzz-") as directory:
+            attachment_path = Path(directory) / attachment.filename
+            attachment_path.write_bytes(attachment.content)
+            attachment_path.chmod(0o600)
+            result = await self.runner(
+                (
+                    str(self.config.cli_path),
+                    "messages",
+                    "send",
+                    "--channel",
+                    self.config.channel_id,
+                    "--content",
+                    "-",
+                    "--file",
+                    str(attachment_path),
+                ),
+                stdin=message.encode("utf-8"),
+                env=self._env(),
+            )
         if result.returncode != 0:
             raise BuzzCliError("buzz_delivery_unknown")
         try:

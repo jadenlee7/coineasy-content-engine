@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 import unittest
 
 from core.buzz.cli import BuzzCliError
 from core.buzz.models import (
+    BuzzAttachment,
     BuzzDeliveryClaim,
     BuzzRelayReceipt,
     BuzzShadowEvent,
@@ -36,14 +39,35 @@ def _event() -> BuzzShadowEvent:
     )
 
 
+def _attachment() -> BuzzAttachment:
+    content = (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\rIHDR"
+        + struct.pack(">II", 1_200, 630)
+    )
+    return BuzzAttachment(
+        filename=f"origintrail-review-{JOB_ID}.png",
+        media_type="image/png",
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        content=content,
+    )
+
+
 class FakeShadow:
-    def __init__(self, event=_event()):
+    def __init__(self, event=_event(), *, banner_error=None):
         self.event = event
+        self.banner_error = banner_error
         self.calls = 0
 
     async def first_event(self):
         self.calls += 1
         return self.event
+
+    async def banner(self, event):
+        self.calls += 1
+        if self.banner_error:
+            raise self.banner_error
+        return _attachment()
 
 
 RECONCILE_COUNTS = {
@@ -121,8 +145,8 @@ class FakePublisher:
         if self.preflight_error:
             raise self.preflight_error
 
-    async def send_once(self, message):
-        self.events.append(("send", message))
+    async def send_once(self, message, attachment):
+        self.events.append(("send", message, attachment.content_sha256))
         if self.send_error:
             raise self.send_error
         return BuzzRelayReceipt(event_id="d" * 64)
@@ -249,6 +273,20 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event[0] for event in control.events], [
             "reconcile", "claim", "attempt", "complete"
         ])
+
+    async def test_invalid_banner_stops_before_durable_claim(self):
+        from core.buzz.errors import BuzzAdapterError
+
+        control = FakeControl()
+        publisher = FakePublisher()
+        shadow = FakeShadow(banner_error=BuzzAdapterError(
+            "buzz_banner_invalid_response"
+        ))
+        result = await _worker(control, publisher, shadow).run_once()
+        self.assertEqual(result.error, "buzz_banner_invalid_response")
+        self.assertFalse(result.claimed)
+        self.assertEqual([event[0] for event in control.events], ["reconcile"])
+        self.assertEqual(publisher.events, [])
 
 
 if __name__ == "__main__":
