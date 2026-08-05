@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -8,6 +9,7 @@ import {
   createStudioSessionValue,
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
+import { ORIGINTRAIL_ARCHIVED_JOB_ID } from "../netlify/functions/_shared/origintrail-archived-review.mts";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
@@ -42,6 +44,12 @@ function detail(sourceContent = "OriginTrail 공식 X Article 본문입니다.")
       telegram_copy_ko: "DKG V10과 Buzz 통합의 핵심 내용을 정리했습니다.",
     },
     source_content: sourceContent,
+    source_evidence: {
+      storage: "inline",
+      content_length: sourceContent.length,
+      content_sha256: createHash("sha256").update(sourceContent, "utf8").digest("hex"),
+      verified_at: FINISHED_AT,
+    },
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_942,
     actual_output_tokens: 595,
@@ -65,9 +73,9 @@ async function withNetlifyEnvironment(
   }
 }
 
-function context() {
+function context(jobId = JOB_ID) {
   return {
-    params: { jobId: JOB_ID },
+    params: { jobId },
     site: { url: "https://console.example" },
   } as never;
 }
@@ -132,6 +140,47 @@ test("Studio and Buzz receive the same evidence-bound 1200x630 PNG", async () =>
         studio.headers.get("x-coineasy-content-sha256"),
         buzz.headers.get("x-coineasy-content-sha256"),
       );
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("archived Staging evidence renders one authenticated banner without deleted storage", async () => {
+  const originalFetch = globalThis.fetch;
+  let storageCalls = 0;
+  globalThis.fetch = async (input) => {
+    const request = new Request(input);
+    if (request.url === "https://console.example/assets/brands/origintrail-dark.png") {
+      return new Response(LOGO, {
+        headers: {
+          "content-type": "image/png",
+          "content-length": String(LOGO.length),
+        },
+      });
+    }
+    storageCalls += 1;
+    throw new Error(`unexpected request ${request.url}`);
+  };
+  try {
+    await withNetlifyEnvironment(environment(), async () => {
+      const session = createStudioSessionValue(ACCESS_TOKEN);
+      const studio = await studioBannerHandler(new Request(
+        `https://console.example/api/batch-review/${ORIGINTRAIL_ARCHIVED_JOB_ID}/banner.png`,
+        { headers: { cookie: `${STUDIO_SESSION_COOKIE}=${session}` } },
+      ), context(ORIGINTRAIL_ARCHIVED_JOB_ID));
+      const buzz = await buzzBannerHandler(new Request(
+        `https://console.example/api/buzz-shadow/origintrail/batch/${ORIGINTRAIL_ARCHIVED_JOB_ID}/banner.png`,
+        { headers: { "x-coineasy-buzz-key": SHADOW_TOKEN } },
+      ), context(ORIGINTRAIL_ARCHIVED_JOB_ID));
+
+      assert.equal(studio.status, 200, await studio.clone().text());
+      assert.equal(buzz.status, 200, await buzz.clone().text());
+      assert.deepEqual(
+        Buffer.from(await studio.arrayBuffer()),
+        Buffer.from(await buzz.arrayBuffer()),
+      );
+      assert.equal(storageCalls, 0);
     });
   } finally {
     globalThis.fetch = originalFetch;

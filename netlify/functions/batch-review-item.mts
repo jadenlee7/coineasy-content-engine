@@ -5,6 +5,7 @@ import {
   getBatchReviewItem,
 } from "./_shared/batch-review.mts";
 import { isCatalogUuid } from "./_shared/content-catalog.mts";
+import { getOriginTrailArchivedReview } from "./_shared/origintrail-archived-review.mts";
 import { requireStudioSession, studioSessionJson } from "./_shared/studio-session.mts";
 
 export default async (req: Request, context: Context): Promise<Response> => {
@@ -19,6 +20,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!isCatalogUuid(jobId)) {
     return studioSessionJson({ error: "invalid_batch_review_item_id" }, 400);
   }
+
+  const archived = getOriginTrailArchivedReview(jobId);
+  if (archived) return studioSessionJson(archived, 200);
 
   const config = batchReviewConfig((name) => Netlify.env.get(name));
   if (!config) return studioSessionJson({ error: "batch_review_not_configured" }, 503);

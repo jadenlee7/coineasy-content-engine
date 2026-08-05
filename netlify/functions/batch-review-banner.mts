@@ -6,6 +6,7 @@ import {
   getBatchReviewItem,
 } from "./_shared/batch-review.mts";
 import { isCatalogUuid } from "./_shared/content-catalog.mts";
+import { getOriginTrailArchivedReview } from "./_shared/origintrail-archived-review.mts";
 import {
   originTrailBatchBannerResponse,
   OriginTrailBatchBannerError,
@@ -26,11 +27,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return studioSessionJson({ error: "invalid_batch_review_item_id" }, 400);
   }
 
-  const config = batchReviewConfig((name) => Netlify.env.get(name));
-  if (!config) return studioSessionJson({ error: "batch_review_not_configured" }, 503);
-
   try {
-    const item = await getBatchReviewItem(config, jobId);
+    const archived = getOriginTrailArchivedReview(jobId);
+    const config = archived ? null : batchReviewConfig((name) => Netlify.env.get(name));
+    if (!archived && !config) {
+      return studioSessionJson({ error: "batch_review_not_configured" }, 503);
+    }
+    const item = archived || await getBatchReviewItem(config!, jobId);
     if (!item) return studioSessionJson({ error: "batch_review_item_not_found" }, 404);
     const banner = await renderOriginTrailBatchBanner(item, context.site.url);
     return originTrailBatchBannerResponse(banner, item.job_id);
