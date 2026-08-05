@@ -163,7 +163,10 @@ test("archived Staging evidence renders one authenticated banner without deleted
     throw new Error(`unexpected request ${request.url}`);
   };
   try {
-    await withNetlifyEnvironment(environment(), async () => {
+    await withNetlifyEnvironment({
+      ...environment(),
+      BUZZ_RESULT_PREVIEW_START_AT: "2026-08-05T10:00:00.000Z",
+    }, async () => {
       const session = createStudioSessionValue(ACCESS_TOKEN);
       const studio = await studioBannerHandler(new Request(
         `https://console.example/api/batch-review/${ORIGINTRAIL_ARCHIVED_JOB_ID}/banner.png`,
