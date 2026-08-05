@@ -95,6 +95,28 @@ class BuzzShadowBannerClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(BuzzAdapterError, "buzz_banner_invalid_response"):
             await client.banner(_event())
 
+    async def test_accepts_netlify_stream_without_content_length(self):
+        content = _png()
+        digest = hashlib.sha256(content).hexdigest()
+
+        async def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={
+                "content-type": "image/png",
+                "content-disposition": (
+                    f'inline; filename="origintrail-review-{JOB_ID}.png"'
+                ),
+                "x-coineasy-content-sha256": digest,
+            }, stream=httpx.ByteStream(content))
+
+        client = BuzzShadowClient(
+            url="https://console.example/api/buzz-shadow/origintrail/batch",
+            token=TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        attachment = await client.banner(_event())
+        self.assertEqual(attachment.content_sha256, digest)
+        self.assertEqual(attachment.content, content)
+
 
 if __name__ == "__main__":
     unittest.main()
