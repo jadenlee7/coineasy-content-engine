@@ -60,7 +60,7 @@ export default async (request: Request, context: Context): Promise<Response> => 
       return json({ error: "buzz_shadow_storage_not_configured" }, 503);
     }
     const item = archived || await getBatchReviewItem(config!, jobId);
-    if (!item || Date.parse(item.finished_at) < previewStartAt) {
+    if (!item || (!archived && Date.parse(item.finished_at) < previewStartAt)) {
       return json({ error: "buzz_shadow_banner_not_found" }, 404);
     }
     const banner = await renderOriginTrailBatchBanner(item, context.site.url);
