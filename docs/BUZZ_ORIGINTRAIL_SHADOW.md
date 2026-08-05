@@ -12,6 +12,7 @@ OriginTrail Official X
   -> existing OpenAI Batch dispatcher
   -> existing read-only Batch Review RPC
   -> Netlify GET /api/buzz-shadow/origintrail/batch
+     (bounded headline + Telegram summary preview)
   -> durable Supabase receipt + scoped Netlify control    [PRODUCTION ACTIVE]
   -> deterministic one-shot delivery worker               [DEPLOYABLE / HOLD]
   -> official `buzz messages send` CLI
@@ -20,9 +21,11 @@ OriginTrail Official X
 
 The read endpoint, authenticated Studio deep link, durable receipt migration,
 and separate control endpoint are production active. The Railway worker image
-is pinned to the official v0.5.4 Linux package and remains fail-closed while
-`BUZZ_DELIVERY_ENABLED=false`. No Buzz relay write, channel creation, OpenAI
-call, or publication is part of this build.
+is pinned to the official v0.5.4 Linux package. Preview delivery is also gated
+by `BUZZ_RESULT_PREVIEW_START_AT`: results completed before that exact timestamp
+are omitted so historical metadata-only receipts cannot conflict with the new
+message fingerprint. No channel creation, OpenAI call, or publication is part
+of this adapter.
 
 ## Cost boundary
 
@@ -55,6 +58,13 @@ It presents that value as `x-coineasy-buzz-key`. The endpoint is GET-only,
 `no-store`, exact OriginTrail-only, and fails the whole response closed if an
 item or cursor is ambiguous.
 
+The cutover must be an ISO-8601 timestamp set only when a reviewed release is
+activated:
+
+```text
+BUZZ_RESULT_PREVIEW_START_AT=<deployment timestamp>
+```
+
 The future delivery process uses a second, distinct scoped credential:
 
 ```text
@@ -77,12 +87,15 @@ only:
 - job/review reference and exact OriginTrail agent/workflow identity;
 - `needs_review`, model tier, settled cost, and completion time;
 - the canonical `https://x.com/origin_trail/status/<id>` source;
-- a same-origin `/?batch=<job_id>` Studio path.
+- a same-origin `/?batch=<job_id>` Studio path;
+- the bounded Korean headline and Telegram summary from the exact four-field
+  review result.
 
-It never returns the generated title or draft, channel copy, raw input/output,
-prompt, input hash, provider IDs, token counts, workspace ID, database
-credential, or a mutation URL. A team member must authenticate to Studio before
-the deep link opens the read-only result.
+It never returns the long-form body, X copy, raw input/output, prompt, input
+hash, provider IDs, token counts, workspace ID, database credential, or a
+mutation URL. Preview fields are trimmed, bounded, control-character checked,
+and rejected if they contain an `@` mention. A team member must authenticate to
+Studio before the deep link opens the full read-only result.
 
 ## Buzz v0.5.4 execution choice
 
@@ -112,8 +125,8 @@ exists.
 The local implementation now enforces this transition order:
 
 1. poll only this endpoint and select at most one event;
-2. format a fixed top-level text message with no mentions, replies, files, or
-   broadcast;
+2. format a deterministic UTF-8-bounded message containing the reviewed
+   headline and summary, with no mentions, replies, files, or broadcast;
 3. claim one deterministic event through a durable receipt;
 4. preflight the exact channel, then durably mark the request fingerprint;
 5. authorize `buzz messages send` only for a fresh `reused=false` marker;

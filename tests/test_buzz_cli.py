@@ -35,6 +35,11 @@ def _event() -> BuzzShadowEvent:
         finished_at="2026-08-03T12:00:00.000Z",
         source_url="https://x.com/origin_trail/status/2082883998829752783",
         studio_review_path=f"/?batch={job_id}",
+        headline_ko="OriginTrail 7월 업데이트",
+        summary_ko=(
+            "DKG V10과 Buzz 통합, 검증 가능한 출처의 핵심 내용을 "
+            "정리했습니다."
+        ),
     )
 
 
@@ -65,16 +70,43 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
     def test_request_fingerprint_is_bound_to_reviewed_cli_release(self):
         self.assertEqual(BUZZ_CLI_RELEASE, "desktop-v0.5.4")
 
-    def test_fixed_message_contains_metadata_only_and_no_mentions(self):
+    def test_fixed_message_contains_bounded_preview_and_no_mentions(self):
         message = format_origintrail_message(
             _event(), studio_origin="https://console.example"
         )
         self.assertNotIn("@", message)
-        self.assertNotIn("headline", message.lower())
         self.assertNotIn("prompt", message.lower())
-        self.assertIn("Status: needs_review", message)
-        self.assertIn("Measured cost: $0.002200", message)
+        self.assertIn("OriginTrail 7월 업데이트", message)
+        self.assertIn("DKG V10과 Buzz 통합", message)
+        self.assertIn("상태: needs_review", message)
+        self.assertIn("실측 비용: $0.002200", message)
         self.assertIn("https://console.example/?batch=", message)
+        self.assertIn("자동 발행: OFF", message)
+        self.assertLessEqual(len(message.encode("utf-8")), 1_024)
+
+    def test_long_korean_summary_is_truncated_on_utf8_boundary(self):
+        event = _event()
+        event = BuzzShadowEvent(
+            **{**event.__dict__, "summary_ko": "검증 가능한 컨텍스트 " * 100}
+        )
+        message = format_origintrail_message(
+            event, studio_origin="https://console.example"
+        )
+        self.assertLessEqual(len(message.encode("utf-8")), 1_024)
+        self.assertIn("…", message)
+        message.encode("utf-8").decode("utf-8")
+
+    def test_preview_mentions_fail_closed_before_relay(self):
+        event = _event()
+        event = BuzzShadowEvent(
+            **{**event.__dict__, "summary_ko": "문의: owner@example.com"}
+        )
+        with self.assertRaisesRegex(
+            BuzzCliError, "buzz_delivery_request_invalid"
+        ):
+            format_origintrail_message(
+                event, studio_origin="https://console.example"
+            )
 
     def test_request_fingerprint_binds_relay_channel_and_message(self):
         message = format_origintrail_message(
