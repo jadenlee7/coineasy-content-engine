@@ -18,6 +18,16 @@ class BuzzShadowEvent:
     finished_at: str
     source_url: str
     studio_review_path: str
+    headline_ko: str
+    summary_ko: str
+
+
+@dataclass(frozen=True)
+class BuzzAttachment:
+    filename: str
+    media_type: str
+    content_sha256: str
+    content: bytes
 
 
 @dataclass(frozen=True)

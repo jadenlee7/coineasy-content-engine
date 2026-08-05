@@ -93,6 +93,8 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     /data-library-review|data-library-editable|data-library-publication|data-library-promotion|<button|<textarea|download/i,
   );
   assert.match(functionSource, /batch-review-output/);
+  assert.match(functionSource, /batch-review-banner/);
+  assert.match(functionSource, /\/api\/batch-review\/\$\{encodeURIComponent\(jobId\)\}\/banner\.png/);
   assert.match(functionSource, /Batch에 고정된 공식 원문/);
   assert.match(functionSource, /원문 본문이 수집되지 않아 사용할 수 없는 결과입니다/);
   assert.match(functionSource, /headline_ko: 120/);
@@ -166,7 +168,10 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.doesNotMatch(libraryDetail.innerHTML, /Squid/);
   assert.match(libraryDetail.innerHTML, /&lt;script&gt;alert\(&#039;title&#039;\)&lt;\/script&gt;/);
   assert.match(libraryDetail.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.doesNotMatch(libraryDetail.innerHTML, /<script|<img|<button|<textarea/i);
+  assert.doesNotMatch(libraryDetail.innerHTML, /<script|<img src=x|<button|<textarea/i);
+  assert.match(libraryDetail.innerHTML, /<img src="\/api\/batch-review\//);
+  assert.match(libraryDetail.innerHTML, /width="1200" height="630"/);
+  assert.match(libraryDetail.innerHTML, /Buzz 전달 시 같은 PNG가 첨부/);
   assert.match(libraryDetail.innerHTML, /Batch에 고정된 공식 원문/);
   assert.match(libraryDetail.innerHTML, /OriginTrail이 공식 업데이트를 발표했습니다/);
   assert.doesNotMatch(libraryDetail.innerHTML, /원문 본문이 수집되지 않아/);
@@ -186,6 +191,7 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   });
   assert.match(libraryDetail.innerHTML, /원문 본문이 수집되지 않아 사용할 수 없는 결과입니다/);
   assert.match(libraryDetail.innerHTML, /근거 부족/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /batch-review-banner/);
   assert.throws(() => renderBatchReviewDetail({
     ...validDetail,
     agent_id: "squid_client_agent",
