@@ -18,6 +18,8 @@ class BuzzShadowEvent:
     finished_at: str
     source_url: str
     studio_review_path: str
+    headline_ko: str
+    summary_ko: str
 
 
 @dataclass(frozen=True)

@@ -31,6 +31,8 @@ def _event() -> BuzzShadowEvent:
         finished_at="2026-08-03T12:00:00.000Z",
         source_url="https://x.com/origin_trail/status/2082883998829752783",
         studio_review_path=f"/?batch={JOB_ID}",
+        headline_ko="OriginTrail 7월 업데이트",
+        summary_ko="DKG V10과 Buzz 통합의 핵심 내용을 정리했습니다.",
     )
 
 

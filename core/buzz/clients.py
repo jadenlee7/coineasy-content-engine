@@ -12,6 +12,7 @@ from core.buzz.models import BuzzDeliveryClaim, BuzzShadowEvent
 
 _HASH = re.compile(r"^[a-f0-9]{64}$")
 _SOURCE = re.compile(r"^https://x[.]com/origin_trail/status/[0-9]{1,19}$")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STATUSES = frozenset(
     {"pending", "claimed", "attempt_started", "delivered", "delivery_unknown", "failed"}
 )
@@ -34,6 +35,8 @@ def _event(raw: object) -> BuzzShadowEvent:
     cost = raw.get("actual_cost_microusd")
     source_url = raw.get("source_url")
     finished_at = raw.get("finished_at")
+    headline_ko = raw.get("headline_ko")
+    summary_ko = raw.get("summary_ko")
     if (
         not isinstance(event_id, str)
         or not _HASH.fullmatch(event_id)
@@ -52,6 +55,16 @@ def _event(raw: object) -> BuzzShadowEvent:
         or not isinstance(source_url, str)
         or not _SOURCE.fullmatch(source_url)
         or raw.get("studio_review_path") != f"/?batch={job_id}"
+        or not isinstance(headline_ko, str)
+        or headline_ko.strip() != headline_ko
+        or not 1 <= len(headline_ko) <= 120
+        or not isinstance(summary_ko, str)
+        or summary_ko.strip() != summary_ko
+        or not 1 <= len(summary_ko) <= 1_800
+        or "@" in headline_ko
+        or "@" in summary_ko
+        or _CONTROL.search(headline_ko) is not None
+        or _CONTROL.search(summary_ko) is not None
     ):
         raise BuzzAdapterError("buzz_shadow_invalid_response")
     return BuzzShadowEvent(
@@ -68,6 +81,8 @@ def _event(raw: object) -> BuzzShadowEvent:
         finished_at=finished_at,
         source_url=source_url,
         studio_review_path=f"/?batch={job_id}",
+        headline_ko=headline_ko,
+        summary_ko=summary_ko,
     )
 
 
