@@ -8,6 +8,10 @@ import {
 } from "./article-banner-svg.mts";
 import type { BatchReviewDetail } from "./batch-review.mts";
 import {
+  ORIGINTRAIL_ARCHIVED_JOB_ID,
+  ORIGINTRAIL_ARCHIVED_SOURCE_SHA256,
+} from "./origintrail-archived-review.mts";
+import {
   articleHeroLogoVariant,
   fetchOfficialBrandLogoDataUrl,
 } from "./official-brand-assets.mts";
@@ -51,6 +55,21 @@ function dateLabel(finishedAt: string): string {
 }
 
 function exactOriginTrailReview(detail: BatchReviewDetail): boolean {
+  const evidence = detail.source_evidence;
+  const sourceVerified = typeof detail.source_content === "string"
+    ? hasStandaloneOriginTrailEvidence(detail.source_content)
+      && evidence.storage === "inline"
+      && evidence.content_length === detail.source_content.length
+      && createHash("sha256").update(detail.source_content, "utf8").digest("hex")
+        === evidence.content_sha256
+    : detail.source_content === null
+      && evidence.storage === "hash_only_archive"
+      && detail.job_id === ORIGINTRAIL_ARCHIVED_JOB_ID
+      && detail.input_sha256
+        === "845705fbfed21b166e665c3b434eff0cd28870d9655d996c6e567d218a4d9dbd"
+      && evidence.content_length === 6_661
+      && evidence.content_sha256 === ORIGINTRAIL_ARCHIVED_SOURCE_SHA256
+      && Number.isFinite(Date.parse(evidence.verified_at));
   return detail.client_id === "origintrail"
     && detail.agent_id === "origintrail_client_agent"
     && detail.workflow_kind === "official_source_nonurgent_pack"
@@ -59,7 +78,7 @@ function exactOriginTrailReview(detail: BatchReviewDetail): boolean {
     && detail.result_code === "needs_review"
     && detail.source_url !== null
     && /^https:\/\/x[.]com\/origin_trail\/status\/[0-9]{1,19}$/.test(detail.source_url)
-    && hasStandaloneOriginTrailEvidence(detail.source_content);
+    && sourceVerified;
 }
 
 export async function renderOriginTrailBatchBanner(

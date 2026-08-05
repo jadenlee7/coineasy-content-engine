@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   contentCatalogConfig,
   isCatalogUuid,
@@ -65,7 +67,13 @@ export type BatchReviewPayload = {
 
 export type BatchReviewDetail = BatchReviewListItem & {
   result_payload: BatchReviewPayload;
-  source_content: string;
+  source_content: string | null;
+  source_evidence: {
+    storage: "inline" | "hash_only_archive";
+    content_length: number;
+    content_sha256: string;
+    verified_at: string;
+  };
   input_sha256: string;
   actual_input_tokens: number;
   actual_output_tokens: number;
@@ -339,6 +347,12 @@ export async function getBatchReviewItem(
     ...listFields,
     result_payload: resultPayload,
     source_content: sourceContent,
+    source_evidence: {
+      storage: "inline",
+      content_length: sourceContent.length,
+      content_sha256: createHash("sha256").update(sourceContent, "utf8").digest("hex"),
+      verified_at: listFields.finished_at,
+    },
     input_sha256: result.input_sha256 as string,
     actual_input_tokens: result.actual_input_tokens,
     actual_output_tokens: result.actual_output_tokens,

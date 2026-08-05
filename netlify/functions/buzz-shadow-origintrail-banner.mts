@@ -11,6 +11,7 @@ import {
   hasValidBuzzShadowAccess,
 } from "./_shared/buzz-shadow.mts";
 import { isCatalogUuid } from "./_shared/content-catalog.mts";
+import { getOriginTrailArchivedReview } from "./_shared/origintrail-archived-review.mts";
 import {
   originTrailBatchBannerResponse,
   OriginTrailBatchBannerError,
@@ -47,15 +48,18 @@ export default async (request: Request, context: Context): Promise<Response> => 
   if (!isCatalogUuid(jobId)) {
     return json({ error: "invalid_buzz_shadow_banner_id" }, 400);
   }
-  const config = batchReviewConfig(getEnv);
-  if (!config) return json({ error: "buzz_shadow_storage_not_configured" }, 503);
   const previewStartAt = buzzResultPreviewStartAt(getEnv);
   if (previewStartAt === null) {
     return json({ error: "buzz_shadow_preview_not_configured" }, 503);
   }
 
   try {
-    const item = await getBatchReviewItem(config, jobId);
+    const archived = getOriginTrailArchivedReview(jobId);
+    const config = archived ? null : batchReviewConfig(getEnv);
+    if (!archived && !config) {
+      return json({ error: "buzz_shadow_storage_not_configured" }, 503);
+    }
+    const item = archived || await getBatchReviewItem(config!, jobId);
     if (!item || Date.parse(item.finished_at) < previewStartAt) {
       return json({ error: "buzz_shadow_banner_not_found" }, 404);
     }
