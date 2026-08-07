@@ -222,6 +222,7 @@ begin
     end;
 
     begin
+        perform set_config('storage.allow_delete_query', 'true', true);
         delete from storage.objects
         where bucket_id = 'content-studio'
           and name = 'a0000000-0000-4000-8000-000000000001/squid/a3000000-0000-4000-8000-000000000001/news-card.png';

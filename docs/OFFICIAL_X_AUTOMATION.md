@@ -16,6 +16,9 @@ structure, but they are never added to `content_source_links` and cannot supply
 facts, entities, dates, numbers, URLs, or calls to action. Netlify accepts these
 runtime references only from the separate studio automation credential.
 Generated work still stops at `needs_review`; the worker has no publish path.
+For Squid, these text references are separate from the versioned visual-family
+registry. A recent post cannot silently become a visual reference merely by
+appearing in this cadence pack.
 
 See `docs/ADR-005-official-x-style-reference-packs.md` for the data and security
 contract.
@@ -52,14 +55,26 @@ Daily News automation uses a client-specific visual policy:
 - Yellow, OriginTrail, and Babylon use the deterministic `classic` card. Their
   source image remains preserved in the source record until each client has an
   approved canonical remix treatment.
-- A Squid Daily News source with an official X photo uses `remix` automatically.
-  The official creative remains authoritative and only audited meaningful copy
-  may be localized in place. No new panel, footer, CTA, or duplicate logo is
-  added.
-- A Squid source without a photo uses `classic`. Once a photo-backed Squid job
-  requests `remix`, an unavailable or unsafe source image fails closed for
-  review/retry instead of silently replacing the official campaign creative
-  with a generic card.
+- A Squid Daily News source with an official X photo or canonical video poster
+  uses `remix` automatically. The complete official crop remains authoritative
+  and its native aspect ratio becomes the primary X deliverable; only audited
+  meaningful copy may be localized in place. No square letterbox, new panel,
+  footer, CTA, duplicate logo, or crop-based cleanup fallback is added.
+- A Squid source without a usable static image enters the server-owned
+  `squid-visual-routing@1` policy. Announcements, verified metrics, and bounded
+  status/product updates route to the matching generated GTM family. A
+  text-only mascot, mood, or meme source stops at
+  `manual_visual_review_required`; it is never expanded into invented 3D art.
+  Once an image-backed Squid job requests `remix`, an unavailable or unsafe
+  source image fails closed for review/retry instead of silently replacing the
+  official campaign creative with a generic card.
+- Squid replies and retweets are filtered before the generic durable-intake RPC,
+  so one timeline reply cannot reject the whole poll or become a draft source;
+  same-account quote posts remain eligible for audited source remix. The visual
+  policy version is bound only to Daily News request UUIDs and Netlify request
+  hashes, preventing an older family render from being reused as current. An
+  exact stored pre-policy result remains replayable only when its immutable spec
+  has no family/policy fields and its original request hash matches.
 
 ## Performance recommendation handoff
 
@@ -160,6 +175,7 @@ X_BEARER_TOKEN
 STUDIO_BASE_URL=https://coineasy-newscard.netlify.app
 STUDIO_AUTOMATION_TOKEN
 AUTOMATION_TIMEZONE=Asia/Seoul
+AUTOMATION_ALLOWED_CLIENTS=yellow,origintrail,squid,babylon
 AUTOMATION_LOOKBACK_HOURS=30
 AUTOMATION_DAILY_DRAFT_LIMIT=4
 AUTOMATION_ENABLE_TUTORIALS=false
@@ -168,6 +184,12 @@ EASYFARM_CONTENT_SIGNALS_URL=https://jlxbywqofrltyttklcqy.supabase.co/functions/
 EASYFARM_CONTENT_SIGNALS_TOKEN
 EASYFARM_CONTENT_SIGNALS_WINDOW_DAYS=7
 ```
+
+`AUTOMATION_ALLOWED_CLIENTS` is a fail-closed intake scope. A dedicated
+OriginTrail worker may set it to `origintrail`; the canonical four-client
+value preserves the normal daily worker behavior. The setting changes which
+official clients are inspected and cannot grant generation or publication
+authority.
 
 `STUDIO_AUTOMATION_TOKEN` must be the same high-entropy value in Netlify and the
 cron service, but it must be different from the human `STUDIO_ACCESS_TOKEN`.
@@ -235,8 +257,8 @@ membership. The scheduled X worker has no Figma write path or plugin secret.
 At `needs_review`, a reviewer can request a local, non-persistent
 Figma-editable SVG using the fields shown in the current Daily News detail.
 This does not create a durable asset or Figma link and does not change workflow
-status. Scheduled drafts use `classic`, so this transient export does not
-depend on source-image retention. A historical `remix` whose external source
+status. Scheduled Squid drafts with pinned official media use `remix`; other
+scheduled drafts use `classic`. A historical `remix` whose external source
 image or Railway-cleaned Squid visual cannot be loaded fails closed instead of
 returning an image-less SVG.
 

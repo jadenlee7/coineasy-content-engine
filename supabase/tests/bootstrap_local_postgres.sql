@@ -10,7 +10,8 @@ create role service_role nologin bypassrls;
 create role authenticator login password 'postgres' noinherit;
 grant anon, authenticated, service_role to authenticator;
 
-create extension if not exists pgcrypto;
+create schema extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 create schema auth;
 create table auth.users (

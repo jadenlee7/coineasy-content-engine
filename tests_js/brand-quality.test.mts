@@ -153,13 +153,13 @@ test("aligns Squid QA density with the classic PNG and editable SVG geometry", (
   };
   const safe = evaluateBrandQuality({
     ...base,
-    headline: "가".repeat(28),
+    headline: "가".repeat(24),
     bodyLines: ["나".repeat(21), "다".repeat(21)],
   });
   assert.equal(safe.checks.find((item) => item.id === "text_density")?.status, "pass");
 
   for (const input of [
-    { headline: "가".repeat(29), bodyLines: ["짧은본문"] },
+    { headline: "가".repeat(25), bodyLines: ["짧은본문"] },
     { headline: "짧은제목", bodyLines: ["나".repeat(24)] },
   ]) {
     const report = evaluateBrandQuality({ ...base, ...input });
@@ -235,6 +235,28 @@ test("flags unsafe Squid subtitle placement and missing remix source imagery", (
   const check = report.checks.find((item) => item.id === "visual_integrity");
   assert.equal(check?.status, "review");
   assert.equal(check?.severity, "critical");
+});
+
+test("fails closed on every unsafe Squid copy-localization result", () => {
+  for (const visualLocalizationStatus of ["unsafe_placement", "cleanup_failed"]) {
+    const report = evaluateBrandQuality({
+      clientId: "squid",
+      contentKind: "daily_news",
+      sourceText: "Squid가 공식 크로스체인 업데이트를 공개했습니다.",
+      headline: "크로스체인 업데이트",
+      bodyLines: ["공식 원문 기준 핵심 내용"],
+      channelCopy: { telegram: "Squid 업데이트", x: "Squid 업데이트" },
+      templateStyle: "remix",
+      sourceImageUsed: true,
+      sourceLogoVisible: true,
+      visualLocalizationStatus,
+    });
+    const check = report.checks.find((item) => item.id === "visual_integrity");
+    assert.equal(check?.status, "review", visualLocalizationStatus);
+    assert.equal(check?.severity, "critical", visualLocalizationStatus);
+    assert.equal(report.status, "review", visualLocalizationStatus);
+    assert.equal(report.human_review_required, true, visualLocalizationStatus);
+  }
 });
 
 test("flags channel copy that exceeds X weighted limits", () => {

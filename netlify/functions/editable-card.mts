@@ -2,6 +2,7 @@ import type { Config, Context } from "@netlify/functions";
 import {
   buildEditableSvg,
   effectiveEditableTemplateStyle,
+  isSupportedSquidGeneratedEditableSpec,
   type EditableCardAssets,
   type EditableClientId,
   type EditableTemplateStyle,
@@ -81,7 +82,15 @@ export function requiredOfficialLogoVariant(
     if (clientId === "squid" || spec.source_logo_visible === true) return null;
     return "dark";
   }
-  if (clientId === "squid" && templateStyle === "classic") return "light";
+  if (clientId === "squid" && templateStyle === "classic") {
+    // Generated v4 has no separate logo layer: the oversized Squid frame word
+    // and reviewed SQUIB are the brand expression. Legacy classic still needs
+    // the official black mark, so only that replay path fetches it.
+    if (isSupportedSquidGeneratedEditableSpec(spec)) {
+      return null;
+    }
+    return "light";
+  }
   if (templateStyle === "signal") return "dark";
   return spec.theme === "yellow" ? "light" : "dark";
 }
@@ -126,6 +135,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     ? body.template_style as EditableTemplateStyle
     : "classic";
   const templateStyle = effectiveEditableTemplateStyle(clientId, requestedTemplateStyle);
+  if (
+    clientId === "squid"
+    && templateStyle === "classic"
+    && spec.render_strategy === "generated_gtm"
+    && !isSupportedSquidGeneratedEditableSpec(spec)
+  ) {
+    return jsonError("unsupported_squid_generated_profile", 409);
+  }
 
   const siteOrigin = new URL(context.site.url).origin;
   const sourceImageUrl = allowlistedSourceImage(body.source_image_url);

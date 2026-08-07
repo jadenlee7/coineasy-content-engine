@@ -289,6 +289,7 @@ def test_transactional_sql_smoke_covers_canary_replay_and_attempt_boundaries() -
         "request replay lost the exact Telegram failure result",
         "request replay lost the published Telegram result",
         "stale approval passed the final provider-attempt fence",
+        "invalid legacy exact job starved a later attested job",
         "arbitrary worker error code reached the database",
         "expired post-fence lease became claimable again",
         "NULL exact Telegram recovery limit was accepted",

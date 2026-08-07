@@ -9,7 +9,7 @@ const consoleHtml = readFileSync(
 
 test("distinguishes missing copy from a rejected Squid subtitle placement", () => {
   assert.match(consoleHtml, /visual_localization_status === "unsafe_placement"/);
-  assert.match(consoleHtml, /원문 자막을 자연스럽게 교체하기 어려워 원본 비주얼 유지/);
+  assert.match(consoleHtml, /원문 비주얼은 그대로 유지하고 한국어 게시 문구로 보완/);
   assert.match(consoleHtml, /원문 자막을 같은 위치의 한국어로 교체/);
   assert.match(consoleHtml, /번역할 문구가 없어 원본 비주얼 그대로 유지/);
 });
@@ -37,8 +37,8 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /prepareArticleBanner\(articlePayload, requestSessionEpoch, requestContext\)/);
   assert.match(consoleHtml, /canvas\.width = width/);
   assert.match(consoleHtml, /canvas\.height = height/);
-  assert.match(consoleHtml, /배너 PNG 저장/);
-  assert.match(consoleHtml, /Figma 배너 SVG/);
+  assert.match(consoleHtml, /미승인 배너 PNG 참고본/);
+  assert.match(consoleHtml, /미승인 배너 SVG 참고본/);
   assert.match(consoleHtml, /data-article-visual-png/);
   assert.match(consoleHtml, /비주얼 3장/);
   assert.match(consoleHtml, /id="article-markdown"/);
@@ -49,6 +49,7 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /\/api\/tutorial\/\$\{encodeURIComponent\(requestContext\.client\)\}/);
   assert.equal((consoleHtml.match(/"Idempotency-Key": generationRequestId/g) || []).length, 3);
   assert.match(consoleHtml, /state\.generationRequest = null/);
+  assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
 });
 
@@ -85,13 +86,75 @@ test("preserves the existing news-card, editable SVG, and channel-copy flow", ()
 
 test("keeps Squid news creation on the reviewed remix or classic visual family", () => {
   assert.match(consoleHtml, /const SQUID_NEWS_TEMPLATES = new Set\(\["remix", "classic"\]\)/);
-  assert.match(consoleHtml, /state\.client === "squid" && !SQUID_NEWS_TEMPLATES\.has\(state\.template\)[\s\S]*state\.template = "classic"/);
+  assert.match(consoleHtml, /state\.client === "squid" && !SQUID_NEWS_TEMPLATES\.has\(state\.template\)[\s\S]*state\.template = "remix"/);
   assert.match(consoleHtml, /item\.disabled = disabled/);
   assert.match(consoleHtml, /if \(!button \|\| button\.disabled\) return/);
   assert.match(consoleHtml, /data-client="squid"\]\[data-template="classic"\][\s\S]*squid-squib-token-juggle\.png/);
   assert.match(consoleHtml, /--brand-primary:#efff5a; --brand-secondary:#e6ccfc; --brand-bg:#e6ccfc/);
   assert.match(consoleHtml, /state\.client === "squid" && state\.template === "classic"[\s\S]*squid-light\.png/);
   assert.match(consoleHtml, /detail\.client_id === "squid" && \["editorial", "signal"\]\.includes\(storedTemplateStyle\)[\s\S]*\? "classic"/);
+  assert.match(consoleHtml, /Squid 원문 우선 · 추천/);
+  assert.match(consoleHtml, /@squidrouter 배너 유지 \+ 한국어 문구/);
+  assert.match(consoleHtml, /Squid 클래식 · fallback/);
+  assert.match(consoleHtml, /const changed = state\.client !== clientId;[\s\S]*if \(changed && clientId === "squid"\) state\.template = "remix"/);
+  assert.match(consoleHtml, /function isOfficialSquidXStatusUrl\(value\)/);
+  assert.match(consoleHtml, /function hasOfficialSquidSource\(contentValue, urlValue\)/);
+  assert.match(consoleHtml, /hasOfficialSquidSource\(requestContext\.sourceContent, payload\.source_url \|\| requestContext\.sourceUrl\)/);
+  assert.match(consoleHtml, /shell\.dataset\.output = "source-native"/);
+  assert.match(consoleHtml, /--source-native-aspect/);
+  assert.match(consoleHtml, /payload\.output_width/);
+  assert.match(consoleHtml, /payload\.output_height/);
+  assert.match(consoleHtml, /aspect-ratio: var\(--asset-aspect, 1\)/);
+  assert.match(consoleHtml, /--asset-aspect:\$\{width\} \/ \$\{height\}/);
+  assert.match(consoleHtml, /\.library-thumb img \{[^}]*object-fit: contain/);
+  assert.match(consoleHtml, /function clearArticleBanner\(\)[\s\S]*shell\.removeAttribute\("data-output"\)[\s\S]*shell\.style\.removeProperty\("--source-native-aspect"\)/);
+  assert.match(consoleHtml, /공식 @squidrouter 원문 배너를 그대로 가져와 한국어 게시 문구와 함께 준비/);
+  assert.match(consoleHtml, /클래식 fallback은 원문 배너를 사용하지 않습니다/);
+  assert.match(consoleHtml, /source_not_official_squid/);
+  assert.match(consoleHtml, /공식 @squidrouter 계정의 원문인지 확인되지 않았습니다/);
+  assert.doesNotMatch(consoleHtml, /sourceUrl\.addEventListener\("blur"[\s\S]{0,300}setStatus/);
+});
+
+test("defaults a newly selected Squid client to remix without overwriting an explicit Squid classic choice", () => {
+  const selectClientSource = consoleHtml.match(
+    /function selectClient\(clientId\) \{[\s\S]*?\n      \}(?=\n\n      function syncTemplateOptions)/,
+  )?.[0];
+  assert.ok(selectClientSource, "selectClient must be present in the console");
+  const state = { client: "yellow", template: "classic" };
+  const clients = { querySelectorAll: () => [] };
+  const selectClient = Function(
+    "state",
+    "clients",
+    `"use strict"; ${selectClientSource}; return selectClient;`,
+  )(state, clients) as (clientId: string) => void;
+
+  selectClient("squid");
+  assert.deepEqual(state, { client: "squid", template: "remix" });
+  state.template = "classic";
+  selectClient("squid");
+  assert.deepEqual(state, { client: "squid", template: "classic" });
+});
+
+test("uses the same X-link priority as the server when identifying an official Squid source", () => {
+  const helperNames = ["normalizeUserUrl", "isXStatusUrl", "isOfficialSquidXStatusUrl", "hasOfficialSquidSource"];
+  const helperSources = helperNames.map((name, index) => {
+    const nextName = helperNames[index + 1];
+    const lookahead = nextName ? `(?=\\n\\n      function ${nextName})` : "(?=\\n\\n      function errorMessage)";
+    const source = consoleHtml.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n      \\}${lookahead}`))?.[0];
+    assert.ok(source, `${name} must be present in the console`);
+    return source;
+  }).join("\n");
+  const hasOfficialSquidSource = Function(
+    `"use strict"; ${helperSources}; return hasOfficialSquidSource;`,
+  )() as (contentValue: string, urlValue: string) => boolean;
+
+  const official = "https://x.com/squidrouter/status/2083266484789514640";
+  assert.equal(hasOfficialSquidSource(official, "https://docs.example.com/story"), true);
+  assert.equal(hasOfficialSquidSource(official, "https://x.com/other/status/2083266484789514640"), false);
+  assert.equal(hasOfficialSquidSource("본문", official), true);
+  assert.equal(hasOfficialSquidSource("본문", `${official}/photo/1`), true);
+  assert.equal(hasOfficialSquidSource("본문", `${official}/arbitrary`), false);
+  assert.equal(hasOfficialSquidSource("본문", "https://x.com/squidrouter/status/208326648478951464012"), false);
 });
 
 test("sends stored results to the private Telegram review flow and opens DM deep links", () => {
@@ -106,7 +169,8 @@ test("sends stored results to the private Telegram review flow and opens DM deep
   assert.match(consoleHtml, /initialQuery\.get\("content"\)/);
   assert.match(consoleHtml, /function openInitialReviewLink\(\)/);
   assert.match(consoleHtml, /selectStudioView\("library", false\)/);
-  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewContentId\)/);
+  assert.match(consoleHtml, /initialReviewRef = initialBatchReviewRef \|\| initialReviewContentId/);
+  assert.match(consoleHtml, /loadLibraryDetail\(initialReviewRef\)/);
 });
 
 test("binds generation responses and editable SVG follow-ups to the submitted client and mode", () => {
@@ -155,6 +219,14 @@ test("keeps mock tutorials visibly marked as samples that must not be published"
   assert.match(consoleHtml, /승인·게시할 수 있는 완성본이 아닙니다/);
 });
 
+test("labels every pre-approval tutorial and article output as review-only", () => {
+  assert.match(consoleHtml, /미승인 검토용 튜토리얼/);
+  assert.match(consoleHtml, /미승인 PNG 참고본/);
+  assert.match(consoleHtml, /이중 사실 확인 승인 전에는 PNG를 게시하지 마세요/);
+  assert.match(consoleHtml, /미승인 검토용 Railway 원고/);
+  assert.match(consoleHtml, /현재 원고와 게시 문구도 이중 사실 확인 승인 전에는 사용할 수 없습니다/);
+});
+
 test("counts X copy with the same weighted Unicode ranges as the server", () => {
   const functionSource = consoleHtml.match(
     /function xWeightedLength\(value\) \{[\s\S]*?\n      \}(?=\n\n      function updateCopyCounts)/,
@@ -182,7 +254,7 @@ test("explains durable tutorial storage setup and failures to team members", () 
   assert.match(consoleHtml, /tutorial_deadline_exceeded/);
   assert.match(consoleHtml, /news_card_deadline_exceeded/);
   assert.match(consoleHtml, /article_deadline_exceeded/);
-  assert.match(consoleHtml, /payload\.error\.endsWith\("_idempotency_conflict"\)\) state\.generationRequest = null/);
+  assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /confirmResultReset\(\)/);
 });
 

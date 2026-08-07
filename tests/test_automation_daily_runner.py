@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -29,16 +31,23 @@ from core.automation.models import (
 from core.automation.repository import AutomationRepositoryError
 from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
 from core.batch.bridge import BatchQueueBridge
+from core.batch.canary import (
+    CanaryConfigApproval,
+    canonical_sha256,
+    config_subject,
+)
 from core.batch.policy import BatchPolicy
 from core.batch.repository import BatchRepositoryError
 from core.batch.settings import BatchSettings
 from core.sources.x_client import XTransientError
+from core.squid_visual_style import SQUID_VISUAL_POLICY_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 VERSION_ID = "99999999-9999-4999-8999-999999999999"
 NOW = datetime(2026, 7, 22, 0, 10, tzinfo=timezone.utc)
+CANARY_KST_DAY_START = datetime(2026, 7, 21, 15, tzinfo=timezone.utc)
 
 
 def settings(**overrides):
@@ -104,6 +113,34 @@ def test_squid_photo_news_uses_original_visual_localization_only():
         content_kind="daily_news",
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
+
+
+def test_origintrail_source_payload_preserves_x_article_evidence():
+    article_evidence = {
+        "article_id": "2084276731330936832",
+        "article_url": "https://x.com/i/article/2084276731330936832",
+        "title": "July 2026 OriginTrail recap",
+        "source_content_sha256": "a" * 64,
+        "retrieval_method": "x_api_post_lookup",
+    }
+    payload = OfficialXDailyRunner._source_payload(
+        {
+            "id": "2084283287518798116",
+            "text": "Pinned X Article body.",
+            "url": (
+                "https://x.com/origin_trail/status/2084283287518798116"
+            ),
+            "created_at": "2026-07-22T00:00:00Z",
+            "is_retweet": False,
+            "is_reply": False,
+            "is_quote": False,
+            "article_evidence": article_evidence,
+        },
+        include_standalone_signals=True,
+    )
+
+    assert payload["article_evidence"] == article_evidence
+    assert payload["article_evidence"] is not article_evidence
 
 
 class FakeRepository:
@@ -454,6 +491,29 @@ async def test_dry_run_reads_and_plans_but_never_writes_or_generates():
 
 
 @pytest.mark.asyncio
+async def test_allowed_clients_scope_prevents_other_client_intake():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    x_client = FakeXClient()
+
+    summary = await runner(
+        FakeRepository(states),
+        x_client,
+        FakeGenerationClient(),
+        allowed_clients=("origintrail",),
+    ).run(dry_run=True)
+
+    assert [call[0][0].lstrip("@") for call in x_client.calls] == [
+        "origin_trail",
+    ]
+    assert {item["client_id"] for item in summary.outcomes} <= {
+        "origintrail",
+    }
+
+
+@pytest.mark.asyncio
 async def test_catalog_completion_failure_leaves_lease_for_idempotent_retry():
     states = {
         client_id: AutomationState(None, client_id != "yellow", ())
@@ -492,10 +552,41 @@ def test_request_uuid_is_stable_and_bound_to_mode():
         source_item_id="22222222-2222-4222-8222-222222222222",
         content_kind="article",
     )
+    squid = daily_runner._request_id(
+        client_id="squid",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="daily_news",
+    )
+    squid_article = daily_runner._request_id(
+        client_id="squid",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="article",
+    )
 
     assert first == second
     assert first != article
     assert str(uuid.UUID(first)) == first
+    assert squid != str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v1:squid:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
+    ))
+    assert squid == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v3:double-fact-check@1:"
+        f"{SQUID_VISUAL_POLICY_VERSION}:squid:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
+    ))
+    assert squid_article == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v2:double-fact-check@1:squid:"
+        "22222222-2222-4222-8222-222222222222:article",
+    ))
+    assert first == str(uuid.uuid5(
+        uuid.UUID(WORKSPACE_ID),
+        "official-x-review:v2:double-fact-check@1:yellow:"
+        "22222222-2222-4222-8222-222222222222:daily_news",
+    ))
 
 
 def test_scheduled_runner_rejects_tutorial_auto_generation():
@@ -576,7 +667,19 @@ async def test_pending_source_recovers_when_fresh_x_poll_is_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_squid_photo_daily_news_reaches_generation_as_remix():
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "A new era for Squid starts today.",
+        "Squid has crossed 5 million swaps across connected chains.",
+        "The TGE claim phase status is available.",
+        "Use MiniPay to bridge with Squid.",
+        "Bouncing through the weekend with the official SQUIB mascot.",
+    ],
+)
+async def test_every_squid_photo_daily_news_family_reaches_generation_as_remix(
+    source_text,
+):
     states = {
         client_id: AutomationState(None, client_id != "squid", ())
         for client_id in AUTOMATION_CLIENTS
@@ -586,6 +689,7 @@ async def test_squid_photo_daily_news_reaches_generation_as_remix():
         False,
         (pending(
             "squid",
+            text=source_text,
             source_image_url="https://pbs.twimg.com/media/official.jpg",
         ),),
     )
@@ -597,7 +701,110 @@ async def test_squid_photo_daily_news_reaches_generation_as_remix():
     assert summary.generated == 1
     assert generation.calls[0]["client_id"] == "squid"
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"].endswith("/official.jpg")
+    assert generation.calls[0]["source_image_url"].endswith("/official.jpg?name=orig")
+
+
+@pytest.mark.asyncio
+async def test_text_only_squid_worldbuilding_stops_for_manual_visual_review():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending("squid", text="Bouncing through the weekend like SQUIB."),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 0
+    assert summary.skipped >= 1
+    assert repo.queues == []
+    assert generation.calls == []
+    assert {
+        "client_id": "squid",
+        "status": "manual_visual_review_required",
+        "detail": "worldbuilding",
+    } in summary.outcomes
+
+
+@pytest.mark.asyncio
+async def test_text_only_squid_worldbuilding_note_still_queues_as_article():
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    article_text = (
+        "Announcing SQUIB, our mascot and guide to the Squid ecosystem. "
+        + "This complete official note explains the story, design, and role " * 8
+    )
+    states["squid"] = AutomationState(
+        "702",
+        False,
+        (pending("squid", text=article_text, note=True),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["content_kind"] == "article"
+    assert generation.calls[0]["content_kind"] == "article"
+    assert not any(
+        item["status"] == "manual_visual_review_required"
+        for item in summary.outcomes
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_flag", ["is_retweet", "is_reply"])
+async def test_squid_filters_reply_and_retweet_before_generic_source_rpc(blocked_flag):
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    valid_id = "2082883998829752783"
+    blocked_id = "2082883998829752784"
+    valid = {
+        "id": valid_id,
+        "text": "Squid routing update is now live for users.",
+        "created_at": "2026-07-22T00:00:00Z",
+        "url": f"https://x.com/SquidRouter/status/{valid_id}",
+        "is_retweet": False,
+        "is_reply": False,
+        "is_quote": False,
+        "metrics": {},
+        "media": [],
+        "source_image_url": "",
+        "is_note_tweet": False,
+    }
+    blocked = {
+        **valid,
+        "id": blocked_id,
+        "url": f"https://x.com/SquidRouter/status/{blocked_id}",
+        blocked_flag: True,
+    }
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(posts=[blocked, valid]),
+        FakeGenerationClient(),
+    ).run()
+
+    squid_record = next(
+        item for item in repo.records
+        if item["client_id"] == "squid"
+    )
+    assert [item["external_id"] for item in squid_record["source_items"]] == [valid_id]
+    assert squid_record["source_items"][0]["is_retweet"] is False
+    assert squid_record["source_items"][0]["is_reply"] is False
+    assert squid_record["next_cursor"] == valid_id
+    assert summary.generated == 1
 
 
 @pytest.mark.asyncio
@@ -641,10 +848,12 @@ async def test_fresh_squid_quote_photo_reaches_daily_news_render_path():
         if item["client_id"] == "squid"
     )
     assert squid_record["source_items"][0]["media"] == quote["media"]
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert squid_record["source_items"][0]["is_retweet"] is False
+    assert squid_record["source_items"][0]["is_reply"] is False
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
 
 
 @pytest.mark.asyncio
@@ -688,10 +897,10 @@ async def test_fresh_squid_quote_video_preview_reaches_remix_render_path():
         generation,
     ).run()
 
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
 
 
 @pytest.mark.asyncio
@@ -779,15 +988,55 @@ class FakeBatchQueueRepository:
         return kwargs["item"].job_id
 
 
-def active_batch_settings(*, start_offset_days=-1, end_offset_days=4):
+def canary_batch_settings(*, experiment_start_at, experiment_end_at):
+    subject = config_subject(
+        environment="staging",
+        release_sha="a" * 40,
+        supabase_url="https://project-ref.supabase.co",
+        workspace_id=WORKSPACE_ID,
+        allowed_clients=frozenset({"origintrail"}),
+        daily_cap_usd=Decimal("0.05"),
+        max_claims=1,
+        max_requests_per_batch=1,
+        experiment_start_at=experiment_start_at,
+        experiment_end_at=experiment_end_at,
+        timezone_name="Asia/Seoul",
+    )
+    subject_sha256 = canonical_sha256(subject)
     return BatchSettings(
         mode="live",
         allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
+        daily_cap_usd=Decimal("0.05"),
+        max_claims=1,
         max_requests_per_batch=1,
-        experiment_start_at=NOW + timedelta(days=start_offset_days),
-        experiment_end_at=NOW + timedelta(days=end_offset_days),
+        supabase_url="https://project-ref.supabase.co",
+        supabase_service_role_key="s" * 64,
+        workspace_id=WORKSPACE_ID,
+        experiment_start_at=experiment_start_at,
+        experiment_end_at=experiment_end_at,
+        canary_environment="staging",
+        runtime_environment="staging",
+        canary_release_sha="a" * 40,
+        runtime_release_sha="a" * 40,
+        canary_subject_sha256=subject_sha256,
+        canary_approval=CanaryConfigApproval(
+            approval_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            approved_by="operator:test",
+            approved_at=NOW - timedelta(hours=1),
+            expires_at=NOW + timedelta(hours=1),
+            subject_sha256=subject_sha256,
+        ),
+    )
+
+
+def active_batch_settings(*, start_offset_days=0, end_offset_days=2):
+    return canary_batch_settings(
+        experiment_start_at=(
+            CANARY_KST_DAY_START + timedelta(days=start_offset_days)
+        ),
+        experiment_end_at=(
+            CANARY_KST_DAY_START + timedelta(days=end_offset_days)
+        ),
     )
 
 
@@ -993,7 +1242,7 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
             15,
             tzinfo=timezone.utc,
         ),
-        "limit_usd": Decimal("6.00"),
+        "limit_usd": Decimal("0.05"),
     }
     queued = batch_repository.calls[0]
     item = queued["item"]
@@ -1007,7 +1256,11 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
     assert item.approval_required is True
     assert item.max_cost_usd == Decimal("0.05")
     assert item.max_output_tokens == 2_000
-    assert item.deadline_at.isoformat() == "2026-07-25T00:00:00+09:00"
+    assert item.deadline_at.isoformat() == "2026-07-23T15:00:00+00:00"
+    evidence = json.loads(item.input_text)
+    assert evidence["source"]["content_sha256"] == hashlib.sha256(
+        evidence["source"]["content"].encode("utf-8")
+    ).hexdigest()
     assert "visual" not in item.output_schema["properties"]
     assert {
         name: field["pattern"]
@@ -1064,9 +1317,9 @@ async def test_image_backed_origintrail_source_stays_on_the_sync_plane():
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == image_url
+    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
     assert generation.calls[0]["client_id"] == "origintrail"
-    assert generation.calls[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []
@@ -1160,6 +1413,7 @@ def test_origintrail_batch_item_rejects_article_work():
         attempts=1,
         max_attempts=3,
         locked_by="official-x:test",
+        origintrail_batch_eligible=True,
     )
     reference_pack = StyleReferencePack(
         request_id=job.request_id,
@@ -1169,6 +1423,38 @@ def test_origintrail_batch_item_rejects_article_work():
     )
 
     with pytest.raises(ValueError, match="unsupported evidence"):
+        OfficialXDailyRunner._origintrail_batch_item(
+            job=job,
+            reference_pack=reference_pack,
+            experiment_end_at=None,
+        )
+
+
+def test_origintrail_batch_item_rejects_url_only_source_evidence():
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="https://t.co/BFl2YSh2VB",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="official-x:test",
+        origintrail_batch_eligible=True,
+    )
+    reference_pack = StyleReferencePack(
+        request_id=job.request_id,
+        primary_source_item_id=job.primary_source_item_id,
+        reference_pack_hash="a" * 32,
+        references=(),
+    )
+
+    with pytest.raises(ValueError, match="substantive source evidence"):
         OfficialXDailyRunner._origintrail_batch_item(
             job=job,
             reference_pack=reference_pack,
@@ -1209,8 +1495,8 @@ async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == preview_url
-    assert generation.calls[0]["source_image_url"] == preview_url
+    assert repo.queues[0]["source_image_url"] == f"{preview_url}?name=orig"
+    assert generation.calls[0]["source_image_url"] == f"{preview_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []
@@ -1308,14 +1594,13 @@ async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
-    ending_soon = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=NOW + timedelta(hours=25),
+    ending_soon = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 20, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 22, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -1349,16 +1634,8 @@ async def test_batch_deadline_is_clamped_to_the_experiment_end():
     )
     repo = FakeRepository(states)
     batch_repository = FakeBatchQueueRepository()
-    experiment_end = NOW + timedelta(hours=30)
-    clamped = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=experiment_end,
-    )
+    clamped = active_batch_settings()
+    experiment_end = clamped.experiment_end_at
 
     await runner(
         repo,
@@ -1372,7 +1649,8 @@ async def test_batch_deadline_is_clamped_to_the_experiment_end():
 
 
 @pytest.mark.asyncio
-async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
+@pytest.mark.parametrize("deadline_window", ["open", "drain"])
+async def test_retry_always_uses_replay_only_without_new_budget(deadline_window):
     states = {
         client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
@@ -1397,21 +1675,24 @@ async def test_retry_inside_drain_window_uses_replay_only_without_new_budget():
         origintrail_batch_eligible=True,
     ))
     batch_repository = FakeBatchQueueRepository()
-    ending_soon = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=1),
-        experiment_end_at=NOW + timedelta(hours=25),
+    batch_window = (
+        active_batch_settings()
+        if deadline_window == "open"
+        else canary_batch_settings(
+            experiment_start_at=datetime(
+                2026, 7, 20, 15, tzinfo=timezone.utc
+            ),
+            experiment_end_at=datetime(
+                2026, 7, 22, 15, tzinfo=timezone.utc
+            ),
+        )
     )
 
     summary = await runner(
         repo,
         FakeXClient(),
         FakeGenerationClient(),
-        batch_settings=ending_soon,
+        batch_settings=batch_window,
         batch_bridge=batch_bridge(batch_repository),
     ).run()
 
@@ -1450,14 +1731,13 @@ async def test_expired_experiment_recovers_only_a_prior_batch_attempt():
     repo.execution_planes[job_id] = "openai_batch"
     repo.batch_recovery_result = True
     batch_repository = FakeBatchQueueRepository()
-    expired = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=2),
-        experiment_end_at=NOW - timedelta(hours=1),
+    expired = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 19, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 21, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -1508,14 +1788,13 @@ async def test_max_attempt_claim_uses_stored_receipt_without_admission():
     repo.batch_recovery_result = True
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
-    expired = BatchSettings(
-        mode="live",
-        allowed_clients=frozenset({"origintrail"}),
-        daily_cap_usd=Decimal("6.00"),
-        max_claims=100,
-        max_requests_per_batch=1,
-        experiment_start_at=NOW - timedelta(days=2),
-        experiment_end_at=NOW - timedelta(hours=1),
+    expired = canary_batch_settings(
+        experiment_start_at=datetime(
+            2026, 7, 19, 15, tzinfo=timezone.utc
+        ),
+        experiment_end_at=datetime(
+            2026, 7, 21, 15, tzinfo=timezone.utc
+        ),
     )
 
     summary = await runner(
@@ -1877,7 +2156,7 @@ async def test_origintrail_uses_existing_sync_path_outside_experiment_window():
         generation,
         batch_settings=active_batch_settings(
             start_offset_days=1,
-            end_offset_days=2,
+            end_offset_days=3,
         ),
         batch_bridge=batch_bridge(batch_repository),
     ).run()
@@ -1907,7 +2186,7 @@ async def test_new_origintrail_job_resumes_sync_after_experiment_expiry():
         FakeXClient(),
         generation,
         batch_settings=active_batch_settings(
-            start_offset_days=-2,
+            start_offset_days=-3,
             end_offset_days=-1,
         ),
         batch_bridge=batch_bridge(batch_repository),

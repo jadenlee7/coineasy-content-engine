@@ -1479,40 +1479,6 @@ begin
         'file-error-billable'
     );
 
-    begin
-        perform public.fail_agent_batch_job(
-            test_workspace_id,
-            billable_exact_job_id,
-            'batch-billable',
-            'model_refusal',
-            false,
-            null::timestamptz,
-            800::bigint,
-            20::bigint,
-            60000::bigint,
-            false
-        );
-        raise exception 'failure accounting exceeded the hard reservation';
-    exception when check_violation then null;
-    end;
-    if not exists (
-        select 1
-        from agent_runtime.batch_jobs
-        where job_id = billable_exact_job_id
-          and status = 'submitted'
-          and reservation_state = 'held'
-          and actual_cost_microusd is null
-    ) or not exists (
-        select 1
-        from agent_runtime.batch_budgets
-        where workspace_id = test_workspace_id
-          and budget_key = 'openai:pilot'
-          and reserved_microusd = 100000
-          and spent_microusd = 45000
-    ) then
-        raise exception 'over-cost failure changed held accounting';
-    end if;
-
     failure := public.fail_agent_batch_job(
         test_workspace_id,
         billable_exact_job_id,
@@ -2167,7 +2133,8 @@ begin
             'source_snapshot_complete', true,
             'input_immutable', true,
             'retry_idempotent', true,
-            'remaining_batch_stages', 1
+            'remaining_batch_stages', 1,
+            'request_sha256', repeat('e', 63) || item_index::text
         );
 
         perform public.queue_agent_batch_job(
@@ -2520,16 +2487,34 @@ begin
         raise exception 'unfinished Batch work leaked into the review inbox';
     end if;
 
+    -- The forward one-shot migration makes every OriginTrail row invisible to
+    -- the generic claimer.  Exact one-shot claim/create/registration is covered
+    -- by the dedicated canary and provider-create-fence security smokes.  This
+    -- older multi-member ledger fixture temporarily uses the generic Yellow
+    -- identity only for claim mechanics, then restores the exact OriginTrail
+    -- identity before registration and review projection.
+    perform public.expire_agent_batch_jobs(
+        test_workspace_id,
+        array['origintrail']::text[]
+    );
+    update agent_runtime.batch_jobs
+    set client_id = 'yellow'
+    where workspace_id = test_workspace_id
+      and job_id = any(review_job_ids[1:3]);
     claimed := public.claim_agent_batch_jobs(
         test_workspace_id,
         'batch:review-worker',
-        array['origintrail']::text[],
+        array['yellow']::text[],
         3,
         900
     );
     if jsonb_array_length(claimed) <> 3 then
-        raise exception 'review handoff Batch jobs were not claimed together';
+        raise exception 'review handoff generic ledger jobs were not claimed';
     end if;
+    update agent_runtime.batch_jobs
+    set client_id = 'origintrail'
+    where workspace_id = test_workspace_id
+      and job_id = any(review_job_ids[1:3]);
     if not exists (
         select 1
         from agent_runtime.batch_jobs

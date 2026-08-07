@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
@@ -30,7 +31,7 @@ from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
 )
-from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
+from core.automation.settings import AutomationSettings
 from core.batch.bridge import BatchQueueBridge
 from core.batch.models import BatchWorkItem, canonical_input_sha256
 from core.batch.policy import BatchPolicy
@@ -46,10 +47,17 @@ from core.sources.x_client import (
     XRequestError,
     XTransientError,
 )
+from core.sources.x_media_url import normalize_x_media_url
+from core.squid_visual_style import (
+    SQUID_VISUAL_POLICY_VERSION,
+    classify_squid_visual_style,
+)
 
 
 _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
+_FACT_CHECK_GENERATION_POLICY_VERSION = "double-fact-check@1"
+_SOURCE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -97,7 +105,8 @@ def _pinned_source_image_url(source: Mapping[str, object]) -> str:
         raise ValueError("recorded source image is invalid")
     source_image_url = source_image_url.strip()
     if source_image_url:
-        if not XClient._allowed_media_url(source_image_url):
+        source_image_url = normalize_x_media_url(source_image_url)
+        if not source_image_url:
             raise ValueError("recorded source image is invalid")
         return source_image_url
 
@@ -113,7 +122,8 @@ def _pinned_source_image_url(source: Mapping[str, object]) -> str:
         if not isinstance(preview_url, str):
             raise ValueError("recorded source media is invalid")
         preview_url = preview_url.strip()
-        if not XClient._allowed_media_url(preview_url):
+        preview_url = normalize_x_media_url(preview_url)
+        if not preview_url:
             raise ValueError("recorded source media is invalid")
         return preview_url
     return ""
@@ -238,7 +248,7 @@ class OfficialXDailyRunner:
         if not dry_run:
             await self._drain_jobs(worker_id, summary)
 
-        for client_id in AUTOMATION_CLIENTS:
+        for client_id in self.settings.allowed_clients:
             try:
                 await self._intake_client(
                     client_id=client_id,
@@ -317,6 +327,16 @@ class OfficialXDailyRunner:
                 and post.get("is_retweet") is False
                 and post.get("is_reply") is False
             )
+        elif client_id == "squid" and fresh_posts is not None:
+            # The generic official-source RPC rejects the entire poll when a
+            # reply or retweet is present. Squid quotes remain valid because
+            # same-account quoted media is an approved source-remix input.
+            queueable_fresh_posts = tuple(
+                post
+                for post in fresh_posts
+                if post.get("is_retweet") is False
+                and post.get("is_reply") is False
+            )
 
         if fresh_posts is not None and not dry_run:
             state = await self.repository.record_sources(
@@ -333,7 +353,7 @@ class OfficialXDailyRunner:
                     self._source_payload(
                         post,
                         include_standalone_signals=(
-                            client_id == "origintrail"
+                            client_id in {"origintrail", "squid"}
                         ),
                     )
                     for post in queueable_fresh_posts or ()
@@ -384,10 +404,6 @@ class OfficialXDailyRunner:
             selected,
             enable_tutorials=self.settings.enable_tutorials,
         )
-        if dry_run:
-            summary.add(client_id, "planned", decision.content_kind)
-            return
-
         source_item_id = selected.get("source_item_id")
         source_content = selected.get("text")
         source_url = selected.get("url")
@@ -397,12 +413,32 @@ class OfficialXDailyRunner:
             else selected.get("source_image_url", "")
         )
         if (
-            not isinstance(source_item_id, str)
-            or not isinstance(source_content, str)
+            not isinstance(source_content, str)
             or not isinstance(source_url, str)
             or not isinstance(source_image_url, str)
         ):
             raise ValueError("recorded source is incomplete")
+        if client_id == "squid" and decision.content_kind == "daily_news":
+            visual_decision = classify_squid_visual_style(
+                source_content,
+                source_url=source_url,
+                has_official_media=bool(source_image_url),
+            )
+            if visual_decision.manual_review_required:
+                summary.skipped += 1
+                summary.add(
+                    client_id,
+                    "manual_visual_review_required",
+                    visual_decision.family,
+                )
+                return
+        if dry_run:
+            summary.add(client_id, "planned", decision.content_kind)
+            return
+
+        if not isinstance(source_item_id, str):
+            raise ValueError("recorded source is incomplete")
+
         request_id = self._request_id(
             client_id=client_id,
             source_item_id=source_item_id,
@@ -754,6 +790,8 @@ class OfficialXDailyRunner:
                 budget_window_end=budget_window_end,
                 daily_cap_usd=self.batch_settings.daily_cap_usd,
                 now=now,
+                # A public-job retry can read an exact existing Batch ledger
+                # admission, but it must never create or reserve a new one.
                 allow_existing_readback=job.attempts > 1,
             )
         except BatchRepositoryError as exc:
@@ -843,12 +881,19 @@ class OfficialXDailyRunner:
             or job.source_image_url.strip()
         ):
             raise ValueError("OriginTrail Batch handoff received unsupported evidence")
+        if not _SOURCE_URL_RE.sub("", job.source_content).strip():
+            raise ValueError(
+                "OriginTrail Batch handoff requires substantive source evidence"
+            )
         evidence = {
             "client_id": job.client_id,
             "content_kind": job.content_kind,
             "request_id": job.request_id,
             "source": {
                 "content": job.source_content,
+                "content_sha256": hashlib.sha256(
+                    job.source_content.encode("utf-8")
+                ).hexdigest(),
                 "url": job.source_url,
             },
             "style_reference_pack": {
@@ -950,9 +995,14 @@ class OfficialXDailyRunner:
         content_kind: str,
     ) -> str:
         namespace = uuid.UUID(self.settings.workspace_id)
+        policy_identity = (
+            f"v3:{_FACT_CHECK_GENERATION_POLICY_VERSION}:{SQUID_VISUAL_POLICY_VERSION}"
+            if client_id == "squid" and content_kind == "daily_news"
+            else f"v2:{_FACT_CHECK_GENERATION_POLICY_VERSION}"
+        )
         return str(uuid.uuid5(
             namespace,
-            f"official-x-review:v1:{client_id}:{source_item_id}:{content_kind}",
+            f"official-x-review:{policy_identity}:{client_id}:{source_item_id}:{content_kind}",
         ))
 
     def _retry_at(self, attempts: int) -> datetime:
@@ -1001,6 +1051,9 @@ class OfficialXDailyRunner:
                 "is_retweet": post.get("is_retweet") is True,
                 "is_reply": post.get("is_reply") is True,
             })
+        article_evidence = post.get("article_evidence")
+        if isinstance(article_evidence, Mapping):
+            payload["article_evidence"] = dict(article_evidence)
         return payload
 
     @staticmethod
@@ -1052,6 +1105,7 @@ def build_daily_runner(
         )
     batch_bridge = None
     if batch_settings is not None and batch_settings.mode == "live":
+        batch_settings.assert_canary_config_authorized()
         if (
             batch_settings.supabase_url != settings.supabase_url
             or batch_settings.supabase_service_role_key

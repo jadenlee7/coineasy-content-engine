@@ -2,17 +2,22 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>Squid Korea · Daily News</title>
+<title>Squid · Korea GTM</title>
 {{ brand_font_links | default('') | safe }}
+{% set requested_family = creative_family | default('legacy', true) %}
+{% set family = requested_family if requested_family in ['editorial_big_type', 'milestone_metric', 'status_progress', 'product_proof', 'worldbuilding'] else 'legacy' %}
+{% set variant = family %}
+{% if family == 'worldbuilding' %}{{ squid_worldbuilding_requires_official_source_media() }}{% endif %}
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --squid-lavender: #E6CCFC;
-    --squid-lime: #EFFF5A;
+    --squid-lavender: #BC8EE4;
+    --squid-lavender-soft: #E6CCFC;
+    --squid-lime: #E6FA36;
     --squid-ink: #000000;
     --squid-purple: #1C0F3D;
-    --squid-muted: rgba(61, 46, 92, .84);
+    --squid-paper: #F8F5FA;
     --body-font: 'Pretendard Variable', Pretendard, sans-serif;
     --display-font: {% if font_display %}'{{ font_display }}', {% endif %}var(--body-font);
   }
@@ -27,160 +32,309 @@
 
   .canvas {
     position: relative;
+    isolation: isolate;
     width: 1080px;
     height: 1080px;
     overflow: hidden;
     color: var(--squid-ink);
-    background:
-      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
-      var(--squid-lavender);
+    background: var(--squid-lavender);
   }
 
-  .bubbles {
+  .canvas::before,
+  .canvas::after {
     position: absolute;
-    right: 8px;
-    top: 8px;
-    width: 420px;
-    height: 420px;
-    object-fit: contain;
-    opacity: .46;
-  }
-
-  .squib {
-    position: absolute;
-    right: -70px;
-    top: -116px;
-    width: 720px;
-    height: 720px;
-    object-fit: contain;
-    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+    z-index: -2;
+    display: block;
+    content: '';
+    pointer-events: none;
   }
 
   .brand-logo {
     position: absolute;
-    left: 60px;
-    top: 44px;
-    width: 148px;
-    height: 59px;
+    z-index: 8;
+    left: 64px;
+    top: 52px;
+    width: 132px;
+    height: 74px;
     object-fit: contain;
     object-position: left center;
   }
 
-  .story {
+  .brand-logo--dark { display: none; }
+
+  .bubbles,
+  .squib,
+  .form-language {
     position: absolute;
-    left: 60px;
-    right: 40px;
-    top: 438px;
+    z-index: -1;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
   }
 
+  .story,
+  .support,
+  .footer { position: absolute; z-index: 4; }
+
   .eyebrow {
-    min-height: 29px;
-    color: rgba(28, 15, 61, .74);
+    color: rgba(28, 15, 61, .72);
     font-family: Inter, var(--body-font);
-    font-size: 22px;
-    font-weight: 800;
-    line-height: 1.2;
-    letter-spacing: 1.8px;
+    font-size: 21px;
+    font-weight: 850;
+    line-height: 1.25;
+    letter-spacing: 1.7px;
     text-transform: uppercase;
   }
 
   .headline {
-    width: 980px;
-    height: 204px;
-    margin-top: 22px;
     overflow: hidden;
     color: var(--squid-ink);
     font-family: var(--display-font);
-    font-size: 96px;
     font-weight: 900;
-    line-height: 1.02;
-    letter-spacing: -3.2px;
     word-break: keep-all;
     overflow-wrap: break-word;
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  .support {
-    position: absolute;
-    left: 60px;
-    right: 40px;
-    top: 770px;
   }
 
   .rule {
     width: 320px;
-    height: 8px;
-    margin-bottom: 24px;
-    border-radius: 4px;
+    height: 9px;
+    border-radius: 999px;
     background: var(--squid-lime);
   }
 
   .body-lines {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    width: 930px;
-    max-height: 96px;
     overflow: hidden;
   }
 
   .body-line {
     color: var(--squid-purple);
-    font-size: 32px;
-    font-weight: 560;
-    line-height: 1.36;
-    letter-spacing: -1px;
+    font-weight: 570;
     word-break: keep-all;
   }
 
   .footer {
-    position: absolute;
-    left: 60px;
-    right: 40px;
-    bottom: 38px;
+    left: 64px;
+    right: 64px;
+    bottom: 42px;
     display: flex;
     align-items: center;
-    gap: 34px;
+    gap: 24px;
     min-width: 0;
-  }
-
-  .coineasy {
-    flex: 0 0 auto;
-    color: rgba(28, 15, 61, .56);
-    font-family: Inter, var(--body-font);
-    font-size: 15px;
-    font-weight: 750;
-    letter-spacing: 1.2px;
   }
 
   .source {
     min-width: 0;
     overflow: hidden;
-    color: rgba(28, 15, 61, .62);
+    color: rgba(28, 15, 61, .58);
     font-family: Inter, var(--body-font);
-    font-size: 15px;
-    font-weight: 650;
-    letter-spacing: .2px;
+    font-size: 14px;
+    font-weight: 720;
+    letter-spacing: .45px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .date-credit { margin-left: auto; }
+
+  .canvas:not(.canvas--legacy) .date-credit {
+    margin-left: 4px;
+  }
+
+  /* Legacy replay: retained for stored specs that predate creative_family. */
+  .canvas--legacy {
+    background:
+      radial-gradient(circle at 36% 94%, rgba(255, 255, 255, .76) 0, rgba(255, 255, 255, .28) 23%, rgba(255, 255, 255, 0) 48%),
+      var(--squid-lavender-soft);
+  }
+
+  .canvas--legacy .bubbles {
+    right: 8px;
+    top: 8px;
+    width: 420px;
+    height: 420px;
+    opacity: .46;
+  }
+
+  .canvas--legacy .squib {
+    right: -70px;
+    top: -116px;
+    width: 720px;
+    height: 720px;
+    filter: drop-shadow(0 24px 28px rgba(72, 48, 105, .16));
+  }
+
+  .canvas--legacy .form-language { display: none; }
+
+  .canvas--legacy .story {
+    left: 60px;
+    right: 40px;
+    top: 438px;
+  }
+
+  .canvas--legacy .headline {
+    width: 980px;
+    height: 204px;
+    margin-top: 22px;
+    font-size: 96px;
+    line-height: 1.02;
+    letter-spacing: -3.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .canvas--legacy .support {
+    left: 60px;
+    right: 40px;
+    top: 770px;
+  }
+
+  .canvas--legacy .rule { margin-bottom: 24px; }
+
+  .canvas--legacy .body-lines {
+    gap: 7px;
+    width: 930px;
+    max-height: 96px;
+  }
+
+  .canvas--legacy .body-line {
+    font-size: 32px;
+    line-height: 1.36;
+    letter-spacing: -1px;
+  }
+
+  /*
+   * Generated Korea stage v4: the full-bleed, mascot-led Squid composition.
+   * Deliberate type/SQUIB overlap and edge crop are part of the art direction;
+   * this is not a publisher card and therefore has no panel or public footer.
+   */
+  .stage-word { display: none; }
+
+  .canvas:not(.canvas--legacy) {
+    background:
+      radial-gradient(ellipse at 70% 39%, rgba(255, 255, 255, .98) 0, rgba(255, 255, 255, .76) 18%, rgba(255, 255, 255, 0) 50%),
+      radial-gradient(ellipse at 35% 86%, rgba(255, 255, 255, .9) 0, rgba(230, 204, 252, .42) 29%, rgba(188, 142, 228, 0) 66%),
+      linear-gradient(132deg, #C99AF0 0%, var(--squid-lavender) 54%, #E6CCFC 100%);
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word {
+    position: absolute;
+    z-index: 2;
+    display: block;
+    overflow: hidden;
+    color: #000;
+    font-family: var(--display-font);
+    font-weight: 900;
+    line-height: .82;
+    letter-spacing: -10px;
+    text-align: left;
+    text-transform: none;
+    white-space: nowrap;
+    transform-origin: left top;
+  }
+
+  .canvas:not(.canvas--legacy) .stage-word--top {
+    left: 170px;
+    top: 38px;
+    width: 1048px;
+    height: 224px;
+    font-size: 220px;
+    transform: scaleX(1.48);
+  }
+
+  .canvas:not(.canvas--legacy) .form-language {
+    z-index: 0;
+    left: -340px;
+    top: -360px;
+    width: 1760px;
+    height: 1760px;
+    opacity: .24;
+    transform: rotate(74deg);
+  }
+
+  .canvas:not(.canvas--legacy) .bubbles {
+    z-index: 1;
+    right: -130px;
+    top: 220px;
+    width: 520px;
+    height: 520px;
+    opacity: .88;
+  }
+
+  .canvas:not(.canvas--legacy) .squib {
+    z-index: 3;
+    left: -110px;
+    top: -40px;
+    width: 1200px;
+    height: 1200px;
+    filter: drop-shadow(0 26px 30px rgba(87, 63, 111, .2));
+    transform: none;
+  }
+
+  .canvas:not(.canvas--legacy) .story {
+    z-index: 5;
+    left: 68px;
+    top: 704px;
+    width: 980px;
+    text-align: left;
+  }
+
+  .canvas:not(.canvas--legacy) .headline {
+    width: 984px;
+    height: 370px;
+    color: #000;
+    font-family: var(--display-font);
+    font-size: 168px;
+    font-weight: 900;
+    line-height: 1.04;
+    letter-spacing: -5.2px;
+    -webkit-line-clamp: 2;
+  }
+
+  .metric {
+    position: absolute;
+    right: 12px;
+    top: -466px;
+    width: 460px;
+    overflow: hidden;
+    color: #000;
+    font-family: var(--display-font);
+    font-size: 184px;
+    font-weight: 900;
+    line-height: .83;
+    letter-spacing: -8px;
+    text-align: right;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .canvas--milestone_metric.has-metric .headline {
+    font-size: 160px;
+  }
+
 </style>
 </head>
 <body>
-<main class="canvas" data-client="squid">
+<main class="canvas canvas--{{ variant }}{% if visual_metric | default('', true) and variant == 'milestone_metric' %} has-metric{% endif %}" data-client="squid" data-creative-family="{{ family }}" data-render-variant="{{ variant }}">
   <img src="{{ squid_bubbles_path }}" class="bubbles" alt=""/>
   <img src="{{ squid_squib_path }}" class="squib" alt=""/>
-  <img src="{{ logo_light_path }}" class="brand-logo" alt="Squid"/>
+  <img src="{{ squid_form_language_path }}" class="form-language" alt=""/>
+  {% if family == 'legacy' %}
+  <img src="{{ logo_light_path }}" class="brand-logo brand-logo--light" alt="Squid"/>
+  <img src="{{ logo_dark_path }}" class="brand-logo brand-logo--dark" alt="Squid"/>
+  {% else %}
+  <div class="stage-word stage-word--top" aria-hidden="true">Squid</div>
+  {% endif %}
 
   <section class="story">
-    {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if family == 'legacy' and label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if visual_metric | default('', true) and variant == 'milestone_metric' %}<div class="metric">{{ visual_metric }}</div>{% endif %}
     {% if headline %}<h1 class="headline">{{ headline | safe }}</h1>{% endif %}
   </section>
 
+  {% if family == 'legacy' %}
   <section class="support">
     <div class="rule"></div>
     {% if body_lines %}
@@ -191,26 +345,112 @@
   </section>
 
   <footer class="footer">
-    <div class="coineasy">COINEASY / KOREA</div>
-    <div class="source" data-source-url>{{ source_url | default('') }}</div>
-    <div class="source date-credit">{{ date | default('') }}</div>
+    {% if source_url %}<div class="source" data-source-url>{{ source_url }}</div>{% endif %}
+    {% if date %}<div class="source date-credit">{{ date }}</div>{% endif %}
   </footer>
+  {% endif %}
 </main>
 <script>
+  const canvas = document.querySelector('.canvas');
+  const variant = canvas?.dataset.renderVariant || 'legacy';
   const headline = document.querySelector('.headline');
-  if (headline) {
-    let size = 96;
-    while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > 64) {
+  const generatedFamilies = new Set([
+    'editorial_big_type',
+    'milestone_metric',
+    'status_progress',
+    'product_proof',
+  ]);
+  window.__squidGeneratedHeadlineLayoutStatus = null;
+  window.__evaluateSquidGeneratedHeadlineLayout = async () => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    if (!headline) {
+      window.__squidGeneratedHeadlineLayoutStatus = { safe: true, variant, renderedLines: 0 };
+      return window.__squidGeneratedHeadlineLayoutStatus;
+    }
+    const initialSizes = {
+      editorial_big_type: 168,
+      milestone_metric: 160,
+      status_progress: 168,
+      product_proof: 168,
+      legacy: 96,
+    };
+    const minimumSizes = {
+      editorial_big_type: 74,
+      milestone_metric: 74,
+      status_progress: 74,
+      product_proof: 74,
+      legacy: 64,
+    };
+    let size = initialSizes[variant] || 126;
+    const minimum = minimumSizes[variant] || 64;
+    const story = headline.closest('.story');
+    if (story) {
+      story.style.left = '';
+      story.style.width = '';
+    }
+    headline.style.width = '';
+    headline.style.fontSize = '';
+    headline.style.letterSpacing = '';
+    headline.style.lineHeight = '';
+
+    if (!generatedFamilies.has(variant)) {
+      while ((headline.scrollHeight > headline.clientHeight || headline.scrollWidth > headline.clientWidth) && size > minimum) {
+        size -= 2;
+        headline.style.fontSize = `${size}px`;
+        headline.style.letterSpacing = `${Math.max(-6.5, -size * .042)}px`;
+      }
+      const safe = headline.scrollHeight <= headline.clientHeight
+        && headline.scrollWidth <= headline.clientWidth;
+      window.__squidGeneratedHeadlineLayoutStatus = {
+        safe,
+        variant,
+        fontSize: size,
+        renderedLines: 0,
+      };
+      return window.__squidGeneratedHeadlineLayoutStatus;
+    }
+
+    headline.style.fontSize = `${size}px`;
+    headline.style.letterSpacing = '-5.2px';
+    headline.style.display = 'block';
+    headline.style.webkitLineClamp = 'unset';
+    const visualLineCount = () => {
+      const range = document.createRange();
+      range.selectNodeContents(headline);
+      return Array.from(range.getClientRects()).filter(rect => rect.width > 0).length;
+    };
+    while ((visualLineCount() > 2 || headline.scrollWidth > headline.clientWidth) && size > minimum) {
       size -= 2;
       headline.style.fontSize = `${size}px`;
-      headline.style.letterSpacing = `${Math.max(-3.2, -size * .034)}px`;
+      headline.style.letterSpacing = `${Math.max(-6.5, -size * .042)}px`;
     }
-  }
+    const renderedLines = visualLineCount();
+    const safe = renderedLines <= 2 && headline.scrollWidth <= headline.clientWidth;
+    headline.style.display = '-webkit-box';
+    headline.style.webkitLineClamp = '2';
+    headline.style.lineHeight = size >= 150 ? '1.04' : '.82';
+    if (size >= 150) {
+      if (story) {
+        story.style.left = '120px';
+        story.style.width = '940px';
+      }
+      headline.style.width = '940px';
+    }
+    window.__squidGeneratedHeadlineLayoutStatus = {
+      safe,
+      variant,
+      fontSize: size,
+      renderedLines,
+    };
+    return window.__squidGeneratedHeadlineLayoutStatus;
+  };
+  void window.__evaluateSquidGeneratedHeadlineLayout();
 
   const body = document.querySelector('.body-lines');
   if (body) {
-    let size = 32;
-    while (body.scrollHeight > body.clientHeight && size > 23) {
+    let size = variant === 'legacy' ? 29 : 24;
+    const minimum = variant === 'legacy' ? 22 : 19;
+    while (body.scrollHeight > body.clientHeight && size > minimum) {
       size -= 1;
       for (const line of body.children) line.style.fontSize = `${size}px`;
     }

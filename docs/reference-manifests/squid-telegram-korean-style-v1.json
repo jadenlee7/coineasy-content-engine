@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "reference_id": "squid/telegram-korean-style-v1",
+  "classification": "reference_only",
+  "selection_scope": "user_selected_art_direction",
+  "selected_at": "2026-08-03",
+  "artifact": {
+    "sha256": "92a761fe9da400920f44d55c56007361854b2baeb8bead5fbac552051d03bb0b",
+    "bytes": 1374292,
+    "mime_type": "image/png",
+    "width": 1254,
+    "height": 1254,
+    "stored_in_runtime_repository": false
+  },
+  "provenance": {
+    "official_squid_export": false,
+    "generated_media": true,
+    "generator": "OpenAI Media Service API",
+    "generator_agent": "gpt-image",
+    "generator_version": "2.0",
+    "digital_source_type": "trainedAlgorithmicMedia",
+    "c2pa_signature_verification": "not_independently_verified",
+    "redistribution_rights_review": "pending"
+  },
+  "related_official_source": {
+    "x_status_url": "https://x.com/squidrouter/status/2083266484789514640",
+    "media_url": "https://pbs.twimg.com/media/HOk_0-FakAAENyq.jpg",
+    "prepared_source_sha256": "e6f4047e165cf5d72f59ba4676234acafb86b1b61ee0954352bd578fd5ddec1e",
+    "prepared_source_width": 1080,
+    "prepared_source_height": 1080,
+    "binding_status": "not_runtime_source_bound"
+  },
+  "design_profile": {
+    "profile_id": "squid/full-bleed-character-type",
+    "version": 1,
+    "approved_copy_direction": [
+      "Squid가",
+      "텔레그램에",
+      "왔어요"
+    ],
+    "required_cues": [
+      "full-bleed square composition",
+      "lavender-to-white soft halo background",
+      "acid-lime SQUIB dominating the center-left",
+      "oversized condensed black display type",
+      "deliberate type-to-character overlap",
+      "tight stacked leading and assertive edge crop"
+    ],
+    "optional_cues_requiring_an_approved_asset": [
+      "white paper plane in the upper-right"
+    ],
+    "forbidden_cleanup": [
+      "adding generous whitespace around the headline",
+      "separating all type from the character",
+      "shrinking the character into a decorative corner asset",
+      "adding a publisher panel, footer, or CoinEasy mark"
+    ]
+  },
+  "runtime_eligible": false,
+  "publication_eligible": false,
+  "figma_template_eligible": false,
+  "approved_clean_plate_eligible": false
+}

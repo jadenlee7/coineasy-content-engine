@@ -1,9 +1,10 @@
 """
 News Card LLM Pipeline (Multi-tenant)
 
-Takes a client's content source (tweet, blog, announcement) and produces a
-single 1080x1080 Korean news card spec: label badge + headline + 1-3 body
-bullets + date + source_url + theme.
+Takes a client's content source (tweet, blog, announcement) and produces one
+Korean news-image spec: label badge + headline + 1-3 body bullets + date +
+source_url + theme. Generated layouts are square; an official Squid source
+creative is a source-native composition with optional in-place Korean copy.
 
 USAGE:
     from core.llm.news_card_pipeline import generate_news_card_spec
@@ -37,7 +38,6 @@ from core.llm.anthropic_compat import create_message, first_text
 from core.sources.source_image import PreparedSourceImage
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
-    crop_confirmed_lower_caption,
     probe_light_lower_caption,
     probe_source_text,
 )
@@ -51,9 +51,11 @@ SYSTEM_PROMPT = """You are the content brain for a Web3 news card system
 serving Korean audiences.
 
 Your job: Take an English source (blog post, tweet, or announcement) about a
-blockchain / Web3 product, and produce a single Korean news card — a tight
-1080x1080 square graphic with: a short label badge, a date, one headline
-sentence, and 1-3 body bullet lines.
+blockchain / Web3 product, and produce a single Korean news image. Generated
+card layouts are tight 1080x1080 square graphics with a short label badge, a
+date, one headline sentence, and 1-3 body bullet lines. Client-specific rules
+may instead declare an attached official creative to be the final source-native
+composition; in that case do not add the generated square-card hierarchy.
 
 Return STRICT JSON ONLY. No markdown fences, no prose, no commentary.
 Do not use em dashes (—) in any output text values. Use commas or periods instead."""
@@ -91,14 +93,11 @@ def _minimum_squid_font_percent(
     source_image_width: int,
     source_image_height: int,
 ) -> float:
-    """Mirror the renderer's max(14px, 2%-of-frame-width) floor."""
+    """Mirror the source-native renderer's max(14px, 2%-of-frame-width) floor."""
     if source_image_width <= 0 or source_image_height <= 0:
         return 2.0
-    frame_width = (
-        1080.0
-        if source_image_width >= source_image_height
-        else 1080.0 * source_image_width / source_image_height
-    )
+    scale = min(1.0, 1200.0 / max(source_image_width, source_image_height))
+    frame_width = source_image_width * scale
     return max(2.0, 14.0 / frame_width * 100.0)
 
 
@@ -124,7 +123,9 @@ BASE_USER_PROMPT = """# News Card Pipeline
 
 ## 1. Your Output
 
-A single JSON object describing one Korean news card (1080x1080 square).
+A single JSON object describing one Korean news image. Generated card families
+use a 1080x1080 square; an official Squid source-creative override keeps the
+source aspect ratio.
 NOT a carousel. NOT multiple slides. One card.
 
 ## 2. Card Design Philosophy
@@ -312,7 +313,7 @@ def _build_user_prompt(
 - Keep the official Squid rhythm: a short question or human one-line hook, then one product answer and at most one verified supporting fact.
 - Natural 해요체 is allowed for the banner hook. Do not force 합니다/됩니다 when it makes a short official post sound corporate.
 - label: 2-18 characters. Prefer a topic-specific lockup such as "CANTON × SQUID", "XRP × SQUID", or "$QUID" instead of generic labels like "공식 업데이트".
-- headline: 14-28 Korean characters where possible, maximum two visual lines. Preserve the source's question, wit, and brevity.
+- headline: 14-24 Korean characters where possible, maximum two visual lines. Preserve the source's question, wit, and brevity.
 - body_lines: 1-2 concise lines, 10-23 characters each where possible. Include only source-verified facts; do not repeat the headline.
 - Avoid "간편하게 탐색할 수 있습니다", "소식을 전합니다", "소개합니다", "핵심 변화", "최신 소식", and "전체 맥락".
 - Use display name "Squid" and the correct Korean particles: Squid가/는/를/와/로.
@@ -347,6 +348,9 @@ _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _HANGUL = re.compile(r"[가-힣]")
 _REGION_ALIGNMENTS = {"left", "center", "right"}
 _REGION_FONT_ROLES = {"display", "body"}
+_MAX_DISCOVERY_PHRASE_WIDTH = 96.0
+_MAX_DISCOVERY_PHRASE_HEIGHT = 45.0
+_MAX_DISCOVERY_PHRASE_AREA = 4_000.0
 
 
 def _number(value: object, default: float) -> float:
@@ -376,6 +380,15 @@ def _text_width_units(text: str) -> float:
                 units += 0.45
         line_units.append(units)
     return max(line_units, default=1.0)
+
+
+def _plausible_discovery_phrase_box(box: dict[str, float]) -> bool:
+    """Reject a scene-wide OCR anchor before it can own destructive cleanup."""
+    return (
+        box["width"] <= _MAX_DISCOVERY_PHRASE_WIDTH
+        and box["height"] <= _MAX_DISCOVERY_PHRASE_HEIGHT
+        and box["width"] * box["height"] <= _MAX_DISCOVERY_PHRASE_AREA
+    )
 
 
 def _canonicalize_translation_rows(text: str, row_count: int) -> str:
@@ -447,12 +460,18 @@ def _discover_visual_copy(
 
 Protected terms that may remain Latin: {protected}
 
-Find up to four complete, meaningful source-language captions or headlines.
+Find up to four compact visual-copy blocks in reading order. Blocks from one
+headline may be grammatical fragments, but their Korean plus any intentionally
+preserved Latin row must form one complete, natural message.
 - Read only visible image pixels. Never infer copy from post context.
 - Include short meme/slang captions such as "chillin'".
 - Ignore logos, wordmarks, handles, URLs, watermarks, decorative shapes, and tiny product/UI labels.
 - Transcribe source_text exactly and translate its meaning into concise natural Korean containing Hangul.
 - Use image-relative percentage coordinates around the complete phrase, including every visible row and outline/shadow.
+- Never merge a slogan spanning more than two visible rows into one region. Split it into tight reading-order blocks of at most two adjacent rows each.
+- A prominent standalone protected platform or product name may remain untouched when it carries the visual rhythm. Do not return that untouched row as a translation region. In a stack shaped like "SUBJECT IS / ON / PLATFORM", localize the compact subject and connector blocks while preserving the protected PLATFORM row when the combined result remains natural Korean.
+- Exact Squid Telegram poster rule: when the visible rows are "SQUID IS / ON / TELEGRAM", return only `SQUID IS` -> `SQUID가` and `ON` -> `있는 곳`; leave the giant `TELEGRAM` row untouched and do not return it as a region.
+- Keep every returned region at width <= 96%, height <= 45%, and area <= 40% of the image. These are hard cleanup-safety limits, not layout suggestions.
 - text must contain at most two non-empty lines. Never add a caption panel.
 - Return found=false when no meaningful translatable copy is visibly present.
 
@@ -479,6 +498,12 @@ or:
 """
     no_text_votes = 0
     calls_used = 0
+    retry_stacked_layout = False
+    protected_identities = {
+        _normalized_source_identity(term)
+        for term in preserve_terms
+        if _normalized_source_identity(term)
+    }
     for attempt in range(2):
         try:
             timeout = _remaining_llm_timeout(
@@ -487,6 +512,19 @@ or:
                 reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS,
             )
             calls_used += 1
+            attempt_prompt = prompt
+            if retry_stacked_layout:
+                attempt_prompt = f"""Reinspect the same creative from scratch.
+
+The previous pass merged a stacked, multi-row slogan into one scene-wide phrase box. That geometry is unsafe for source cleanup.
+- Split a slogan spanning more than two visible rows into two or more reading-order regions.
+- Keep each region tight to at most two adjacent visual rows.
+- A standalone protected platform/product row may stay untouched when it carries the source's visual rhythm. A connector such as "ON" may be its own compact localization block only when the Korean blocks plus that preserved Latin row form one complete natural message.
+- The Korean texts plus any intentionally preserved Latin row must read as one complete natural message without repeating or omitting meaning.
+- Every source_text must still transcribe only the exact visible words inside that region.
+- Never return a region wider than 96%, taller than 45%, or covering more than 40% of the image area.
+
+{prompt}"""
             response = create_message(
                 api_client,
                 model=model,
@@ -505,7 +543,7 @@ or:
                                 "data": source_image.base64_data,
                             },
                         },
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": attempt_prompt},
                     ],
                 }],
             )
@@ -530,6 +568,21 @@ or:
                     raise ValueError("visual copy discovery region must be an object")
                 source_text = raw_region.get("source_text")
                 text = raw_region.get("text")
+                # A protected Latin platform/product row is part of the source
+                # rhythm, not a destructive cleanup target. Some models still
+                # echo it as an unchanged region despite the prompt; omit that
+                # exact identity deterministically while keeping the Korean
+                # blocks around it bound to their audited pixels.
+                if (
+                    isinstance(source_text, str)
+                    and isinstance(text, str)
+                    and not _HANGUL.search(text)
+                    and _normalized_source_identity(source_text)
+                    in protected_identities
+                    and _normalized_source_identity(text)
+                    == _normalized_source_identity(source_text)
+                ):
+                    continue
                 box = _strict_percent_box(
                     raw_region,
                     minimum_width=6.0,
@@ -545,6 +598,11 @@ or:
                     or box is None
                 ):
                     raise ValueError("visual copy discovery region is invalid")
+                if not _plausible_discovery_phrase_box(box):
+                    retry_stacked_layout = True
+                    raise ValueError(
+                        "visual copy discovery merged a stacked phrase into an unsafe scene-wide box"
+                    )
                 font_size = max(2.8, min(12.0, _number(raw_region.get("font_size"), 5.2)))
                 text_color = raw_region.get("text_color")
                 regions.append({
@@ -562,6 +620,8 @@ or:
                     if isinstance(text_color, str) and _HEX_COLOR.match(text_color)
                     else "#FFFFFF",
                 })
+            if not regions:
+                return _clear_visual_localization(result), calls_used
             result["source_text_visible"] = True
             result["translation_regions"] = regions
             discovery_anchors = [
@@ -943,7 +1003,6 @@ def _scout_lower_band_caption_anchor(
         dict[str, float],
         dict[str, float],
         tuple[int, tuple[float, float, float, float], str],
-        bool,
     ]
 ]:
     """Recover one lower caption only from a unique bounded-lattice consensus.
@@ -1228,7 +1287,6 @@ def _scout_lower_band_caption_anchor(
             detected_box,
             cleanup_anchor,
             scout_signature,
-            True,
         )
 
     canonical_region = {
@@ -1256,7 +1314,7 @@ def _scout_lower_band_caption_anchor(
         or canonical_signature[1] != scout_signature[1]
     ):
         return None
-    return detected_box, cleanup_anchor, canonical_signature, False
+    return detected_box, cleanup_anchor, canonical_signature
 
 
 def _carve_aggregate_bottom_visual_band(
@@ -1821,8 +1879,9 @@ Rules:
 - Every coordinate in protected_regions MUST be an image-relative percentage from 0 to 100. NEVER return pixel coordinates.
 - Independently transcribe each complete source phrase into verified_source_texts. After case, whitespace, and punctuation normalization it must still exactly match the supplied source_text for that source_index. Return safe=false if the pixels do not corroborate that phrase.
 - Protected kind must be exactly one of: source_text, other_text, logo, character, face, limb, product, product_ui, token_icon, other_visual. Use other_visual for an ambiguous object that still needs protection. Never return kind=other.
-- Map one tight protected_regions box per contiguous source-language phrase or important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
+- Map one tight protected_regions box per contiguous source-language phrase. Map one or more tight boxes around the occupied pixels of each important visual element, including its outline/shadow, official or partner logo, character, face, limb, product, product UI, and token icon. Return at most 32 protected boxes. Do not mark ordinary background texture or empty scenery as other_visual.
 - Every other_visual box must tightly isolate one important ambiguous object. Never use an edge-to-edge top/bottom band or a scene-wide background box as other_visual; map the distinct character, product, logo, or other object instead.
+- When a non-rectangular object sits close to source lettering, approximate its occupied silhouette with multiple non-overlapping tight boxes instead of one broad enclosing rectangle full of empty pixels. Every returned box remains fully protected.
 - protected_regions must include at least one kind=source_text box for each subtitle index, marked with that exact source_index. Every visible text row MUST use its own tight source_text box with the same source_index; never wrap two or more rows in one box. Same-row phrase fragments may use separate boxes. Use kind=other_text for any additional visible phrase that is not represented in Subtitles. Text printed inside a product or block still counts as protected text.
 - Tighten each source_text box to the actual visible glyphs including outline and shadow while staying bound to source_phrase_box. Never move it to unrelated copy.
 - Confirm korean_text can remain readable in the same line count and exact audited area. Preserve every subtitle index exactly once. Do not translate, rewrite, or reposition korean_text.
@@ -1857,7 +1916,6 @@ or:
         required_probe_signature: Optional[
             tuple[int, tuple[float, float, float, float], str]
         ] = None
-        crop_probe_allowed = False
         attempt_number = attempt_index + 1
         attempt_prompt = audit_prompt
         if retry_context:
@@ -2011,7 +2069,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                             recovery_audited_box,
                             recovery_cleanup_anchor,
                             required_probe_signature,
-                            crop_probe_allowed,
                         ) = scout
                         print(
                             "[squid] raster-confirmed lower-band anchor found "
@@ -2033,7 +2090,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                             recovery_audited_box,
                             recovery_cleanup_anchor,
                             required_probe_signature,
-                            crop_probe_allowed,
                         ) = scout
                         print(
                             "[squid] raster-confirmed lower-band anchor found "
@@ -2119,7 +2175,6 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 probe = probe_source_text(source_image, audited_regions)
                 if (
                     required_probe_signature is not None
-                    and not crop_probe_allowed
                     and _source_text_probe_signature(probe)
                     != required_probe_signature
                 ):
@@ -2131,47 +2186,22 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                     f"{attempt_number}: {probe.masked_pixels} pixels"
                 )
             except SourceTextCleanupError as exc:
-                crop_probe_succeeded = False
-                if crop_probe_allowed:
-                    try:
-                        crop_confirmed_lower_caption(
-                            source_image,
-                            audited_regions,
-                        )
-                    except SourceTextCleanupError:
-                        pass
-                    except Exception:
-                        return _clear_visual_localization(
-                            result,
-                            failure_status="cleanup_failed",
-                        )
-                    else:
-                        crop_probe_succeeded = True
-                        print(
-                            "[squid] protected lower-caption crop validation "
-                            f"accepted on attempt {attempt_number}"
-                        )
-                if crop_probe_succeeded:
-                    # The orchestrator will reproduce the same deterministic
-                    # crop and remap Korean geometry before rendering.
-                    pass
-                else:
-                    terminal_failure_status = "cleanup_failed"
-                    retry_context = (
-                        "deterministic raster probing could not isolate the complete "
-                        "source lettering inside the proposed boxes"
-                    )
-                    print(
-                        "[squid] placement raster probe rejected safely on attempt "
-                        f"{attempt_number}: {exc}"
-                    )
-                    if (
-                        attempt_number < effective_max_calls
-                        and retry_protections is not None
-                    ):
-                        retained_retry_protections = retry_protections
-                        continue
-                    break
+                terminal_failure_status = "cleanup_failed"
+                retry_context = (
+                    "deterministic raster probing could not isolate the complete "
+                    "source lettering inside the proposed boxes"
+                )
+                print(
+                    "[squid] placement raster probe rejected safely on attempt "
+                    f"{attempt_number}: {exc}"
+                )
+                if (
+                    attempt_number < effective_max_calls
+                    and retry_protections is not None
+                ):
+                    retained_retry_protections = retry_protections
+                    continue
+                break
             except Exception as exc:
                 print(
                     "[squid] placement raster probe failed closed on attempt "
@@ -2271,6 +2301,7 @@ def _normalize_visual_localization(
     source_image_height: int = 1080,
     *,
     require_audit_metadata: bool = False,
+    approved_geometry: bool = False,
 ) -> dict:
     """Keep Squid visual translation regions bounded and renderer-safe."""
     enabled = (
@@ -2383,15 +2414,27 @@ def _normalize_visual_localization(
 
             raw_x = target_box["x"]
             raw_y = target_box["y"]
-            font_size = max(2.8, min(12.0, _number(raw.get("font_size"), 5.2)))
+            font_size = max(
+                2.8,
+                min(
+                    20.0 if approved_geometry else 12.0,
+                    _number(raw.get("font_size"), 5.2),
+                ),
+            )
             raw_width = target_box["width"]
             raw_height = target_box["height"]
             align = raw.get("align") if raw.get("align") in _REGION_ALIGNMENTS else "left"
-            scale_x = 1.0
-            translation_units = _text_width_units(text.strip())
-            if translation_units > 0:
-                estimated_width = max(0.1, translation_units * font_size * 0.60)
-                scale_x = max(0.9, min(1.35, raw_width * 0.96 / estimated_width))
+            if approved_geometry:
+                scale_x = max(
+                    0.8,
+                    min(1.4, _number(raw.get("scale_x"), 1.0)),
+                )
+            else:
+                scale_x = 1.0
+                translation_units = _text_width_units(text.strip())
+                if translation_units > 0:
+                    estimated_width = max(0.1, translation_units * font_size * 0.60)
+                    scale_x = max(0.9, min(1.35, raw_width * 0.96 / estimated_width))
 
             # Match the renderer's 2%-of-image-width minimum font and reject
             # regions that could still disappear after its deterministic shrink.
@@ -2517,6 +2560,9 @@ def generate_news_card_spec(
     mock_response: Optional[dict] = None,
     source_image: Optional[PreparedSourceImage] = None,
     cached_visual_localization: Optional[list[dict]] = None,
+    approved_visual_localization: Optional[
+        Sequence[Mapping[str, object]]
+    ] = None,
     style_references: Sequence[Mapping[str, str]] = (),
     brand_review_guidance: Mapping[str, object] | None = None,
 ) -> dict:
@@ -2539,6 +2585,11 @@ def generate_news_card_spec(
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
         result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+        if approved_visual_localization is not None:
+            result["source_text_visible"] = True
+            result["translation_regions"] = copy.deepcopy(
+                list(approved_visual_localization)
+            )
         had_detected_copy = (
             result.get("source_text_visible") is True
             and isinstance(result.get("translation_regions"), list)
@@ -2550,6 +2601,7 @@ def generate_news_card_spec(
             source_image is not None,
             source_image.width if source_image is not None else 1080,
             source_image.height if source_image is not None else 1080,
+            approved_geometry=approved_visual_localization is not None,
         )
         result = _stamp_visual_localization_status(
             result,
@@ -2625,6 +2677,16 @@ def generate_news_card_spec(
 
     result = _parse_json_response(response, "news card generation")
     result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+    if approved_visual_localization is not None:
+        # The orchestrator can supply this only after the source digest,
+        # dimensions, clean-plate digest, and reviewed regions have all been
+        # verified by the internal approval registry.  Keep the creative-model
+        # call for factual card copy, but never let sampled visual OCR replace
+        # immutable human-approved geometry.
+        result["source_text_visible"] = True
+        result["translation_regions"] = copy.deepcopy(
+            list(approved_visual_localization)
+        )
     had_detected_copy = (
         result.get("source_text_visible") is True
         and isinstance(result.get("translation_regions"), list)
@@ -2635,6 +2697,7 @@ def generate_news_card_spec(
     if (
         client_id == "squid"
         and source_image is not None
+        and approved_visual_localization is None
         and isinstance(cached_visual_localization, list)
         and cached_visual_localization
     ):
@@ -2657,7 +2720,12 @@ def generate_news_card_spec(
             cache_hit = True
             print("[squid] validated visual localization cache hit; placement audit skipped")
 
-    if client_id == "squid" and source_image is not None and not cache_hit:
+    if (
+        client_id == "squid"
+        and source_image is not None
+        and approved_visual_localization is None
+        and not cache_hit
+    ):
         # The sampled creative-writing model never owns destructive image
         # geometry. A temperature-zero, image-only pass always replaces its
         # visual OCR so a valid-but-partial first answer cannot make cold
@@ -2698,7 +2766,12 @@ def generate_news_card_spec(
         source_image is not None,
         source_image.width if source_image is not None else 1080,
         source_image.height if source_image is not None else 1080,
-        require_audit_metadata=(client_id == "squid" and source_image is not None),
+        require_audit_metadata=(
+            client_id == "squid"
+            and source_image is not None
+            and approved_visual_localization is None
+        ),
+        approved_geometry=approved_visual_localization is not None,
     )
     result = _stamp_visual_localization_status(
         result,

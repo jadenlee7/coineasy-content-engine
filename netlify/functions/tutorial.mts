@@ -9,6 +9,10 @@ import {
   evaluateBrandQuality,
   type BrandQaClient,
 } from "./_shared/brand-quality.mts";
+import {
+  evaluateFactCheck,
+  validatedFactCheckReport,
+} from "./_shared/fact-check.mts";
 import { signTutorialSlide } from "./_shared/tutorial-slide-token.mts";
 import { requireStudioGenerationAccess } from "./_shared/studio-session.mts";
 import {
@@ -44,6 +48,7 @@ type RailwayTutorialResponse = {
   client_id: string;
   content_type: string;
   series: Record<string, unknown>;
+  lessons: unknown[];
   lesson_count: number;
   png_paths: string[];
   manifest_path: string;
@@ -71,6 +76,74 @@ const NETLIFY_REQUEST_BUDGET_MS = 55_000;
 const RAILWAY_GENERATION_BUDGET_MS = 32_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const TUTORIAL_LAYOUTS = new Set([
+  "P1_3CARD",
+  "P2_BULLETS",
+  "P3_BEFORE_AFTER",
+  "P4_SUMMARY",
+  "P5_COVER",
+  "P6_STEP",
+  "P7_DEFINITION",
+  "P8_DIAGRAM",
+]);
+
+function tutorialClaimValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) throw new Error("invalid_tutorial_claims");
+  if (typeof value === "string") {
+    if (value.length > 2_000) throw new Error("invalid_tutorial_claims");
+    return value.normalize("NFC").trim();
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("invalid_tutorial_claims");
+    return value;
+  }
+  if (typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) {
+    if (value.length > 20) throw new Error("invalid_tutorial_claims");
+    return value.map((item) => tutorialClaimValue(item, depth + 1));
+  }
+  if (!value || typeof value !== "object") throw new Error("invalid_tutorial_claims");
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 30) throw new Error("invalid_tutorial_claims");
+  return Object.fromEntries(entries.map(([key, item]) => {
+    if (
+      !/^[a-z][a-z0-9_]{0,49}$/.test(key)
+      || key.startsWith("_")
+      || key.endsWith("_svg")
+    ) throw new Error("invalid_tutorial_claims");
+    return [key, tutorialClaimValue(item, depth + 1)];
+  }));
+}
+
+export function normalizedTutorialLessons(value: unknown, lessonCount: number): Record<string, unknown>[] | null {
+  if (!Array.isArray(value) || value.length !== lessonCount || value.length > MAX_SLIDES) return null;
+  try {
+    const lessons = value.map((rawLesson, index) => {
+      const lesson = rawLesson && typeof rawLesson === "object" && !Array.isArray(rawLesson)
+        ? rawLesson as Record<string, unknown>
+        : {};
+      if (
+        !Object.keys(lesson).every((key) => ["lesson_number", "layout", "theme", "slots"].includes(key))
+        || lesson.lesson_number !== index + 1
+        || typeof lesson.layout !== "string"
+        || !TUTORIAL_LAYOUTS.has(lesson.layout)
+        || !["dark", "yellow"].includes(String(lesson.theme || ""))
+        || !lesson.slots
+        || typeof lesson.slots !== "object"
+        || Array.isArray(lesson.slots)
+      ) throw new Error("invalid_tutorial_claims");
+      return {
+        lesson_number: lesson.lesson_number,
+        layout: lesson.layout,
+        theme: lesson.theme,
+        slots: tutorialClaimValue(lesson.slots),
+      } as Record<string, unknown>;
+    });
+    return JSON.stringify(lessons).length <= 50_000 ? lessons : null;
+  } catch {
+    return null;
+  }
+}
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
@@ -225,10 +298,16 @@ function catalogRetryResponse(
   const source = objectValue(existing.content.source);
   const duration = existing.generationMeta.duration_ms;
   const mockMode = existing.generationMeta.mock_mode === true;
+  const lessons = normalizedTutorialLessons(existing.content.lessons, existing.slides.length);
+  const factCheck = validatedFactCheckReport(existing.generationMeta.fact_check, "tutorial");
+  if (!lessons || !factCheck) {
+    throw new TutorialStorageError("fact_check_regeneration_required");
+  }
   return {
     client_id: clientId,
     content_type: "edu_carousel",
     series,
+    lessons,
     lesson_count: existing.slides.length,
     duration_ms: typeof duration === "number" && Number.isFinite(duration) ? duration : 0,
     source_mode: source.mode === "x_import" ? "x_import" : "provided",
@@ -237,6 +316,7 @@ function catalogRetryResponse(
     content_version_id: existing.contentVersionId,
     asset_ids: existing.slides.map((slide) => slide.assetId),
     brand_qa: existing.generationMeta.brand_qa || null,
+    fact_check: factCheck,
     mock_mode: mockMode,
     reused: true,
     slides: signedSlides(
@@ -337,7 +417,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (catalogRequestHash(existingGeneration) !== requestHash) {
       return json({ error: "tutorial_idempotency_conflict" }, 409);
     }
-    return json(catalogRetryResponse(existingGeneration, apiSecret, clientId));
+    try {
+      return json(catalogRetryResponse(existingGeneration, apiSecret, clientId));
+    } catch (error) {
+      const code = error instanceof TutorialStorageError
+        ? error.code
+        : "durable_storage_invalid_response";
+      return json({ error: code }, code === "fact_check_regeneration_required" ? 409 : 503);
+    }
   }
 
   let brandReviewGuidance = emptyBrandReviewGuidance();
@@ -414,6 +501,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       || !result.series
       || typeof result.series !== "object"
       || Array.isArray(result.series)
+      || !Array.isArray(result.lessons)
       || !Number.isSafeInteger(result.lesson_count)
       || typeof result.duration_ms !== "number"
       || !Number.isFinite(result.duration_ms)
@@ -422,10 +510,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const pngPaths = Array.isArray(result.png_paths) ? result.png_paths : [];
+    const tutorialLessons = normalizedTutorialLessons(result.lessons, result.lesson_count);
     if (
       !pngPaths.length
       || pngPaths.length > MAX_SLIDES
       || result.lesson_count !== pngPaths.length
+      || !tutorialLessons
     ) {
       return json({ error: "invalid_generated_file_count" }, 502);
     }
@@ -464,6 +554,17 @@ export default async (req: Request, context: Context): Promise<Response> => {
       sourceText: resolvedSource.content,
       series: result.series,
       lessonCount: result.lesson_count,
+    });
+    const factCheck = evaluateFactCheck({
+      contentKind: "tutorial",
+      source: resolvedSource,
+      publicText: {
+        series: result.series,
+        lessons: tutorialLessons,
+        lesson_count: String(result.lesson_count),
+      },
+      artifactSha256: generatedPngs.map((slide) => slide.sha256),
+      brandQa,
     });
 
     const storedSlides: StoredTutorialSlide[] = [];
@@ -513,6 +614,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         content: {
           request_hash: requestHash,
           series: result.series,
+          lessons: tutorialLessons,
           lesson_count: result.lesson_count,
           source: {
             type: sourceType,
@@ -530,6 +632,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...brandReviewGuidanceAudit(brandReviewGuidance),
           brand_review_guidance_available: brandReviewGuidanceAvailable,
           brand_qa: brandQa,
+          fact_check: factCheck,
         },
         slides: catalogSlides,
       }, fetch, deadlineSignal(requestDeadline, 6_000));
@@ -545,6 +648,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         client_id: result.client_id,
         content_type: result.content_type,
         series: result.series,
+        lessons: tutorialLessons,
         lesson_count: result.lesson_count,
         duration_ms: result.duration_ms,
         source_mode: resolvedSource.mode,
@@ -553,6 +657,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         content_version_id: catalog.contentVersionId,
         asset_ids: catalog.assetIds,
         brand_qa: brandQa,
+        fact_check: factCheck,
         mock_mode: body.mock_mode === true,
         reused: false,
         slides,
@@ -610,7 +715,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
             || Date.now() >= requestDeadline - 100;
           return json(
             { error: lookupDeadlineExceeded ? "tutorial_deadline_exceeded" : lookupCode },
-            lookupDeadlineExceeded ? 504 : 503,
+            lookupDeadlineExceeded
+              ? 504
+              : lookupCode === "fact_check_regeneration_required" ? 409 : 503,
           );
         }
       }

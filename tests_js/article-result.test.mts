@@ -49,6 +49,19 @@ const STORED_ARTICLE = {
     duration_ms: 28_074,
     mock_mode: false,
     brand_qa: { status: "pass", score: 100 },
+    fact_check: {
+      schema_version: "1.0",
+      policy_version: "double-fact-check@1",
+      content_kind: "article",
+      status: "review",
+      human_review_required: true,
+      input_sha256: "a".repeat(64),
+      output_sha256: "b".repeat(64),
+      checks: [
+        { id: "source_evidence", status: "review", label: "Source evidence", detail: "Human verification required.", metrics: {} },
+        { id: "output_claims", status: "pass", label: "Output claims", detail: "Mechanical anchors recorded.", metrics: {} },
+      ],
+    },
   },
   assets: [],
 };
@@ -143,5 +156,18 @@ test("article result polling still requires Studio generation access", async () 
     } as never);
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: "studio_auth_required" });
+  });
+});
+
+test("article result polling requires regeneration for a legacy report instead of retry polling", async () => {
+  await withArticleResultEnvironment(async () => Response.json({
+    ...STORED_ARTICLE,
+    generation_meta: { ...STORED_ARTICLE.generation_meta, fact_check: null },
+  }), async () => {
+    const response = await articleResultHandler(request(), {
+      params: { clientId: "squid", requestId: REQUEST_ID },
+    } as never);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "fact_check_regeneration_required" });
   });
 });

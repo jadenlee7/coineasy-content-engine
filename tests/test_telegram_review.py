@@ -64,7 +64,7 @@ def notification_payload(**overrides):
         "content_kind": "article",
         "caption_html": "🔎 <b>검토 요청 · Squid</b>",
         "message_html": (
-            "<b>게시할 Telegram 문구</b>\n\n검토할 내용\n\n"
+            "⚠️ <b>미승인 검토용 · 전달/게시 금지</b>\n<b>검토용 Telegram 문구</b>\n\n검토할 내용\n\n"
             "<i>승인 전에는 게시되지 않습니다.</i>"
         ),
         "review_url": (
@@ -106,7 +106,7 @@ async def test_review_sender_posts_banner_then_copy_without_exposing_config(monk
     result = await send_telegram_review(
         config=TelegramReviewConfig(BOT_TOKEN, CHAT_ID),
         caption_html="🔎 <b>검토 요청 · Squid</b>",
-        message_html="<b>게시할 Telegram 문구</b>\n\n검토할 내용",
+        message_html="⚠️ <b>미승인 검토용 · 전달/게시 금지</b>\n<b>검토용 Telegram 문구</b>\n\n검토할 내용",
         review_url=notification_payload()["review_url"],
         image_data_url=IMAGE_DATA_URL,
     )

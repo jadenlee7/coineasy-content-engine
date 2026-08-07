@@ -1,16 +1,25 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jinja2 import Environment, FileSystemLoader, UndefinedError
 
 from core.orchestrator import (
     NEWS_CARD_TEMPLATES,
+    _SQUID_GENERATED_TEMPLATE_VERSION,
     _align_regions_to_detected_text,
     generate_news_card,
 )
 from core.client_config import get_client_config
-from core.renderers.playwright_renderer import _build_font_head, _inject_brand_slots
+from core.llm.news_card_pipeline import _minimum_squid_font_percent
+from core.renderers.playwright_renderer import (
+    TranslationLayoutError,
+    _build_font_head,
+    _expects_squid_generated_headline_layout,
+    _inject_brand_slots,
+)
 from core.sources.source_image import PreparedSourceImage, SourceImageError
 from core.sources.source_text_cleanup import SourceTextCleanupError
 
@@ -23,6 +32,11 @@ MOCK_SPEC = {
     "source_url": "https://example.com/news",
     "theme": "dark",
 }
+
+
+def test_squid_minimum_font_matches_the_source_native_viewport():
+    assert _minimum_squid_font_percent(1600, 900) == 2.0
+    assert _minimum_squid_font_percent(480, 320) == pytest.approx(14 / 480 * 100)
 
 
 def test_news_card_templates_are_allowlisted_and_present():
@@ -72,9 +86,18 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "overlapsExistingRegion" in override_html
     assert "anyRegionFailed" in override_html
     assert "if (!text)" in override_html
-    assert "for (const region of translationRegions) region.hidden = true" in override_html
+    assert "window.__squidTranslationLayoutStatus" in override_html
+    assert "window.__evaluateSquidTranslationLayout = async () =>" in override_html
+    assert "await document.fonts.ready" in override_html
+    assert "region.style.fontSize = initialSize" in override_html
+    assert "safe: !anyRegionFailed" in override_html
+    assert "region.hidden = true" not in override_html
     assert ".28em" not in override_html
     assert "cdn.jsdelivr.net" not in override_html
+
+    renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
+    assert "document.fonts.status === 'loaded'" in renderer_source
+    assert "window.__evaluateSquidTranslationLayout()" in renderer_source
 
     squid_classic = Path("clients/squid/overrides/news/news_title_card.html")
     assert squid_classic.is_file()
@@ -85,7 +108,158 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "width: 320px" in classic_html
     assert "main-card" not in classic_html
     assert "body-item" not in classic_html
-    assert "size > 64" in classic_html
+    assert "coineasy" not in classic_html.lower()
+    assert "size > minimum" in classic_html
+    assert ".canvas--legacy" in classic_html
+    assert "linear-gradient(132deg, #C99AF0" in classic_html
+    assert "width: 1200px" in classic_html
+    assert "top: -40px" in classic_html
+    assert "white oval" not in classic_html.lower()
+    assert 'class="stage-word stage-word--top"' in classic_html
+    assert 'class="stage-word stage-word--bottom"' not in classic_html
+    assert "window.__evaluateSquidGeneratedHeadlineLayout = async () =>" in classic_html
+    assert "await document.fonts.ready" in classic_html
+    assert "if (!generatedFamilies.has(variant))" in classic_html
+    assert "headline.style.lineHeight = size >= 150 ? '1.04' : '.82'" in classic_html
+    legacy_fit_branch = classic_html.split("if (!generatedFamilies.has(variant))", 1)[1].split(
+        "headline.style.fontSize = `${size}px`;", 1
+    )[0]
+    assert "headline.style.lineHeight" not in legacy_fit_branch
+
+    renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
+    assert "window.__evaluateSquidGeneratedHeadlineLayout()" in renderer_source
+    assert "Squid generated headline did not pass browser layout" in renderer_source
+
+
+def test_squid_generated_headline_guard_excludes_source_remix_audit_family():
+    assert _expects_squid_generated_headline_layout({
+        "creative_family": "product_proof",
+        "render_strategy": "source_remix",
+    }) is False
+    assert _expects_squid_generated_headline_layout({
+        "creative_family": "product_proof",
+        "render_strategy": "generated_gtm",
+    }) is True
+
+
+def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():
+    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@4"
+
+    netlify_source = Path("netlify/functions/news-card.mts").read_text()
+    assert '"squid-generated-gtm@4"' in netlify_source
+    assert '"squid-generated-gtm@3"' not in netlify_source
+    assert "payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION" in netlify_source
+
+
+def test_squid_remix_preserves_the_full_latest_official_landscape_composition():
+    template_dir = Path("clients/squid/overrides/news")
+    template = Environment(
+        loader=FileSystemLoader(str(template_dir)),
+        autoescape=False,
+    ).get_template("news_remix_card.html")
+
+    html = template.render(
+        source_image_data_url="data:image/jpeg;base64,b2ZmaWNpYWw=",
+        source_image_width=1200,
+        source_image_height=675,
+        output_width=1200,
+        output_height=675,
+        output_policy="official_source_native_v1",
+        source_background_color="#B881DF",
+        source_text_visible=False,
+        translation_regions=[],
+        brand_bg_dark="#1A0E2E",
+        font_family="Pretendard Variable",
+        font_display="",
+        brand_font_links="",
+    )
+
+    # The latest official @squidrouter poster is 1200x675. The primary X
+    # deliverable must keep that native composition instead of shrinking it
+    # into a square letterbox or wrapping it in publisher chrome.
+    assert "left: 0.000px" in html
+    assert "top: 0.000px" in html
+    assert "width: 1200.000px" in html
+    assert "height: 675.000px" in html
+    assert "width: 1200.000px; height: 675.000px" in html
+    assert "object-fit: fill" in html
+    assert "--source-bg: #B881DF" in html
+    assert "background: var(--source-bg)" in html
+    assert '<section class="source-frame" aria-label="Squid source creative">' in html
+    assert 'class="translation-region"' not in html
+    for forbidden in (
+        "object-fit: cover",
+        "visual-blur",
+        "visual-shade",
+        "logo-wrap",
+        "translation-footer",
+        "<h1",
+    ):
+        assert forbidden not in html
+
+
+def test_squid_generated_html_routes_the_same_four_public_families_as_editable_svg():
+    template = Environment(
+        loader=FileSystemLoader("clients/squid/overrides/news"),
+        autoescape=False,
+    ).get_template("news_title_card.html")
+    common = {
+        "label": "SQUID UPDATE",
+        "headline": "Squid로 더 멀리 연결해요",
+        "body_lines": ["공식 원문에서 확인한 소식이에요"],
+        "source_url": "https://x.com/squidrouter/status/123",
+        "date": "2026.08.02",
+        "squid_bubbles_path": "bubbles.png",
+        "squid_squib_path": "squib.png",
+        "squid_form_language_path": "form.png",
+        "logo_light_path": "logo-black.png",
+        "logo_dark_path": "logo-white.png",
+        "font_display": "",
+        "brand_font_links": "",
+    }
+
+    safe_families = (
+        "editorial_big_type",
+        "milestone_metric",
+        "status_progress",
+        "product_proof",
+    )
+    for family in safe_families:
+        html = template.render(
+            **common,
+            creative_family=family,
+            visual_metric="5m" if family == "milestone_metric" else "",
+        )
+        assert f"canvas--{family}" in html
+        assert f'data-creative-family="{family}"' in html
+        assert "COINEASY / KOREA" not in html
+        assert "#E6FA36" in html
+        assert "#BC8EE4" in html
+        assert "linear-gradient(132deg, #C99AF0" in html
+        assert "left: -110px" in html
+        assert "width: 1200px" in html
+        assert "font-size: 168px" in html
+        assert (
+            '<div class="stage-word stage-word--top" aria-hidden="true">Squid</div>'
+            in html
+        )
+        assert 'stage-word--bottom' not in html
+        assert 'class="eyebrow"' not in html
+        assert '<section class="support">' not in html
+        assert '<footer class="footer">' not in html
+        assert 'class="brand-logo' not in html
+        assert "background: rgba(255, 255, 255, .97)" not in html
+        if family == "product_proof":
+            assert "canvas--status_progress" not in html.split("<main", 1)[1].split(">", 1)[0]
+            assert 'class="form-language"' in html
+        if family == "milestone_metric":
+            assert '<div class="metric">5m</div>' in html
+
+    with pytest.raises(UndefinedError):
+        template.render(
+            **common,
+            creative_family="worldbuilding",
+        )
 
 
 def test_squid_renderer_embeds_local_pretendard_without_a_network_dependency():
@@ -271,7 +445,7 @@ async def test_squid_generic_template_requests_use_the_official_classic(
 
     result = await generate_news_card(
         client_id="squid",
-        source_content="A long enough official Squid source for a template routing test.",
+        source_content="A substantial official Squid ecosystem announcement with enough detail.",
         output_dir=tmp_path,
         mock_mode=True,
         mock_response=MOCK_SPEC,
@@ -282,6 +456,85 @@ async def test_squid_generic_template_requests_use_the_official_classic(
     assert result.requested_template_style == requested_style
     assert result.template_style == "classic"
     assert result.png_path.endswith("news_card_classic.png")
+    assert result.spec["creative_family"] == "editorial_big_type"
+    assert result.spec["render_strategy"] == "generated_gtm"
+    assert result.spec["channel_profile"] == "x_square"
+    assert result.spec["creative_family_policy_version"] == "squid-visual-routing@1"
+    assert result.spec["visual_reference_pack_version"] == 2
+    assert (
+        result.spec["visual_design_profile_id"]
+        == "squid/full-bleed-character-type"
+    )
+    assert result.spec["visual_design_profile_version"] == 1
+    assert result.spec["template_version"] == "squid-generated-gtm@4"
+    assert result.spec["asset_pack_version"] == "squid-local-approved@1"
+    display_font_path = get_client_config("squid").font_display_file_path
+    assert result.spec["font_status"] == (
+        "bagoss_condensed_licensed"
+        if display_font_path is not None and display_font_path.is_file()
+        else "pretendard_fallback"
+    )
+    assert captured["slots"]["creative_family"] == "editorial_big_type"
+    assert result.figma_template is None
+
+
+@pytest.mark.asyncio
+async def test_squid_milestone_uses_only_the_metric_copied_from_source(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="Squid crossed 5M swaps across connected chains.",
+        source_url="https://x.com/squidrouter/status/2082889008385044897",
+        output_dir=tmp_path,
+        mock_mode=True,
+        mock_response={
+            **MOCK_SPEC,
+            "headline": "스왑 500만 건을 넘었어요",
+        },
+        template_style="classic",
+    )
+
+    assert result.spec["creative_family"] == "milestone_metric"
+    assert result.spec["visual_metric"] == "5m"
+    assert captured["slots"]["visual_metric"] == "5m"
+    assert result.figma_template is None
+
+
+@pytest.mark.asyncio
+async def test_squid_text_only_worldbuilding_never_invents_a_generated_scene(
+    monkeypatch,
+    tmp_path,
+):
+    rendered = False
+
+    async def fake_render_png(**_kwargs):
+        nonlocal rendered
+        rendered = True
+
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+
+    with pytest.raises(ValueError, match="requires approved official media"):
+        await generate_news_card(
+            client_id="squid",
+            source_content="Bouncing through the weekend like SQUIB.",
+            source_url="https://x.com/squidrouter/status/2083583547353501977",
+            output_dir=tmp_path,
+            mock_mode=True,
+            mock_response=MOCK_SPEC,
+            template_style="classic",
+        )
+
+    assert rendered is False
 
 
 @pytest.mark.asyncio
@@ -295,6 +548,7 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
             base64_data="aW1hZ2U=",
             width=1080,
             height=1080,
+            background_color="#B881DF",
         )
 
     async def fake_render_png(**kwargs):
@@ -332,6 +586,8 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
         mock_mode=True,
         mock_response={
             **MOCK_SPEC,
+            "visual_design_profile_id": "rogue/llm-profile",
+            "visual_design_profile_version": 999,
             "source_logo_visible": True,
             "source_text_visible": True,
             "translation_regions": [{
@@ -366,12 +622,282 @@ async def test_remix_uses_prepared_source_visual(monkeypatch, tmp_path):
     assert captured["slots"]["source_crop_bottom"] == 100.0
     assert captured["slots"]["source_image_width"] == 1080
     assert captured["slots"]["source_image_height"] == 1080
+    assert captured["slots"]["output_width"] == 1080
+    assert captured["slots"]["output_height"] == 1080
+    assert captured["viewport"] == (1080, 1080)
+    assert captured["device_scale_factor"] == 1
+    assert captured["slots"]["source_background_color"] == "#B881DF"
     assert result.template_style == "remix"
     assert result.requested_template_style == "remix"
     assert result.source_image_used is True
+    assert result.source_image_url == "https://pbs.twimg.com/media/source.jpg?name=orig"
+    assert result.source_image_sha256 == hashlib.sha256(b"image").hexdigest()
+    assert result.spec["render_strategy"] == "source_remix"
+    assert result.spec["channel_profile"] == "source_native"
+    assert result.spec["visual_reference_pack_version"] == 2
+    assert "visual_design_profile_id" not in result.spec
+    assert "visual_design_profile_version" not in result.spec
+    assert result.spec["template_version"] == "squid-source-remix@1"
+    assert result.spec["asset_pack_version"] == "official-source-media@1"
     assert result.source_visual_path == str(tmp_path / "source_visual_cleaned.jpg")
     assert (tmp_path / "source_visual_cleaned.jpg").read_bytes() == b"cleaned"
     assert result.png_path.endswith("news_card_remix.png")
+    manifest = json.loads(Path(result.manifest_path).read_text())
+    assert manifest["source_image_url"] == result.source_image_url
+    assert manifest["source_image_sha256"] == result.source_image_sha256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_size", "expected_viewport"),
+    [((1600, 900), (1200, 675)), ((900, 1600), (675, 1200))],
+)
+async def test_squid_remix_uses_the_official_source_aspect_for_the_primary_png(
+    monkeypatch,
+    tmp_path,
+    source_size,
+    expected_viewport,
+):
+    captured = {}
+
+    async def fake_fetch_source_image(_url):
+        return PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=source_size[0],
+            height=source_size[1],
+            background_color="#B881DF",
+        )
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+
+    monkeypatch.setattr("core.orchestrator.fetch_source_image", fake_fetch_source_image)
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="A textless official Squid X creative with a landscape composition.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
+        output_dir=tmp_path,
+        mock_mode=True,
+        mock_response={
+            **MOCK_SPEC,
+            "source_text_visible": False,
+            "translation_regions": [],
+        },
+        template_style="remix",
+    )
+
+    assert captured["viewport"] == expected_viewport
+    assert captured["device_scale_factor"] == 1
+    assert captured["slots"]["output_width"] == expected_viewport[0]
+    assert captured["slots"]["output_height"] == expected_viewport[1]
+    assert result.spec["output_width"] == expected_viewport[0]
+    assert result.spec["output_height"] == expected_viewport[1]
+
+
+@pytest.mark.asyncio
+async def test_remix_rejects_dimension_changing_cleanup_and_preserves_original(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    source = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="c291cmNl",
+        width=480,
+        height=320,
+        background_color="#B881DF",
+    )
+
+    async def fake_fetch_source_image(_url):
+        return source
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+
+    monkeypatch.setattr("core.orchestrator.fetch_source_image", fake_fetch_source_image)
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+    monkeypatch.setattr(
+        "core.orchestrator.generate_news_card_spec",
+        lambda **_kwargs: {
+            **MOCK_SPEC,
+            "source_text_visible": True,
+            "translation_regions": [{
+                "source_text": "Original caption",
+                "text": "원문 자막",
+                "x": 30,
+                "y": 80,
+                "width": 40,
+                "height": 10,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 5,
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "core.orchestrator.clean_source_text",
+        lambda _image, _regions: SimpleNamespace(
+            image=PreparedSourceImage(
+                media_type="image/jpeg",
+                base64_data="Y3JvcHBlZA==",
+                width=480,
+                height=280,
+            ),
+            masked_pixels=19_200,
+            detected_regions=({"x": 30, "y": 80, "width": 40, "height": 10},),
+        ),
+    )
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="A source whose cleanup implementation attempted to crop.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
+        output_dir=tmp_path,
+        mock_mode=True,
+        mock_response={
+            **MOCK_SPEC,
+            "source_text_visible": True,
+            "translation_regions": [{
+                "source_text": "Original caption",
+                "text": "원문 자막",
+                "x": 30,
+                "y": 80,
+                "width": 40,
+                "height": 10,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 5,
+            }],
+        },
+        template_style="remix",
+    )
+
+    assert captured["slots"]["source_image_data_url"] == source.data_url
+    assert captured["slots"]["source_background_color"] == "#B881DF"
+    assert captured["slots"]["source_text_visible"] is False
+    assert captured["slots"]["translation_regions"] == []
+    assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.source_visual_path is None
+    assert not (tmp_path / "source_visual_cleaned.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_remix_browser_layout_rejection_rerenders_untouched_original(
+    monkeypatch,
+    tmp_path,
+):
+    source = PreparedSourceImage(
+        media_type="image/jpeg",
+        base64_data="c291cmNl",
+        width=480,
+        height=320,
+        background_color="#B881DF",
+    )
+    region = {
+        "source_text": "Original caption",
+        "text": "원문 자막",
+        "x": 30,
+        "y": 80,
+        "width": 40,
+        "height": 10,
+        "source_x": 30,
+        "source_y": 80,
+        "source_width": 40,
+        "source_height": 10,
+        "align": "center",
+        "font_role": "display",
+        "font_size": 5,
+    }
+    render_calls = []
+    cached = []
+    discarded = []
+
+    async def fake_fetch_source_image(_url):
+        return source
+
+    async def fake_render_png(**kwargs):
+        render_calls.append(kwargs)
+        if len(render_calls) == 1:
+            raise TranslationLayoutError("replacement overflow")
+        kwargs["output_path"].write_bytes(b"original")
+
+    monkeypatch.setattr("core.orchestrator.fetch_source_image", fake_fetch_source_image)
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+    monkeypatch.setattr(
+        "core.orchestrator.generate_news_card_spec",
+        lambda **_kwargs: {
+            **MOCK_SPEC,
+            "source_text_visible": True,
+            "translation_regions": [dict(region)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.orchestrator.clean_source_text",
+        lambda image, _regions: SimpleNamespace(
+            image=PreparedSourceImage(
+                media_type="image/jpeg",
+                base64_data="Y2xlYW5lZA==",
+                width=image.width,
+                height=image.height,
+            ),
+            masked_pixels=48,
+            detected_regions=({"x": 30, "y": 80, "width": 40, "height": 10},),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.orchestrator.make_visual_localization_cache_key",
+        lambda **_kwargs: "cache-key",
+    )
+    monkeypatch.setattr("core.orchestrator.get_visual_localization", lambda _key: None)
+    monkeypatch.setattr(
+        "core.orchestrator.put_visual_localization",
+        lambda key, regions: cached.append((key, regions)),
+    )
+    monkeypatch.setattr(
+        "core.orchestrator.discard_visual_localization",
+        lambda key: discarded.append(key),
+    )
+
+    result = await generate_news_card(
+        client_id="squid",
+        source_content="A source whose Korean replacement cannot fit in Chromium.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg?name=orig",
+        output_dir=tmp_path,
+        template_style="remix",
+    )
+
+    assert len(render_calls) == 2
+    assert render_calls[0]["viewport"] == (480, 320)
+    assert render_calls[1]["viewport"] == (480, 320)
+    assert render_calls[0]["device_scale_factor"] == 1
+    assert render_calls[1]["device_scale_factor"] == 1
+    assert render_calls[0]["slots"]["source_image_data_url"].endswith("Y2xlYW5lZA==")
+    assert render_calls[0]["slots"]["source_text_visible"] is True
+    assert render_calls[1]["slots"]["source_image_data_url"] == source.data_url
+    assert render_calls[1]["slots"]["source_text_visible"] is False
+    assert render_calls[1]["slots"]["translation_regions"] == []
+    assert render_calls[1]["slots"]["source_background_color"] == "#B881DF"
+    assert cached and cached[0][0] == "cache-key"
+    assert discarded == ["cache-key"]
+    assert result.spec["visual_localization_status"] == "unsafe_placement"
+    assert result.spec["source_text_visible"] is False
+    assert result.spec["translation_regions"] == []
+    assert result.source_visual_path is None
+    assert Path(result.png_path).read_bytes() == b"original"
+    assert not (tmp_path / "source_visual_cleaned.jpg").exists()
+    manifest = json.loads(Path(result.manifest_path).read_text())
+    assert manifest["source_visual_path"] is None
+    assert manifest["spec"]["visual_localization_status"] == "unsafe_placement"
+    assert manifest["spec"]["source_text_visible"] is False
+    assert manifest["spec"]["translation_regions"] == []
 
 
 @pytest.mark.asyncio
@@ -459,7 +985,7 @@ async def test_remix_cleanup_failure_atomically_preserves_the_original(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_remix_uses_confirmed_lower_crop_when_inpainting_is_unsafe(
+async def test_remix_preserves_the_full_source_when_inpainting_is_unsafe(
     monkeypatch,
     tmp_path,
 ):
@@ -469,12 +995,6 @@ async def test_remix_uses_confirmed_lower_crop_when_inpainting_is_unsafe(
         base64_data="c291cmNl",
         width=480,
         height=320,
-    )
-    cropped = PreparedSourceImage(
-        media_type="image/jpeg",
-        base64_data="Y3JvcHBlZA==",
-        width=480,
-        height=270,
     )
     region = {
         "source_text": "voila",
@@ -506,29 +1026,9 @@ async def test_remix_uses_confirmed_lower_crop_when_inpainting_is_unsafe(
         calls.append("inpaint")
         raise SourceTextCleanupError("background reconstruction is unsafe")
 
-    def safe_crop(image, regions):
-        assert image is source
-        assert regions[0]["text"] == "짜잔"
-        calls.append("crop")
-        return SimpleNamespace(
-            image=cropped,
-            masked_pixels=24_000,
-            detected_regions=({
-                "x": 42,
-                "y": 88,
-                "width": 16,
-                "height": 8,
-            },),
-            strategy="lower_crop",
-        )
-
     monkeypatch.setattr("core.orchestrator.fetch_source_image", fake_fetch_source_image)
     monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
     monkeypatch.setattr("core.orchestrator.clean_source_text", fail_cleanup)
-    monkeypatch.setattr(
-        "core.orchestrator.crop_confirmed_lower_caption",
-        safe_crop,
-    )
 
     result = await generate_news_card(
         client_id="squid",
@@ -546,20 +1046,17 @@ async def test_remix_uses_confirmed_lower_crop_when_inpainting_is_unsafe(
         template_style="remix",
     )
 
-    assert calls == ["inpaint", "crop"]
-    assert captured["slots"]["source_image_data_url"] == cropped.data_url
+    assert calls == ["inpaint"]
+    assert captured["slots"]["source_image_data_url"] == source.data_url
     assert captured["slots"]["source_image_width"] == 480
-    assert captured["slots"]["source_image_height"] == 270
-    assert captured["slots"]["source_text_visible"] is True
-    translated = captured["slots"]["translation_regions"][0]
-    assert translated["text"] == "짜잔"
-    assert translated["source_x"] == translated["x"]
-    assert translated["source_y"] == translated["y"]
-    assert translated["y"] + translated["height"] <= 100
-    assert result.source_visual_path == str(tmp_path / "source_visual_cleaned.jpg")
-    assert (tmp_path / "source_visual_cleaned.jpg").read_bytes() == b"cropped"
+    assert captured["slots"]["source_image_height"] == 320
+    assert captured["slots"]["source_text_visible"] is False
+    assert captured["slots"]["translation_regions"] == []
+    assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.source_visual_path is None
+    assert not (tmp_path / "source_visual_cleaned.jpg").exists()
     assert result.spec["source_image_width"] == 480
-    assert result.spec["source_image_height"] == 270
+    assert result.spec["source_image_height"] == 320
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,35 @@ EDU_CAROUSEL_SIZE = (1080, 1080)     # square for Instagram/X carousel
 NEWS_CARD_16x9 = (1200, 675)         # 16:9 for X, Telegram (reserved, unused)
 NEWS_CARD_1x1 = (1080, 1080)         # square — primary news card viewport
 
+_SQUID_GENERATED_HEADLINE_FAMILIES = frozenset({
+    "editorial_big_type",
+    "milestone_metric",
+    "status_progress",
+    "product_proof",
+})
+
+
+class TranslationLayoutError(RuntimeError):
+    """The browser rejected an in-place translated-text layout.
+
+    This is distinct from a Chromium/runtime failure: callers can safely retry
+    with the untouched source creative instead of publishing a cleaned raster
+    whose replacement text was not rendered.
+    """
+
+
+def _expects_squid_generated_headline_layout(slots: dict[str, Any]) -> bool:
+    """Return whether this render owns a generated Squid headline.
+
+    Source-remix specs retain ``creative_family`` as audit metadata, but their
+    headline lives inside ``translation_regions`` on the official creative.
+    Only the generated-GTM render strategy uses the title-card headline guard.
+    """
+    return (
+        slots.get("render_strategy") == "generated_gtm"
+        and slots.get("creative_family") in _SQUID_GENERATED_HEADLINE_FAMILIES
+    )
+
 
 async def render_png(
     client_id: str,
@@ -92,9 +121,44 @@ async def render_png(
                         "document.fonts.status === 'loaded'",
                         timeout=2_500,
                     )
+                    headline_layout_status = await page.evaluate(
+                        "window.__evaluateSquidGeneratedHeadlineLayout "
+                        "? window.__evaluateSquidGeneratedHeadlineLayout() : null"
+                    )
+                    if _expects_squid_generated_headline_layout(slots) and (
+                        not isinstance(headline_layout_status, dict)
+                        or headline_layout_status.get("safe") is not True
+                        or headline_layout_status.get("variant")
+                        != slots.get("creative_family")
+                        or not 1 <= headline_layout_status.get("renderedLines", 0) <= 2
+                    ):
+                        raise TranslationLayoutError(
+                            "Squid generated headline did not pass browser layout"
+                        )
                 else:
                     await page.set_content(html, wait_until="networkidle")
                 await page.wait_for_timeout(wait_ms)
+                expects_translation_layout = (
+                    client_id == "squid"
+                    and slots.get("source_text_visible") is True
+                    and isinstance(slots.get("translation_regions"), list)
+                    and bool(slots["translation_regions"])
+                )
+                if expects_translation_layout:
+                    layout_status = await page.evaluate(
+                        "window.__evaluateSquidTranslationLayout "
+                        "? window.__evaluateSquidTranslationLayout() : null"
+                    )
+                    expected_regions = len(slots["translation_regions"])
+                    if (
+                        not isinstance(layout_status, dict)
+                        or layout_status.get("safe") is not True
+                        or layout_status.get("expected") != expected_regions
+                        or layout_status.get("rendered") != expected_regions
+                    ):
+                        raise TranslationLayoutError(
+                            "Squid Korean replacement text did not pass browser layout"
+                        )
                 await page.screenshot(
                     path=str(output_path),
                     clip={"x": 0, "y": 0, "width": width, "height": height},
