@@ -2,7 +2,7 @@
 
 ## Current state
 
-The local build provides the first safe seam between CoinEasy's existing
+The build provides the first safe seam between CoinEasy's existing
 execution plane and Buzz desktop v0.5.4:
 
 ```text
@@ -13,16 +13,34 @@ OriginTrail Official X
   -> existing read-only Batch Review RPC
   -> Netlify GET /api/buzz-shadow/origintrail/batch
   -> durable Supabase receipt + scoped Netlify control    [PRODUCTION ACTIVE]
-  -> deterministic one-shot delivery worker               [DEPLOYABLE / HOLD]
+  -> deterministic one-shot delivery worker               [PRODUCTION ACTIVE]
   -> official `buzz messages send` CLI
   -> dedicated #origintrail-shadow channel
 ```
 
 The read endpoint, authenticated Studio deep link, durable receipt migration,
-and separate control endpoint are production active. The Railway worker image
-is pinned to the official v0.5.4 Linux package and remains fail-closed while
-`BUZZ_DELIVERY_ENABLED=false`. No Buzz relay write, channel creation, OpenAI
-call, or publication is part of this build.
+separate control endpoint, and the delivery worker are all production active.
+The Railway service `coineasy-origintrail-buzz-delivery-prod` runs the pinned
+official v0.5.4 image hourly (`15 * * * *`, `--send-once`, restart policy
+NEVER) with `BUZZ_DELIVERY_ENABLED=true`. The first fenced relay write was
+delivered on 2026-08-04T16:16Z: the receipt shows the first attempt failing,
+the durable fence authorizing exactly one retry, and the relay event id
+recorded on attempt 2 of 3. Channel creation, OpenAI calls, and publication
+remain outside this adapter. The template default stays
+`BUZZ_DELIVERY_ENABLED=false`, so any new environment still starts in hold.
+
+## Operations
+
+Every worker run — including idle ones — opens by calling the server-side
+`reconcile` transition (limit 25) and reports the result in its JSON output as
+`reconcile: {ok, reconciled_count, pending_count, failed_count,
+delivery_unknown_count}`. A receipt whose lease expired mid-flight therefore
+surfaces in the Railway logs within an hour: an expired `claimed` lease
+re-queues (`pending_count`) or exhausts (`failed_count`), and an expired
+`attempt_started` lease becomes `delivery_unknown_count`, which is the signal
+to inspect the channel manually before any human decision to re-send. A
+nonzero `delivery_unknown_count`, or `reconcile.ok=false` on consecutive
+runs, is the page-worthy condition; zeros are the normal steady state.
 
 ## Cost boundary
 
@@ -109,8 +127,10 @@ exists.
 
 ## Durable delivery gate
 
-The local implementation now enforces this transition order:
+The implementation now enforces this transition order:
 
+0. reconcile expired receipt leases (best-effort; a fault here never blocks
+   or triggers a delivery) and surface the counts in the run output;
 1. poll only this endpoint and select at most one event;
 2. format a fixed top-level text message with no mentions, replies, files, or
    broadcast;
@@ -134,10 +154,15 @@ subprocess client. A relay call is reachable only when the environment contains
 the literal `BUZZ_DELIVERY_ENABLED=true` and the operator also supplies
 `--send-once`.
 
-The first live relay write requires a separate operator approval. Production
-schema/control deployment, relay identity and channel provisioning, publication,
-outreach, and OpenAI calls remain outside this adapter. See
-[`ADR-011`](ADR-011-origintrail-buzz-durable-delivery.md).
+The first live relay write happened on 2026-08-04 under the decision recorded
+in the [`ADR-011` addendum](ADR-011-origintrail-buzz-durable-delivery.md).
+Publication, outreach, and OpenAI calls remain outside this adapter. On the
+Netlify side, each Buzz function can adopt a scoped Postgres role credential —
+`SUPABASE_BUZZ_DELIVERY_KEY` (role `coineasy_buzz_delivery`, the five receipt
+RPCs and nothing else) for the control endpoint and `SUPABASE_BUZZ_SHADOW_KEY`
+(role `coineasy_batch_reviewer`, read-only) for the shadow read — replacing the
+site-wide service-role key for those functions only; rollback is deleting the
+variable.
 
 Official Buzz references:
 

@@ -175,8 +175,14 @@ clients. The producer role is granted both.
 `workspace_clients` directly, and use Storage. Netlify environment variables are
 per-site, so swapping that one variable to a reviewer token would break those
 functions. The reviewer role is therefore defined and granted here but **not
-adopted** until either the Batch functions read a separate variable or the other
-functions get their own role. This ADR does not pretend that swap is ready.
+adopted** by the review console until either the Batch functions read a separate
+variable or the other functions get their own role. This ADR does not pretend
+that site-wide swap is ready. The first per-function adoption path now exists
+elsewhere: the Buzz shadow function reads its own optional
+`SUPABASE_BUZZ_SHADOW_KEY` and can carry a reviewer-role token without touching
+the site-wide variable, and the Buzz delivery function likewise adopts the
+`coineasy_buzz_delivery` role through `SUPABASE_BUZZ_DELIVERY_KEY` (see the
+ADR-011 addendum).
 
 ## Cutover plan
 
