@@ -244,3 +244,27 @@ class BuzzDeliveryControlClient:
         if raw.get("event_id") != event_id or raw.get("status") not in _STATUSES:
             raise BuzzAdapterError("buzz_delivery_control_invalid_response")
         return str(raw["status"])
+
+    async def reconcile(self, *, limit: int) -> dict[str, int]:
+        raw = await self._post({"action": "reconcile", "limit": limit})
+        workspace = raw.get("workspace_id")
+        if not isinstance(workspace, str):
+            raise BuzzAdapterError("buzz_delivery_control_invalid_response")
+        try:
+            uuid.UUID(workspace)
+        except ValueError:
+            raise BuzzAdapterError(
+                "buzz_delivery_control_invalid_response"
+            ) from None
+        counts: dict[str, int] = {}
+        for key in (
+            "reconciled_count",
+            "pending_count",
+            "failed_count",
+            "delivery_unknown_count",
+        ):
+            value = raw.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise BuzzAdapterError("buzz_delivery_control_invalid_response")
+            counts[key] = value
+        return counts

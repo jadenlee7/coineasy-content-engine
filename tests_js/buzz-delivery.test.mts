@@ -180,3 +180,65 @@ test("adapter has no relay process, provider, publish, or deployment path", () =
   assert.match(source, /claim_origintrail_buzz_delivery/);
   assert.match(source, /mark_origintrail_buzz_delivery_attempt/);
 });
+
+test("scoped buzz delivery key replaces the service-role key when set", async () => {
+  const SCOPED = "scoped-buzz-delivery-role-jwt-value";
+  let bearer: string | null = null;
+  await withEnvironment(
+    env({ SUPABASE_BUZZ_DELIVERY_KEY: SCOPED }),
+    async (url, init) => {
+      bearer = new Headers(init?.headers).get("authorization");
+      assert.equal(new Headers(init?.headers).get("apikey"), SCOPED);
+      return Response.json({
+        event_id: EVENT_ID,
+        job_id: JOB_ID,
+        channel_id: CHANNEL_ID,
+        message_sha256: MESSAGE_SHA,
+        request_sha256: REQUEST_SHA,
+        status: "claimed",
+        lease_expires_at: "2026-08-03T12:03:00Z",
+        claim_granted: true,
+        reused: false,
+      });
+    },
+    async () => {
+      const response = await buzzDeliveryHandler(request(claimBody()));
+      assert.equal(response.status, 200);
+    },
+  );
+  assert.equal(bearer, `Bearer ${SCOPED}`);
+});
+
+test("reconcile accepts only its own workspace echo", async () => {
+  const counts = {
+    reconciled_count: 1,
+    pending_count: 0,
+    failed_count: 0,
+    delivery_unknown_count: 1,
+  };
+  await withEnvironment(env(), async () =>
+    Response.json({ workspace_id: WORKSPACE_ID, ...counts }),
+  async () => {
+    const response = await buzzDeliveryHandler(request({ action: "reconcile", limit: 25 }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { workspace_id: WORKSPACE_ID, ...counts });
+  });
+  await withEnvironment(env(), async () =>
+    Response.json({ workspace_id: JOB_ID, ...counts }),
+  async () => {
+    const response = await buzzDeliveryHandler(request({ action: "reconcile", limit: 25 }));
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: "buzz_delivery_invalid_response" });
+  });
+});
+
+test("delivery token equal to a scoped supabase key is not configured", async () => {
+  const forbidden = async () => { throw new Error("storage must not be called"); };
+  await withEnvironment(
+    env({ SUPABASE_BUZZ_DELIVERY_KEY: TOKEN }),
+    forbidden,
+    async () => {
+      assert.equal((await buzzDeliveryHandler(request(claimBody()))).status, 503);
+    },
+  );
+});

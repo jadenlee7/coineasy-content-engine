@@ -41,6 +41,14 @@ export default async (request: Request): Promise<Response> => {
 
   const config = batchReviewConfig(getEnv);
   if (!config) return json({ error: "buzz_shadow_storage_not_configured" }, 503);
+  // Adoption path for the read-only `coineasy_batch_reviewer` role (ADR-007):
+  // this endpoint calls only list_agent_batch_review_inbox, so a scoped key
+  // can replace the service-role key here without touching the other
+  // functions that share the site-wide variable. Unset keeps today's key.
+  const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
+  const effectiveConfig = scopedKey
+    ? { ...config, serviceRoleKey: scopedKey }
+    : config;
 
   const url = new URL(request.url);
   const limitRaw = url.searchParams.get("limit");
@@ -54,7 +62,7 @@ export default async (request: Request): Promise<Response> => {
   ) return json({ error: "invalid_buzz_shadow_filters" }, 400);
 
   try {
-    const page = await listBatchReviewInbox(config, {
+    const page = await listBatchReviewInbox(effectiveConfig, {
       limit,
       beforeFinishedAt,
       beforeJobId,

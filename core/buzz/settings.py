@@ -20,6 +20,8 @@ _LOWER_HEX_128 = re.compile(r"^[0-9a-f]{128}$")
 _CANONICAL_DECIMAL = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _RESERVED_SECRET_NAMES = (
     "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_BUZZ_DELIVERY_KEY",
+    "SUPABASE_BUZZ_SHADOW_KEY",
     "STUDIO_ACCESS_TOKEN",
     "API_SECRET",
     "PUBLICATION_WORKER_TOKEN",
@@ -66,7 +68,10 @@ def _relay_url(value: str) -> str:
         or not parsed.hostname
         or (parsed.scheme != "https" and not (local and parsed.scheme == "http"))
     ):
-        raise ValueError("BUZZ_RELAY_URL is outside the allowlist")
+        raise ValueError(
+            "BUZZ_RELAY_URL must be a bare https host (no path, query, or"
+            " credentials); http is allowed only for localhost"
+        )
     return normalized
 
 

@@ -149,7 +149,7 @@ The migration drops the existing signature, creates the new one, and re-grants
 only `list_agent_batch_review_inbox` and `get_agent_batch_review_item`;
 `record_studio_content_review_v2` is called by the Netlify console under its own
 credential and appears in no role in
-`20260801090000_least_privilege_ledger_roles.sql`. The least-privilege assertions
+`20260805090000_least_privilege_ledger_roles.sql`. The least-privilege assertions
 in `supabase/tests/agent_batch_ledger_least_privilege.sql` are unaffected.
 
 **The new column cannot be constrained retroactively.** Existing

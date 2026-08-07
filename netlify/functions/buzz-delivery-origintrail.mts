@@ -3,6 +3,7 @@ import type { Config } from "@netlify/functions";
 import {
   buzzDeliveryAccessConfigured,
   BuzzDeliveryError,
+  buzzDeliverySupabaseConfig,
   executeBuzzDeliveryAction,
   hasValidBuzzDeliveryAccess,
   parseBuzzDeliveryAction,
@@ -56,7 +57,10 @@ export default async (request: Request): Promise<Response> => {
 
   try {
     const action = parseBuzzDeliveryAction(await requestBody(request));
-    return json(await executeBuzzDeliveryAction(config, action));
+    return json(await executeBuzzDeliveryAction(
+      buzzDeliverySupabaseConfig(config, getEnv),
+      action,
+    ));
   } catch (error) {
     const code = error instanceof BuzzDeliveryError
       ? error.code

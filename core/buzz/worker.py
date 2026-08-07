@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -25,6 +26,7 @@ class DeliveryControl(Protocol):
     async def mark_attempt(self, event_id: str, **kwargs) -> bool: ...
     async def complete(self, event_id: str, **kwargs) -> None: ...
     async def fail(self, event_id: str, **kwargs) -> str: ...
+    async def reconcile(self, **kwargs) -> dict[str, int]: ...
 
 
 class RelayPublisher(Protocol):
@@ -44,9 +46,12 @@ class OriginTrailBuzzDeliveryWorker:
         channel_id: str,
         lease_seconds: int = 180,
         worker_id: str | None = None,
+        reconcile_limit: int = 25,
     ):
         if not 180 <= lease_seconds <= 600:
             raise ValueError("Buzz delivery lease must be between 180 and 600 seconds")
+        if not 1 <= reconcile_limit <= 100:
+            raise ValueError("Buzz reconcile limit must be between 1 and 100")
         self.shadow = shadow
         self.control = control
         self.publisher = publisher
@@ -55,6 +60,7 @@ class OriginTrailBuzzDeliveryWorker:
         self.channel_id = str(uuid.UUID(channel_id))
         self.lease_seconds = lease_seconds
         self.worker_id = worker_id or f"origintrail-buzz:{uuid.uuid4()}"
+        self.reconcile_limit = reconcile_limit
 
     async def _fail_before_attempt(
         self, event_id: str, *, code: str, retryable: bool
@@ -82,7 +88,23 @@ class OriginTrailBuzzDeliveryWorker:
             error=code,
         )
 
+    async def _reconcile_leases(self) -> dict[str, object]:
+        # Best-effort: this is the only caller of the server-side reconcile
+        # transition, so every run must attempt it — a receipt stuck in
+        # claimed/attempt_started past its lease is otherwise never surfaced.
+        # A reconcile fault must not block the delivery decision below.
+        try:
+            counts = await self.control.reconcile(limit=self.reconcile_limit)
+        except Exception:
+            return {"ok": False, "error": "buzz_delivery_reconcile_unavailable"}
+        return {"ok": True, **counts}
+
     async def run_once(self) -> BuzzDeliveryRunResult:
+        reconcile = await self._reconcile_leases()
+        result = await self._deliver_once()
+        return replace(result, reconcile=reconcile)
+
+    async def _deliver_once(self) -> BuzzDeliveryRunResult:
         try:
             event = await self.shadow.first_event()
         except BuzzAdapterError as exc:

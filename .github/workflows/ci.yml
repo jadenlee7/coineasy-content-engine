@@ -248,6 +248,7 @@ jobs:
           done
       - name: Run transactional SQL security smoke tests
         run: |
-          for smoke in supabase/tests/*_security.sql; do
+          for smoke in supabase/tests/*_security.sql \
+                       supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
