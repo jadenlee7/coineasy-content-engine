@@ -53,6 +53,13 @@ declare
         'coineasy_batch_reviewer', jsonb_build_array(
             'list_agent_batch_review_inbox',
             'get_agent_batch_review_item'
+        ),
+        'coineasy_buzz_delivery', jsonb_build_array(
+            'claim_origintrail_buzz_delivery',
+            'mark_origintrail_buzz_delivery_attempt',
+            'complete_origintrail_buzz_delivery',
+            'fail_origintrail_buzz_delivery',
+            'reconcile_origintrail_buzz_delivery_leases'
         )
     );
     role_name text;
@@ -184,13 +191,33 @@ begin
         'public.claim_agent_batch_jobs(uuid,text,text[],integer,integer)',
         'public.configure_agent_batch_budget(uuid,text,timestamp with time zone,timestamp with time zone,bigint)',
         'public.claim_origintrail_batch_canary_job(uuid,text,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer,integer)',
-        'public.register_origintrail_batch_provider_create(uuid,text,uuid,text,uuid,text,text,text,text,text,text)'
+        'public.register_origintrail_batch_provider_create(uuid,text,uuid,text,uuid,text,text,text,text,text,text)',
+        'public.claim_origintrail_buzz_delivery(uuid,uuid,text,uuid,text,text,text,integer)',
+        'public.complete_origintrail_buzz_delivery(uuid,text,text,text,text)'
     ]
     loop
         if has_function_privilege(
             'coineasy_batch_reviewer', to_regprocedure(leaked), 'EXECUTE'
         ) then
             raise exception 'reviewer must stay read-only, but can execute %',
+                leaked;
+        end if;
+    end loop;
+
+    -- The Buzz delivery role owns receipt transitions and nothing else: no
+    -- Batch ledger claim, no queueing, and no review-inbox read.
+    foreach leaked in array array[
+        'public.claim_agent_batch_jobs(uuid,text,text[],integer,integer)',
+        'public.queue_agent_batch_job(uuid,text,uuid,text,text,text,text,smallint,text,text,text,timestamp with time zone,jsonb,text,bigint,integer,bigint,text,text,boolean)',
+        'public.list_agent_batch_review_inbox(uuid,integer,timestamp with time zone,uuid)',
+        'public.get_agent_batch_review_item(uuid,uuid)'
+    ]
+    loop
+        if has_function_privilege(
+            'coineasy_buzz_delivery', to_regprocedure(leaked), 'EXECUTE'
+        ) then
+            raise exception
+                'buzz delivery role must stay receipt-only, but can execute %',
                 leaked;
         end if;
     end loop;

@@ -27,6 +27,8 @@ const FAILURE_CODES = new Set([
 const RESERVED_SECRET_ENVS = [
   "BUZZ_SHADOW_ACCESS_TOKEN",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_BUZZ_DELIVERY_KEY",
+  "SUPABASE_BUZZ_SHADOW_KEY",
   "STUDIO_ACCESS_TOKEN",
   "API_SECRET",
   "PUBLICATION_WORKER_TOKEN",
@@ -106,6 +108,18 @@ export function buzzDeliveryAccessConfigured(
   getEnv: (name: string) => string | undefined,
 ): boolean {
   return configuredToken(getEnv) !== null;
+}
+
+// Adoption path for the scoped `coineasy_buzz_delivery` Postgres role: when
+// SUPABASE_BUZZ_DELIVERY_KEY is set, the five receipt RPCs authenticate with
+// it instead of the site-wide service-role key. Unset keeps today's behavior,
+// so rollback is deleting one variable.
+export function buzzDeliverySupabaseConfig(
+  config: ContentCatalogConfig,
+  getEnv: (name: string) => string | undefined,
+): ContentCatalogConfig {
+  const scoped = (getEnv("SUPABASE_BUZZ_DELIVERY_KEY") || "").trim();
+  return scoped ? { ...config, serviceRoleKey: scoped } : config;
 }
 
 export function hasValidBuzzDeliveryAccess(
@@ -273,10 +287,15 @@ function rpcRequest(
   };
 }
 
-function validResponse(action: BuzzDeliveryAction, raw: unknown): boolean {
+function validResponse(
+  action: BuzzDeliveryAction,
+  raw: unknown,
+  workspaceId: string,
+): boolean {
   if (!isRecord(raw)) return false;
   if (action.action === "reconcile") {
     return uuid(raw.workspace_id)
+      && raw.workspace_id === workspaceId
       && ["reconciled_count", "pending_count", "failed_count", "delivery_unknown_count"]
         .every((key) => Number.isSafeInteger(raw[key]) && Number(raw[key]) >= 0);
   }
@@ -342,7 +361,7 @@ export async function executeBuzzDeliveryAction(
   } catch {
     throw new BuzzDeliveryError("buzz_delivery_invalid_response");
   }
-  if (!validResponse(action, raw)) {
+  if (!validResponse(action, raw, config.workspaceId)) {
     throw new BuzzDeliveryError("buzz_delivery_invalid_response");
   }
   return raw as Record<string, unknown>;

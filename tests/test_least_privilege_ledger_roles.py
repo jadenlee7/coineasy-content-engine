@@ -23,6 +23,9 @@ MIGRATION = (
     / "20260805090000_least_privilege_ledger_roles.sql"
 ).read_text()
 BATCH_REPOSITORY = (ROOT / "core" / "batch" / "repository.py").read_text()
+BUZZ_DELIVERY_ADAPTER = (
+    ROOT / "netlify" / "functions" / "_shared" / "buzz-delivery.mts"
+).read_text()
 
 # `queue_agent_batch_job` lives in the same repository class but is reached only
 # through `BatchQueueBridge`, which runs in the producer. Keeping the dispatcher
@@ -75,6 +78,19 @@ def test_dispatcher_holds_every_batch_rpc_except_the_producer_bridge():
 
 def test_dispatcher_cannot_queue_work():
     assert not (_granted_routines("dispatcher_routines") & PRODUCER_ONLY_BATCH_RPCS)
+
+
+def test_buzz_delivery_grant_matches_the_netlify_adapter_exactly():
+    """The buzz role covers exactly the RPCs the delivery adapter issues."""
+    called = frozenset(
+        re.findall(r'name: "([a-z_]+)"', BUZZ_DELIVERY_ADAPTER)
+    )
+    assert called, "no RPC names parsed from the buzz delivery adapter"
+    granted = _granted_routines("buzz_delivery_routines")
+    assert granted == called, (
+        "buzz delivery grant drifted from the adapter's RPCs -- "
+        f"missing {sorted(called - granted)}, unused {sorted(granted - called)}"
+    )
 
 
 def test_migration_applies_after_every_routine_it_grants():

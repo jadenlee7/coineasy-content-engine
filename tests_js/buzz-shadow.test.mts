@@ -319,3 +319,62 @@ test("endpoint rejects invalid filters and malformed upstream pages", async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test("shadow token equal to another secret fails closed as not configured", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("storage must not be called");
+  };
+  try {
+    await withNetlifyEnvironment({
+      BUZZ_SHADOW_ACCESS_TOKEN: TOKEN,
+      SUPABASE_SERVICE_ROLE_KEY: TOKEN,
+      SUPABASE_URL: "https://project.supabase.co",
+      CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+    }, async () => {
+      const response = await buzzShadowHandler(new Request(
+        "https://console.example/api/buzz-shadow/origintrail/batch",
+        { headers: { "x-coineasy-buzz-key": TOKEN } },
+      ));
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: "buzz_shadow_not_configured" });
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("scoped buzz shadow key replaces the service-role key when set", async () => {
+  const SCOPED = "scoped-batch-reviewer-role-jwt-value";
+  const originalFetch = globalThis.fetch;
+  let bearer: string | null = null;
+  globalThis.fetch = async (input, init) => {
+    bearer = new Headers(init?.headers).get("authorization");
+    assert.equal(new Headers(init?.headers).get("apikey"), SCOPED);
+    return Response.json({
+      items: [reviewPage().items[0]],
+      next_cursor: null,
+    });
+  };
+  try {
+    await withNetlifyEnvironment({
+      BUZZ_SHADOW_ACCESS_TOKEN: TOKEN,
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
+      SUPABASE_BUZZ_SHADOW_KEY: SCOPED,
+      CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+    }, async () => {
+      const response = await buzzShadowHandler(new Request(
+        "https://console.example/api/buzz-shadow/origintrail/batch?limit=1",
+        { headers: { "x-coineasy-buzz-key": TOKEN } },
+      ));
+      assert.equal(response.status, 200);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(bearer, `Bearer ${SCOPED}`);
+});

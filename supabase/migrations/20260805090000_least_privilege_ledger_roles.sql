@@ -1,11 +1,13 @@
--- Least-privilege PostgREST roles for the agent Batch ledger.
+-- Least-privilege PostgREST roles for the agent Batch ledger and the
+-- OriginTrail Buzz delivery adapter.
 --
--- Additive only. This migration creates three NOLOGIN roles, grants each
+-- Additive only. This migration creates four NOLOGIN roles, grants each
 -- EXECUTE on exactly the routines its component provably calls, and grants the
 -- roles to `authenticator` so PostgREST can switch into them from a JWT `role`
 -- claim. It revokes nothing and changes no existing privilege, so applying it
 -- alters no behavior. Adoption happens later, per component, by swapping a
--- credential value. See docs/ADR-007-least-privilege-ledger-credentials.md.
+-- credential value. See docs/ADR-007-least-privilege-ledger-credentials.md and
+-- the ADR-011 addendum for the Buzz adapter.
 --
 -- This migration is deliberately timestamped after every migration that creates
 -- a routine it grants, so the `to_regprocedure` guard below is checked against
@@ -71,11 +73,22 @@ declare
         'public.configure_agent_batch_budget(uuid,text,timestamp with time zone,timestamp with time zone,bigint)',
         'public.queue_agent_batch_job(uuid,text,uuid,text,text,text,text,smallint,text,text,text,timestamp with time zone,jsonb,text,bigint,integer,bigint,text,text,boolean)'
     ];
-    -- Read-only. Defined here but NOT adopted: the Netlify site shares one
-    -- credential across non-Batch functions that need more. See ADR-007.
+    -- Read-only. The buzz-shadow Netlify function adopts this role through
+    -- its own SUPABASE_BUZZ_SHADOW_KEY variable; the review console still
+    -- shares the site-wide credential. See ADR-007.
     reviewer_routines constant text[] := array[
         'public.list_agent_batch_review_inbox(uuid,integer,timestamp with time zone,uuid)',
         'public.get_agent_batch_review_item(uuid,uuid)'
+    ];
+    -- The buzz-delivery Netlify function's receipt transitions, adopted
+    -- through SUPABASE_BUZZ_DELIVERY_KEY. The Python worker itself holds no
+    -- database credential in any configuration.
+    buzz_delivery_routines constant text[] := array[
+        'public.claim_origintrail_buzz_delivery(uuid,uuid,text,uuid,text,text,text,integer)',
+        'public.mark_origintrail_buzz_delivery_attempt(uuid,text,text,text)',
+        'public.complete_origintrail_buzz_delivery(uuid,text,text,text,text)',
+        'public.fail_origintrail_buzz_delivery(uuid,text,text,text,boolean)',
+        'public.reconcile_origintrail_buzz_delivery_leases(uuid,integer)'
     ];
     role_name text;
     routine text;
@@ -84,7 +97,8 @@ begin
     foreach role_name in array array[
         'coineasy_batch_dispatcher',
         'coineasy_batch_producer',
-        'coineasy_batch_reviewer'
+        'coineasy_batch_reviewer',
+        'coineasy_buzz_delivery'
     ]
     loop
         if not exists (select 1 from pg_roles where rolname = role_name) then
@@ -101,13 +115,15 @@ begin
     foreach role_name in array array[
         'coineasy_batch_dispatcher',
         'coineasy_batch_producer',
-        'coineasy_batch_reviewer'
+        'coineasy_batch_reviewer',
+        'coineasy_buzz_delivery'
     ]
     loop
         routines := case role_name
             when 'coineasy_batch_dispatcher' then dispatcher_routines
             when 'coineasy_batch_producer' then producer_routines
-            else reviewer_routines
+            when 'coineasy_batch_reviewer' then reviewer_routines
+            else buzz_delivery_routines
         end;
 
         foreach routine in array routines

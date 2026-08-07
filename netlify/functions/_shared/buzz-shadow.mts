@@ -14,6 +14,15 @@ const BUZZ_SHADOW_EVENT_TYPE = "origintrail.batch_review_ready.v1";
 const MINIMUM_TOKEN_LENGTH = 32;
 const MAXIMUM_TOKEN_LENGTH = 512;
 const MAXIMUM_EVENTS = 50;
+const RESERVED_SECRET_ENVS = [
+  "BUZZ_DELIVERY_WORKER_TOKEN",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_BUZZ_DELIVERY_KEY",
+  "SUPABASE_BUZZ_SHADOW_KEY",
+  "STUDIO_ACCESS_TOKEN",
+  "API_SECRET",
+  "PUBLICATION_WORKER_TOKEN",
+] as const;
 const OFFICIAL_SOURCE_PATTERN = /^https:\/\/x\.com\/origin_trail\/status\/[0-9]{1,19}$/;
 
 export type BuzzShadowEvent = {
@@ -57,7 +66,16 @@ function configuredToken(
   getEnv: (name: string) => string | undefined,
 ): string | null {
   const value = (getEnv("BUZZ_SHADOW_ACCESS_TOKEN") || "").trim();
-  return value.length >= MINIMUM_TOKEN_LENGTH && value.length <= MAXIMUM_TOKEN_LENGTH
+  // Same distinctness rule the delivery token already enforces: a shadow
+  // token equal to another secret means a mis-provisioned environment, so
+  // the endpoint fails closed as not-configured instead of accepting it.
+  const reused = RESERVED_SECRET_ENVS.some((name) => {
+    const reserved = (getEnv(name) || "").trim();
+    return reserved.length > 0 && reserved === value;
+  });
+  return value.length >= MINIMUM_TOKEN_LENGTH
+    && value.length <= MAXIMUM_TOKEN_LENGTH
+    && !reused
     ? value
     : null;
 }
