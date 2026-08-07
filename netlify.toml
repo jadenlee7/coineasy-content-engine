@@ -1,5 +1,12 @@
 [build]
   publish = "web/console"
 
+[build.environment]
+  # The site build has no Python of its own, but Netlify auto-installs the
+  # repo-root requirements.txt. Its pins (pydantic-core via pydantic==2.9.2)
+  # only have prebuilt wheels up to CPython 3.12; on the image default they
+  # fall back to a source build and die on the missing Rust toolchain.
+  PYTHON_VERSION = "3.12"
+
 [functions]
   directory = "netlify/functions"
