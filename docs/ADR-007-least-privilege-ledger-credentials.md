@@ -2,7 +2,7 @@
 
 Status: Proposed. Roles and grants ship as an additive migration; the credential
 cutover is deliberately **not** part of this change.
-Date: 2026-08-01
+Date: 2026-08-01. Re-measured 2026-08-07 against `main` @ `ce3470b`.
 
 ## Context
 
@@ -28,11 +28,20 @@ Measured on the production project on 2026-08-01, `service_role` holds:
 | `public` routines it may execute | 42 |
 | `rolbypassrls` | true |
 
-The Batch dispatcher needs **nine** of those 42 routines and **zero** table
+The Batch dispatcher needs **fifteen** of those routines and **zero** table
 grants. It is also the only component in the system holding `OPENAI_API_KEY` and
 the only one that opens a connection to a third party. Today a fault or
 compromise in that process can delete published content and workspace members.
 That gap — not any observed incident — is what this ADR closes.
+
+That routine count moves, and the direction is the argument. Re-measured on a
+fresh database at `main` @ `ce3470b`, `service_role` now executes **56** `public`
+routines rather than the 42 above — the canary-grant, cost-overage,
+production-shadow, fact-check-gate, and Buzz-delivery migrations each granted
+themselves to it. Over the same span the dispatcher's genuine need went from 9 to
+15, the producer stayed at 16, and the reviewer stayed at 2. The shared
+credential grows with every migration that lands; a scoped role grows only when
+a component actually calls something new, and only deliberately.
 
 The ledger's own tables are already unreachable directly: the
 `20260731120000_agent_batch_ledger` migration revokes direct access to
@@ -47,22 +56,35 @@ Three components authenticate with `SUPABASE_SERVICE_ROLE_KEY` today. Their
 actual routine usage is disjoint in a useful way.
 
 **Dispatcher** (`scripts/run_batch_dispatcher.py`, Railway, holds
-`OPENAI_API_KEY`) — 9 routines, all via `SupabaseBatchRepository._rpc`:
+`OPENAI_API_KEY`) — 15 routines, all via `SupabaseBatchRepository._rpc`:
 
 ```text
 configure_agent_batch_budget   claim_agent_batch_jobs    expire_agent_batch_jobs
 register_agent_batch           list_active_agent_batches update_agent_batch_poll
 complete_agent_batch_job       fail_agent_batch_job      finalize_agent_batch
+
+configure_origintrail_batch_canary_grant   claim_origintrail_batch_canary_job
+peek_origintrail_batch_shadow_candidate    configure_origintrail_batch_shadow_day
+authorize_origintrail_batch_provider_create
+register_origintrail_batch_provider_create
 ```
+
+The six in the second block arrived with the canary-grant, cost-overage, and
+production-shadow migrations. They are on the live run path, not operator
+subcommands: the entrypoint calls the shadow and canary-grant routines while
+arming a day, and `core/batch/dispatcher.py` calls the claim, authorize, and
+register routines while dispatching a provider batch.
 
 It cannot reach `queue_agent_batch_job` (no call site), the whole
 `*_review_draft_*` family, or the two review-inbox readers. It makes no direct
 PostgREST table call and no Storage call.
 
 **Producer** (`scripts/run_official_x_daily.py`, Railway, holds X and Studio
-credentials) — 13 automation routines plus 2 ledger routines
+credentials) — 14 automation routines plus 2 ledger routines
 (`configure_agent_batch_budget`, `queue_agent_batch_job`) reached through
-`BatchQueueBridge`. Also no direct table or Storage access.
+`BatchQueueBridge`. Also no direct table or Storage access. Unchanged across the
+same span: `core/automation/repository.py` issues the same RPC names at
+`ce3470b` as it did at `566bca0`.
 
 **Review console** (Netlify functions) — the Batch surface uses exactly
 `list_agent_batch_review_inbox` and `get_agent_batch_review_item`, both read-only
@@ -77,8 +99,8 @@ code changes: each component keeps its existing `apikey` + `Authorization`
 header shape and only the credential value changes.
 
 ```text
-coineasy_batch_dispatcher  -> 9 ledger routines
-coineasy_batch_producer    -> 13 automation routines + 2 ledger routines
+coineasy_batch_dispatcher  -> 15 ledger routines
+coineasy_batch_producer    -> 14 automation routines + 2 ledger routines
 coineasy_batch_reviewer    -> 2 read-only review routines
 ```
 
@@ -126,7 +148,7 @@ not mistaken for something this ADR already solved.
 
 The dispatcher loses the ability to reach `publications`, `jobs`, `assets`,
 `figma_links`, `workspace_clients`, and `workspace_members` entirely — not by
-policy but because the grant does not exist. The same holds for the 33 routines
+policy but because the grant does not exist. The same holds for the 41 routines
 it never called.
 
 Three constraints follow from the measured surface and must be respected at
@@ -179,9 +201,12 @@ separate, reversible step per component.
 6. Leave the reviewer role unadopted until the Netlify credential split above is
    resolved.
 
-Do not cut over during the 14-day OriginTrail canary window unless the canary is
-paused: a credential fault mid-window would consume canary days without
-producing canary evidence.
+Do not cut over during the 14-day OriginTrail canary window or the 7-day
+production shadow (`20260804130000_origintrail_7d_production_shadow`) unless the
+run is paused: a credential fault mid-window would consume evidence days without
+producing evidence. The shadow path is the reason the dispatcher role now spans
+15 routines rather than 9, so cutting over mid-shadow would also be the first
+time those six grants are exercised in production.
 
 ## Verification
 
@@ -192,10 +217,32 @@ privilege, and is not a member of `service_role`. It also asserts that the
 dispatcher role cannot execute `queue_agent_batch_job` or any
 `*_review_draft_*` routine, which is the specific separation this ADR buys.
 
+That suite alone is a closed loop: the expected set and the granted set are both
+authored here, so a ledger routine added *and* called by the dispatcher keeps it
+green while the scoped credential silently lacks the grant. That is exactly what
+happened between `566bca0` and `ce3470b` — six routines reached the dispatcher's
+call sites with no grant behind them, and every check stayed green.
+
+`tests/test_least_privilege_ledger_roles.py` closes the loop against the call
+sites: it parses the routine names out of the migration, parses the RPC names
+`SupabaseBatchRepository` issues, and fails when a call site has no grant. It
+also pins the dispatcher grant to *exactly* the batch RPCs minus the
+producer-only bridge call, and asserts the migration still sorts last. A scoped
+role is only as good as the thing that notices when it goes stale.
+
+The migration is deliberately timestamped after every migration that creates a
+routine it grants, so its `to_regprocedure` guard validates each signature
+against the final definition. A grant issued before a later `create or replace`
+survives only while the signature is unchanged; ordering last removes that
+dependency, and the ordering assertion above keeps it that way.
+
 ## References
 
 - `docs/BATCH_FIRST_EXPERIMENT.md` — the broker/token condition this ADR answers
+- `supabase/migrations/20260805090000_least_privilege_ledger_roles.sql` — the
+  roles and grants this ADR describes
 - `supabase/migrations/20260731120000_agent_batch_ledger.sql` — ledger and its
   existing `SECURITY DEFINER` boundary
+- `tests/test_least_privilege_ledger_roles.py` — the call-site drift guard
 - [Supabase Postgres roles](https://supabase.com/docs/guides/database/postgres/roles)
 - [PostgREST roles and JWT](https://docs.postgrest.org/en/stable/references/auth.html)

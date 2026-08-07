@@ -1,5 +1,5 @@
 -- Transactional assertion suite for the least-privilege ledger roles created by
--- 20260801090000_least_privilege_ledger_roles.sql. Run as the database owner
+-- 20260805090000_least_privilege_ledger_roles.sql. Run as the database owner
 -- after that migration. Everything rolls back; no row is written.
 --
 -- What this proves:
@@ -24,7 +24,13 @@ declare
             'update_agent_batch_poll',
             'complete_agent_batch_job',
             'fail_agent_batch_job',
-            'finalize_agent_batch'
+            'finalize_agent_batch',
+            'configure_origintrail_batch_canary_grant',
+            'peek_origintrail_batch_shadow_candidate',
+            'configure_origintrail_batch_shadow_day',
+            'claim_origintrail_batch_canary_job',
+            'authorize_origintrail_batch_provider_create',
+            'register_origintrail_batch_provider_create'
         ),
         'coineasy_batch_producer', jsonb_build_array(
             'get_official_x_automation_state',
@@ -176,7 +182,9 @@ begin
         'public.queue_agent_batch_job(uuid,text,uuid,text,text,text,text,smallint,text,text,text,timestamp with time zone,jsonb,text,bigint,integer,bigint,text,text,boolean)',
         'public.complete_agent_batch_job(uuid,uuid,text,text,jsonb,bigint,bigint,bigint)',
         'public.claim_agent_batch_jobs(uuid,text,text[],integer,integer)',
-        'public.configure_agent_batch_budget(uuid,text,timestamp with time zone,timestamp with time zone,bigint)'
+        'public.configure_agent_batch_budget(uuid,text,timestamp with time zone,timestamp with time zone,bigint)',
+        'public.claim_origintrail_batch_canary_job(uuid,text,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer,integer)',
+        'public.register_origintrail_batch_provider_create(uuid,text,uuid,text,uuid,text,text,text,text,text,text)'
     ]
     loop
         if has_function_privilege(

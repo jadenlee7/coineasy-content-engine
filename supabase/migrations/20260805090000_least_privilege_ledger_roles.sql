@@ -7,6 +7,15 @@
 -- alters no behavior. Adoption happens later, per component, by swapping a
 -- credential value. See docs/ADR-007-least-privilege-ledger-credentials.md.
 --
+-- This migration is deliberately timestamped after every migration that creates
+-- a routine it grants, so the `to_regprocedure` guard below is checked against
+-- the final signature of each one. A grant made before a later
+-- `create or replace` survives only while the signature is unchanged; running
+-- last removes that dependency entirely. It does not remove the need to extend
+-- the arrays when a *new* routine is added: that is what the drift guard in
+-- `tests/test_least_privilege_ledger_roles.py` is for. It fails the build when
+-- a dispatcher call site has no grant behind it.
+--
 -- Deliberately NOT granted to any of these roles:
 --   * any privilege on `agent_runtime` (direct access is revoked even from
 --     service_role; the SECURITY DEFINER routines are the only path)
@@ -27,7 +36,17 @@ declare
         'public.update_agent_batch_poll(uuid,text,text,text,text)',
         'public.complete_agent_batch_job(uuid,uuid,text,text,jsonb,bigint,bigint,bigint)',
         'public.fail_agent_batch_job(uuid,uuid,text,text,boolean,timestamp with time zone,bigint,bigint,bigint,boolean)',
-        'public.finalize_agent_batch(uuid,text)'
+        'public.finalize_agent_batch(uuid,text)',
+        -- Canary and production-shadow path. `scripts/run_batch_dispatcher.py`
+        -- reaches the first three on its live run (not as an operator
+        -- subcommand), and `core/batch/dispatcher.py` reaches the last three
+        -- while claiming and registering a provider batch.
+        'public.configure_origintrail_batch_canary_grant(uuid,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer)',
+        'public.peek_origintrail_batch_shadow_candidate(uuid,text,uuid,timestamp with time zone,timestamp with time zone)',
+        'public.configure_origintrail_batch_shadow_day(uuid,date,text,uuid,timestamp with time zone,timestamp with time zone,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer)',
+        'public.claim_origintrail_batch_canary_job(uuid,text,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer,integer)',
+        'public.authorize_origintrail_batch_provider_create(uuid,text,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer,uuid,text,text,text)',
+        'public.register_origintrail_batch_provider_create(uuid,text,uuid,text,uuid,text,text,text,text,text,text)'
     ];
     -- The producer keeps a single role: daily_runner requires its automation and
     -- batch credentials to be byte-identical, so these cannot be split without a
