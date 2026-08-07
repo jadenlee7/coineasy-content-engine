@@ -44,6 +44,9 @@ class BuzzDeliveryRunResult:
     status: str
     event_id: str | None = None
     error: str | None = None
+    # Outcome of the best-effort lease reconciliation that opens every run.
+    # Kept out of `ok`: a reconcile fault must not mask the delivery outcome.
+    reconcile: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -55,4 +58,6 @@ class BuzzDeliveryRunResult:
             result["event_id"] = self.event_id
         if self.error is not None:
             result["error"] = self.error
+        if self.reconcile is not None:
+            result["reconcile"] = dict(self.reconcile)
         return result

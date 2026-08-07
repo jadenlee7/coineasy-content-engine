@@ -145,5 +145,47 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.calls[0][1], b"")
 
 
+class RunCommandTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timed_out_subprocess_is_killed_before_raising(self):
+        import asyncio
+        from unittest import mock
+
+        from core.buzz import cli as cli_module
+
+        class HungProcess:
+            def __init__(self):
+                self.killed = False
+                self.waited = False
+                self.returncode = None
+
+            async def communicate(self, stdin):
+                await asyncio.sleep(3600)
+
+            def kill(self):
+                self.killed = True
+
+            async def wait(self):
+                self.waited = True
+                return -9
+
+        hung = HungProcess()
+
+        async def fake_exec(*argv, **kwargs):
+            return hung
+
+        with (
+            mock.patch("asyncio.create_subprocess_exec", fake_exec),
+            mock.patch.object(cli_module, "_PROCESS_TIMEOUT_SECONDS", 0.01),
+        ):
+            with self.assertRaisesRegex(BuzzCliError, "buzz_cli_preflight_failed"):
+                await cli_module._run_command(
+                    ("/opt/coineasy/bin/buzz", "channels", "get"),
+                    stdin=b"",
+                    env={},
+                )
+        self.assertTrue(hung.killed)
+        self.assertTrue(hung.waited)
+
+
 if __name__ == "__main__":
     unittest.main()

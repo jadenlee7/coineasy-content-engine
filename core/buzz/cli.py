@@ -15,6 +15,7 @@ from core.buzz.models import BuzzRelayReceipt, BuzzShadowEvent
 _EVENT_ID = re.compile(r"^[a-f0-9]{64}$")
 _MAX_PROCESS_OUTPUT = 65_536
 _MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@1"
+_PROCESS_TIMEOUT_SECONDS = 30.0
 BUZZ_CLI_RELEASE = "desktop-v0.5.4"
 
 
@@ -58,8 +59,22 @@ async def _run_command(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=30)
-    except (OSError, asyncio.TimeoutError):
+    except OSError:
+        raise BuzzCliError(
+            "buzz_cli_preflight_failed", retryable_before_attempt=True
+        ) from None
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(stdin), timeout=_PROCESS_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        # An orphaned `messages send` could still reach the relay after the
+        # worker records delivery_unknown; the process must die with the wait.
+        try:
+            process.kill()
+            await process.wait()
+        except (OSError, ProcessLookupError):
+            pass
         raise BuzzCliError(
             "buzz_cli_preflight_failed", retryable_before_attempt=True
         ) from None

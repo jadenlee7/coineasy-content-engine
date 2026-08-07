@@ -44,6 +44,14 @@ class FakeShadow:
         return self.event
 
 
+RECONCILE_COUNTS = {
+    "reconciled_count": 0,
+    "pending_count": 0,
+    "failed_count": 0,
+    "delivery_unknown_count": 0,
+}
+
+
 class FakeControl:
     def __init__(
         self,
@@ -53,12 +61,16 @@ class FakeControl:
         mark_result=True,
         mark_error=None,
         complete_error=None,
+        reconcile_error=None,
+        reconcile_counts=None,
     ):
         self.claim_granted = claim_granted
         self.claim_status = claim_status
         self.mark_result = mark_result
         self.mark_error = mark_error
         self.complete_error = complete_error
+        self.reconcile_error = reconcile_error
+        self.reconcile_counts = dict(reconcile_counts or RECONCILE_COUNTS)
         self.events: list[tuple] = []
 
     async def claim(self, event, **kwargs):
@@ -88,6 +100,12 @@ class FakeControl:
     async def fail(self, event_id, **kwargs):
         self.events.append(("fail", kwargs))
         return "pending" if kwargs["retryable_before_attempt"] else "delivery_unknown"
+
+    async def reconcile(self, **kwargs):
+        self.events.append(("reconcile", kwargs))
+        if self.reconcile_error:
+            raise self.reconcile_error
+        return dict(self.reconcile_counts)
 
 
 class FakePublisher:
@@ -130,9 +148,10 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
             "claimed": True,
             "status": "delivered",
             "event_id": EVENT_ID,
+            "reconcile": {"ok": True, **RECONCILE_COUNTS},
         })
         self.assertEqual([event[0] for event in control.events], [
-            "claim", "attempt", "complete"
+            "reconcile", "claim", "attempt", "complete"
         ])
         self.assertEqual([event[0] for event in publisher.events], [
             "preflight", "send"
@@ -144,7 +163,9 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         result = await _worker(control, publisher).run_once()
         self.assertEqual(result.status, "delivery_unknown")
         self.assertEqual([event[0] for event in publisher.events], ["preflight"])
-        self.assertEqual([event[0] for event in control.events], ["claim", "attempt"])
+        self.assertEqual([event[0] for event in control.events], [
+            "reconcile", "claim", "attempt"
+        ])
 
     async def test_reused_attempt_never_calls_buzz(self):
         control = FakeControl(mark_result=False)
@@ -169,7 +190,7 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error, "buzz_delivery_completion_unavailable")
         self.assertEqual([event[0] for event in publisher.events], ["preflight", "send"])
         self.assertEqual([event[0] for event in control.events], [
-            "claim", "attempt", "complete"
+            "reconcile", "claim", "attempt", "complete"
         ])
 
     async def test_preflight_network_error_retries_before_attempt_only(self):
@@ -179,7 +200,9 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         ))
         result = await _worker(control, publisher).run_once()
         self.assertEqual(result.status, "pending")
-        self.assertEqual([event[0] for event in control.events], ["claim", "fail"])
+        self.assertEqual([event[0] for event in control.events], [
+            "reconcile", "claim", "fail"
+        ])
         self.assertTrue(control.events[-1][1]["retryable_before_attempt"])
 
     async def test_existing_terminal_receipt_stops_before_preflight(self):
@@ -190,13 +213,40 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "delivered")
         self.assertEqual(publisher.events, [])
 
-    async def test_empty_shadow_is_idle_without_control_or_relay(self):
+    async def test_empty_shadow_is_idle_with_reconcile_only(self):
         control = FakeControl()
         publisher = FakePublisher()
         result = await _worker(control, publisher, FakeShadow(None)).run_once()
         self.assertEqual(result.status, "idle")
-        self.assertEqual(control.events, [])
+        self.assertEqual([event[0] for event in control.events], ["reconcile"])
+        self.assertEqual(control.events[0][1], {"limit": 25})
         self.assertEqual(publisher.events, [])
+
+    async def test_reconcile_surfaces_expired_lease_transitions(self):
+        counts = {
+            "reconciled_count": 2,
+            "pending_count": 1,
+            "failed_count": 0,
+            "delivery_unknown_count": 1,
+        }
+        control = FakeControl(reconcile_counts=counts)
+        publisher = FakePublisher()
+        result = await _worker(control, publisher, FakeShadow(None)).run_once()
+        self.assertEqual(result.as_dict()["reconcile"], {"ok": True, **counts})
+
+    async def test_reconcile_fault_never_blocks_the_delivery_decision(self):
+        control = FakeControl(reconcile_error=RuntimeError("control down"))
+        publisher = FakePublisher()
+        result = await _worker(control, publisher).run_once()
+        self.assertEqual(result.status, "delivered")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.as_dict()["reconcile"], {
+            "ok": False,
+            "error": "buzz_delivery_reconcile_unavailable",
+        })
+        self.assertEqual([event[0] for event in control.events], [
+            "reconcile", "claim", "attempt", "complete"
+        ])
 
 
 if __name__ == "__main__":
