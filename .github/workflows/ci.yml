@@ -151,6 +151,24 @@ jobs:
             python -m scripts.run_batch_dispatcher --preflight-live \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result["ok"] is True; assert result["config_approval_phase"] == "active"; assert result["dispatch_phase"] == "active"; assert result["canary_dispatch"]["request_sha256"] == "d" * 64; assert result["runtime_environment_verified"] is True; assert result["runtime_release_verified"] is True; assert result["database_calls"] is False; assert result["provider_calls"] is False; assert result["submissions_enabled"] is False'
 
+  buzz-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned Buzz delivery image
+        run: >-
+          docker build
+          --file Dockerfile.buzz-delivery
+          --tag coineasy-buzz-delivery-ci
+          .
+      - name: Prove the scheduled worker holds without network or credentials
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_DELIVERY_ENABLED=false \
+            coineasy-buzz-delivery-ci \
+            python -m scripts.run_origintrail_buzz_delivery --send-once \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "hold", "reason": "buzz_delivery_disabled", "provider_calls": False, "database_calls": False, "shadow_calls": False}'
+
   publication-image:
     runs-on: ubuntu-latest
     steps:
@@ -230,6 +248,7 @@ jobs:
           done
       - name: Run transactional SQL security smoke tests
         run: |
-          for smoke in supabase/tests/*_security.sql; do
+          for smoke in supabase/tests/*_security.sql \
+                       supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done

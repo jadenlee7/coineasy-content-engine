@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -111,6 +113,34 @@ def test_squid_photo_news_uses_original_visual_localization_only():
         content_kind="daily_news",
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
+
+
+def test_origintrail_source_payload_preserves_x_article_evidence():
+    article_evidence = {
+        "article_id": "2084276731330936832",
+        "article_url": "https://x.com/i/article/2084276731330936832",
+        "title": "July 2026 OriginTrail recap",
+        "source_content_sha256": "a" * 64,
+        "retrieval_method": "x_api_post_lookup",
+    }
+    payload = OfficialXDailyRunner._source_payload(
+        {
+            "id": "2084283287518798116",
+            "text": "Pinned X Article body.",
+            "url": (
+                "https://x.com/origin_trail/status/2084283287518798116"
+            ),
+            "created_at": "2026-07-22T00:00:00Z",
+            "is_retweet": False,
+            "is_reply": False,
+            "is_quote": False,
+            "article_evidence": article_evidence,
+        },
+        include_standalone_signals=True,
+    )
+
+    assert payload["article_evidence"] == article_evidence
+    assert payload["article_evidence"] is not article_evidence
 
 
 class FakeRepository:
@@ -458,6 +488,29 @@ async def test_dry_run_reads_and_plans_but_never_writes_or_generates():
         item == {"client_id": "yellow", "status": "planned", "detail": "daily_news"}
         for item in summary.outcomes
     )
+
+
+@pytest.mark.asyncio
+async def test_allowed_clients_scope_prevents_other_client_intake():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    x_client = FakeXClient()
+
+    summary = await runner(
+        FakeRepository(states),
+        x_client,
+        FakeGenerationClient(),
+        allowed_clients=("origintrail",),
+    ).run(dry_run=True)
+
+    assert [call[0][0].lstrip("@") for call in x_client.calls] == [
+        "origin_trail",
+    ]
+    assert {item["client_id"] for item in summary.outcomes} <= {
+        "origintrail",
+    }
 
 
 @pytest.mark.asyncio
@@ -1204,6 +1257,10 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
     assert item.max_cost_usd == Decimal("0.05")
     assert item.max_output_tokens == 2_000
     assert item.deadline_at.isoformat() == "2026-07-23T15:00:00+00:00"
+    evidence = json.loads(item.input_text)
+    assert evidence["source"]["content_sha256"] == hashlib.sha256(
+        evidence["source"]["content"].encode("utf-8")
+    ).hexdigest()
     assert "visual" not in item.output_schema["properties"]
     assert {
         name: field["pattern"]
@@ -1356,6 +1413,7 @@ def test_origintrail_batch_item_rejects_article_work():
         attempts=1,
         max_attempts=3,
         locked_by="official-x:test",
+        origintrail_batch_eligible=True,
     )
     reference_pack = StyleReferencePack(
         request_id=job.request_id,
@@ -1365,6 +1423,38 @@ def test_origintrail_batch_item_rejects_article_work():
     )
 
     with pytest.raises(ValueError, match="unsupported evidence"):
+        OfficialXDailyRunner._origintrail_batch_item(
+            job=job,
+            reference_pack=reference_pack,
+            experiment_end_at=None,
+        )
+
+
+def test_origintrail_batch_item_rejects_url_only_source_evidence():
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="https://t.co/BFl2YSh2VB",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="official-x:test",
+        origintrail_batch_eligible=True,
+    )
+    reference_pack = StyleReferencePack(
+        request_id=job.request_id,
+        primary_source_item_id=job.primary_source_item_id,
+        reference_pack_hash="a" * 32,
+        references=(),
+    )
+
+    with pytest.raises(ValueError, match="substantive source evidence"):
         OfficialXDailyRunner._origintrail_batch_item(
             job=job,
             reference_pack=reference_pack,

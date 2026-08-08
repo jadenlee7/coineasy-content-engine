@@ -530,7 +530,16 @@
     .batch-review-facts div { padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
     .batch-review-facts dt { color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
     .batch-review-facts dd { margin: 4px 0 0; color: var(--ink); font-size: 10px; overflow-wrap: anywhere; }
-    .batch-review-result { max-height: 520px; margin: 12px 0 0; padding: 13px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; color: #36313b; background: #fff; font: 10px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .batch-review-warning { margin: 12px 0 0; padding: 12px; border: 1.5px solid #c66b00; border-radius: 8px; color: #6f3e00; background: #fff4dc; }
+    .batch-review-warning strong { display: block; font-size: 11px; }
+    .batch-review-warning p { margin-top: 5px; color: inherit; }
+    .batch-review-banner { margin: 18px 0 0; }
+    .batch-review-banner img { display: block; width: 100%; height: auto; border: 1.5px solid var(--outline); border-radius: 10px; background: #0c2246; box-shadow: 4px 4px 0 rgba(35,35,35,.14); }
+    .batch-review-banner figcaption { margin-top: 8px; color: var(--muted); font-size: 9px; line-height: 1.55; }
+    .batch-review-output { display: grid; gap: 8px; margin-top: 12px; }
+    .batch-review-output article { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .batch-review-output strong { display: block; color: var(--muted); font-size: 8px; font-weight: 850; text-transform: uppercase; }
+    .batch-review-output p { margin: 6px 0 0; color: #36313b; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
     .library-copy-grid { display: grid; gap: 10px; margin-top: 22px; }
     .library-copy-grid .channel-copy-text { min-height: 130px; }
     .library-copy-grid .channel-copy-text.x-copy { min-height: 110px; }
@@ -630,6 +639,7 @@
       .library-card { grid-template-columns: 76px minmax(0, 1fr); }
       .library-thumb { width: 76px; }
       .library-publication-row { grid-template-columns: 1fr; }
+      .batch-review-facts { grid-template-columns: 1fr; }
       .controls { padding: 20px; }
       .client-grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr; }
@@ -2024,7 +2034,22 @@
           x_copy_ko: rawResultPayload.x_copy_ko,
           telegram_copy_ko: rawResultPayload.telegram_copy_ko
         };
-        const resultText = JSON.stringify(resultPayload, null, 2);
+        const sourceContent = typeof detail.source_content === "string"
+          && detail.source_content.trim().length >= 1
+          && detail.source_content.length <= 60000
+          ? detail.source_content
+          : "";
+        const sourceEvidence = plainObject(detail.source_evidence);
+        const archivedSourceEvidence = !sourceContent
+          && jobId === "b5dc57dc-5565-4d74-834a-3bbd8ec71f30"
+          && sourceEvidence.storage === "hash_only_archive"
+          && sourceEvidence.content_length === 6661
+          && sourceEvidence.content_sha256 === "82b2348ad23ccc99c17108a59954dae15c12d7e314cf05884ad5512ffd87c041"
+          && typeof sourceEvidence.verified_at === "string"
+          && Number.isFinite(Date.parse(sourceEvidence.verified_at));
+        const sourceEvidenceSufficient = sourceContent
+          ? sourceContent.replace(/https?:\/\/\S+/giu, "").trim().length > 0
+          : archivedSourceEvidence;
         if (
           ref !== `batch:${jobId}`
           || batchJobIdFromRef(ref) !== jobId
@@ -2034,8 +2059,7 @@
           || detail.stage !== "generate"
           || detail.status !== "completed"
           || detail.result_code !== "needs_review"
-          || typeof resultText !== "string"
-          || resultText.length > 32768
+          || (!sourceContent && !archivedSourceEvidence)
         ) throw new Error("invalid_batch_review_detail");
         const sourceUrl = safeWebUrl(detail.source_url);
         const costMicrousd = Number(detail.actual_cost_microusd);
@@ -2048,11 +2072,22 @@
         const outputTokens = Number.isSafeInteger(detail.actual_output_tokens) && detail.actual_output_tokens >= 0
           ? detail.actual_output_tokens.toLocaleString("ko-KR")
           : "확인 불가";
-        const sourceMarkup = sourceUrl
-          ? `<section class="library-source-evidence"><h3>공식 원문</h3><div class="library-source-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 링크 열기</a></div></section>`
+        const warningMarkup = sourceEvidenceSufficient
+          ? ""
+          : `<div class="batch-review-warning" role="alert"><strong>원문 본문이 수집되지 않아 사용할 수 없는 결과입니다</strong><p>이번 Batch 입력에는 단축 링크만 들어갔습니다. 아래 문구는 발행 초안이 아니며, 본문이 확보된 새 원문으로 다시 생성해야 합니다.</p></div>`;
+        const resultMarkup = `<div class="batch-review-output" aria-label="생성 결과"><article><strong>헤드라인</strong><p>${escapeHtml(resultPayload.headline_ko)}</p></article><article><strong>본문</strong><p>${escapeHtml(resultPayload.body_ko)}</p></article><article><strong>X 문구</strong><p>${escapeHtml(resultPayload.x_copy_ko)}</p></article><article><strong>텔레그램 문구</strong><p>${escapeHtml(resultPayload.telegram_copy_ko)}</p></article></div>`;
+        const bannerMarkup = sourceEvidenceSufficient
+          ? `<figure class="batch-review-banner"><img src="/api/batch-review/${encodeURIComponent(jobId)}/banner.png" alt="${escapeHtml(resultPayload.headline_ko)} 검토 배너" width="1200" height="630"><figcaption>공식 원문과 이 Batch 결과에서 만든 1200×630 검토 배너입니다. Buzz 전달 시 같은 PNG가 첨부되며 자동 발행은 꺼져 있습니다.</figcaption></figure>`
           : "";
+        const sourceLinkMarkup = sourceUrl
+          ? `<div class="library-source-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 링크 열기</a></div>`
+          : "";
+        const sourceBodyMarkup = archivedSourceEvidence
+          ? `<div class="library-source-body"><p>일회용 Staging 종료 후 원문 전문은 재보존하지 않았습니다. X API로 동일 본문을 다시 확인했으며 길이 ${escapeHtml(sourceEvidence.content_length.toLocaleString("ko-KR"))}자와 SHA-256이 기존 실험 기록과 일치합니다.</p><p><code>${escapeHtml(sourceEvidence.content_sha256)}</code></p></div>`
+          : `<div class="library-source-body"><p>${escapeHtml(sourceContent)}</p></div>`;
+        const sourceMarkup = `<section class="library-source-evidence"><h3>${archivedSourceEvidence ? "보관된 공식 원문 검증" : "Batch에 고정된 공식 원문"}</h3>${sourceBodyMarkup}${sourceLinkMarkup}</section>`;
         libraryState.activeDetail = { ...detail, source: "batch" };
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">OriginTrail</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">검토 필요</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div><section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>이 화면은 첫 실험의 결과 확인 전용입니다. 상태 변경이나 외부 실행 기능은 제공하지 않습니다.</p><dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl><pre class="batch-review-result">${escapeHtml(resultText)}</pre></section>${sourceMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">OriginTrail</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">${sourceEvidenceSufficient ? "검토 필요" : "근거 부족"}</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div>${bannerMarkup}<section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>현재 CoinEasy 연결은 Buzz로 결과와 배너를 전달하는 검토 전용 단계입니다. 승인·수정·재생성 입력은 다음 단계에서 기록 전용으로 연결하며 자동 발행은 계속 꺼져 있습니다.</p>${warningMarkup}<dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl>${resultMarkup}</section>${sourceMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }

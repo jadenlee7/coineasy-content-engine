@@ -67,10 +67,18 @@ def test_config_subject_is_deterministic_canonical_and_secret_free():
     assert first["daily_cap_usd"] == "0.05"
 
 
+def test_config_subject_accepts_exact_production_shadow_environment():
+    subject = _subject(environment="production")
+
+    assert subject["environment"] == "production"
+    assert subject["authorized_provider_batches"] == 1
+    assert subject["automatic_external_effects"] is False
+
+
 @pytest.mark.parametrize(
     "override, message",
     [
-        ({"environment": "production"}, "must be staging"),
+        ({"environment": "preview"}, "staging or production"),
         ({"release_sha": "b" * 39}, "40 lowercase hex"),
         ({"allowed_clients": frozenset({"origintrail", "yellow"})}, "only"),
         ({"daily_cap_usd": Decimal("0.50")}, "exactly 0.05"),

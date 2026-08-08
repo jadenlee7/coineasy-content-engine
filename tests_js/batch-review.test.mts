@@ -12,6 +12,7 @@ import {
   createStudioSessionValue,
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
+import { ORIGINTRAIL_ARCHIVED_JOB_ID } from "../netlify/functions/_shared/origintrail-archived-review.mts";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
@@ -49,6 +50,7 @@ function detailItem(overrides: Record<string, unknown> = {}) {
   return {
     ...listItem(),
     result_payload: resultPayload(),
+    source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_000,
     actual_output_tokens: 220,
@@ -149,6 +151,7 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
   });
   assert.equal(item?.ref, `batch:${JOB_ID}`);
   assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
+  assert.equal(item?.source_content, "OriginTrail이 공식 업데이트를 발표했습니다.");
   assert.equal(item?.actual_output_tokens, 220);
 
   for (const invalid of [
@@ -159,6 +162,8 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
     detailItem({ stage: "review" }),
     detailItem({ status: "failed" }),
     detailItem({ result_code: "approved" }),
+    detailItem({ source_content: "" }),
+    detailItem({ source_content: "x".repeat(60_001) }),
     detailItem({ result_payload: resultPayload({ headline_ko: "" }) }),
     detailItem({ result_payload: resultPayload({ body_ko: "" }) }),
     detailItem({ result_payload: resultPayload({ x_copy_ko: "" }) }),
@@ -291,6 +296,35 @@ test("authenticated Batch review endpoints are GET-only, no-store, and validate 
         { headers },
       ), { params: { jobId: "not-a-uuid" } } as never);
       assert.equal(invalidId.status, 400);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an authenticated archived Staging review survives deletion of its Preview database", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("the archived review must not read deleted storage");
+  };
+  try {
+    await withNetlifyEnvironment({ STUDIO_ACCESS_TOKEN: ACCESS_TOKEN }, async () => {
+      const cookie = createStudioSessionValue(ACCESS_TOKEN);
+      const response = await batchReviewItemHandler(new Request(
+        `https://console.example/api/batch-review/${ORIGINTRAIL_ARCHIVED_JOB_ID}`,
+        { headers: { cookie: `${STUDIO_SESSION_COOKIE}=${cookie}` } },
+      ), { params: { jobId: ORIGINTRAIL_ARCHIVED_JOB_ID } } as never);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const payload = await response.json() as Record<string, any>;
+      assert.equal(payload.job_id, ORIGINTRAIL_ARCHIVED_JOB_ID);
+      assert.equal(payload.source_content, null);
+      assert.equal(payload.source_evidence.storage, "hash_only_archive");
+      assert.equal(payload.source_evidence.content_length, 6_661);
+      assert.match(payload.source_evidence.content_sha256, /^[a-f0-9]{64}$/);
+      assert.equal(fetchCalls, 0);
     });
   } finally {
     globalThis.fetch = originalFetch;

@@ -6,20 +6,23 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Mapping
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 
-CONFIG_SCHEMA = "coineasy.batch.canary.config.v1"
+CONFIG_SCHEMA = "coineasy.batch.canary.config.v2"
 DISPATCH_SCHEMA = "coineasy.batch.canary.dispatch.v1"
-CANARY_ENVIRONMENT = "staging"
+PILOT_DAY_SCHEMA = "coineasy.batch.production-shadow.day.v1"
+CANARY_ENVIRONMENTS = frozenset({"staging", "production"})
 CANARY_CLIENT = "origintrail"
 CANARY_DAILY_CAP_USD = Decimal("0.05")
 CANARY_WINDOW = timedelta(hours=48)
+PRODUCTION_SHADOW_WINDOW = timedelta(days=7)
 CANARY_APPROVAL_TTL = timedelta(hours=2)
+PRODUCTION_SHADOW_APPROVAL_TTL = timedelta(days=8)
 
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _RELEASE_SHA_RE = re.compile(r"^[a-f0-9]{40}$")
@@ -98,9 +101,12 @@ def config_subject(
     experiment_start_at: datetime,
     experiment_end_at: datetime,
     timezone_name: str,
+    production_shadow_auto_dispatch: bool = False,
 ) -> dict[str, object]:
-    if environment != CANARY_ENVIRONMENT:
-        raise ValueError("BATCH_CANARY_ENVIRONMENT must be staging")
+    if environment not in CANARY_ENVIRONMENTS:
+        raise ValueError(
+            "BATCH_CANARY_ENVIRONMENT must be staging or production"
+        )
     if _RELEASE_SHA_RE.fullmatch(release_sha) is None:
         raise ValueError("BATCH_CANARY_RELEASE_SHA must be 40 lowercase hex")
     parsed_supabase_url = urlsplit(supabase_url)
@@ -130,8 +136,17 @@ def config_subject(
         or experiment_end_at.tzinfo is None
     ):
         raise ValueError("Batch canary window must be timezone-aware")
-    if experiment_end_at - experiment_start_at != CANARY_WINDOW:
-        raise ValueError("Batch canary window must be exactly 48 hours")
+    expected_window = (
+        PRODUCTION_SHADOW_WINDOW
+        if production_shadow_auto_dispatch
+        else CANARY_WINDOW
+    )
+    if experiment_end_at - experiment_start_at != expected_window:
+        raise ValueError(
+            "Batch production shadow window must be exactly 7 days"
+            if production_shadow_auto_dispatch
+            else "Batch canary window must be exactly 48 hours"
+        )
     if timezone_name != "Asia/Seoul":
         raise ValueError("Batch canary timezone must be Asia/Seoul")
     kst = ZoneInfo(timezone_name)
@@ -168,7 +183,16 @@ def config_subject(
             "model": "gpt-5.6-luna",
             "max_job_cost_usd": "0.05",
         },
-        "authorized_provider_batches": 1,
+        "approval_mode": (
+            "seven_day_daily_shadow"
+            if production_shadow_auto_dispatch
+            else "exact_one_shot"
+        ),
+        "authorized_provider_batches": (
+            7 if production_shadow_auto_dispatch else 1
+        ),
+        "max_provider_batches_per_kst_day": 1,
+        "production_shadow_auto_dispatch": production_shadow_auto_dispatch,
         "automatic_external_effects": False,
     }
 
@@ -187,6 +211,7 @@ class CanaryConfigApproval:
         raw: str,
         *,
         expected_subject_sha256: str,
+        maximum_ttl: timedelta = CANARY_APPROVAL_TTL,
     ) -> "CanaryConfigApproval":
         value = _receipt(raw, expected_keys=frozenset({
             "version",
@@ -209,9 +234,13 @@ class CanaryConfigApproval:
         expires_at = _timestamp(value["expires_at"], "expires_at")
         if (
             expires_at <= approved_at
-            or expires_at - approved_at > CANARY_APPROVAL_TTL
+            or expires_at - approved_at > maximum_ttl
         ):
-            raise ValueError("Batch canary approval TTL must be at most 2 hours")
+            raise ValueError(
+                "Batch canary approval TTL must be at most 2 hours"
+                if maximum_ttl == CANARY_APPROVAL_TTL
+                else "Batch Production Shadow approval TTL is too long"
+            )
         subject_sha256 = _sha256(value["subject_sha256"], "subject_sha256")
         if not hmac.compare_digest(subject_sha256, expected_subject_sha256):
             raise ValueError("Batch canary config receipt does not match settings")
@@ -265,6 +294,85 @@ def dispatch_subject(
         "request_sha256": _sha256(request_sha256, "request_sha256"),
         "authorized_provider_batches": 1,
         "authorized_total_usd": "0.05",
+    }
+
+
+_PILOT_DAY_CONFIG_NAMESPACE = uuid.UUID(
+    "b7878b09-8601-47c8-9423-42a84f0cf158"
+)
+_PILOT_DAY_DISPATCH_NAMESPACE = uuid.UUID(
+    "c30c836c-359c-40f8-979c-acd0bf9b04d4"
+)
+
+
+def pilot_day_authorization(
+    *,
+    pilot_subject_sha256: str,
+    pilot_approval_id: str,
+    kst_date: date,
+    job_id: str,
+    input_sha256: str,
+    request_sha256: str,
+) -> dict[str, str]:
+    """Derive an exact one-shot grant from the approved seven-day pilot.
+
+    The derivation is deterministic so an hourly retry reuses the same grant,
+    while the database keeps a unique KST-day fence for the pilot.
+    """
+    normalized_pilot_subject = _sha256(
+        pilot_subject_sha256,
+        "pilot_subject_sha256",
+    )
+    normalized_pilot_approval = _uuid(
+        pilot_approval_id,
+        "pilot_approval_id",
+    )
+    normalized_job_id = _uuid(job_id, "job_id")
+    normalized_input_sha = _sha256(input_sha256, "input_sha256")
+    normalized_request_sha = _sha256(request_sha256, "request_sha256")
+    if not isinstance(kst_date, date) or isinstance(kst_date, datetime):
+        raise ValueError("kst_date must be a date")
+    date_text = kst_date.isoformat()
+    binding = {
+        "schema": PILOT_DAY_SCHEMA,
+        "pilot_subject_sha256": normalized_pilot_subject,
+        "pilot_approval_id": normalized_pilot_approval,
+        "kst_date": date_text,
+        "job_id": normalized_job_id,
+        "input_sha256": normalized_input_sha,
+        "request_sha256": normalized_request_sha,
+        "authorized_provider_batches": 1,
+        "authorized_total_usd": "0.05",
+        "automatic_external_effects": False,
+    }
+    daily_config_subject_sha256 = canonical_sha256(binding)
+    config_approval_id = str(uuid.uuid5(
+        _PILOT_DAY_CONFIG_NAMESPACE,
+        canonical_json(binding),
+    ))
+    exact_dispatch = dispatch_subject(
+        config_subject_sha256=daily_config_subject_sha256,
+        config_approval_id=config_approval_id,
+        job_id=normalized_job_id,
+        input_sha256=normalized_input_sha,
+        request_sha256=normalized_request_sha,
+    )
+    dispatch_subject_sha256 = canonical_sha256(exact_dispatch)
+    dispatch_approval_id = str(uuid.uuid5(
+        _PILOT_DAY_DISPATCH_NAMESPACE,
+        canonical_json(exact_dispatch),
+    ))
+    return {
+        "pilot_subject_sha256": normalized_pilot_subject,
+        "pilot_approval_id": normalized_pilot_approval,
+        "kst_date": date_text,
+        "config_subject_sha256": daily_config_subject_sha256,
+        "config_approval_id": config_approval_id,
+        "dispatch_subject_sha256": dispatch_subject_sha256,
+        "dispatch_approval_id": dispatch_approval_id,
+        "job_id": normalized_job_id,
+        "input_sha256": normalized_input_sha,
+        "request_sha256": normalized_request_sha,
     }
 
 

@@ -168,15 +168,15 @@ The Netlify adapter accepts exactly `headline_ko`, `body_ko`, `x_copy_ko`, and
 `1..maximum` bounds; missing, empty, whitespace-only, additional,
 nested, or secret-like fields fail closed before rendering.
 
-A second GET-only projection at `/api/buzz-shadow/origintrail/batch` exposes
-only status metadata for the future Buzz bridge. It uses a dedicated
-`BUZZ_SHADOW_ACCESS_TOKEN`, while the Supabase service-role key remains inside
-Netlify. The projection deliberately omits the generated headline and body,
-channel copy, prompts, token counts, provider identifiers, and all mutation
-capabilities. Its deterministic event ID is stable across repeated polls, and
-its relative `/?batch=<job_id>` path opens the signed-session, read-only Batch
-detail. This endpoint does not call the Buzz relay; outbound delivery and its
-durable receipt remain **HOLD** until a separate staging gate.
+A second GET-only projection at `/api/buzz-shadow/origintrail/batch` exposes a
+bounded Korean headline and Telegram summary for the Buzz bridge. It uses a
+dedicated `BUZZ_SHADOW_ACCESS_TOKEN`, while the Supabase service-role key
+remains inside Netlify. The projection requires an explicit
+`BUZZ_RESULT_PREVIEW_START_AT` cutover and omits the long-form body, X copy,
+prompts, token counts, provider identifiers, and all mutation capabilities. Its
+deterministic event ID is stable across repeated polls, and its relative
+`/?batch=<job_id>` path opens the signed-session, read-only Batch detail. This
+endpoint itself does not call the Buzz relay.
 
 ## Route contract
 
@@ -258,7 +258,7 @@ immutable evidence packet
   -> structured output validation
   -> needs_review result
   -> signed-session Batch review inbox (read-only)
-  -> metadata-only Buzz shadow projection (GET-only; no relay write)
+  -> bounded-preview Buzz shadow projection (GET-only; no relay write)
   -> human review handoff
 ```
 
@@ -435,7 +435,7 @@ environment, and deployed release SHA are active. Its summary must also say
 `runtime_environment_verified:true` and `runtime_release_verified:true`. It
 still does not authorize or execute a submission.
 
-The default live command and the Railway cron are poll-only. The only local
+The default live command and the hourly Railway cron are poll-only. The only local
 process flag that enables the exact claim/create path is billable and remains
 HOLD until the separate approval gate:
 
@@ -466,7 +466,7 @@ The staging gate is:
      and state.queued_job_id is null
      and standalone.source_item_id is null;
    ```
-4. Deploy the signed-session, GET-only review adapter, metadata-only Buzz
+4. Deploy the signed-session, GET-only review adapter, bounded-preview Buzz
    shadow endpoint, and console. Set a new `BUZZ_SHADOW_ACCESS_TOKEN` only in
    Netlify and the isolated future bridge; never reuse a Studio, Supabase,
    provider, publish, or deploy credential. Confirm the detail view accepts
@@ -508,7 +508,7 @@ The staging gate is:
    on the dispatcher only, and run `--preflight-live`. It must report the exact
    job/input/request binding plus `ready_to_submit:true` with zero external calls.
 10. Run the dispatcher once manually with `--submit-once`, never on its
-    ten-minute cron. The scheduled/default command is poll-only and cannot
+    hourly cron. The scheduled/default command is poll-only and cannot
     submit without that explicit process flag.
     Immediately remove the dispatch receipt and use `--poll-only` for later
     reconciliation. The live pass must register the immutable grant and consume
@@ -533,6 +533,21 @@ been promoted separately; application rollout and billable Batch execution
 remain **HOLD** until an operator reviews the staging receipt, spend, duplicate
 count, structured-output result, and absence of external side effects and
 explicitly approves that specific promotion.
+
+## Production shadow one-shot
+
+After the staging evidence and production application release are explicitly
+approved, the same fail-closed profile may bind to `production`. This is not a
+general production mode: `BATCH_CANARY_ENVIRONMENT=production` must exactly
+match `RAILWAY_ENVIRONMENT_NAME=production`, the deployed 40-hex release SHA,
+the short-lived config receipt, and a separate exact-job dispatch receipt.
+OriginTrail remains the only client, the database and OpenAI project limits
+remain `$0.05`, only one request and one provider Batch are authorized, and all
+outputs remain review-only with no publish, approval, outreach, visual, or
+deploy adapter. The dispatcher still defaults to hourly poll-only operation;
+one billable submission additionally requires an explicit manual
+`--submit-once` process invocation. Remove the dispatch receipt immediately
+after that invocation and keep only polling active until reconciliation.
 
 Fresh authorized attempt-one claims submit directly. Only a stale lease from
 an ambiguous create/register attempt searches provider history, bounded
@@ -567,11 +582,39 @@ removal, poll-only follow-up, and the dedicated project key, restrictions, and
 project hard spend limit plus lower alerts remain promotion blockers. A new
 config subject is a new experiment and requires separate explicit approval.
 
-A broader 14-day profile is not currently accepted by live startup. Enabling
-one requires a code change, a new config subject and receipt, reviewed staging
-evidence, and a separate spend approval. The generic ledger ceiling of `$6`
-per day is defense-in-depth for a future promotion, not permission to use an
-`$84` 14-day envelope.
+## Approved seven-day Production Shadow Pilot
+
+The promoted profile is separately gated by
+`BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH=true`. It accepts exactly seven KST
+midnights, OriginTrail only, a `$0.05` daily ledger ceiling, one claim and one
+request per provider Batch, and at most one durably admitted provider Batch per
+KST date. Its config subject records seven authorized provider Batches, the
+one-per-day fence, review-only output, and `automatic_external_effects:false`.
+The dedicated OpenAI project has a separate `$1` monthly hard limit; this is
+defense in depth above the pilot's internal maximum of `$0.35`.
+
+The hourly dispatcher runs with `--submit-once`, but this flag alone grants no
+authority. During the active seven-day window it first polls registered work,
+then asks a read-only RPC for one immutable current-day candidate. The worker
+deterministically derives that day's exact config and dispatch binding from the
+approved pilot subject. A forward-only RPC atomically records the KST-day fence
+and wraps the existing exact one-shot grant. The existing provider-create
+intent, attempt-one claim, request hash, `$0.05` cap, and lookup-only ambiguous
+recovery rules remain unchanged. A second job on the same KST date cannot be
+admitted even if the cron runs again.
+
+No exact candidate means a successful no-op. After the seventh KST midnight,
+new admission stops while polling and reconciliation continue. Generated
+content remains in Studio/Buzz review; no publish, approve, outreach, visual,
+or deploy adapter is present in the dispatcher image. Emergency stop order is:
+set `BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH=false` or pause the cron, preserve a
+poll-only reconciler for active provider Batches, and investigate any ambiguous
+claimed row before removing credentials.
+
+A profile longer than seven days is not accepted by the Production Shadow
+subject. Extending it requires another code/config review and explicit spend
+approval; the generic ledger ceiling of `$6` per day is not permission to use
+it.
 
 A previously uncertain OriginTrail handoff is still recovered after the
 experiment end by consuming the already-durable same-UUID ledger receipt and

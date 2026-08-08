@@ -78,6 +78,7 @@ class AutomationSettings:
     x_bearer_token: str
     studio_base_url: str
     studio_automation_token: str
+    allowed_clients: tuple[str, ...] = AUTOMATION_CLIENTS
     lookback_hours: int = 30
     daily_draft_limit: int = 4
     enable_tutorials: bool = False
@@ -89,6 +90,32 @@ class AutomationSettings:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AutomationSettings":
         env = os.environ if environ is None else environ
+        raw_allowed_clients = env.get(
+            "AUTOMATION_ALLOWED_CLIENTS",
+            ",".join(AUTOMATION_CLIENTS),
+        )
+        requested_clients = tuple(
+            value.strip().lower()
+            for value in raw_allowed_clients.split(",")
+            if value.strip()
+        )
+        if (
+            not requested_clients
+            or len(requested_clients) != len(set(requested_clients))
+            or any(
+                client_id not in AUTOMATION_CLIENTS
+                for client_id in requested_clients
+            )
+        ):
+            raise ValueError(
+                "AUTOMATION_ALLOWED_CLIENTS must be a unique nonempty "
+                "subset of yellow, origintrail, squid, babylon"
+            )
+        allowed_clients = tuple(
+            client_id
+            for client_id in AUTOMATION_CLIENTS
+            if client_id in requested_clients
+        )
         workspace_id = _required(env, "CONTENT_STUDIO_WORKSPACE_ID")
         try:
             workspace_id = str(uuid.UUID(workspace_id))
@@ -133,6 +160,7 @@ class AutomationSettings:
             x_bearer_token=_required(env, "X_BEARER_TOKEN", min_length=20),
             studio_base_url=_required(env, "STUDIO_BASE_URL"),
             studio_automation_token=automation_token,
+            allowed_clients=allowed_clients,
             lookback_hours=_bounded_int(
                 env,
                 "AUTOMATION_LOOKBACK_HOURS",

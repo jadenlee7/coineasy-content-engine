@@ -7,7 +7,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from core.batch.canary import DISPATCH_SCHEMA, canonical_sha256, dispatch_subject
+from core.batch.canary import (
+    CONFIG_SCHEMA,
+    DISPATCH_SCHEMA,
+    canonical_sha256,
+    dispatch_subject,
+    pilot_day_authorization,
+)
 from core.batch.settings import BatchSettings
 from core.batch.dispatcher import BatchDispatchSummary
 import scripts.run_batch_dispatcher as batch_script
@@ -39,7 +45,7 @@ def _live_env(**overrides):
     if "BATCH_CANARY_APPROVAL_RECEIPT" not in overrides:
         _subject, digest = BatchSettings.canary_subject_from_env(values)
         values["BATCH_CANARY_APPROVAL_RECEIPT"] = json.dumps({
-            "version": "coineasy.batch.canary.config.v1",
+            "version": CONFIG_SCHEMA,
             "approval_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "approved_by": "operator:test",
             "approved_at": "2026-07-31T23:00:00Z",
@@ -66,7 +72,7 @@ def _active_live_env(now: datetime) -> dict[str, str]:
     expires_at = now + timedelta(hours=1)
     config_approval_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     values["BATCH_CANARY_APPROVAL_RECEIPT"] = json.dumps({
-        "version": "coineasy.batch.canary.config.v1",
+        "version": CONFIG_SCHEMA,
         "approval_id": config_approval_id,
         "approved_by": "operator:test",
         "approved_at": approved_at.isoformat(),
@@ -94,6 +100,33 @@ def _active_live_env(now: datetime) -> dict[str, str]:
         "request_sha256": request_sha256,
         "subject_sha256": canonical_sha256(subject),
     })
+    return values
+
+
+def _active_shadow_env(now: datetime) -> dict[str, str]:
+    start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    values = _live_env(
+        BATCH_EXPERIMENT_START_AT=start.isoformat(),
+        BATCH_EXPERIMENT_END_AT=(start + timedelta(days=7)).isoformat(),
+        BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH="true",
+        BATCH_CANARY_APPROVAL_RECEIPT="",
+        BATCH_CANARY_DISPATCH_RECEIPT="",
+    )
+    subject, digest = BatchSettings.canary_subject_from_env(values)
+    values["BATCH_CANARY_APPROVAL_RECEIPT"] = json.dumps({
+        "version": CONFIG_SCHEMA,
+        "approval_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "approved_by": "coineasy-owner:test",
+        "approved_at": (now - timedelta(minutes=5)).isoformat(),
+        "expires_at": (start + timedelta(days=7)).isoformat(),
+        "subject_sha256": digest,
+    })
+    assert subject["authorized_provider_batches"] == 7
     return values
 
 
@@ -131,6 +164,66 @@ def test_live_mode_requires_separate_provider_and_ledger_credentials():
         15,
         tzinfo=timezone.utc,
     )
+
+
+def test_live_mode_accepts_exact_production_runtime_binding():
+    settings = BatchSettings.from_env(_live_env(
+        BATCH_CANARY_ENVIRONMENT="production",
+        RAILWAY_ENVIRONMENT_NAME="production",
+    ))
+
+    assert settings.canary_environment == "production"
+    assert settings.runtime_environment == "production"
+    assert settings.public_summary()["runtime_environment_verified"] is True
+
+
+def test_seven_day_production_shadow_is_daily_bounded_and_auto_dispatches():
+    now = datetime(2026, 8, 1, 1, tzinfo=timezone.utc)
+    settings = BatchSettings.from_env(_active_shadow_env(now))
+
+    assert settings.production_shadow_auto_dispatch is True
+    assert settings.canary_dispatch_approval is None
+    assert settings.dispatch_phase(now) == "active"
+    assert settings.submission_deadline_safe(now) is True
+    assert settings.submission_not_after() == settings.experiment_end_at
+    assert settings.public_summary()["authorized_provider_batches"] == 7
+    assert settings.public_summary()["max_provider_batches_per_kst_day"] == 1
+    assert settings.public_summary()["auto_publish"] is False
+
+
+def test_seven_day_shadow_rejects_wrong_window_and_flag_spelling():
+    now = datetime(2026, 8, 1, 1, tzinfo=timezone.utc)
+    env = _active_shadow_env(now)
+    start = datetime.fromisoformat(env["BATCH_EXPERIMENT_START_AT"])
+    env["BATCH_EXPERIMENT_END_AT"] = (start + timedelta(days=6)).isoformat()
+    with pytest.raises(ValueError, match="exactly 7 days"):
+        BatchSettings.canary_subject_from_env(env)
+
+    env = _active_shadow_env(now)
+    env["BATCH_PRODUCTION_SHADOW_AUTO_DISPATCH"] = "TRUE"
+    with pytest.raises(ValueError, match="must be true or false"):
+        BatchSettings.from_env(env)
+
+
+def test_daily_shadow_authorization_is_deterministic_and_exact():
+    arguments = {
+        "pilot_subject_sha256": "a" * 64,
+        "pilot_approval_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "kst_date": date(2026, 8, 5),
+        "job_id": "11111111-1111-4111-8111-111111111111",
+        "input_sha256": "c" * 64,
+        "request_sha256": "d" * 64,
+    }
+
+    first = pilot_day_authorization(**arguments)
+    second = pilot_day_authorization(**arguments)
+
+    assert first == second
+    assert first["kst_date"] == "2026-08-05"
+    assert first["job_id"] == arguments["job_id"]
+    assert len(first["config_subject_sha256"]) == 64
+    assert len(first["dispatch_subject_sha256"]) == 64
+    assert first["config_approval_id"] != first["dispatch_approval_id"]
 
 
 def test_live_producer_parses_without_loading_openai_api_key():
@@ -282,6 +375,91 @@ async def test_live_worker_polls_then_registers_exact_grant_before_claim(
     assert built["canary_not_after"] == now + timedelta(hours=1)
     assert calls[2][1]["request_sha256"] == "d" * 64
     assert calls[2][1]["hard_limit_usd"] == Decimal("0.05")
+    assert result["submissions_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_shadow_worker_derives_one_exact_daily_grant_before_claim(
+    monkeypatch,
+):
+    now = datetime(2026, 8, 1, 1, tzinfo=timezone.utc)
+    settings = BatchSettings.from_env(_active_shadow_env(now))
+    calls = []
+    builds = []
+
+    class Clock:
+        @classmethod
+        def now(cls, _timezone):
+            return now
+
+        @classmethod
+        def fromisoformat(cls, value):
+            return datetime.fromisoformat(value)
+
+    class Repository:
+        async def configure_daily_budget(self, **kwargs):
+            calls.append(("budget", kwargs))
+
+        async def peek_origintrail_shadow_candidate(self, **kwargs):
+            calls.append(("peek", kwargs))
+            return {
+                "kst_date": "2026-08-01",
+                "job_id": "11111111-1111-4111-8111-111111111111",
+                "input_sha256": "c" * 64,
+                "request_sha256": "d" * 64,
+            }
+
+        async def configure_origintrail_shadow_day(self, **kwargs):
+            calls.append(("shadow_day", kwargs))
+
+    class Dispatcher:
+        def __init__(self, exact):
+            self.exact = exact
+
+        async def poll_once(self):
+            calls.append(("poll", {}))
+            return BatchDispatchSummary()
+
+        async def submit_once(self, *, summary):
+            assert self.exact is True
+            calls.append(("submit", {}))
+            summary.claimed += 1
+            summary.submitted += 1
+            return summary
+
+    def build(**kwargs):
+        builds.append(kwargs)
+        return Dispatcher("canary_job_id" in kwargs)
+
+    monkeypatch.setattr(batch_script, "datetime", Clock)
+    monkeypatch.setattr(
+        batch_script,
+        "SupabaseBatchRepository",
+        lambda **_kwargs: Repository(),
+    )
+    monkeypatch.setattr(batch_script, "build_batch_dispatcher", build)
+
+    result = await batch_script._run_live(settings, poll_only=False)
+
+    assert [name for name, _kwargs in calls] == [
+        "poll",
+        "budget",
+        "peek",
+        "shadow_day",
+        "submit",
+    ]
+    assert len(builds) == 2
+    assert "canary_job_id" not in builds[0]
+    assert builds[1]["canary_job_id"] == (
+        "11111111-1111-4111-8111-111111111111"
+    )
+    assert calls[2][1]["pilot_subject_sha256"] == (
+        settings.canary_subject_sha256
+    )
+    assert calls[3][1]["kst_date"] == date(2026, 8, 1)
+    assert calls[3][1]["hard_limit_usd"] == Decimal("0.05")
+    assert result["pilot_kst_date"] == "2026-08-01"
+    assert result["submitted"] == 1
     assert result["submissions_enabled"] is True
 
 
@@ -441,7 +619,7 @@ def test_live_receipt_is_required_even_when_all_credentials_exist():
         ),
         ({"BATCH_CANARY_ENABLED": "false"}, "CANARY_ENABLED"),
         ({"BATCH_CANARY_ENABLED": "TRUE"}, "CANARY_ENABLED"),
-        ({"BATCH_CANARY_ENVIRONMENT": "production"}, "must be staging"),
+        ({"BATCH_CANARY_ENVIRONMENT": "preview"}, "staging or production"),
         ({"RAILWAY_ENVIRONMENT_NAME": "production"}, "ENVIRONMENT_NAME"),
         ({"RAILWAY_GIT_COMMIT_SHA": ""}, "RAILWAY_GIT_COMMIT_SHA"),
         ({"OPENAI_API_KEY": "short"}, "OPENAI_API_KEY"),

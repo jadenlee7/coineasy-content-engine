@@ -175,6 +175,7 @@ X_BEARER_TOKEN
 STUDIO_BASE_URL=https://coineasy-newscard.netlify.app
 STUDIO_AUTOMATION_TOKEN
 AUTOMATION_TIMEZONE=Asia/Seoul
+AUTOMATION_ALLOWED_CLIENTS=yellow,origintrail,squid,babylon
 AUTOMATION_LOOKBACK_HOURS=30
 AUTOMATION_DAILY_DRAFT_LIMIT=4
 AUTOMATION_ENABLE_TUTORIALS=false
@@ -183,6 +184,12 @@ EASYFARM_CONTENT_SIGNALS_URL=https://jlxbywqofrltyttklcqy.supabase.co/functions/
 EASYFARM_CONTENT_SIGNALS_TOKEN
 EASYFARM_CONTENT_SIGNALS_WINDOW_DAYS=7
 ```
+
+`AUTOMATION_ALLOWED_CLIENTS` is a fail-closed intake scope. A dedicated
+OriginTrail worker may set it to `origintrail`; the canonical four-client
+value preserves the normal daily worker behavior. The setting changes which
+official clients are inspected and cannot grant generation or publication
+authority.
 
 `STUDIO_AUTOMATION_TOKEN` must be the same high-entropy value in Netlify and the
 cron service, but it must be different from the human `STUDIO_ACCESS_TOKEN`.

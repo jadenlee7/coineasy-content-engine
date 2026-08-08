@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   contentCatalogConfig,
   isCatalogUuid,
@@ -13,6 +15,7 @@ const BATCH_REVIEW_STATUS = "completed";
 const BATCH_REVIEW_RESULT_CODE = "needs_review";
 const MAX_RESULT_JSON_BYTES = 32 * 1024;
 const MAX_SOURCE_URL_LENGTH = 2_048;
+const MAX_SOURCE_CONTENT_LENGTH = 60_000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const MODEL_BY_TIER = {
@@ -26,7 +29,9 @@ const RESULT_FIELD_LIMITS = {
   telegram_copy_ko: 1_800,
 } as const;
 
-export type BatchReviewConfig = ContentCatalogConfig;
+export type BatchReviewConfig = ContentCatalogConfig & {
+  authorizationKey?: string;
+};
 
 export type BatchReviewListItem = {
   ref: string;
@@ -64,6 +69,13 @@ export type BatchReviewPayload = {
 
 export type BatchReviewDetail = BatchReviewListItem & {
   result_payload: BatchReviewPayload;
+  source_content: string | null;
+  source_evidence: {
+    storage: "inline" | "hash_only_archive";
+    content_length: number;
+    content_sha256: string;
+    verified_at: string;
+  };
   input_sha256: string;
   actual_input_tokens: number;
   actual_output_tokens: number;
@@ -145,6 +157,15 @@ function exactBatchResultPayload(value: unknown): BatchReviewPayload | null {
   };
 }
 
+function exactSourceContent(value: unknown): string | null {
+  if (
+    typeof value !== "string"
+    || value.trim().length < 1
+    || value.length > MAX_SOURCE_CONTENT_LENGTH
+  ) return null;
+  return value;
+}
+
 function parseListItem(value: unknown): BatchReviewListItem | null {
   if (!isRecord(value)) return null;
   const modelTier = value.model_tier;
@@ -190,7 +211,7 @@ function parseListItem(value: unknown): BatchReviewListItem | null {
 function rpcHeaders(config: BatchReviewConfig): Record<string, string> {
   return {
     apikey: config.serviceRoleKey,
-    Authorization: `Bearer ${config.serviceRoleKey}`,
+    Authorization: `Bearer ${config.authorizationKey ?? config.serviceRoleKey}`,
     "Content-Type": "application/json",
   };
 }
@@ -310,6 +331,9 @@ export async function getBatchReviewItem(
   const resultPayload = isRecord(result)
     ? exactBatchResultPayload(result.result_payload)
     : null;
+  const sourceContent = isRecord(result)
+    ? exactSourceContent(result.source_content)
+    : null;
   if (
     !listFields
     || listFields.job_id !== normalizedJobId
@@ -318,11 +342,19 @@ export async function getBatchReviewItem(
     || !validBoundedInteger(result.actual_input_tokens, 1_050_000)
     || !validBoundedInteger(result.actual_output_tokens, 128_000)
     || !resultPayload
+    || !sourceContent
   ) throw new BatchReviewError("batch_review_invalid_response");
 
   return {
     ...listFields,
     result_payload: resultPayload,
+    source_content: sourceContent,
+    source_evidence: {
+      storage: "inline",
+      content_length: sourceContent.length,
+      content_sha256: createHash("sha256").update(sourceContent, "utf8").digest("hex"),
+      verified_at: listFields.finished_at,
+    },
     input_sha256: result.input_sha256 as string,
     actual_input_tokens: result.actual_input_tokens,
     actual_output_tokens: result.actual_output_tokens,

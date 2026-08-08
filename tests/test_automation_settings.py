@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.automation.settings import AutomationSettings
+from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
 
 
 SIGNALS_URL = (
@@ -28,12 +28,21 @@ def test_automation_settings_are_review_first_by_default():
     settings = AutomationSettings.from_env(_env())
 
     assert settings.lookback_hours == 30
+    assert settings.allowed_clients == AUTOMATION_CLIENTS
     assert settings.daily_draft_limit == 4
     assert settings.enable_tutorials is False
     assert settings.timezone == "Asia/Seoul"
     assert settings.easyfarm_content_signals_url is None
     assert settings.easyfarm_content_signals_token is None
     assert settings.easyfarm_content_signals_window_days == 7
+
+
+def test_automation_settings_scope_clients_in_canonical_order():
+    settings = AutomationSettings.from_env(_env(
+        AUTOMATION_ALLOWED_CLIENTS="babylon,origintrail",
+    ))
+
+    assert settings.allowed_clients == ("origintrail", "babylon")
 
 
 def test_automation_settings_enable_the_exact_easyfarm_signals_endpoint():
@@ -56,6 +65,15 @@ def test_automation_settings_enable_the_exact_easyfarm_signals_endpoint():
         ({"CONTENT_STUDIO_WORKSPACE_ID": "not-a-uuid"}, "UUID"),
         ({"AUTOMATION_TIMEZONE": "UTC"}, "Asia/Seoul"),
         ({"AUTOMATION_DAILY_DRAFT_LIMIT": "5"}, "between 1 and 4"),
+        ({"AUTOMATION_ALLOWED_CLIENTS": ""}, "unique nonempty subset"),
+        (
+            {"AUTOMATION_ALLOWED_CLIENTS": "origintrail,origintrail"},
+            "unique nonempty subset",
+        ),
+        (
+            {"AUTOMATION_ALLOWED_CLIENTS": "origintrail,unknown"},
+            "unique nonempty subset",
+        ),
         ({"AUTOMATION_ENABLE_TUTORIALS": "maybe"}, "boolean"),
         ({"AUTOMATION_ENABLE_TUTORIALS": "true"}, "must remain false"),
         ({"STUDIO_AUTOMATION_TOKEN": "a" * 513}, "at most 512"),

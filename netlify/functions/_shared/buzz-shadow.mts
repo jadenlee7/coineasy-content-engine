@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
+  batchReviewConfig,
+  type BatchReviewConfig,
   type BatchReviewCursor,
   type BatchReviewListItem,
   type BatchReviewPage,
@@ -14,6 +16,15 @@ const BUZZ_SHADOW_EVENT_TYPE = "origintrail.batch_review_ready.v1";
 const MINIMUM_TOKEN_LENGTH = 32;
 const MAXIMUM_TOKEN_LENGTH = 512;
 const MAXIMUM_EVENTS = 50;
+const RESERVED_SECRET_ENVS = [
+  "BUZZ_DELIVERY_WORKER_TOKEN",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_BUZZ_DELIVERY_KEY",
+  "SUPABASE_BUZZ_SHADOW_KEY",
+  "STUDIO_ACCESS_TOKEN",
+  "API_SECRET",
+  "PUBLICATION_WORKER_TOKEN",
+] as const;
 const OFFICIAL_SOURCE_PATTERN = /^https:\/\/x\.com\/origin_trail\/status\/[0-9]{1,19}$/;
 
 export type BuzzShadowEvent = {
@@ -30,6 +41,13 @@ export type BuzzShadowEvent = {
   finished_at: string;
   source_url: string;
   studio_review_path: string;
+  headline_ko: string;
+  summary_ko: string;
+};
+
+export type BuzzShadowPreview = {
+  headline_ko: string;
+  summary_ko: string;
 };
 
 export type BuzzShadowPage = {
@@ -57,7 +75,16 @@ function configuredToken(
   getEnv: (name: string) => string | undefined,
 ): string | null {
   const value = (getEnv("BUZZ_SHADOW_ACCESS_TOKEN") || "").trim();
-  return value.length >= MINIMUM_TOKEN_LENGTH && value.length <= MAXIMUM_TOKEN_LENGTH
+  // Same distinctness rule the delivery token already enforces: a shadow
+  // token equal to another secret means a mis-provisioned environment, so
+  // the endpoint fails closed as not-configured instead of accepting it.
+  const reused = RESERVED_SECRET_ENVS.some((name) => {
+    const reserved = (getEnv(name) || "").trim();
+    return reserved.length > 0 && reserved === value;
+  });
+  return value.length >= MINIMUM_TOKEN_LENGTH
+    && value.length <= MAXIMUM_TOKEN_LENGTH
+    && !reused
     ? value
     : null;
 }
@@ -66,6 +93,17 @@ export function buzzShadowAccessConfigured(
   getEnv: (name: string) => string | undefined,
 ): boolean {
   return configuredToken(getEnv) !== null;
+}
+
+export function buzzShadowBatchReviewConfig(
+  getEnv: (name: string) => string | undefined,
+): BatchReviewConfig | null {
+  const config = batchReviewConfig(getEnv);
+  if (!config) return null;
+  // PostgREST still requires the project API key in `apikey`. The scoped
+  // custom-role JWT replaces only the bearer used for database authorization.
+  const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
+  return scopedKey ? { ...config, authorizationKey: scopedKey } : config;
 }
 
 export function hasValidBuzzShadowAccess(
@@ -86,6 +124,23 @@ function validTimestamp(value: string): boolean {
   return value.length >= 20
     && value.length <= 40
     && Number.isFinite(Date.parse(value));
+}
+
+function validPreviewText(value: unknown, maximum: number): value is string {
+  return typeof value === "string"
+    && value.trim() === value
+    && value.length >= 1
+    && value.length <= maximum
+    && !value.includes("@")
+    && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+
+export function buzzResultPreviewStartAt(
+  getEnv: (name: string) => string | undefined,
+): number | null {
+  const value = (getEnv("BUZZ_RESULT_PREVIEW_START_AT") || "").trim();
+  if (!validTimestamp(value)) return null;
+  return Date.parse(value);
 }
 
 function validReviewItem(item: BatchReviewListItem): boolean {
@@ -117,11 +172,21 @@ function eventId(workspaceId: string, jobId: string): string {
     .digest("hex");
 }
 
-function projectEvent(item: BatchReviewListItem, workspaceId: string): BuzzShadowEvent {
+function projectEvent(
+  item: BatchReviewListItem,
+  workspaceId: string,
+  preview: BuzzShadowPreview | undefined,
+): BuzzShadowEvent {
   if (!validReviewItem(item)) {
     throw new BuzzShadowError("buzz_shadow_invalid_review_page");
   }
-  if (!validTimestamp(item.finished_at) || item.source_url === null) {
+  if (
+    !validTimestamp(item.finished_at)
+    || item.source_url === null
+    || !preview
+    || !validPreviewText(preview.headline_ko, 120)
+    || !validPreviewText(preview.summary_ko, 1_800)
+  ) {
     throw new BuzzShadowError("buzz_shadow_invalid_review_page");
   }
   return {
@@ -138,6 +203,8 @@ function projectEvent(item: BatchReviewListItem, workspaceId: string): BuzzShado
     finished_at: item.finished_at,
     source_url: item.source_url,
     studio_review_path: `/?batch=${encodeURIComponent(item.job_id)}`,
+    headline_ko: preview.headline_ko,
+    summary_ko: preview.summary_ko,
   };
 }
 
@@ -154,6 +221,7 @@ function projectCursor(cursor: BatchReviewCursor | null): BatchReviewCursor | nu
 export function projectBuzzShadowPage(
   page: BatchReviewPage,
   workspaceId: string,
+  previews: ReadonlyMap<string, BuzzShadowPreview>,
 ): BuzzShadowPage {
   if (
     !isCatalogUuid(workspaceId)
@@ -169,7 +237,7 @@ export function projectBuzzShadowPage(
       throw new BuzzShadowError("buzz_shadow_invalid_review_page");
     }
     seen.add(item.job_id);
-    return projectEvent(item, workspaceId);
+    return projectEvent(item, workspaceId, previews.get(item.job_id));
   });
   return {
     schema_version: BUZZ_SHADOW_SCHEMA_VERSION,

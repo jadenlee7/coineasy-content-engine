@@ -44,11 +44,11 @@ def test_batch_dispatcher_is_short_lived_and_uses_small_worker_image():
 
     assert config["build"]["dockerfilePath"] == "Dockerfile.batch"
     assert config["deploy"] == {
-        "startCommand": "python -m scripts.run_batch_dispatcher",
-        "cronSchedule": "*/10 * * * *",
+        "startCommand": "python -m scripts.run_batch_dispatcher --submit-once",
+        "cronSchedule": "0 * * * *",
         "restartPolicyType": "NEVER",
     }
-    assert "--submit-once" not in config["deploy"]["startCommand"]
+    assert config["deploy"]["startCommand"].endswith("--submit-once")
     dockerfile = (ROOT / "Dockerfile.batch").read_text().lower()
     assert "requirements-automation.txt" in dockerfile
     assert "copy core ./core" not in dockerfile

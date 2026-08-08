@@ -92,7 +92,11 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     functionSource,
     /data-library-review|data-library-editable|data-library-publication|data-library-promotion|<button|<textarea|download/i,
   );
-  assert.match(functionSource, /<pre class="batch-review-result">\$\{escapeHtml\(resultText\)\}<\/pre>/);
+  assert.match(functionSource, /batch-review-output/);
+  assert.match(functionSource, /batch-review-banner/);
+  assert.match(functionSource, /\/api\/batch-review\/\$\{encodeURIComponent\(jobId\)\}\/banner\.png/);
+  assert.match(functionSource, /Batch에 고정된 공식 원문/);
+  assert.match(functionSource, /원문 본문이 수집되지 않아 사용할 수 없는 결과입니다/);
   assert.match(functionSource, /headline_ko: 120/);
   assert.match(functionSource, /body_ko: 1800/);
   assert.match(functionSource, /x_copy_ko: 500/);
@@ -145,6 +149,7 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     input_sha256: "a".repeat(64),
     finished_at: "2026-07-31T12:00:00.000Z",
     source_url: "https://x.com/origin_trail/status/123",
+    source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
     result_payload: {
       headline_ko: "<img src=x onerror=alert(1)>",
       body_ko: "검토용 plain text",
@@ -163,7 +168,13 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.doesNotMatch(libraryDetail.innerHTML, /Squid/);
   assert.match(libraryDetail.innerHTML, /&lt;script&gt;alert\(&#039;title&#039;\)&lt;\/script&gt;/);
   assert.match(libraryDetail.innerHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.doesNotMatch(libraryDetail.innerHTML, /<script|<img|<button|<textarea/i);
+  assert.doesNotMatch(libraryDetail.innerHTML, /<script|<img src=x|<button|<textarea/i);
+  assert.match(libraryDetail.innerHTML, /<img src="\/api\/batch-review\//);
+  assert.match(libraryDetail.innerHTML, /width="1200" height="630"/);
+  assert.match(libraryDetail.innerHTML, /Buzz 전달 시 같은 PNG가 첨부/);
+  assert.match(libraryDetail.innerHTML, /Batch에 고정된 공식 원문/);
+  assert.match(libraryDetail.innerHTML, /OriginTrail이 공식 업데이트를 발표했습니다/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /원문 본문이 수집되지 않아/);
   assert.doesNotMatch(
     libraryDetail.innerHTML,
     /data-library-review|data-library-editable|data-library-publication|data-library-promotion/i,
@@ -173,6 +184,14 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
     ...validDetail,
     client_id: "squid",
   }), /invalid_batch_review_detail/);
+
+  renderBatchReviewDetail({
+    ...validDetail,
+    source_content: "https://t.co/example",
+  });
+  assert.match(libraryDetail.innerHTML, /원문 본문이 수집되지 않아 사용할 수 없는 결과입니다/);
+  assert.match(libraryDetail.innerHTML, /근거 부족/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /batch-review-banner/);
   assert.throws(() => renderBatchReviewDetail({
     ...validDetail,
     agent_id: "squid_client_agent",

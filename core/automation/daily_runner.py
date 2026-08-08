@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
@@ -30,7 +31,7 @@ from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
 )
-from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
+from core.automation.settings import AutomationSettings
 from core.batch.bridge import BatchQueueBridge
 from core.batch.models import BatchWorkItem, canonical_input_sha256
 from core.batch.policy import BatchPolicy
@@ -56,6 +57,7 @@ from core.squid_visual_style import (
 _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
 _FACT_CHECK_GENERATION_POLICY_VERSION = "double-fact-check@1"
+_SOURCE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -246,7 +248,7 @@ class OfficialXDailyRunner:
         if not dry_run:
             await self._drain_jobs(worker_id, summary)
 
-        for client_id in AUTOMATION_CLIENTS:
+        for client_id in self.settings.allowed_clients:
             try:
                 await self._intake_client(
                     client_id=client_id,
@@ -879,12 +881,19 @@ class OfficialXDailyRunner:
             or job.source_image_url.strip()
         ):
             raise ValueError("OriginTrail Batch handoff received unsupported evidence")
+        if not _SOURCE_URL_RE.sub("", job.source_content).strip():
+            raise ValueError(
+                "OriginTrail Batch handoff requires substantive source evidence"
+            )
         evidence = {
             "client_id": job.client_id,
             "content_kind": job.content_kind,
             "request_id": job.request_id,
             "source": {
                 "content": job.source_content,
+                "content_sha256": hashlib.sha256(
+                    job.source_content.encode("utf-8")
+                ).hexdigest(),
                 "url": job.source_url,
             },
             "style_reference_pack": {
@@ -1042,6 +1051,9 @@ class OfficialXDailyRunner:
                 "is_retweet": post.get("is_retweet") is True,
                 "is_reply": post.get("is_reply") is True,
             })
+        article_evidence = post.get("article_evidence")
+        if isinstance(article_evidence, Mapping):
+            payload["article_evidence"] = dict(article_evidence)
         return payload
 
     @staticmethod

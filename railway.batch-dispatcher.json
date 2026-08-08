@@ -5,8 +5,8 @@
     "dockerfilePath": "Dockerfile.batch"
   },
   "deploy": {
-    "startCommand": "python -m scripts.run_batch_dispatcher",
-    "cronSchedule": "*/10 * * * *",
+    "startCommand": "python -m scripts.run_batch_dispatcher --submit-once",
+    "cronSchedule": "0 * * * *",
     "restartPolicyType": "NEVER"
   }
 }
