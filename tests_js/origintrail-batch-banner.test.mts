@@ -9,6 +9,7 @@ import {
   createStudioSessionValue,
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
+import { renderOriginTrailBatchBanner } from "../netlify/functions/_shared/origintrail-batch-banner.mts";
 import { ORIGINTRAIL_ARCHIVED_JOB_ID } from "../netlify/functions/_shared/origintrail-archived-review.mts";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
@@ -104,6 +105,45 @@ function pngChunkTypes(bytes: Buffer): string[] {
   assert.equal(offset, bytes.length);
   return chunks;
 }
+
+test("bundled Hangul font renders distinct glyphs and deterministic PNG bytes", async () => {
+  const fetcher: typeof fetch = async (input) => {
+    const request = new Request(input);
+    if (request.url === "https://console.example/assets/brands/origintrail-dark.png") {
+      return new Response(LOGO, {
+        headers: {
+          "content-type": "image/png",
+          "content-length": String(LOGO.length),
+        },
+      });
+    }
+    throw new Error(`unexpected request ${request.url}`);
+  };
+  const firstDetail = detail();
+  firstDetail.result_payload.headline_ko = "가나다라마바사";
+  const secondDetail = detail();
+  secondDetail.result_payload.headline_ko = "아자차카타파하";
+
+  const first = await renderOriginTrailBatchBanner(
+    firstDetail,
+    "https://console.example",
+    fetcher,
+  );
+  const replay = await renderOriginTrailBatchBanner(
+    firstDetail,
+    "https://console.example",
+    fetcher,
+  );
+  const second = await renderOriginTrailBatchBanner(
+    secondDetail,
+    "https://console.example",
+    fetcher,
+  );
+
+  assert.equal(first.sha256, replay.sha256);
+  assert.deepEqual(first.bytes, replay.bytes);
+  assert.notEqual(first.sha256, second.sha256);
+});
 
 test("Studio and Buzz receive the same evidence-bound 1200x630 PNG", async () => {
   const originalFetch = globalThis.fetch;
