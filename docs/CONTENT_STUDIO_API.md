@@ -270,6 +270,12 @@ Railway claims the durable job, verifies the private PNG bytes and canonical
 `sendPhoto` call. It never regenerates or reformats content. Known failures before
 the fence may use the bounded job retry budget. Any uncertain response after the
 fence becomes `delivery_unknown` and cannot be claimed again automatically.
+While Studio publication is disabled, an authenticated operator can close a
+`delivery_unknown` attempt through
+`POST /api/library/{content_item_id}/publish-resolution` only after attesting
+that the canonical channel, exact caption, and exact PNG were all checked. The
+route never calls Telegram or requeues work; it writes an audited `cancelled`
+resolution and requires a new approved version for any later publication.
 
 New requests require both `STUDIO_TELEGRAM_PUBLISH_ENABLED=true` on Netlify and
 `TELEGRAM_PUBLICATION_ENABLED=true` on Railway, with both allowlists exactly

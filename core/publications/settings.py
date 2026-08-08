@@ -149,6 +149,7 @@ class PublicationSettings:
     allowed_clients: tuple[str, ...] = ("squid",)
     lease_seconds: int = 180
     max_claims: int = 1
+    send_timeout_seconds: int = 90
     clients_dir: Path = Path("clients")
 
     @classmethod
@@ -206,6 +207,9 @@ class PublicationSettings:
             ),
             max_claims=_bounded_int(
                 env, "TELEGRAM_PUBLICATION_MAX_CLAIMS", 1, 1, 4
+            ),
+            send_timeout_seconds=_bounded_int(
+                env, "TELEGRAM_PUBLICATION_SEND_TIMEOUT_SECONDS", 90, 30, 120
             ),
             clients_dir=clients_dir,
         )

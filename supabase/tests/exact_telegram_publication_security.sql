@@ -50,7 +50,8 @@ begin
         'public.claim_exact_telegram_publication_job(uuid,text,integer)',
         'public.mark_exact_telegram_attempt_started(uuid,text,text)',
         'public.complete_exact_telegram_publication_job(uuid,text,text,bigint,text,timestamp with time zone)',
-        'public.fail_exact_telegram_publication_job(uuid,text,text,boolean)'
+        'public.fail_exact_telegram_publication_job(uuid,text,text,boolean)',
+        'public.cancel_unobserved_exact_telegram_publication(uuid,uuid,uuid,uuid,timestamp with time zone,text,boolean,boolean,boolean,text)'
     ] loop
         if has_function_privilege('anon', signature, 'execute')
            or has_function_privilege('authenticated', signature, 'execute') then
@@ -491,6 +492,34 @@ begin
         raise exception
             'manual observation of exact delivery_unknown failed';
     end if;
+
+    update public.publications
+    set delivery_started_at = pg_catalog.date_trunc(
+        'milliseconds', statement_timestamp() - interval '11 minutes'
+    )
+    where id = (first_request ->> 'publication_id')::uuid;
+    begin
+        perform public.cancel_unobserved_exact_telegram_publication(
+            'd0000000-0000-4000-8000-000000000001',
+            'd1000000-0000-4000-8000-000000000002',
+            version_id,
+            (first_request ->> 'publication_id')::uuid,
+            (
+                select publication.delivery_started_at
+                from public.publications as publication
+                where publication.id =
+                        (first_request ->> 'publication_id')::uuid
+            ),
+            'squid_kor_update',
+            true,
+            true,
+            true,
+            'd4000000-0000-4000-8000-000000000102'
+        );
+        raise exception
+            'delivery unknown resolution ignored an observed message';
+    exception when unique_violation then null;
+    end;
 
     begin
         update public.publications
@@ -1104,6 +1133,116 @@ begin
        ) then
         raise exception 'recovery-only pre-attempt lease was not retried';
     end if;
+end
+$test$;
+
+do $test$
+declare
+    publication public.publications%rowtype;
+    version_id uuid;
+    resolved jsonb;
+    replay jsonb;
+    resolution_key text := 'd4000000-0000-4000-8000-000000000100';
+begin
+    select delivery.* into publication
+    from public.publications as delivery
+    where delivery.content_item_id =
+            'd1000000-0000-4000-8000-000000000005'
+      and delivery.request_payload ->> 'workflow'
+            = 'exact_telegram_publication_v1';
+    version_id := publication.content_version_id;
+    update public.publications
+    set delivery_started_at = pg_catalog.date_trunc(
+        'milliseconds', statement_timestamp() - interval '11 minutes'
+    )
+    where id = publication.id
+    returning * into publication;
+
+    begin
+        perform public.cancel_unobserved_exact_telegram_publication(
+            publication.workspace_id,
+            publication.content_item_id,
+            version_id,
+            publication.id,
+            publication.delivery_started_at,
+            'squid_kor_update',
+            true,
+            false,
+            true,
+            resolution_key
+        );
+        raise exception
+            'delivery unknown resolution accepted incomplete operator checks';
+    exception when invalid_parameter_value then null;
+    end;
+
+    resolved := public.cancel_unobserved_exact_telegram_publication(
+        publication.workspace_id,
+        publication.content_item_id,
+        version_id,
+        publication.id,
+        publication.delivery_started_at,
+        'squid_kor_update',
+        true,
+        true,
+        true,
+        resolution_key
+    );
+    if resolved ->> 'status' <> 'cancelled'
+       or resolved ->> 'reused' <> 'false'
+       or exists (
+            select 1
+            from public.jobs as job
+            where job.input ->> 'publication_id' = publication.id::text
+              and job.status in ('queued', 'running', 'retrying')
+       )
+       or not exists (
+            select 1
+            from public.event_log as event
+            where event.entity_id = publication.id
+              and event.event_type =
+                    'exact_telegram_delivery_not_observed_cancelled'
+              and event.data ->> 'reviewer_source' = 'studio_session'
+       ) then
+        raise exception
+            'delivery unknown resolution did not close the exact attempt';
+    end if;
+
+    replay := public.cancel_unobserved_exact_telegram_publication(
+        publication.workspace_id,
+        publication.content_item_id,
+        version_id,
+        publication.id,
+        publication.delivery_started_at,
+        'squid_kor_update',
+        true,
+        true,
+        true,
+        resolution_key
+    );
+    if replay ->> 'status' <> 'cancelled'
+       or replay ->> 'reused' <> 'true' then
+        raise exception
+            'delivery unknown resolution replay was not idempotent';
+    end if;
+
+    begin
+        perform public.cancel_unobserved_exact_telegram_publication(
+            publication.workspace_id,
+            publication.content_item_id,
+            version_id,
+            publication.id,
+            publication.delivery_started_at,
+            'squid_kor_update',
+            true,
+            true,
+            true,
+            'd4000000-0000-4000-8000-000000000101'
+        );
+        raise exception
+            'delivery unknown resolution accepted a different idempotency key';
+    exception when object_not_in_prerequisite_state then null;
+    end;
 end
 $test$;
 

@@ -35,6 +35,7 @@ deploying any application plane.
 | `RAILWAY_API_URL` | no | no | required |
 | `TELEGRAM_PUBLICATION_ENABLED=false` | required | required | no |
 | `TELEGRAM_PUBLICATION_ALLOWED_CLIENTS=squid` | required | required | no |
+| `TELEGRAM_PUBLICATION_SEND_TIMEOUT_SECONDS=90` | optional | optional | no |
 | `TELEGRAM_PUBLICATION_RECOVERY_LIMIT=100` | optional | optional | no |
 | `STUDIO_TELEGRAM_PUBLISH_ENABLED=false` | no | no | required |
 | `STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS=squid` | no | no | required |
@@ -52,7 +53,9 @@ Its five-minute invocation is mandatory
 while publication is enabled and claims at most one durable job by default. Set
 `TELEGRAM_PUBLICATION_LEASE_SECONDS` to at least 180 seconds. The main Railway
 API also exposes a dedicated, bodyless internal kick endpoint authenticated only
-by `X-Publication-Worker-Key`.
+by `X-Publication-Worker-Key`. It returns `202 scheduled` before the provider
+call and runs one durable claim as a server background task; the five-minute
+cron remains the mandatory recovery backstop.
 
 ## Rollout order
 
@@ -166,10 +169,22 @@ reset, requeue, or resend that job automatically.
 2. If the message exists, paste its canonical
    `https://t.me/squid_kor_update/<message_id>` URL into the Telegram performance
    observation field. This records the existing post and does not publish.
-3. If it does not appear, keep the job unresolved until Telegram delivery can be
-   ruled out operationally. A new approved version and a new publication request
-   require an explicit human decision because a delayed original message could
-   otherwise become a duplicate.
+3. If it does not appear, wait at least ten minutes and use the Studio action
+   **미발행 확인 후 이 시도 닫기** only after checking the canonical channel,
+   exact stored caption, and exact PNG. This service-role RPC never calls
+   Telegram and never requeues the job. It changes only the fenced publication
+   to `cancelled`, records the three attestations plus `studio_session` in the
+   audit log, and is idempotent for one resolution key.
+4. A cancelled immutable version cannot be resent. Correct or regenerate the
+   content, complete the double fact check on the new version, and make a new
+   explicit publication decision. If a canonical Telegram observation already
+   exists for the old version, the cancellation RPC fails closed.
+
+The resolution route is available only while
+`STUDIO_TELEGRAM_PUBLISH_ENABLED` is not `true`; keep both Railway execution
+planes disabled as well. It is an incident-resolution path, not an automatic
+negative-delivery detector. Positive evidence may be linked through the manual
+observation field, but absence is never inferred from one failed HTTP request.
 
 Never put bot tokens, worker tokens, raw provider payloads, or arbitrary error
 text into publication rows or operator notes.

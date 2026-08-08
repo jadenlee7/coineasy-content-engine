@@ -64,6 +64,15 @@ export type StudioTelegramPublicationTarget = {
   current_version_id: string;
 };
 
+export type StudioTelegramDeliveryResolution = {
+  contentItemId: string;
+  contentVersionId: string;
+  publicationId: string;
+  deliveryStartedAt: string;
+  publicChannel: "squid_kor_update";
+  idempotencyKey: string;
+};
+
 export class ContentPublicationError extends Error {
   readonly code: string;
 
@@ -110,6 +119,18 @@ function normalizedIsoTimestamp(value: unknown): string | null | undefined {
 
 function publicationError(message: string, status: number): string {
   const normalized = message.toLowerCase();
+  if (normalized.includes("delivery resolution")) {
+    if (normalized.includes("does not exist")) {
+      return "telegram_publication_not_found";
+    }
+    if (normalized.includes("is invalid")) {
+      return "invalid_telegram_delivery_resolution";
+    }
+    return "telegram_delivery_resolution_conflict";
+  }
+  if (normalized.includes("delivery was already observed publicly")) {
+    return "telegram_delivery_resolution_conflict";
+  }
   if (normalized.includes("idempotency")) return "telegram_publication_idempotency_conflict";
   if (
     normalized.includes("mock/test")
@@ -360,6 +381,32 @@ export async function getStudioTelegramPublication(
   return normalizedPublication(raw, contentItemId, contentVersionId, true);
 }
 
+export async function cancelStudioTelegramDeliveryUnknown(
+  config: ContentCatalogConfig,
+  resolution: StudioTelegramDeliveryResolution,
+  fetcher: typeof fetch = fetch,
+  signal: AbortSignal = AbortSignal.timeout(10_000),
+): Promise<StudioTelegramPublication> {
+  const raw = await rpc(config, "cancel_unobserved_exact_telegram_publication", {
+    target_workspace_id: config.workspaceId,
+    target_content_item_id: resolution.contentItemId.toLowerCase(),
+    target_content_version_id: resolution.contentVersionId.toLowerCase(),
+    target_publication_id: resolution.publicationId.toLowerCase(),
+    target_delivery_started_at: resolution.deliveryStartedAt,
+    target_public_channel: resolution.publicChannel,
+    target_channel_checked: true,
+    target_caption_checked: true,
+    target_png_checked: true,
+    request_idempotency_key: resolution.idempotencyKey.toLowerCase(),
+  }, fetcher, signal);
+  return normalizedPublication(
+    raw,
+    resolution.contentItemId,
+    resolution.contentVersionId,
+    false,
+  );
+}
+
 export async function kickTelegramPublicationWorker(
   config: PublicationWorkerConfig,
   fetcher: typeof fetch = fetch,
@@ -370,14 +417,15 @@ export async function kickTelegramPublicationWorker(
       {
         method: "POST",
         headers: { "X-Publication-Worker-Key": config.workerToken },
-        signal: AbortSignal.timeout(18_000),
+        signal: AbortSignal.timeout(5_000),
       },
     );
     if (!response.ok) return false;
     const result = await response.json().catch(() => null);
     return isRecord(result)
-      && typeof result.ok === "boolean"
-      && typeof result.claimed === "boolean";
+      && result.ok === true
+      && result.accepted === true
+      && result.status === "scheduled";
   } catch {
     return false;
   }

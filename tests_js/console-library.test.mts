@@ -117,6 +117,14 @@ test("publishes only the exact server-allowed approved Telegram version", () => 
   assert.match(consoleHtml, /Telegram 전송 시도 시각/);
   assert.match(consoleHtml, /delivery_started_at: deliveryStartedAt/);
   assert.match(consoleHtml, /중복 게시를 막기 위해 자동 재시도하지 않습니다/);
+  assert.match(consoleHtml, /data-library-publish-resolution="cancel-unobserved"/);
+  assert.match(consoleHtml, /function resolveUnknownTelegramPublication\(button\)/);
+  assert.match(consoleHtml, /phrase !== "미발행 확인"/);
+  assert.match(consoleHtml, /\/publish-resolution`, \{/);
+  assert.match(consoleHtml, /resolution: "confirmed_not_observed_cancelled"/);
+  assert.match(consoleHtml, /channel_checked: true/);
+  assert.match(consoleHtml, /caption_checked: true/);
+  assert.match(consoleHtml, /png_checked: true/);
   assert.match(consoleHtml, /telegram_publication_client_not_allowed/);
   assert.doesNotMatch(consoleHtml, /PUBLICATION_WORKER_TOKEN|X-Publication-Worker-Key/);
 });

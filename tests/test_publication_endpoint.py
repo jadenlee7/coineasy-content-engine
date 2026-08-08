@@ -68,18 +68,17 @@ def test_worker_endpoint_accepts_only_dedicated_secret_and_empty_body(client):
     assert with_body.json()["detail"] == "publication_worker_request_body_not_allowed"
 
 
-def test_worker_endpoint_runs_one_server_selected_claim(client):
+def test_worker_endpoint_schedules_one_server_selected_claim(client):
     response = client.post(
         "/internal/publications/telegram/run-once",
         headers={"X-Publication-Worker-Key": WORKER_TOKEN},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json() == {
         "ok": True,
-        "claimed": True,
-        "status": "published",
-        "publication_id": "33333333-3333-4333-8333-333333333333",
+        "accepted": True,
+        "status": "scheduled",
     }
 
 

@@ -8,6 +8,7 @@ Authentication: X-API-Key header
 Deployment: Railway
 """
 import asyncio
+import logging
 import os
 import re
 import secrets
@@ -75,6 +76,7 @@ app = FastAPI(
     description="Multi-tenant Korean content generation for Web3 clients",
     version="1.0.0",
 )
+_LOGGER = logging.getLogger(__name__)
 
 API_SECRET = os.environ.get("API_SECRET", "")
 OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/tmp/content_engine_output")).resolve()
@@ -549,9 +551,33 @@ async def notify_telegram_review(
     return result
 
 
-@app.post("/internal/publications/telegram/run-once")
+async def _run_exact_telegram_publication_background(
+    settings: PublicationSettings,
+) -> None:
+    """Run one durable claim after the dispatch response has been sent."""
+    try:
+        result = await build_exact_telegram_publication_worker(settings).run_once()
+    except PublicationRepositoryError:
+        _LOGGER.error("exact_telegram_publication_background_queue_unavailable")
+        return
+    except Exception:
+        # Provider URLs contain the bot token. Never serialize an arbitrary
+        # exception or traceback from this background boundary.
+        _LOGGER.error("exact_telegram_publication_background_failed")
+        return
+    _LOGGER.info(
+        "exact_telegram_publication_background_finished ok=%s claimed=%s status=%s publication_id=%s",
+        result.ok,
+        result.claimed,
+        result.status,
+        result.publication_id or "none",
+    )
+
+
+@app.post("/internal/publications/telegram/run-once", status_code=202)
 async def run_exact_telegram_publication_once(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_publication_worker_key: str = Header(
         default="",
         alias="X-Publication-Worker-Key",
@@ -583,14 +609,19 @@ async def run_exact_telegram_publication_once(
         if not telegram_publication_enabled():
             raise HTTPException(503, "telegram_publication_worker_disabled")
         settings = PublicationSettings.from_env()
-        result = await build_exact_telegram_publication_worker(settings).run_once()
+        background_tasks.add_task(
+            _run_exact_telegram_publication_background,
+            settings,
+        )
     except HTTPException:
         raise
     except ValueError:
         raise HTTPException(503, "telegram_publication_worker_not_configured")
-    except PublicationRepositoryError:
-        raise HTTPException(503, "telegram_publication_queue_unavailable")
-    return result.as_dict()
+    return {
+        "ok": True,
+        "accepted": True,
+        "status": "scheduled",
+    }
 
 
 @app.post("/clients/{client_id}/generate/edu-carousel", response_model=GenerateResponse)

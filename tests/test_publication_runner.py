@@ -137,6 +137,28 @@ def test_publication_settings_reject_short_lease_even_for_validation():
         )
 
 
+@pytest.mark.parametrize("timeout", ["30", "90", "120"])
+def test_publication_settings_accept_bounded_send_timeout(timeout):
+    env = _env(enabled="false")
+    env["TELEGRAM_PUBLICATION_SEND_TIMEOUT_SECONDS"] = timeout
+    settings = PublicationSettings.from_env_for_validation(
+        env,
+        clients_dir=ROOT / "clients",
+    )
+    assert settings.send_timeout_seconds == int(timeout)
+
+
+@pytest.mark.parametrize("timeout", ["29", "121", "not-an-integer"])
+def test_publication_settings_reject_unbounded_send_timeout(timeout):
+    env = _env(enabled="false")
+    env["TELEGRAM_PUBLICATION_SEND_TIMEOUT_SECONDS"] = timeout
+    with pytest.raises(ValueError):
+        PublicationSettings.from_env_for_validation(
+            env,
+            clients_dir=ROOT / "clients",
+        )
+
+
 def test_normal_settings_loader_still_requires_the_execution_flag():
     with pytest.raises(ValueError, match="must be true"):
         PublicationSettings.from_env(

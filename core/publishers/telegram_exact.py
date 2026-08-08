@@ -124,11 +124,17 @@ class ExactTelegramPublisher:
         self,
         config: TelegramExactConfig,
         *,
-        timeout_seconds: float = 30.0,
+        preflight_timeout_seconds: float = 15.0,
+        send_timeout_seconds: float = 90.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
+        if not 5 <= preflight_timeout_seconds <= 30:
+            raise ValueError("Telegram preflight timeout must be between 5 and 30 seconds")
+        if not 30 <= send_timeout_seconds <= 120:
+            raise ValueError("Telegram send timeout must be between 30 and 120 seconds")
         self.config = config
-        self.timeout_seconds = timeout_seconds
+        self.preflight_timeout_seconds = preflight_timeout_seconds
+        self.send_timeout_seconds = send_timeout_seconds
         self.transport = transport
 
     def _url(self, method: str) -> str:
@@ -150,7 +156,7 @@ class ExactTelegramPublisher:
     async def preflight(self) -> None:
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout_seconds,
+                timeout=self.preflight_timeout_seconds,
                 follow_redirects=False,
                 transport=self.transport,
             ) as client:
@@ -191,7 +197,7 @@ class ExactTelegramPublisher:
         )
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout_seconds,
+                timeout=self.send_timeout_seconds,
                 follow_redirects=False,
                 transport=self.transport,
             ) as client:
