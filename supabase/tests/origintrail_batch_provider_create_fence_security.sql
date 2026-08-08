@@ -111,6 +111,95 @@ values (
     statement_timestamp()
 );
 
+-- Anchor the OriginTrail ledger fixture to the same public review boundary
+-- enforced in production. Provider fencing itself does not exercise media, so
+-- this is intentionally a legacy text-only source.
+insert into public.source_feeds (
+    id, workspace_id, client_id, provider, name, source_url, handle,
+    poll_interval_minutes, active, created_by
+)
+values (
+    'f5000000-0000-4000-8000-000000000001',
+    'f0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'x',
+    'OriginTrail provider-fence test source',
+    'https://x.com/origin_trail',
+    '@origin_trail',
+    15,
+    true,
+    null
+);
+
+insert into public.source_items (
+    id, workspace_id, client_id, source_feed_id, external_id, source_type,
+    canonical_url, author_handle, published_at, body, media, raw_payload,
+    source_hash, ingested_by
+)
+values (
+    'f6000000-0000-4000-8000-000000000001',
+    'f0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'f5000000-0000-4000-8000-000000000001',
+    '1977777777777777777',
+    'tweet',
+    'https://x.com/origin_trail/status/1977777777777777777',
+    '@origin_trail',
+    statement_timestamp() - interval '1 hour',
+    'Pinned legacy text-only OriginTrail provider-fence evidence.',
+    '[]'::jsonb,
+    '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+    pg_catalog.md5('origintrail-provider-fence-text-source'),
+    null
+);
+
+insert into private.origintrail_standalone_sources (
+    workspace_id, client_id, source_item_id, is_quote,
+    first_poll_request_id
+)
+values (
+    'f0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'f6000000-0000-4000-8000-000000000001',
+    false,
+    'f7000000-0000-4000-8000-000000000001'
+);
+
+insert into public.jobs (
+    id, workspace_id, client_id, job_kind, status, priority, input, output,
+    idempotency_key, attempts, max_attempts, available_at
+)
+values (
+    'f1000000-0000-4000-8000-000000000001',
+    'f0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'generate',
+    'queued',
+    0,
+    jsonb_build_object(
+        'workflow', 'official_x_review_draft_v1',
+        'kst_date',
+            (statement_timestamp() at time zone 'Asia/Seoul')::date,
+        'source_item_ids', jsonb_build_array(
+            'f6000000-0000-4000-8000-000000000001'::uuid
+        ),
+        'content_kind', 'daily_news',
+        'request_id',
+            'f8000000-0000-4000-8000-000000000001'::uuid,
+        'source_content',
+            'Pinned legacy text-only OriginTrail provider-fence evidence.',
+        'source_url',
+            'https://x.com/origin_trail/status/1977777777777777777',
+        'source_image_url', '',
+        'manual_only', false
+    ),
+    '{}'::jsonb,
+    'origintrail-provider-fence-review:1',
+    0,
+    3,
+    statement_timestamp()
+);
+
 insert into agent_runtime.batch_jobs (
     job_id,
     workspace_id,

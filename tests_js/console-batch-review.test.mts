@@ -103,6 +103,13 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.match(functionSource, /telegram_copy_ko: 1800/);
   assert.match(functionSource, /resultKeys\.length === Object\.keys\(resultFieldLimits\)\.length/);
   assert.match(functionSource, /rawResultPayload\[key\]\.trim\(\)\.length >= 1/);
+  assert.match(functionSource, /고정된 보조 팩트체크/);
+  assert.match(functionSource, /사람의 이중 사실 확인이 필요합니다/);
+  assert.match(functionSource, /safeWebUrl\(reference\.url\)/);
+  assert.match(functionSource, /escapeHtml\(note\)/);
+  assert.match(functionSource, /escapeHtml\(reference\.label_ko\)/);
+  assert.match(functionSource, /escapeHtml\(reference\.finding_ko\)/);
+  assert.match(functionSource, /escapeHtml\(safeUrl\)/);
 
   const libraryState: Record<string, unknown> = {};
   const libraryDetail = { innerHTML: "", hidden: true };
@@ -175,10 +182,95 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.match(libraryDetail.innerHTML, /Batch에 고정된 공식 원문/);
   assert.match(libraryDetail.innerHTML, /OriginTrail이 공식 업데이트를 발표했습니다/);
   assert.doesNotMatch(libraryDetail.innerHTML, /원문 본문이 수집되지 않아/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /고정된 보조 팩트체크/);
   assert.doesNotMatch(
     libraryDetail.innerHTML,
     /data-library-review|data-library-editable|data-library-publication|data-library-promotion/i,
   );
+
+  const factCheckEvidence = {
+    evidence_sha256: "e".repeat(64),
+    payload: {
+      schema_version: "1.0",
+      policy_version: "origintrail-media-fact-evidence@1",
+      review_status: "qualified",
+      human_review_required: true,
+      verified_at: "2026-08-08T10:00:00.000Z",
+      source_url: "https://x.com/origin_trail/status/2085782218815775024",
+      source_content_sha256: "a".repeat(64),
+      media: {
+        type: "video",
+        media_key: "13_2085781578374860800",
+        recorded_url: "https://pbs.twimg.com/example.jpg",
+        preview_url: "https://pbs.twimg.com/example.jpg?name=orig",
+        preview_url_sha256: "b".repeat(64),
+        width: 1920,
+        height: 1920,
+        factual_evidence: false,
+      },
+      review_notes_ko: [
+        "공개 점수는 커뮤니티 제출 결과로 한정해 해석합니다.",
+        "<img src=x onerror=alert('note')>",
+      ],
+      official_references: [
+        {
+          kind: "origintrail_implementation",
+          label_ko: "OriginTrail 구현 문서 <script>alert('label')</script>",
+          url: "https://github.com/OriginTrail/dkg/blob/example/README.md",
+          observed_at: "2026-08-08T10:00:00.000Z",
+          snapshot_sha256: "c".repeat(64),
+          availability: "available",
+          finding_ko: "현재 확인 범위는 전송·연결 계층입니다. <svg onload=alert('finding')>",
+        },
+        {
+          kind: "arc_methodology",
+          label_ko: "ARC-AGI-3 방법론",
+          url: "https://arcprize.org/media/ARC_AGI_3_Technical_Report.pdf",
+          observed_at: "2026-08-08T10:00:00.000Z",
+          snapshot_sha256: null,
+          availability: "unavailable",
+          finding_ko: "현재 원문 스냅샷을 확인하지 못해 검증 완료로 간주하지 않습니다.",
+        },
+      ],
+    },
+  };
+  renderBatchReviewDetail({
+    ...validDetail,
+    fact_check_evidence: factCheckEvidence,
+  });
+  assert.match(libraryDetail.innerHTML, /고정된 보조 팩트체크/);
+  assert.match(libraryDetail.innerHTML, /사람의 이중 사실 확인이 필요합니다/);
+  assert.match(libraryDetail.innerHTML, /수집 시점 확인됨/);
+  assert.match(libraryDetail.innerHTML, /수집 시점 확인 불가/);
+  assert.match(libraryDetail.innerHTML, /&lt;img src=x onerror=alert\(&#039;note&#039;\)&gt;/);
+  assert.match(libraryDetail.innerHTML, /&lt;script&gt;alert\(&#039;label&#039;\)&lt;\/script&gt;/);
+  assert.match(libraryDetail.innerHTML, /&lt;svg onload=alert\(&#039;finding&#039;\)&gt;/);
+  assert.doesNotMatch(libraryDetail.innerHTML, /<script|<svg onload|<img src=x|<button|<textarea/i);
+  assert.doesNotMatch(
+    libraryDetail.innerHTML,
+    /data-library-review|data-library-editable|data-library-publication|data-library-promotion/i,
+  );
+
+  renderBatchReviewDetail({
+    ...validDetail,
+    fact_check_evidence: {
+      ...factCheckEvidence,
+      payload: {
+        ...factCheckEvidence.payload,
+        official_references: [{
+          ...factCheckEvidence.payload.official_references[0],
+          url: "javascript:alert('unsafe')",
+        }],
+      },
+    },
+  });
+  assert.doesNotMatch(libraryDetail.innerHTML, /고정된 보조 팩트체크|unsafe/);
+
+  renderBatchReviewDetail({
+    ...validDetail,
+    fact_check_evidence: null,
+  });
+  assert.doesNotMatch(libraryDetail.innerHTML, /고정된 보조 팩트체크/);
 
   assert.throws(() => renderBatchReviewDetail({
     ...validDetail,

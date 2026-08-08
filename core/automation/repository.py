@@ -17,6 +17,10 @@ from core.automation.models import (
     StyleReference,
     StyleReferencePack,
 )
+from core.automation.origintrail_evidence import (
+    OriginTrailFactEvidence,
+    parse_origintrail_fact_evidence,
+)
 from core.automation.content_signals import (
     CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION,
     ContentSignalsSnapshot,
@@ -650,6 +654,32 @@ class SupabaseAutomationRepository:
                 batch_handoff_recovery_only
             ),
         )
+
+    async def get_origintrail_reviewed_source_evidence(
+        self,
+        *,
+        workspace_id: str,
+        job_id: str,
+        worker_id: str,
+    ) -> OriginTrailFactEvidence | None:
+        """Read one immutable evidence pack through the current job lease."""
+        raw = await self._rpc(
+            "get_origintrail_reviewed_source_evidence",
+            {
+                "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+                "target_job_id": _uuid(job_id, "job_id"),
+                "target_worker_id": self._worker(worker_id),
+            },
+        )
+        if raw is None:
+            return None
+        try:
+            return parse_origintrail_fact_evidence(raw)
+        except ValueError as exc:
+            raise AutomationRepositoryError(
+                "invalid_origintrail_fact_evidence",
+                retryable=False,
+            ) from exc
 
     async def bind_execution_plane(
         self,

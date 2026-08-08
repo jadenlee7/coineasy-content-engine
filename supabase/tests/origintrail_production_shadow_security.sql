@@ -82,6 +82,106 @@ values (
     100000
 );
 
+-- The shadow ledger rows must use the same public review-job boundary as
+-- production. Shadow selection is independent of media admission, so these
+-- fixtures intentionally point at one legacy text-only standalone source.
+insert into public.source_feeds (
+    id, workspace_id, client_id, provider, name, source_url, handle,
+    poll_interval_minutes, active, created_by
+)
+values (
+    'e5500000-0000-4000-8000-000000000001',
+    'e5000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'x',
+    'OriginTrail production-shadow test source',
+    'https://x.com/origin_trail',
+    '@origin_trail',
+    15,
+    true,
+    null
+);
+
+insert into public.source_items (
+    id, workspace_id, client_id, source_feed_id, external_id, source_type,
+    canonical_url, author_handle, published_at, body, media, raw_payload,
+    source_hash, ingested_by
+)
+values (
+    'e5600000-0000-4000-8000-000000000001',
+    'e5000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'e5500000-0000-4000-8000-000000000001',
+    '1966666666666666666',
+    'tweet',
+    'https://x.com/origin_trail/status/1966666666666666666',
+    '@origin_trail',
+    statement_timestamp() - interval '1 hour',
+    'Pinned legacy text-only OriginTrail shadow evidence.',
+    '[]'::jsonb,
+    '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+    pg_catalog.md5('origintrail-shadow-text-source'),
+    null
+);
+
+insert into private.origintrail_standalone_sources (
+    workspace_id, client_id, source_item_id, is_quote,
+    first_poll_request_id
+)
+values (
+    'e5000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'e5600000-0000-4000-8000-000000000001',
+    false,
+    'e5700000-0000-4000-8000-000000000001'
+);
+
+insert into public.jobs (
+    id, workspace_id, client_id, job_kind, status, priority, input, output,
+    idempotency_key, attempts, max_attempts, available_at
+)
+select
+    fixture.job_id,
+    'e5000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'generate',
+    'queued',
+    0,
+    jsonb_build_object(
+        'workflow', 'official_x_review_draft_v1',
+        'kst_date',
+            (statement_timestamp() at time zone 'Asia/Seoul')::date,
+        'source_item_ids', jsonb_build_array(
+            'e5600000-0000-4000-8000-000000000001'::uuid
+        ),
+        'content_kind', 'daily_news',
+        'request_id', fixture.request_id,
+        'source_content',
+            'Pinned legacy text-only OriginTrail shadow evidence.',
+        'source_url',
+            'https://x.com/origin_trail/status/1966666666666666666',
+        'source_image_url', '',
+        'manual_only', false
+    ),
+    '{}'::jsonb,
+    'origintrail-shadow-review:' || fixture.ordinal::text,
+    0,
+    3,
+    statement_timestamp()
+from (
+    values
+        (
+            'e5100000-0000-4000-8000-000000000001'::uuid,
+            'e5800000-0000-4000-8000-000000000001'::uuid,
+            1
+        ),
+        (
+            'e5100000-0000-4000-8000-000000000002'::uuid,
+            'e5800000-0000-4000-8000-000000000002'::uuid,
+            2
+        )
+) as fixture(job_id, request_id, ordinal);
+
 insert into agent_runtime.batch_jobs (
     job_id,
     workspace_id,

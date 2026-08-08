@@ -17,6 +17,7 @@ from core.automation.repository import (
     AutomationRepositoryError,
     SupabaseAutomationRepository,
 )
+from core.automation.origintrail_evidence import OriginTrailFactEvidence
 
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
@@ -628,6 +629,71 @@ async def test_claim_parses_kst_date_and_completes_exact_batch_handoff():
         "target_batch_job_id": JOB_ID,
         "target_input_sha256": input_sha256,
     }
+
+
+@pytest.mark.asyncio
+async def test_reviewed_media_evidence_rpc_is_lease_fenced(monkeypatch):
+    worker_id = "official-x:test-worker"
+    captured = {}
+    expected = OriginTrailFactEvidence(
+        canonical_json="{}",
+        evidence_sha256="a" * 64,
+        source_url="https://x.com/origin_trail/status/456",
+        source_content_sha256="b" * 64,
+        recorded_media_url="https://pbs.twimg.com/media/official.jpg",
+        preview_media_url=(
+            "https://pbs.twimg.com/media/official.jpg?name=orig"
+        ),
+    )
+
+    def handler(request):
+        assert request.url.path == (
+            "/rest/v1/rpc/get_origintrail_reviewed_source_evidence"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "payload": {"server": "validated"},
+            "evidence_sha256": "a" * 64,
+        })
+
+    monkeypatch.setattr(
+        "core.automation.repository.parse_origintrail_fact_evidence",
+        lambda value: expected if value["payload"]["server"] == "validated" else None,
+    )
+    result = await _repo(handler).get_origintrail_reviewed_source_evidence(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        worker_id=worker_id,
+    )
+
+    assert result is expected
+    assert captured == {
+        "target_workspace_id": WORKSPACE_ID,
+        "target_job_id": JOB_ID,
+        "target_worker_id": worker_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_reviewed_media_evidence_rejects_malformed_rpc_payload(monkeypatch):
+    monkeypatch.setattr(
+        "core.automation.repository.parse_origintrail_fact_evidence",
+        lambda _value: (_ for _ in ()).throw(ValueError("unsafe")),
+    )
+
+    with pytest.raises(
+        AutomationRepositoryError,
+        match="invalid_origintrail_fact_evidence",
+    ) as caught:
+        await _repo(
+            lambda _request: httpx.Response(200, json={"unsafe": True})
+        ).get_origintrail_reviewed_source_evidence(
+            workspace_id=WORKSPACE_ID,
+            job_id=JOB_ID,
+            worker_id="official-x:test-worker",
+        )
+
+    assert caught.value.retryable is False
 
 
 @pytest.mark.asyncio
