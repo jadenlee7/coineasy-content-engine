@@ -1,13 +1,13 @@
 import type { Config, Context } from "@netlify/functions";
 
 import {
-  batchReviewConfig,
   BatchReviewError,
   getBatchReviewItem,
 } from "./_shared/batch-review.mts";
 import {
   buzzResultPreviewStartAt,
   buzzShadowAccessConfigured,
+  buzzShadowBatchReviewConfig,
   hasValidBuzzShadowAccess,
 } from "./_shared/buzz-shadow.mts";
 import { isCatalogUuid } from "./_shared/content-catalog.mts";
@@ -55,7 +55,7 @@ export default async (request: Request, context: Context): Promise<Response> => 
 
   try {
     const archived = getOriginTrailArchivedReview(jobId);
-    const config = archived ? null : batchReviewConfig(getEnv);
+    const config = archived ? null : buzzShadowBatchReviewConfig(getEnv);
     if (!archived && !config) {
       return json({ error: "buzz_shadow_storage_not_configured" }, 503);
     }

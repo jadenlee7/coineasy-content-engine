@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
+  batchReviewConfig,
+  type BatchReviewConfig,
   type BatchReviewCursor,
   type BatchReviewListItem,
   type BatchReviewPage,
@@ -91,6 +93,17 @@ export function buzzShadowAccessConfigured(
   getEnv: (name: string) => string | undefined,
 ): boolean {
   return configuredToken(getEnv) !== null;
+}
+
+export function buzzShadowBatchReviewConfig(
+  getEnv: (name: string) => string | undefined,
+): BatchReviewConfig | null {
+  const config = batchReviewConfig(getEnv);
+  if (!config) return null;
+  // PostgREST still requires the project API key in `apikey`. The scoped
+  // custom-role JWT replaces only the bearer used for database authorization.
+  const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
+  return scopedKey ? { ...config, authorizationKey: scopedKey } : config;
 }
 
 export function hasValidBuzzShadowAccess(

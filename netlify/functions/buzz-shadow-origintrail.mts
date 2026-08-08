@@ -1,7 +1,6 @@
 import type { Config } from "@netlify/functions";
 
 import {
-  batchReviewConfig,
   BatchReviewError,
   getBatchReviewItem,
   listBatchReviewInbox,
@@ -9,6 +8,7 @@ import {
 } from "./_shared/batch-review.mts";
 import {
   buzzShadowAccessConfigured,
+  buzzShadowBatchReviewConfig,
   buzzResultPreviewStartAt,
   type BuzzShadowPreview,
   BuzzShadowError,
@@ -42,15 +42,8 @@ export default async (request: Request): Promise<Response> => {
     return json({ error: "buzz_shadow_auth_required" }, 401);
   }
 
-  const config = batchReviewConfig(getEnv);
+  const config = buzzShadowBatchReviewConfig(getEnv);
   if (!config) return json({ error: "buzz_shadow_storage_not_configured" }, 503);
-  // Adoption path for the read-only `coineasy_batch_reviewer` role (ADR-007):
-  // the scoped JWT becomes the RPC bearer without replacing the project API
-  // key used by PostgREST. Unset keeps the legacy service-role bearer.
-  const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
-  const effectiveConfig = scopedKey
-    ? { ...config, authorizationKey: scopedKey }
-    : config;
   const previewStartAt = buzzResultPreviewStartAt(getEnv);
   if (previewStartAt === null) {
     return json({ error: "buzz_shadow_preview_not_configured" }, 503);
@@ -68,7 +61,7 @@ export default async (request: Request): Promise<Response> => {
   ) return json({ error: "invalid_buzz_shadow_filters" }, 400);
 
   try {
-    const page = await listBatchReviewInbox(effectiveConfig, {
+    const page = await listBatchReviewInbox(config, {
       limit,
       beforeFinishedAt,
       beforeJobId,
@@ -77,7 +70,7 @@ export default async (request: Request): Promise<Response> => {
       (item) => Date.parse(item.finished_at) >= previewStartAt,
     );
     const details = await Promise.all(
-      eligibleItems.map((item) => getBatchReviewItem(effectiveConfig, item.job_id)),
+      eligibleItems.map((item) => getBatchReviewItem(config, item.job_id)),
     );
     const previews = new Map<string, BuzzShadowPreview>();
     for (let index = 0; index < eligibleItems.length; index += 1) {

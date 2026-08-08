@@ -243,3 +243,43 @@ test("banner routes authenticate before storage and reject URL-only evidence", a
     globalThis.fetch = originalFetch;
   }
 });
+
+test("Buzz banner uses the scoped reviewer bearer without replacing the project API key", async () => {
+  const scopedKey = "scoped-batch-reviewer-role-jwt-value";
+  const originalFetch = globalThis.fetch;
+  let reviewCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url.endsWith("/rest/v1/rpc/get_agent_batch_review_item")) {
+      reviewCalls += 1;
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("authorization"), `Bearer ${scopedKey}`);
+      assert.equal(headers.get("apikey"), "server-only-service-role");
+      return Response.json(detail());
+    }
+    if (request.url === "https://console.example/assets/brands/origintrail-dark.png") {
+      return new Response(LOGO, {
+        headers: {
+          "content-type": "image/png",
+          "content-length": String(LOGO.length),
+        },
+      });
+    }
+    throw new Error(`unexpected request ${request.url}`);
+  };
+  try {
+    await withNetlifyEnvironment({
+      ...environment(),
+      SUPABASE_BUZZ_SHADOW_KEY: scopedKey,
+    }, async () => {
+      const response = await buzzBannerHandler(new Request(
+        `https://console.example/api/buzz-shadow/origintrail/batch/${JOB_ID}/banner.png`,
+        { headers: { "x-coineasy-buzz-key": SHADOW_TOKEN } },
+      ), context());
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.equal(reviewCalls, 1);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
