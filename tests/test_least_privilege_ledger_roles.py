@@ -95,10 +95,36 @@ def test_buzz_delivery_grant_matches_the_netlify_adapter_exactly():
 
 def test_migration_applies_after_every_routine_it_grants():
     """The guard in the migration only has teeth if the routines already exist."""
-    migrations = sorted(p.name for p in (ROOT / "supabase" / "migrations").glob("*.sql"))
+    migration_dir = ROOT / "supabase" / "migrations"
+    migrations = sorted(p.name for p in migration_dir.glob("*.sql"))
     least_privilege = [n for n in migrations if "least_privilege_ledger_roles" in n]
     assert len(least_privilege) == 1, least_privilege
-    assert migrations[-1] == least_privilege[0], (
-        "the least-privilege migration must sort last so its to_regprocedure "
-        f"guard sees final signatures; last is {migrations[-1]}"
+
+    granted = (
+        _granted_routines("dispatcher_routines")
+        | _granted_routines("producer_routines")
+        | _granted_routines("reviewer_routines")
+        | _granted_routines("buzz_delivery_routines")
+    )
+    later_migrations = migrations[migrations.index(least_privilege[0]) + 1 :]
+    function_declaration = re.compile(
+        r"\bcreate\s+(?:or\s+replace\s+)?function\s+public\."
+        r"([a-z_][a-z0-9_]*)\s*\(",
+        re.IGNORECASE,
+    )
+    redefined = {}
+    for migration in later_migrations:
+        declarations = {
+            name.lower()
+            for name in function_declaration.findall(
+                (migration_dir / migration).read_text()
+            )
+        }
+        overlap = sorted(granted & declarations)
+        if overlap:
+            redefined[migration] = overlap
+
+    assert not redefined, (
+        "a migration after the least-privilege grant redefines a granted "
+        f"routine, so its final signature was not checked: {redefined}"
     )
