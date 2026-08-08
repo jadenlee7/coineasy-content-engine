@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import struct
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from core.buzz.cli import (
     BuzzCliConfig,
     BuzzCliError,
     BuzzCliPublisher,
+    BuzzCliReader,
     CommandResult,
     buzz_message_fingerprints,
     format_origintrail_message,
@@ -224,6 +226,47 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             "/opt/coineasy/bin/buzz", "channels", "get", "--channel", CHANNEL_ID,
         ))
         self.assertEqual(runner.calls[0][1], b"")
+
+    async def test_thread_reader_uses_exact_bounded_read_only_command(self):
+        root = "b" * 64
+        reply = "c" * 64
+        reviewer = "d" * 64
+        payload = json.dumps([{
+            "id": reply,
+            "pubkey": reviewer,
+            "kind": 9,
+            "content": "게시 승인: 원문·최종물 확인",
+            "created_at": 1_786_100_000,
+            "tags": [["h", CHANNEL_ID], ["e", root, "", "reply"]],
+        }]).encode()
+        runner = FakeRunner([CommandResult(0, payload, b"")])
+        reader = BuzzCliReader(_publisher(runner).config, runner=runner)
+        messages = await reader.read_thread(root)
+        self.assertEqual(messages[0].content, "게시 승인: 원문·최종물 확인")
+        self.assertEqual(runner.calls[0][0], (
+            "/opt/coineasy/bin/buzz", "--format", "compact", "messages",
+            "thread", "--channel", CHANNEL_ID, "--event", root,
+            "--limit", "100", "--depth-limit", "8",
+        ))
+        self.assertEqual(runner.calls[0][1], b"")
+
+    async def test_thread_reader_rejects_malformed_normalized_events(self):
+        runner = FakeRunner([CommandResult(
+            0,
+            json.dumps([{
+                "id": "b" * 64,
+                "pubkey": "d" * 64,
+                "kind": 9,
+                "content": "게시 승인: 원문·최종물 확인",
+                "created_at": 1_786_100_000,
+                "tags": [],
+                "sig": "must-not-be-present",
+            }]).encode(),
+            b"",
+        )])
+        reader = BuzzCliReader(_publisher(runner).config, runner=runner)
+        with self.assertRaisesRegex(BuzzCliError, "buzz_review_thread_invalid"):
+            await reader.read_thread("b" * 64)
 
 
 class RunCommandTimeoutTests(unittest.IsolatedAsyncioTestCase):

@@ -21,13 +21,40 @@ The delivery worker must keep its narrow trust boundary: it may read one eligibl
 6. Bind the attachment filename, media type, and SHA-256 to the existing durable request fingerprint, then issue one exact `buzz messages send --file` call after the provider-create fence.
 7. Keep Buzz review actions separate from this artifact-delivery slice. A future action adapter may record approve/edit/regenerate intent, but no Buzz action may directly publish content.
 
+### 2026-08-08 review-pack materialization addendum
+
+The banner is now also the asset of one immutable Content Studio review pack.
+Before the V2 Buzz claim can be leased, Netlify:
+
+1. re-reads the verified Batch detail and immutable X Article identity;
+2. renders the same deterministic 1200×630 PNG;
+3. stores that PNG under a deterministic UUID, accepting a retry only when the
+   existing private object is byte-identical;
+4. records one `content_item → content_version → asset` package using the
+   original Batch `request_id` as the content item ID and preserves the exact
+   `content_source_links` row; and
+5. binds the Batch input hash, result hash, source-body hash, PNG hash, content
+   version, asset, and source to an immutable review-pack receipt.
+
+The Buzz delivery claim carries `attachment_sha256`. V2 is granted only when
+that digest equals the materialized PNG digest, and the delivery receipt stores
+the same digest. The feature is disabled by default through
+`BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED=false` until the migrations and one
+isolated staging result are approved. The V1 claim remains a rollback path, but
+its null attachment digest cannot become a V2 review target.
+
+Materialization creates neither a Studio approval nor a publication job.
+Automatic publication remains OFF.
+
 ## Consequences
 
 - The Studio screen and Buzz receive the same evidence-bound visual design.
 - Buzz receives a safe inline image rather than blocked active SVG content.
 - A renderer or attachment change produces a different durable request fingerprint and cannot silently reuse an earlier claim.
 - PNG rendering adds one native image dependency to the Netlify function bundle.
-- This decision expands Buzz from text-only review notification to visual review handoff; it does not yet make Buzz a publication control plane.
+- This decision expands Buzz from text-only review notification to a durable,
+  source-preserving visual review package; it does not make Buzz a publication
+  control plane.
 
 ## Rejected alternatives
 

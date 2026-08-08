@@ -1,0 +1,84 @@
+import type { Config } from "@netlify/functions";
+
+import {
+  buzzReviewAccessConfigured,
+  BuzzReviewError,
+  buzzReviewSupabaseConfig,
+  configuredBuzzReviewers,
+  executeBuzzReviewAction,
+  hasValidBuzzReviewAccess,
+  parseBuzzReviewAction,
+} from "./_shared/buzz-review.mts";
+import { contentCatalogConfig } from "./_shared/content-catalog.mts";
+
+const MAX_BODY_BYTES = 4_096;
+
+function json(body: unknown, status = 200, extraHeaders: HeadersInit = {}): Response {
+  return Response.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+      "Vary": "x-coineasy-buzz-review-key",
+      "X-Content-Type-Options": "nosniff",
+      ...extraHeaders,
+    },
+  });
+}
+
+async function requestBody(request: Request): Promise<unknown> {
+  const declared = Number(request.headers.get("content-length") || 0);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    throw new BuzzReviewError("invalid_buzz_review_request");
+  }
+  const raw = await request.text();
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
+    throw new BuzzReviewError("invalid_buzz_review_request");
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new BuzzReviewError("invalid_buzz_review_request");
+  }
+}
+
+export default async (request: Request): Promise<Response> => {
+  if (request.method !== "POST") {
+    return json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
+  }
+  const getEnv = (name: string) => Netlify.env.get(name);
+  if (!buzzReviewAccessConfigured(getEnv)) {
+    return json({ error: "buzz_review_not_configured" }, 503);
+  }
+  if (!hasValidBuzzReviewAccess(request, getEnv)) {
+    return json({ error: "buzz_review_auth_required" }, 401);
+  }
+  const baseConfig = contentCatalogConfig(getEnv);
+  const reviewers = configuredBuzzReviewers(getEnv);
+  const config = baseConfig ? buzzReviewSupabaseConfig(baseConfig, getEnv) : null;
+  if (!config || !reviewers) {
+    return json({ error: "buzz_review_storage_not_configured" }, 503);
+  }
+
+  try {
+    const action = parseBuzzReviewAction(await requestBody(request), reviewers);
+    return json(await executeBuzzReviewAction(
+      config,
+      action,
+    ));
+  } catch (error) {
+    const code = error instanceof BuzzReviewError
+      ? error.code
+      : "buzz_review_unavailable";
+    const status = code === "invalid_buzz_review_request"
+      ? 400
+      : code === "buzz_review_decision_conflict"
+      ? 409
+      : 502;
+    return json({ error: code }, status);
+  }
+};
+
+export const config: Config = {
+  path: "/api/buzz-review/origintrail",
+};

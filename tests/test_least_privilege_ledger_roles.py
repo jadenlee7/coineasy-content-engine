@@ -22,9 +22,24 @@ MIGRATION = (
     / "migrations"
     / "20260805090000_least_privilege_ledger_roles.sql"
 ).read_text()
+BUZZ_REVIEW_ROLE_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260808133000_buzz_review_decider_role.sql"
+).read_text()
+REVIEW_PACK_ROLE_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260808140000_origintrail_review_pack_roles.sql"
+).read_text()
 BATCH_REPOSITORY = (ROOT / "core" / "batch" / "repository.py").read_text()
 BUZZ_DELIVERY_ADAPTER = (
     ROOT / "netlify" / "functions" / "_shared" / "buzz-delivery.mts"
+).read_text()
+BUZZ_REVIEW_ADAPTER = (
+    ROOT / "netlify" / "functions" / "_shared" / "buzz-review.mts"
 ).read_text()
 
 # `queue_agent_batch_job` lives in the same repository class but is reached only
@@ -34,11 +49,13 @@ BUZZ_DELIVERY_ADAPTER = (
 PRODUCER_ONLY_BATCH_RPCS = frozenset({"queue_agent_batch_job"})
 
 
-def _granted_routines(role_array: str) -> frozenset[str]:
+def _granted_routines(
+    role_array: str, migration: str = MIGRATION
+) -> frozenset[str]:
     """Routine names in one `<role>_routines constant text[] := array[...]`."""
     block = re.search(
         rf"{role_array} constant text\[\] := array\[(.*?)\n    \];",
-        MIGRATION,
+        migration,
         re.DOTALL,
     )
     assert block is not None, f"{role_array} array not found in the migration"
@@ -86,9 +103,29 @@ def test_buzz_delivery_grant_matches_the_netlify_adapter_exactly():
         re.findall(r'name: "([a-z_]+)"', BUZZ_DELIVERY_ADAPTER)
     )
     assert called, "no RPC names parsed from the buzz delivery adapter"
-    granted = _granted_routines("buzz_delivery_routines")
+    granted = _granted_routines("buzz_delivery_routines") | frozenset(
+        re.findall(r"public[.]([a-z_]+)[(]", REVIEW_PACK_ROLE_MIGRATION)
+    )
     assert granted == called, (
         "buzz delivery grant drifted from the adapter's RPCs -- "
+        f"missing {sorted(called - granted)}, unused {sorted(granted - called)}"
+    )
+
+
+def test_buzz_review_grant_matches_the_netlify_adapter_exactly():
+    called = frozenset(
+        re.findall(r'name: "([a-z_]+)"', BUZZ_REVIEW_ADAPTER)
+    )
+    assert called == {
+        "list_origintrail_buzz_review_targets",
+        "record_origintrail_buzz_review_decision",
+    }
+    granted = frozenset(re.findall(
+        r"'public[.]([a-z_]+)[(]",
+        BUZZ_REVIEW_ROLE_MIGRATION,
+    ))
+    assert granted == called, (
+        "buzz review grant drifted from the adapter's RPCs -- "
         f"missing {sorted(called - granted)}, unused {sorted(granted - called)}"
     )
 
@@ -97,8 +134,14 @@ def test_migration_applies_after_every_routine_it_grants():
     """The guard in the migration only has teeth if the routines already exist."""
     migrations = sorted(p.name for p in (ROOT / "supabase" / "migrations").glob("*.sql"))
     least_privilege = [n for n in migrations if "least_privilege_ledger_roles" in n]
+    review_role = [n for n in migrations if "buzz_review_decider_role" in n]
+    final_role = [n for n in migrations if "origintrail_review_pack_roles" in n]
     assert len(least_privilege) == 1, least_privilege
-    assert migrations[-1] == least_privilege[0], (
-        "the least-privilege migration must sort last so its to_regprocedure "
-        f"guard sees final signatures; last is {migrations[-1]}"
+    assert len(review_role) == 1, review_role
+    assert len(final_role) == 1, final_role
+    assert least_privilege[0] < review_role[0]
+    assert review_role[0] < final_role[0]
+    assert migrations[-1] == final_role[0], (
+        "the newest least-privilege grant migration must sort last so its "
+        f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
     )

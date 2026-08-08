@@ -1269,7 +1269,7 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
         "headline_ko": r"^[\s\S]{0,119}\S$",
         "body_ko": r"^[\s\S]{0,1799}\S$",
         "x_copy_ko": r"^[\s\S]{0,499}\S$",
-        "telegram_copy_ko": r"^[\s\S]{0,1799}\S$",
+        "telegram_copy_ko": r"^[\s\S]{0,1023}\S$",
     }
     assert all(
         "minLength" not in field and "maxLength" not in field

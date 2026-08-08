@@ -414,7 +414,30 @@ export async function uploadNewsCard(
   } catch {
     throw new ContentCatalogError("durable_storage_upload_failed");
   }
-  if (!response.ok) throw new ContentCatalogError("durable_storage_upload_failed");
+  if (!response.ok) {
+    // A deterministic caller may have uploaded the exact object before losing
+    // the response or before a later catalog write failed. Verify the existing
+    // private object byte-for-byte; never overwrite or accept a hash collision.
+    if (response.status !== 409) {
+      throw new ContentCatalogError("durable_storage_upload_failed");
+    }
+    let existing: Response;
+    try {
+      existing = await fetcher(
+        `${config.supabaseUrl}/storage/v1/object/${CONTENT_STUDIO_BUCKET}/${encodedStoragePath(storagePath)}`,
+        { headers: storageHeaders(config), signal },
+      );
+    } catch {
+      throw new ContentCatalogError("durable_storage_upload_failed");
+    }
+    if (!existing.ok) throw new ContentCatalogError("durable_storage_upload_failed");
+    const existingBytes = new Uint8Array(await existing.arrayBuffer());
+    const incomingBytes = new Uint8Array(bytes);
+    if (
+      existingBytes.byteLength !== incomingBytes.byteLength
+      || !Buffer.from(existingBytes).equals(Buffer.from(incomingBytes))
+    ) throw new ContentCatalogError("content_idempotency_conflict");
+  }
   return {
     assetId: assetId.toLowerCase(),
     assetKind: "png",

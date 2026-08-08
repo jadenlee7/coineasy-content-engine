@@ -107,6 +107,7 @@ class FakeControl:
             channel_id=kwargs["channel_id"],
             message_sha256=kwargs["message_sha256"],
             request_sha256=kwargs["request_sha256"],
+            attachment_sha256=kwargs["attachment_sha256"],
             status=self.claim_status,
             claim_granted=self.claim_granted,
             reused=False,

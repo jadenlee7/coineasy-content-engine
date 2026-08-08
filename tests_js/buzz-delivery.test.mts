@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import buzzDeliveryHandler from "../netlify/functions/buzz-delivery-origintrail.mts";
+import { renderOriginTrailBatchBanner } from "../netlify/functions/_shared/origintrail-batch-banner.mts";
 
 const TOKEN = "buzz-delivery-worker-token-that-is-dedicated";
 const SHADOW_TOKEN = "buzz-shadow-reader-token-that-is-dedicated";
@@ -12,7 +14,15 @@ const CHANNEL_ID = "33333333-3333-4333-8333-333333333333";
 const EVENT_ID = "a".repeat(64);
 const MESSAGE_SHA = "b".repeat(64);
 const REQUEST_SHA = "c".repeat(64);
+const ATTACHMENT_SHA = "d".repeat(64);
 const WORKER_ID = "origintrail-buzz:test-1234";
+const CONTENT_ID = "44444444-4444-4444-8444-444444444444";
+const SOURCE_ID = "55555555-5555-4555-8555-555555555555";
+const VERSION_ID = "66666666-6666-4666-8666-666666666666";
+const LOGO = readFileSync(new URL(
+  "../web/console/assets/brands/origintrail-dark.png",
+  import.meta.url,
+));
 
 function env(overrides: Record<string, string | undefined> = {}) {
   const values: Record<string, string | undefined> = {
@@ -55,10 +65,16 @@ function claimBody(extra: Record<string, unknown> = {}) {
     channel_id: CHANNEL_ID,
     message_sha256: MESSAGE_SHA,
     request_sha256: REQUEST_SHA,
+    attachment_sha256: ATTACHMENT_SHA,
     worker_id: WORKER_ID,
     lease_seconds: 180,
     ...extra,
   };
+}
+
+function legacyClaimBody() {
+  const { attachment_sha256: _, ...legacy } = claimBody();
+  return legacy;
 }
 
 function request(body: object, token = TOKEN): Request {
@@ -129,6 +145,160 @@ test("claim calls only the narrow RPC and returns its exact receipt", async () =
     target_worker_id: WORKER_ID,
     target_lease_seconds: 180,
   });
+});
+
+test("default-off cutover accepts the legacy claim shape but V2 rejects it", async () => {
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    return Response.json({
+      event_id: EVENT_ID,
+      job_id: JOB_ID,
+      channel_id: CHANNEL_ID,
+      message_sha256: MESSAGE_SHA,
+      request_sha256: REQUEST_SHA,
+      status: "claimed",
+      lease_expires_at: "2026-08-03T12:03:00Z",
+      claim_granted: true,
+      reused: false,
+    });
+  };
+  await withEnvironment(env(), fetcher, async () => {
+    const response = await buzzDeliveryHandler(request(legacyClaimBody()));
+    assert.equal(response.status, 200);
+  });
+  assert.equal(calls, 1);
+
+  calls = 0;
+  await withEnvironment(
+    env({ BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED: "true" }),
+    fetcher,
+    async () => {
+      const response = await buzzDeliveryHandler(request(legacyClaimBody()));
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: "invalid_buzz_delivery_request" });
+    },
+  );
+  assert.equal(calls, 0);
+});
+
+test("enabled review-pack claim materializes exact content and binds the same Buzz PNG", async () => {
+  const sourceContent = "[X Article]\nOriginTrail 공식 검증 가능 지식 본문입니다.";
+  const resultPayload = {
+    headline_ko: "OriginTrail 검증 가능한 지식",
+    body_ko: "공식 원문을 기반으로 정리한 검토용 본문입니다.",
+    x_copy_ko: "OriginTrail 공식 업데이트",
+    telegram_copy_ko: "OriginTrail 공식 업데이트를 확인하세요.",
+  };
+  const rawDetail = {
+    job_id: JOB_ID,
+    request_id: CONTENT_ID,
+    source_item_ids: [SOURCE_ID],
+    result_sha256: "e".repeat(64),
+    client_id: "origintrail",
+    agent_id: "origintrail_client_agent",
+    workflow_kind: "official_source_nonurgent_pack",
+    stage: "generate",
+    status: "completed",
+    model: "gpt-5.6-luna",
+    model_tier: "S",
+    title: resultPayload.headline_ko,
+    result_code: "needs_review",
+    actual_cost_microusd: 220,
+    finished_at: "2026-08-08T01:00:00.000Z",
+    source_url: "https://x.com/origin_trail/status/2082883998829752783",
+    source_content: sourceContent,
+    result_payload: resultPayload,
+    input_sha256: "f".repeat(64),
+    actual_input_tokens: 800,
+    actual_output_tokens: 200,
+  };
+  const renderDetail = {
+    ...rawDetail,
+    ref: `batch:${JOB_ID}`,
+    source_evidence: {
+      storage: "inline" as const,
+      content_length: sourceContent.length,
+      content_sha256: createHash("sha256")
+        .update(sourceContent, "utf8").digest("hex"),
+      verified_at: rawDetail.finished_at,
+    },
+  };
+  const banner = await renderOriginTrailBatchBanner(
+    renderDetail,
+    "https://console.example",
+    async () => new Response(LOGO, {
+      headers: { "content-type": "image/png", "content-length": String(LOGO.length) },
+    }),
+  );
+  let assetId = "";
+  const calls: string[] = [];
+  await withEnvironment(
+    env({ BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED: "true" }),
+    async (input, init) => {
+      const req = new Request(input, init);
+      calls.push(req.url);
+      if (req.url.endsWith("/rest/v1/rpc/get_agent_batch_review_item")) {
+        return Response.json(rawDetail);
+      }
+      if (req.url === "https://console.example/assets/brands/origintrail-dark.png") {
+        return new Response(LOGO, {
+          headers: { "content-type": "image/png", "content-length": String(LOGO.length) },
+        });
+      }
+      if (req.url.includes("/storage/v1/object/content-studio/")) {
+        assetId = req.url.split("/").at(-2) || "";
+        return Response.json({ Key: "stored" });
+      }
+      if (req.url.endsWith("/rest/v1/rpc/record_generated_content")) {
+        return Response.json({
+          content_item_id: CONTENT_ID,
+          content_version_id: VERSION_ID,
+          asset_ids: [assetId],
+        });
+      }
+      if (req.url.endsWith("/rest/v1/rpc/bind_origintrail_batch_review_pack")) {
+        const body = JSON.parse(String(init?.body));
+        return Response.json({
+          job_id: JOB_ID,
+          content_item_id: CONTENT_ID,
+          content_version_id: VERSION_ID,
+          asset_id: assetId,
+          source_item_id: SOURCE_ID,
+          banner_sha256: body.target_banner_sha256,
+          review_pack_sha256: body.target_review_pack_sha256,
+          protocol_version: "origintrail-review-pack@1",
+          reused: false,
+        });
+      }
+      if (req.url.endsWith("/rest/v1/rpc/claim_origintrail_buzz_delivery_v2")) {
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.target_attachment_sha256, banner.sha256);
+        return Response.json({
+          event_id: EVENT_ID,
+          job_id: JOB_ID,
+          channel_id: CHANNEL_ID,
+          message_sha256: MESSAGE_SHA,
+          request_sha256: REQUEST_SHA,
+          attachment_sha256: banner.sha256,
+          status: "claimed",
+          lease_expires_at: "2026-08-08T01:03:00Z",
+          claim_granted: true,
+          reused: false,
+        });
+      }
+      throw new Error(`unexpected request ${req.url}`);
+    },
+    async () => {
+      const response = await buzzDeliveryHandler(
+        request(claimBody({ attachment_sha256: banner.sha256 })),
+        { site: { url: "https://console.example" } } as never,
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.equal((await response.json()).attachment_sha256, banner.sha256);
+    },
+  );
+  assert.equal(calls.filter(url => url.endsWith("claim_origintrail_buzz_delivery_v2")).length, 1);
 });
 
 test("invalid or expanded requests fail before storage", async () => {
