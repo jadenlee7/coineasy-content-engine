@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 
-import sharp from "sharp";
-
 import {
   buildArticleBannerSvg,
   type ArticleBannerInput,
@@ -15,6 +13,7 @@ import {
   articleHeroLogoVariant,
   fetchOfficialBrandLogoDataUrl,
 } from "./official-brand-assets.mts";
+import { configureServerlessFontConfig } from "./serverless-fonts.mts";
 
 const BANNER_WIDTH = 1_200;
 const BANNER_HEIGHT = 630;
@@ -33,6 +32,13 @@ const BUZZ_ALLOWED_PNG_ANCILLARY_CHUNKS = new Set([
   "fcTL",
   "fdAT",
 ]);
+let sharpModule: Promise<typeof import("sharp")> | null = null;
+
+async function serverlessSharp(): Promise<typeof import("sharp").default> {
+  configureServerlessFontConfig();
+  sharpModule ||= import("sharp");
+  return (await sharpModule).default;
+}
 
 export type OriginTrailBatchBanner = {
   bytes: Buffer;
@@ -172,6 +178,7 @@ export async function renderOriginTrailBatchBanner(
 
   let bytes: Buffer;
   try {
+    const sharp = await serverlessSharp();
     const rendered = await sharp(Buffer.from(svg, "utf8"), {
       density: 144,
       limitInputPixels: BANNER_WIDTH * BANNER_HEIGHT * 4,

@@ -10,3 +10,9 @@
 
 [functions]
   directory = "netlify/functions"
+
+[functions."batch-review-banner"]
+  included_files = ["netlify/functions/_assets/fonts/**"]
+
+[functions."buzz-shadow-origintrail-banner"]
+  included_files = ["netlify/functions/_assets/fonts/**"]
