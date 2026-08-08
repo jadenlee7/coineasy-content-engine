@@ -347,13 +347,13 @@ test("shadow token equal to another secret fails closed as not configured", asyn
   assert.equal(fetchCalls, 0);
 });
 
-test("scoped buzz shadow key replaces the service-role key when set", async () => {
+test("scoped buzz shadow key is the bearer while the project API key stays unchanged", async () => {
   const SCOPED = "scoped-batch-reviewer-role-jwt-value";
   const originalFetch = globalThis.fetch;
   let bearer: string | null = null;
   globalThis.fetch = async (input, init) => {
     bearer = new Headers(init?.headers).get("authorization");
-    assert.equal(new Headers(init?.headers).get("apikey"), SCOPED);
+    assert.equal(new Headers(init?.headers).get("apikey"), "server-only-service-role");
     return Response.json({
       items: [reviewPage().items[0]],
       next_cursor: null,

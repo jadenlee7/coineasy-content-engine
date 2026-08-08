@@ -43,11 +43,11 @@ export default async (request: Request): Promise<Response> => {
   if (!config) return json({ error: "buzz_shadow_storage_not_configured" }, 503);
   // Adoption path for the read-only `coineasy_batch_reviewer` role (ADR-007):
   // this endpoint calls only list_agent_batch_review_inbox, so a scoped key
-  // can replace the service-role key here without touching the other
-  // functions that share the site-wide variable. Unset keeps today's key.
+  // becomes the RPC bearer without touching the project API key or the other
+  // functions that share the site-wide variable. Unset keeps today's bearer.
   const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
   const effectiveConfig = scopedKey
-    ? { ...config, serviceRoleKey: scopedKey }
+    ? { ...config, authorizationKey: scopedKey }
     : config;
 
   const url = new URL(request.url);

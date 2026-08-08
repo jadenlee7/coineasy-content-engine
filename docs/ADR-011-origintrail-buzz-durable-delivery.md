@@ -149,8 +149,10 @@ read optional per-function credentials: `SUPABASE_BUZZ_DELIVERY_KEY` (role
 `coineasy_buzz_delivery`) for the control endpoint and
 `SUPABASE_BUZZ_SHADOW_KEY` (role `coineasy_batch_reviewer`, read-only — the
 first adoption path for ADR-007's reviewer role) for the shadow read. Unset,
-both functions keep the site-wide service-role key, so adoption is setting one
-variable and rollback is deleting it. `tests/test_least_privilege_ledger_roles.py`
+both functions keep the site-wide service-role bearer, so adoption is setting
+one variable and rollback is deleting it. The scoped token is sent only as the
+`Authorization` bearer; `apikey` remains the site's project API credential.
+`tests/test_least_privilege_ledger_roles.py`
 fails the build if the adapter's RPC set and the role's grant set drift, and
 the shadow token now enforces the same distinctness-from-reserved-secrets
 rule the delivery token always had.

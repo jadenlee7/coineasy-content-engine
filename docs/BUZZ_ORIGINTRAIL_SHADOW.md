@@ -160,9 +160,9 @@ Publication, outreach, and OpenAI calls remain outside this adapter. On the
 Netlify side, each Buzz function can adopt a scoped Postgres role credential —
 `SUPABASE_BUZZ_DELIVERY_KEY` (role `coineasy_buzz_delivery`, the five receipt
 RPCs and nothing else) for the control endpoint and `SUPABASE_BUZZ_SHADOW_KEY`
-(role `coineasy_batch_reviewer`, read-only) for the shadow read — replacing the
-site-wide service-role key for those functions only; rollback is deleting the
-variable.
+(role `coineasy_batch_reviewer`, read-only) for the shadow read. These custom
+JWTs replace only the `Authorization` bearer; `apikey` remains the project API
+credential. Rollback is deleting the scoped variable.
 
 Official Buzz references:
 

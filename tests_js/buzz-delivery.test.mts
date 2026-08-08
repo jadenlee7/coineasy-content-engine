@@ -181,14 +181,14 @@ test("adapter has no relay process, provider, publish, or deployment path", () =
   assert.match(source, /mark_origintrail_buzz_delivery_attempt/);
 });
 
-test("scoped buzz delivery key replaces the service-role key when set", async () => {
+test("scoped buzz delivery key is the bearer while the project API key stays unchanged", async () => {
   const SCOPED = "scoped-buzz-delivery-role-jwt-value";
   let bearer: string | null = null;
   await withEnvironment(
     env({ SUPABASE_BUZZ_DELIVERY_KEY: SCOPED }),
     async (url, init) => {
       bearer = new Headers(init?.headers).get("authorization");
-      assert.equal(new Headers(init?.headers).get("apikey"), SCOPED);
+      assert.equal(new Headers(init?.headers).get("apikey"), "s".repeat(40));
       return Response.json({
         event_id: EVENT_ID,
         job_id: JOB_ID,
