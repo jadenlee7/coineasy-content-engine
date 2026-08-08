@@ -201,3 +201,17 @@ def test_request_fingerprint_pins_target_caption_and_image():
         caption="승인 문구",
         image_bytes=PNG_BYTES + b"changed",
     )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"preflight_timeout_seconds": 4}, "preflight timeout"),
+        ({"preflight_timeout_seconds": 31}, "preflight timeout"),
+        ({"send_timeout_seconds": 29}, "send timeout"),
+        ({"send_timeout_seconds": 121}, "send timeout"),
+    ],
+)
+def test_publisher_rejects_unbounded_provider_timeouts(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        ExactTelegramPublisher(_config(), **kwargs)

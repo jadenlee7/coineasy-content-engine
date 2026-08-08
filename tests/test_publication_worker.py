@@ -13,6 +13,9 @@ from core.publications.models import (
 )
 from core.publications.repository import PublicationRepositoryError
 from core.publications.worker import ExactTelegramPublicationWorker
+from core.publications.worker import build_exact_telegram_publication_worker
+from core.publications.settings import PublicationSettings
+from core.publications import worker as publication_worker
 from core.publishers.telegram_exact import TelegramExactConfig, TelegramExactError
 
 
@@ -267,3 +270,27 @@ async def test_disallowed_client_fails_without_loading_any_publisher():
     assert result.status == "failed"
     assert factory_called is False
     assert [event[0] for event in repository.events] == ["claim", "fail"]
+
+
+def test_worker_builder_passes_the_bounded_send_timeout(monkeypatch, tmp_path):
+    config = FakePublisher().config
+    monkeypatch.setattr(
+        publication_worker,
+        "load_telegram_exact_config",
+        lambda _client, *, clients_dir: config,
+    )
+    worker = build_exact_telegram_publication_worker(
+        PublicationSettings(
+            supabase_url="https://project.supabase.co",
+            supabase_service_role_key="s" * 40,
+            workspace_id="11111111-1111-4111-8111-111111111111",
+            send_timeout_seconds=117,
+            clients_dir=tmp_path,
+        ),
+        repository=FakeRepository(),
+    )
+
+    publisher = worker.publisher_factory("squid")
+
+    assert publisher.send_timeout_seconds == 117
+    assert publisher.preflight_timeout_seconds == 15

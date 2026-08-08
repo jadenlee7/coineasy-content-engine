@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import publicationHandler from "../netlify/functions/library-publish.mts";
+import publicationResolutionHandler from "../netlify/functions/library-publish-resolution.mts";
 import {
+  cancelStudioTelegramDeliveryUnknown,
   getStudioTelegramPublication,
   kickTelegramPublicationWorker,
   publicationWorkerConfig,
@@ -122,6 +124,30 @@ function postRequest(
   });
 }
 
+function resolutionRequest(
+  body: Record<string, unknown> = {
+    content_version_id: VERSION_ID,
+    publication_id: PUBLICATION_ID,
+    delivery_started_at: NORMALIZED_DELIVERY_STARTED_AT,
+    resolution: "confirmed_not_observed_cancelled",
+    public_channel: "squid_kor_update",
+    channel_checked: true,
+    caption_checked: true,
+    png_checked: true,
+  },
+  headers: Record<string, string> = sessionHeaders(),
+): Request {
+  return new Request(`https://console.example/api/library/${ITEM_ID}/publish-resolution`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+      "Idempotency-Key": IDEMPOTENCY_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 test("exact feature flag is closed unless its value is exactly true", () => {
   for (const value of [undefined, "", "TRUE", "1", " true ", "false"]) {
     assert.equal(studioTelegramPublishEnabled(() => value), false);
@@ -205,6 +231,43 @@ test("publication helpers bind the service-only RPC to one immutable Telegram ve
   assert.equal(current?.delivery_started_at, NORMALIZED_DELIVERY_STARTED_AT);
 });
 
+test("delivery-unknown resolution binds all three operator checks and never calls a worker", async () => {
+  let requestBody: Record<string, unknown> = {};
+  const resolved = await cancelStudioTelegramDeliveryUnknown(
+    catalogConfig(),
+    {
+      contentItemId: ITEM_ID,
+      contentVersionId: VERSION_ID,
+      publicationId: PUBLICATION_ID,
+      deliveryStartedAt: NORMALIZED_DELIVERY_STARTED_AT,
+      publicChannel: "squid_kor_update",
+      idempotencyKey: IDEMPOTENCY_KEY,
+    },
+    async (input, init) => {
+      assert.equal(
+        String(input),
+        "https://project.supabase.co/rest/v1/rpc/cancel_unobserved_exact_telegram_publication",
+      );
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json(publication("cancelled", false));
+    },
+  );
+  assert.deepEqual(requestBody, {
+    target_workspace_id: WORKSPACE_ID,
+    target_content_item_id: ITEM_ID,
+    target_content_version_id: VERSION_ID,
+    target_publication_id: PUBLICATION_ID,
+    target_delivery_started_at: NORMALIZED_DELIVERY_STARTED_AT,
+    target_public_channel: "squid_kor_update",
+    target_channel_checked: true,
+    target_caption_checked: true,
+    target_png_checked: true,
+    request_idempotency_key: IDEMPOTENCY_KEY,
+  });
+  assert.equal(resolved.status, "cancelled");
+  assert.equal(resolved.external_url, null);
+});
+
 test("publication parser requires a canonical URL only for published state", async () => {
   for (const polluted of [
     { ...publication("published", true), external_url: null },
@@ -240,7 +303,7 @@ test("worker kick uses the dedicated secret, empty body, and validated Railway o
     assert.equal(request.headers.get("x-publication-worker-key"), WORKER_TOKEN);
     assert.equal(request.headers.get("content-type"), null);
     assert.equal(init?.body, undefined);
-    return Response.json({ ok: true, claimed: false, status: "idle" });
+    return Response.json({ ok: true, accepted: true, status: "scheduled" }, { status: 202 });
   });
   assert.equal(kicked, true);
   assert.equal(publicationWorkerConfig((name) => ({
@@ -333,7 +396,7 @@ test("POST feature rollback is 503 while GET continues to expose durable state",
   });
 });
 
-test("new queue awaits a best-effort kick and returns the refreshed terminal state", async () => {
+test("new queue dispatches a best-effort background worker and refreshes durable state", async () => {
   const calls: string[] = [];
   await withEnvironment({
     STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
@@ -358,10 +421,9 @@ test("new queue awaits a best-effort kick and returns the refreshed terminal sta
       assert.equal(init?.body, undefined);
       return Response.json({
         ok: true,
-        claimed: true,
-        publication_id: PUBLICATION_ID,
-        status: "published",
-      });
+        accepted: true,
+        status: "scheduled",
+      }, { status: 202 });
     }
     if (request.url.endsWith("/rpc/get_studio_telegram_publication")) {
       return Response.json(publication("published", true));
@@ -427,6 +489,76 @@ test("kick failure preserves the durable queue and strict body validation never 
     assert.equal(queued.status, 202);
     assert.equal((await queued.json()).status, "queued");
     assert.equal(rpcCalls, 1);
+  });
+});
+
+test("resolution route requires a signed session and disabled publication flag", async () => {
+  let calls = 0;
+  await withEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_TELEGRAM_PUBLISH_ENABLED: "true",
+  }, async () => {
+    calls += 1;
+    throw new Error("resolution must fail before storage");
+  }, async () => {
+    const unauthorized = await publicationResolutionHandler(
+      resolutionRequest(undefined, {}),
+      { params: { contentId: ITEM_ID } } as never,
+    );
+    assert.equal(unauthorized.status, 401);
+
+    const enabled = await publicationResolutionHandler(
+      resolutionRequest(),
+      { params: { contentId: ITEM_ID } } as never,
+    );
+    assert.equal(enabled.status, 409);
+    assert.deepEqual(await enabled.json(), {
+      error: "telegram_resolution_requires_publication_disabled",
+    });
+    assert.equal(calls, 0);
+  });
+});
+
+test("resolution route cancels only the exact attested unknown delivery", async () => {
+  let calls = 0;
+  await withEnvironment({
+    STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_TELEGRAM_PUBLISH_ENABLED: "false",
+    SUPABASE_URL: "https://project.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
+    CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+  }, async (input, init) => {
+    calls += 1;
+    assert.match(String(input), /rpc\/cancel_unobserved_exact_telegram_publication$/);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.target_channel_checked, true);
+    assert.equal(body.target_caption_checked, true);
+    assert.equal(body.target_png_checked, true);
+    return Response.json(publication("cancelled", false));
+  }, async () => {
+    const invalid = await publicationResolutionHandler(
+      resolutionRequest({
+        content_version_id: VERSION_ID,
+        publication_id: PUBLICATION_ID,
+        delivery_started_at: NORMALIZED_DELIVERY_STARTED_AT,
+        resolution: "confirmed_not_observed_cancelled",
+        public_channel: "squid_kor_update",
+        channel_checked: true,
+        caption_checked: false,
+        png_checked: true,
+      }),
+      { params: { contentId: ITEM_ID } } as never,
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(calls, 0);
+
+    const resolved = await publicationResolutionHandler(
+      resolutionRequest(),
+      { params: { contentId: ITEM_ID } } as never,
+    );
+    assert.equal(resolved.status, 201);
+    assert.equal((await resolved.json()).status, "cancelled");
+    assert.equal(calls, 1);
   });
 });
 

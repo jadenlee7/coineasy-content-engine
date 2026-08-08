@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from typing import Callable, Protocol
 
@@ -31,6 +33,11 @@ class PublicationRepository(Protocol):
 
 
 PublisherFactory = Callable[[str], ExactTelegramPublisher]
+_LOGGER = logging.getLogger(__name__)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1_000))
 
 
 class ExactTelegramPublicationWorker:
@@ -83,12 +90,21 @@ class ExactTelegramPublicationWorker:
         )
 
     async def run_once(self) -> PublicationRunResult:
+        run_started_at = time.monotonic()
         claim = await self.repository.claim(
             worker_id=self.worker_id,
             lease_seconds=self.lease_seconds,
         )
         if claim is None:
+            _LOGGER.info("exact_telegram_publication_idle elapsed_ms=%d", _elapsed_ms(run_started_at))
             return PublicationRunResult(ok=True, claimed=False, status="idle")
+        _LOGGER.info(
+            "exact_telegram_publication_claimed publication_id=%s client_id=%s attempts=%d elapsed_ms=%d",
+            claim.publication_id,
+            claim.client_id,
+            claim.attempts,
+            _elapsed_ms(run_started_at),
+        )
         if claim.client_id not in self.allowed_clients:
             return await self._fail_before_attempt(
                 claim,
@@ -97,9 +113,22 @@ class ExactTelegramPublicationWorker:
             )
 
         try:
+            phase_started_at = time.monotonic()
             publisher = self.publisher_factory(claim.client_id)
             await publisher.preflight()
+            _LOGGER.info(
+                "exact_telegram_publication_preflight_ok publication_id=%s elapsed_ms=%d",
+                claim.publication_id,
+                _elapsed_ms(phase_started_at),
+            )
+            phase_started_at = time.monotonic()
             image_bytes = await self.repository.download_asset(claim)
+            _LOGGER.info(
+                "exact_telegram_publication_asset_verified publication_id=%s byte_size=%d elapsed_ms=%d",
+                claim.publication_id,
+                len(image_bytes),
+                _elapsed_ms(phase_started_at),
+            )
         except TelegramExactError as exc:
             return await self._fail_before_attempt(
                 claim,
@@ -132,7 +161,13 @@ class ExactTelegramPublicationWorker:
                 retryable=False,
             )
         try:
+            phase_started_at = time.monotonic()
             await self.repository.mark_attempt(claim, request_sha256)
+            _LOGGER.info(
+                "exact_telegram_publication_fenced publication_id=%s elapsed_ms=%d",
+                claim.publication_id,
+                _elapsed_ms(phase_started_at),
+            )
         except Exception:
             # The fence may have committed even if its response was lost. Never
             # call Telegram or attempt to clear the lease from this uncertain state.
@@ -145,11 +180,23 @@ class ExactTelegramPublicationWorker:
             )
 
         try:
+            phase_started_at = time.monotonic()
             receipt = await publisher.send_photo_once(
                 image_bytes=image_bytes,
                 caption=claim.telegram_text,
             )
+            _LOGGER.info(
+                "exact_telegram_publication_provider_accepted publication_id=%s message_id=%d elapsed_ms=%d",
+                claim.publication_id,
+                receipt.message_id,
+                _elapsed_ms(phase_started_at),
+            )
         except Exception:
+            _LOGGER.error(
+                "exact_telegram_publication_delivery_unknown publication_id=%s elapsed_ms=%d",
+                claim.publication_id,
+                _elapsed_ms(phase_started_at),
+            )
             try:
                 await self.repository.fail(
                     claim,
@@ -167,12 +214,19 @@ class ExactTelegramPublicationWorker:
             )
 
         try:
+            phase_started_at = time.monotonic()
             await self.repository.complete(
                 claim,
                 request_sha256,
                 message_id=receipt.message_id,
                 chat_username=receipt.chat_username,
                 provider_date=receipt.provider_date,
+            )
+            _LOGGER.info(
+                "exact_telegram_publication_completed publication_id=%s elapsed_ms=%d total_elapsed_ms=%d",
+                claim.publication_id,
+                _elapsed_ms(phase_started_at),
+                _elapsed_ms(run_started_at),
             )
         except Exception:
             # Telegram succeeded. A retry would duplicate the public post, so
@@ -207,7 +261,7 @@ def build_exact_telegram_publication_worker(
         lambda client_id: ExactTelegramPublisher(load_telegram_exact_config(
             client_id,
             clients_dir=settings.clients_dir,
-        ))
+        ), send_timeout_seconds=settings.send_timeout_seconds)
     )
     return ExactTelegramPublicationWorker(
         repository=effective_repository,

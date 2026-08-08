@@ -1014,7 +1014,7 @@
 
       const state = { mode: "news", client: "yellow", template: "remix", imageUrl: "", svgUrl: "", articleBannerPngUrl: "", slides: [], activeSlide: 0, hasResult: false, generationRequest: null, sessionEpoch: 0, studioView: "create" };
       const BATCH_REVIEW_REF_PATTERN = /^batch:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
-      const libraryState = { source: "content_studio", items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, publicationRequest: 0, publicationIntent: null, performanceRequest: { x: 0, telegram: 0 } };
+      const libraryState = { source: "content_studio", items: [], nextCursor: null, activeId: "", activeDetail: null, loaded: false, stale: true, listRequest: 0, detailRequest: 0, exportRequest: 0, reviewRequest: null, publicationRequest: 0, publicationIntent: null, publicationResolutionIntent: null, performanceRequest: { x: 0, telegram: 0 } };
       const TELEGRAM_PUBLICATION_POLL_TIMEOUT_MS = 30_000;
       const TELEGRAM_PUBLICATION_POLL_INTERVAL_MS = 1_250;
       const reviewNotificationVersions = new Set();
@@ -1327,6 +1327,7 @@
         libraryState.performanceRequest.telegram += 1;
         libraryState.publicationRequest += 1;
         libraryState.publicationIntent = null;
+        libraryState.publicationResolutionIntent = null;
         libraryState.reviewRequest = null;
         libraryState.activeId = "";
         libraryState.activeDetail = null;
@@ -1884,7 +1885,7 @@
           const publicLink = publication.status === "published" && publication.external_url
             ? `<a href="${escapeHtml(publication.external_url)}" target="_blank" rel="noopener noreferrer">게시된 Telegram 메시지 열기</a>`
             : "";
-          const deliveryTimeValue = ["publishing", "delivery_unknown"].includes(publication.status)
+          const deliveryTimeValue = ["publishing", "delivery_unknown", "cancelled"].includes(publication.status)
             ? formatTelegramDeliveryTime(publication.delivery_started_at)
             : "";
           const deliveryTime = deliveryTimeValue
@@ -1893,7 +1894,12 @@
           const refresh = publication.status === "published"
             ? ""
             : `<div class="library-action-buttons"><button class="library-action-button" type="button" data-library-publish-status="telegram">현재 상태 다시 확인</button></div>`;
-          return `<section class="library-publish${warning ? " warning" : ""}"><h3>Telegram 공개 발행</h3><span class="library-publish-state">${escapeHtml(labels[publication.status])}</span><p>${escapeHtml(description)}</p>${deliveryTime}${publicLink}${refresh}</section>`;
+          const observedTelegram = (Array.isArray(detail.manual_publications) ? detail.manual_publications : [])
+            .some(item => item?.channel === "telegram" && safeWebUrl(item?.external_url));
+          const resolveUnknown = publication.status === "delivery_unknown" && !observedTelegram
+            ? `<div class="library-action-buttons"><button class="library-action-button" type="button" data-library-publish-resolution="cancel-unobserved">미발행 확인 후 이 시도 닫기</button></div>`
+            : "";
+          return `<section class="library-publish${warning ? " warning" : ""}"><h3>Telegram 공개 발행</h3><span class="library-publish-state">${escapeHtml(labels[publication.status])}</span><p>${escapeHtml(description)}</p>${deliveryTime}${publicLink}${refresh}${resolveUnknown}</section>`;
         }
 
         const capabilities = plainObject(detail.publication_capabilities);
@@ -2516,6 +2522,98 @@
             publicationContextIsCurrent(context, requestId)
             && button.isConnected
           ) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+          }
+        }
+      }
+
+      async function resolveUnknownTelegramPublication(button) {
+        const context = publicationContextFromActiveDetail();
+        const detail = plainObject(libraryState.activeDetail);
+        const publication = normalizedTelegramPublication(
+          detail.telegram_publication,
+          context?.contentItemId,
+          context?.contentVersionId
+        );
+        if (!context || !publication || publication.status !== "delivery_unknown" || !publication.delivery_started_at) {
+          setLibraryActionStatus("미확정 Telegram 시도를 찾을 수 없습니다. 상세를 다시 열어주세요.", "error");
+          return;
+        }
+        const phrase = window.prompt("공개 @squid_kor_update 채널에서 전송 시각 주변을 확인하고, 저장된 정확한 문구와 PNG가 모두 없을 때만 ‘미발행 확인’을 입력하세요.");
+        if (phrase !== "미발행 확인") return;
+        if (!window.confirm("이 작업은 재전송하지 않습니다. 현재 시도를 감사 로그와 함께 취소하고, 수정·승인된 새 버전에서만 다시 발행하게 됩니다. 계속할까요?")) return;
+
+        const fingerprint = JSON.stringify([
+          context.contentItemId,
+          context.contentVersionId,
+          publication.publication_id,
+          publication.delivery_started_at,
+          "confirmed_not_observed_cancelled"
+        ]);
+        if (
+          !libraryState.publicationResolutionIntent
+          || libraryState.publicationResolutionIntent.fingerprint !== fingerprint
+        ) {
+          libraryState.publicationResolutionIntent = {
+            fingerprint,
+            id: newGenerationRequestId()
+          };
+        }
+        const intent = libraryState.publicationResolutionIntent;
+        const requestId = ++libraryState.publicationRequest;
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "확인 기록 중…";
+        setLibraryActionStatus("미발행 이중 확인을 감사 로그에 기록하고 있습니다.");
+        try {
+          const response = await fetch(`/api/library/${encodeURIComponent(context.contentItemId)}/publish-resolution`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": intent.id
+            },
+            body: JSON.stringify({
+              content_version_id: context.contentVersionId,
+              publication_id: publication.publication_id,
+              delivery_started_at: publication.delivery_started_at,
+              resolution: "confirmed_not_observed_cancelled",
+              public_channel: "squid_kor_update",
+              channel_checked: true,
+              caption_checked: true,
+              png_checked: true
+            })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!publicationContextIsCurrent(context, requestId)) return;
+          if (handleStudioAccessResponse(response, payload)) return;
+          if (!response.ok) throw new Error(payload?.error || "telegram_delivery_resolution_failed");
+          const resolved = normalizedTelegramPublication(
+            payload,
+            context.contentItemId,
+            context.contentVersionId
+          );
+          if (!resolved || resolved.status !== "cancelled") {
+            throw new Error("telegram_delivery_resolution_invalid_response");
+          }
+          libraryState.publicationResolutionIntent = null;
+          applyTelegramPublication(
+            resolved,
+            "공개 채널·정확한 문구·PNG 미발행 확인을 기록하고 이 시도를 안전하게 닫았습니다. 다시 게시하려면 수정·승인된 새 버전을 사용하세요."
+          );
+        } catch {
+          if (!publicationContextIsCurrent(context, requestId)) return;
+          const recovered = await pollStoredTelegramPublication(context, requestId).catch(() => null);
+          if (!publicationContextIsCurrent(context, requestId)) return;
+          if (recovered?.status === "cancelled") {
+            libraryState.publicationResolutionIntent = null;
+            applyTelegramPublication(recovered, "미발행 확인과 시도 취소가 이미 안전하게 기록되었습니다.");
+            return;
+          }
+          setLibraryActionStatus("미발행 확인을 기록하지 못했습니다. 새 게시 요청을 만들지 않았습니다. 상태를 다시 확인해주세요.", "error");
+        } finally {
+          if (publicationContextIsCurrent(context, requestId) && button.isConnected) {
             button.disabled = false;
             button.textContent = originalLabel;
           }
@@ -3646,6 +3744,11 @@
         const publishStatusButton = event.target.closest("[data-library-publish-status]");
         if (publishStatusButton) {
           await refreshStoredTelegramPublication(publishStatusButton);
+          return;
+        }
+        const publishResolutionButton = event.target.closest("[data-library-publish-resolution]");
+        if (publishResolutionButton) {
+          await resolveUnknownTelegramPublication(publishResolutionButton);
           return;
         }
         const publicationButton = event.target.closest("[data-library-publication]");
