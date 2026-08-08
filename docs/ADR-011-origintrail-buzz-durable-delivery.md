@@ -7,7 +7,7 @@ scheduler, reconcile wiring, and scoped database credentials.
 
 ## Context
 
-CoinEasy exposes a GET-only, metadata-only OriginTrail Batch review shadow for
+CoinEasy exposes a GET-only, bounded-preview OriginTrail Batch review shadow for
 Buzz. The endpoint is authenticated and production active, but it deliberately
 does not connect to a relay. `buzz messages send` is a non-idempotent external
 write and has no dry-run flag. A timeout or lost CLI response after the relay
@@ -29,9 +29,11 @@ transitions to the worker.
 The one-shot worker follows this exact order:
 
 1. Read at most one event from the existing OriginTrail shadow.
-2. Build fixed `origintrail-batch-review-ready@1` text containing metadata and
-   canonical links only. Mentions, replies, files, broadcasts, model output,
-   prompts, and draft copy are forbidden.
+2. Build deterministic `origintrail-batch-review-ready@2` text containing the
+   bounded Korean headline and Telegram summary plus canonical metadata and
+   links. Mentions, replies, files, broadcasts, long-form body, X copy, prompts,
+   and raw provider output are forbidden. A required cutover timestamp excludes
+   historical v1 receipts from the v2 message fingerprint.
 3. Claim the deterministic event through the durable control endpoint.
 4. Run a read-only `buzz channels get` preflight for the exact channel.
 5. Persist the exact relay/channel/message request SHA-256 as `attempt_started`.

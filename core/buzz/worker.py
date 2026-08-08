@@ -13,12 +13,13 @@ from core.buzz.cli import (
     format_origintrail_message,
 )
 from core.buzz.errors import BuzzAdapterError
-from core.buzz.models import BuzzDeliveryRunResult, BuzzShadowEvent
+from core.buzz.models import BuzzAttachment, BuzzDeliveryRunResult, BuzzShadowEvent
 from core.buzz.settings import BuzzDeliverySettings
 
 
 class ShadowReader(Protocol):
     async def first_event(self) -> BuzzShadowEvent | None: ...
+    async def banner(self, event: BuzzShadowEvent) -> BuzzAttachment: ...
 
 
 class DeliveryControl(Protocol):
@@ -31,7 +32,7 @@ class DeliveryControl(Protocol):
 
 class RelayPublisher(Protocol):
     async def preflight(self) -> None: ...
-    async def send_once(self, message: str): ...
+    async def send_once(self, message: str, attachment: BuzzAttachment): ...
 
 
 class OriginTrailBuzzDeliveryWorker:
@@ -114,6 +115,16 @@ class OriginTrailBuzzDeliveryWorker:
         if event is None:
             return BuzzDeliveryRunResult(ok=True, claimed=False, status="idle")
         try:
+            attachment = await self.shadow.banner(event)
+        except BuzzAdapterError as exc:
+            return BuzzDeliveryRunResult(
+                ok=False,
+                claimed=False,
+                status="failed",
+                event_id=event.event_id,
+                error=exc.code,
+            )
+        try:
             message = format_origintrail_message(
                 event, studio_origin=self.studio_origin
             )
@@ -121,6 +132,7 @@ class OriginTrailBuzzDeliveryWorker:
                 relay_url=self.relay_url,
                 channel_id=self.channel_id,
                 message=message,
+                attachment=attachment,
             )
         except BuzzCliError as exc:
             return BuzzDeliveryRunResult(
@@ -194,7 +206,7 @@ class OriginTrailBuzzDeliveryWorker:
             )
 
         try:
-            receipt = await self.publisher.send_once(message)
+            receipt = await self.publisher.send_once(message, attachment)
         except Exception:
             try:
                 await self.control.fail(

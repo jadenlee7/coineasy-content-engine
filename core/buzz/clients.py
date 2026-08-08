@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
+import struct
 import uuid
 from collections.abc import Mapping
 
 import httpx
 
 from core.buzz.errors import BuzzAdapterError
-from core.buzz.models import BuzzDeliveryClaim, BuzzShadowEvent
+from core.buzz.models import BuzzAttachment, BuzzDeliveryClaim, BuzzShadowEvent
 
 
 _HASH = re.compile(r"^[a-f0-9]{64}$")
 _SOURCE = re.compile(r"^https://x[.]com/origin_trail/status/[0-9]{1,19}$")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STATUSES = frozenset(
     {"pending", "claimed", "attempt_started", "delivered", "delivery_unknown", "failed"}
 )
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_BANNER_BYTES = 4 * 1_024 * 1_024
 
 
 def _uuid(value: object, name: str) -> str:
@@ -34,6 +40,8 @@ def _event(raw: object) -> BuzzShadowEvent:
     cost = raw.get("actual_cost_microusd")
     source_url = raw.get("source_url")
     finished_at = raw.get("finished_at")
+    headline_ko = raw.get("headline_ko")
+    summary_ko = raw.get("summary_ko")
     if (
         not isinstance(event_id, str)
         or not _HASH.fullmatch(event_id)
@@ -52,6 +60,16 @@ def _event(raw: object) -> BuzzShadowEvent:
         or not isinstance(source_url, str)
         or not _SOURCE.fullmatch(source_url)
         or raw.get("studio_review_path") != f"/?batch={job_id}"
+        or not isinstance(headline_ko, str)
+        or headline_ko.strip() != headline_ko
+        or not 1 <= len(headline_ko) <= 120
+        or not isinstance(summary_ko, str)
+        or summary_ko.strip() != summary_ko
+        or not 1 <= len(summary_ko) <= 1_800
+        or "@" in headline_ko
+        or "@" in summary_ko
+        or _CONTROL.search(headline_ko) is not None
+        or _CONTROL.search(summary_ko) is not None
     ):
         raise BuzzAdapterError("buzz_shadow_invalid_response")
     return BuzzShadowEvent(
@@ -68,6 +86,8 @@ def _event(raw: object) -> BuzzShadowEvent:
         finished_at=finished_at,
         source_url=source_url,
         studio_review_path=f"/?batch={job_id}",
+        headline_ko=headline_ko,
+        summary_ko=summary_ko,
     )
 
 
@@ -109,6 +129,71 @@ class BuzzShadowClient:
             raise BuzzAdapterError("buzz_shadow_invalid_response")
         events = raw["events"]
         return None if not events else _event(events[0])
+
+    async def banner(self, event: BuzzShadowEvent) -> BuzzAttachment:
+        filename = f"origintrail-review-{event.job_id}.png"
+        url = f"{self.url}/{event.job_id}/banner.png"
+        try:
+            async with httpx.AsyncClient(
+                timeout=15.0, follow_redirects=False, transport=self.transport
+            ) as client:
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers={"x-coineasy-buzz-key": self.token},
+                ) as response:
+                    if response.status_code != 200:
+                        raise BuzzAdapterError(
+                            "buzz_banner_unavailable", retryable_before_attempt=True
+                        )
+                    declared = response.headers.get("content-length")
+                    if (
+                        response.headers.get("content-type") != "image/png"
+                        or response.headers.get("content-disposition")
+                        != f'inline; filename="{filename}"'
+                        or (
+                            declared is not None
+                            and (
+                                not declared.isdigit()
+                                or not 24 <= int(declared) <= _MAX_BANNER_BYTES
+                            )
+                        )
+                    ):
+                        raise BuzzAdapterError("buzz_banner_invalid_response")
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > _MAX_BANNER_BYTES:
+                            raise BuzzAdapterError("buzz_banner_invalid_response")
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+                    server_sha = response.headers.get(
+                        "x-coineasy-content-sha256", ""
+                    )
+        except BuzzAdapterError:
+            raise
+        except (httpx.TimeoutException, httpx.TransportError):
+            raise BuzzAdapterError(
+                "buzz_banner_unavailable", retryable_before_attempt=True
+            ) from None
+
+        content_sha = hashlib.sha256(content).hexdigest()
+        if (
+            (declared is not None and len(content) != int(declared))
+            or not content.startswith(_PNG_SIGNATURE)
+            or content[12:16] != b"IHDR"
+            or struct.unpack(">II", content[16:24]) != (1_200, 630)
+            or not _HASH.fullmatch(server_sha)
+            or not secrets.compare_digest(content_sha, server_sha)
+        ):
+            raise BuzzAdapterError("buzz_banner_invalid_response")
+        return BuzzAttachment(
+            filename=filename,
+            media_type="image/png",
+            content_sha256=content_sha,
+            content=content,
+        )
 
 
 class BuzzDeliveryControlClient:

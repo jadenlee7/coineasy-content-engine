@@ -12,6 +12,7 @@ import {
   createStudioSessionValue,
   STUDIO_SESSION_COOKIE,
 } from "../netlify/functions/_shared/studio-session.mts";
+import { ORIGINTRAIL_ARCHIVED_JOB_ID } from "../netlify/functions/_shared/origintrail-archived-review.mts";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
@@ -295,6 +296,35 @@ test("authenticated Batch review endpoints are GET-only, no-store, and validate 
         { headers },
       ), { params: { jobId: "not-a-uuid" } } as never);
       assert.equal(invalidId.status, 400);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an authenticated archived Staging review survives deletion of its Preview database", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("the archived review must not read deleted storage");
+  };
+  try {
+    await withNetlifyEnvironment({ STUDIO_ACCESS_TOKEN: ACCESS_TOKEN }, async () => {
+      const cookie = createStudioSessionValue(ACCESS_TOKEN);
+      const response = await batchReviewItemHandler(new Request(
+        `https://console.example/api/batch-review/${ORIGINTRAIL_ARCHIVED_JOB_ID}`,
+        { headers: { cookie: `${STUDIO_SESSION_COOKIE}=${cookie}` } },
+      ), { params: { jobId: ORIGINTRAIL_ARCHIVED_JOB_ID } } as never);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const payload = await response.json() as Record<string, any>;
+      assert.equal(payload.job_id, ORIGINTRAIL_ARCHIVED_JOB_ID);
+      assert.equal(payload.source_content, null);
+      assert.equal(payload.source_evidence.storage, "hash_only_archive");
+      assert.equal(payload.source_evidence.content_length, 6_661);
+      assert.match(payload.source_evidence.content_sha256, /^[a-f0-9]{64}$/);
+      assert.equal(fetchCalls, 0);
     });
   } finally {
     globalThis.fetch = originalFetch;

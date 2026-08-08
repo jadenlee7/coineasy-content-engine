@@ -1,13 +1,16 @@
 import type { Config } from "@netlify/functions";
 
 import {
-  batchReviewConfig,
   BatchReviewError,
+  getBatchReviewItem,
   listBatchReviewInbox,
   MAX_BATCH_REVIEW_LIMIT,
 } from "./_shared/batch-review.mts";
 import {
   buzzShadowAccessConfigured,
+  buzzShadowBatchReviewConfig,
+  buzzResultPreviewStartAt,
+  type BuzzShadowPreview,
   BuzzShadowError,
   hasValidBuzzShadowAccess,
   projectBuzzShadowPage,
@@ -39,16 +42,12 @@ export default async (request: Request): Promise<Response> => {
     return json({ error: "buzz_shadow_auth_required" }, 401);
   }
 
-  const config = batchReviewConfig(getEnv);
+  const config = buzzShadowBatchReviewConfig(getEnv);
   if (!config) return json({ error: "buzz_shadow_storage_not_configured" }, 503);
-  // Adoption path for the read-only `coineasy_batch_reviewer` role (ADR-007):
-  // this endpoint calls only list_agent_batch_review_inbox, so a scoped key
-  // becomes the RPC bearer without touching the project API key or the other
-  // functions that share the site-wide variable. Unset keeps today's bearer.
-  const scopedKey = (getEnv("SUPABASE_BUZZ_SHADOW_KEY") || "").trim();
-  const effectiveConfig = scopedKey
-    ? { ...config, authorizationKey: scopedKey }
-    : config;
+  const previewStartAt = buzzResultPreviewStartAt(getEnv);
+  if (previewStartAt === null) {
+    return json({ error: "buzz_shadow_preview_not_configured" }, 503);
+  }
 
   const url = new URL(request.url);
   const limitRaw = url.searchParams.get("limit");
@@ -62,12 +61,32 @@ export default async (request: Request): Promise<Response> => {
   ) return json({ error: "invalid_buzz_shadow_filters" }, 400);
 
   try {
-    const page = await listBatchReviewInbox(effectiveConfig, {
+    const page = await listBatchReviewInbox(config, {
       limit,
       beforeFinishedAt,
       beforeJobId,
     });
-    return json(projectBuzzShadowPage(page, config.workspaceId));
+    const eligibleItems = page.items.filter(
+      (item) => Date.parse(item.finished_at) >= previewStartAt,
+    );
+    const details = await Promise.all(
+      eligibleItems.map((item) => getBatchReviewItem(config, item.job_id)),
+    );
+    const previews = new Map<string, BuzzShadowPreview>();
+    for (let index = 0; index < eligibleItems.length; index += 1) {
+      const detail = details[index];
+      if (!detail || detail.job_id !== eligibleItems[index].job_id) {
+        throw new BuzzShadowError("buzz_shadow_invalid_review_page");
+      }
+      previews.set(detail.job_id, {
+        headline_ko: detail.result_payload.headline_ko.trim(),
+        summary_ko: detail.result_payload.telegram_copy_ko.trim(),
+      });
+    }
+    return json(projectBuzzShadowPage({
+      items: eligibleItems,
+      next_cursor: page.next_cursor,
+    }, config.workspaceId, previews));
   } catch (error) {
     const code = error instanceof BatchReviewError || error instanceof BuzzShadowError
       ? error.code
