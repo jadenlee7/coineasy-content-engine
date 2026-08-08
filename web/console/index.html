@@ -540,6 +540,19 @@
     .batch-review-output article { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
     .batch-review-output strong { display: block; color: var(--muted); font-size: 8px; font-weight: 850; text-transform: uppercase; }
     .batch-review-output p { margin: 6px 0 0; color: #36313b; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .batch-review-evidence { margin-top: 22px; padding: 16px; border: 1.5px solid #8a6d1f; border-radius: 10px; background: #fffaf0; }
+    .batch-review-evidence h3 { margin: 0; font-size: 13px; }
+    .batch-review-evidence-warning { margin: 8px 0 0; color: #6f5100; font-size: 10px; font-weight: 800; line-height: 1.55; }
+    .batch-review-evidence-notes { margin: 12px 0 0; padding-left: 18px; color: #4f4633; font-size: 10px; line-height: 1.65; }
+    .batch-review-evidence-notes li + li { margin-top: 5px; }
+    .batch-review-evidence-references { display: grid; gap: 8px; margin-top: 12px; }
+    .batch-review-evidence-reference { padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .batch-review-evidence-reference-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .batch-review-evidence-reference-head strong { color: var(--ink); font-size: 10px; line-height: 1.45; }
+    .batch-review-evidence-reference-head span { flex: 0 0 auto; color: #246b49; font-size: 8px; font-weight: 800; }
+    .batch-review-evidence-reference.unavailable .batch-review-evidence-reference-head span { color: #9a4e00; }
+    .batch-review-evidence-reference p { margin: 7px 0 0; color: #4f5661; font-size: 10px; line-height: 1.6; }
+    .batch-review-evidence-reference a { display: inline-flex; margin-top: 8px; color: #145ea8; font-size: 9px; font-weight: 750; overflow-wrap: anywhere; }
     .library-copy-grid { display: grid; gap: 10px; margin-top: 22px; }
     .library-copy-grid .channel-copy-text { min-height: 130px; }
     .library-copy-grid .channel-copy-text.x-copy { min-height: 110px; }
@@ -2080,8 +2093,108 @@
           ? `<div class="library-source-body"><p>일회용 Staging 종료 후 원문 전문은 재보존하지 않았습니다. X API로 동일 본문을 다시 확인했으며 길이 ${escapeHtml(sourceEvidence.content_length.toLocaleString("ko-KR"))}자와 SHA-256이 기존 실험 기록과 일치합니다.</p><p><code>${escapeHtml(sourceEvidence.content_sha256)}</code></p></div>`
           : `<div class="library-source-body"><p>${escapeHtml(sourceContent)}</p></div>`;
         const sourceMarkup = `<section class="library-source-evidence"><h3>${archivedSourceEvidence ? "보관된 공식 원문 검증" : "Batch에 고정된 공식 원문"}</h3>${sourceBodyMarkup}${sourceLinkMarkup}</section>`;
+        const rawFactCheckEvidence = plainObject(detail.fact_check_evidence);
+        const factCheckPayload = plainObject(rawFactCheckEvidence.payload);
+        const mediaEvidence = plainObject(factCheckPayload.media);
+        const reviewNotes = Array.isArray(factCheckPayload.review_notes_ko)
+          ? factCheckPayload.review_notes_ko
+          : [];
+        const officialReferences = Array.isArray(factCheckPayload.official_references)
+          ? factCheckPayload.official_references
+          : [];
+        const exactKeys = (value, expected) => {
+          const keys = Object.keys(value);
+          return keys.length === expected.length && keys.every(key => expected.includes(key));
+        };
+        const boundedText = (value, maximum) => typeof value === "string"
+          && value.trim().length >= 1
+          && value.length <= maximum;
+        const sha256 = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+        const safeTimestamp = value => typeof value === "string" && Number.isFinite(Date.parse(value));
+        const referenceKinds = new Set([
+          "origintrail_implementation",
+          "prime_intellect_announcement",
+          "prime_agent_release",
+          "arc_community_leaderboard",
+          "arc_methodology",
+          "scorecard_source"
+        ]);
+        const normalizedReferences = officialReferences.map(value => {
+          const reference = plainObject(value);
+          return {
+            reference,
+            safe_url: safeWebUrl(reference.url)
+          };
+        });
+        const validFactCheckEvidence = exactKeys(rawFactCheckEvidence, ["payload", "evidence_sha256"])
+          && exactKeys(factCheckPayload, [
+            "schema_version",
+            "policy_version",
+            "review_status",
+            "human_review_required",
+            "verified_at",
+            "source_url",
+            "source_content_sha256",
+            "media",
+            "review_notes_ko",
+            "official_references"
+          ])
+          && exactKeys(mediaEvidence, [
+            "type",
+            "media_key",
+            "recorded_url",
+            "preview_url",
+            "preview_url_sha256",
+            "width",
+            "height",
+            "factual_evidence"
+          ])
+          && factCheckPayload.schema_version === "1.0"
+          && factCheckPayload.policy_version === "origintrail-media-fact-evidence@1"
+          && factCheckPayload.review_status === "qualified"
+          && factCheckPayload.human_review_required === true
+          && safeTimestamp(factCheckPayload.verified_at)
+          && Boolean(safeWebUrl(factCheckPayload.source_url))
+          && sha256(factCheckPayload.source_content_sha256)
+          && ["photo", "video", "animated_gif"].includes(mediaEvidence.type)
+          && boundedText(mediaEvidence.media_key, 160)
+          && Boolean(safeWebUrl(mediaEvidence.recorded_url))
+          && Boolean(safeWebUrl(mediaEvidence.preview_url))
+          && sha256(mediaEvidence.preview_url_sha256)
+          && Number.isSafeInteger(mediaEvidence.width)
+          && mediaEvidence.width > 0
+          && Number.isSafeInteger(mediaEvidence.height)
+          && mediaEvidence.height > 0
+          && mediaEvidence.factual_evidence === false
+          && sha256(rawFactCheckEvidence.evidence_sha256)
+          && reviewNotes.length >= 1
+          && reviewNotes.length <= 8
+          && reviewNotes.every(note => boundedText(note, 600))
+          && normalizedReferences.length >= 1
+          && normalizedReferences.length <= 8
+          && normalizedReferences.every(({ reference, safe_url: safeUrl }) =>
+            exactKeys(reference, [
+              "kind",
+              "label_ko",
+              "url",
+              "observed_at",
+              "snapshot_sha256",
+              "availability",
+              "finding_ko"
+            ])
+            && referenceKinds.has(reference.kind)
+            && boundedText(reference.label_ko, 160)
+            && Boolean(safeUrl)
+            && safeTimestamp(reference.observed_at)
+            && (reference.snapshot_sha256 === null || sha256(reference.snapshot_sha256))
+            && ["available", "unavailable"].includes(reference.availability)
+            && boundedText(reference.finding_ko, 1200)
+          );
+        const factCheckEvidenceMarkup = validFactCheckEvidence
+          ? `<section class="batch-review-evidence"><h3>고정된 보조 팩트체크</h3><p class="batch-review-evidence-warning" role="note">생성 문구는 아직 사람의 이중 사실 확인이 필요합니다. 아래 내용은 고정된 보조 근거이며 자동 승인이나 발행을 뜻하지 않습니다.</p><ul class="batch-review-evidence-notes">${reviewNotes.map(note => `<li>${escapeHtml(note)}</li>`).join("")}</ul><div class="batch-review-evidence-references">${normalizedReferences.map(({ reference, safe_url: safeUrl }) => `<article class="batch-review-evidence-reference${reference.availability === "unavailable" ? " unavailable" : ""}"><div class="batch-review-evidence-reference-head"><strong>${escapeHtml(reference.label_ko)}</strong><span>${reference.availability === "available" ? "수집 시점 확인됨" : "수집 시점 확인 불가"}</span></div><p>${escapeHtml(reference.finding_ko)}</p><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${reference.availability === "available" ? "공식 자료 열기" : "공식 자료 위치 보기"}</a></article>`).join("")}</div></section>`
+          : "";
         libraryState.activeDetail = { ...detail, source: "batch" };
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">OriginTrail</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">${sourceEvidenceSufficient ? "검토 필요" : "근거 부족"}</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div>${bannerMarkup}<section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>현재 CoinEasy 연결은 Buzz로 결과와 배너를 전달하는 검토 전용 단계입니다. 승인·수정·재생성 입력은 다음 단계에서 기록 전용으로 연결하며 자동 발행은 계속 꺼져 있습니다.</p>${warningMarkup}<dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl>${resultMarkup}</section>${sourceMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">Batch 검토</span><span class="library-chip">OriginTrail</span><span class="library-chip">공식 원문 비긴급 팩</span><span class="library-chip status">${sourceEvidenceSufficient ? "검토 필요" : "근거 부족"}</span></div><h2>${escapeHtml(detail.title || "제목 없는 Batch 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.finished_at || "")}">${escapeHtml(formatLibraryDate(detail.finished_at))}</time></div>${bannerMarkup}<section class="batch-review-readonly"><h3>읽기 전용 Batch 결과</h3><p>현재 CoinEasy 연결은 Buzz로 결과와 배너를 전달하는 검토 전용 단계입니다. 승인·수정·재생성 입력은 다음 단계에서 기록 전용으로 연결하며 자동 발행은 계속 꺼져 있습니다.</p>${warningMarkup}<dl class="batch-review-facts"><div><dt>검토 참조</dt><dd>${escapeHtml(ref)}</dd></div><div><dt>모델</dt><dd>${escapeHtml(detail.model || "확인 불가")} · ${escapeHtml(detail.model_tier || "")}</dd></div><div><dt>토큰</dt><dd>입력 ${escapeHtml(inputTokens)} · 출력 ${escapeHtml(outputTokens)}</dd></div><div><dt>실제 비용</dt><dd>${escapeHtml(costText)}</dd></div><div><dt>단계</dt><dd>${escapeHtml(detail.stage || "확인 불가")}</dd></div><div><dt>입력 해시</dt><dd>${escapeHtml(detail.input_sha256 || "확인 불가")}</dd></div></dl>${resultMarkup}</section>${sourceMarkup}${factCheckEvidenceMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }

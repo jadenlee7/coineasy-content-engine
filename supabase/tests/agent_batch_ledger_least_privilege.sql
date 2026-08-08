@@ -47,6 +47,7 @@ declare
             'complete_review_draft_batch_handoff',
             'recover_review_draft_batch_handoff',
             'fail_review_draft_job',
+            'get_origintrail_reviewed_source_evidence',
             'configure_agent_batch_budget',
             'queue_agent_batch_job'
         ),

@@ -139,6 +139,112 @@ values
         statement_timestamp()
     );
 
+-- The media-evidence trigger now requires every OriginTrail ledger fixture to
+-- have the same public review-job boundary used in production. These rows are
+-- deliberately legacy text-only evidence; this test is about cost settlement,
+-- not the separately covered reviewed-media admission path.
+insert into public.source_feeds (
+    id, workspace_id, client_id, provider, name, source_url, handle,
+    poll_interval_minutes, active, created_by
+)
+values (
+    'e2000000-0000-4000-8000-000000000001',
+    'e0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'x',
+    'OriginTrail cost test source',
+    'https://x.com/origin_trail',
+    '@origin_trail',
+    15,
+    true,
+    null
+);
+
+insert into public.source_items (
+    id, workspace_id, client_id, source_feed_id, external_id, source_type,
+    canonical_url, author_handle, published_at, body, media, raw_payload,
+    source_hash, ingested_by
+)
+values (
+    'e2100000-0000-4000-8000-000000000001',
+    'e0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'e2000000-0000-4000-8000-000000000001',
+    '1999999999999999999',
+    'tweet',
+    'https://x.com/origin_trail/status/1999999999999999999',
+    '@origin_trail',
+    statement_timestamp() - interval '1 hour',
+    'Pinned legacy text-only OriginTrail cost evidence.',
+    '[]'::jsonb,
+    '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+    pg_catalog.md5('origintrail-cost-text-source'),
+    null
+);
+
+insert into private.origintrail_standalone_sources (
+    workspace_id, client_id, source_item_id, is_quote,
+    first_poll_request_id
+)
+values (
+    'e0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'e2100000-0000-4000-8000-000000000001',
+    false,
+    'e2200000-0000-4000-8000-000000000001'
+);
+
+insert into public.jobs (
+    id, workspace_id, client_id, job_kind, status, priority, input, output,
+    idempotency_key, attempts, max_attempts, available_at
+)
+select
+    fixture.job_id,
+    'e0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'generate',
+    'queued',
+    0,
+    jsonb_build_object(
+        'workflow', 'official_x_review_draft_v1',
+        'kst_date',
+            (statement_timestamp() at time zone 'Asia/Seoul')::date,
+        'source_item_ids', jsonb_build_array(
+            'e2100000-0000-4000-8000-000000000001'::uuid
+        ),
+        'content_kind', 'daily_news',
+        'request_id', fixture.request_id,
+        'source_content',
+            'Pinned legacy text-only OriginTrail cost evidence.',
+        'source_url',
+            'https://x.com/origin_trail/status/1999999999999999999',
+        'source_image_url', '',
+        'manual_only', false
+    ),
+    '{}'::jsonb,
+    'origintrail-cost-review:' || fixture.ordinal::text,
+    0,
+    3,
+    statement_timestamp()
+from (
+    values
+        (
+            'e1000000-0000-4000-8000-000000000001'::uuid,
+            'e3000000-0000-4000-8000-000000000001'::uuid,
+            1
+        ),
+        (
+            'e1000000-0000-4000-8000-000000000004'::uuid,
+            'e3000000-0000-4000-8000-000000000004'::uuid,
+            4
+        ),
+        (
+            'e1000000-0000-4000-8000-000000000005'::uuid,
+            'e3000000-0000-4000-8000-000000000005'::uuid,
+            5
+        )
+) as fixture(job_id, request_id, ordinal);
+
 insert into agent_runtime.batch_jobs (
     job_id,
     workspace_id,

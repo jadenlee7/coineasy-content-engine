@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import batchReviewHandler from "../netlify/functions/batch-review.mts";
@@ -18,6 +19,11 @@ const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const JOB_ID = "22222222-2222-4222-8222-222222222222";
 const ACCESS_TOKEN = "test-studio-access-token-32-bytes";
 const FINISHED_AT = "2026-07-31T12:00:00.000Z";
+const SOURCE_URL = "https://x.com/origin_trail/status/123";
+const SOURCE_CONTENT = "OriginTrail이 공식 업데이트를 발표했습니다.";
+const RECORDED_MEDIA_URL =
+  "https://pbs.twimg.com/amplify_video_thumb/2085781578374860800/img/vH2LVZnApTMbJhq2.jpg";
+const PREVIEW_MEDIA_URL = `${RECORDED_MEDIA_URL}?name=orig`;
 
 function reviewConfig() {
   return {
@@ -41,7 +47,7 @@ function listItem(overrides: Record<string, unknown> = {}) {
     result_code: "needs_review",
     actual_cost_microusd: 2_200,
     finished_at: FINISHED_AT,
-    source_url: "https://x.com/origin_trail/status/123",
+    source_url: SOURCE_URL,
     ...overrides,
   };
 }
@@ -50,11 +56,129 @@ function detailItem(overrides: Record<string, unknown> = {}) {
   return {
     ...listItem(),
     result_payload: resultPayload(),
-    source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
+    source_content: SOURCE_CONTENT,
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_000,
     actual_output_tokens: 220,
     ...overrides,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(
+      key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function factCheckReference(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: "origintrail_implementation",
+    label_ko: "OriginTrail Prime Agent 어댑터 구현 범위",
+    url: "https://github.com/OriginTrail/dkg/blob/075e87d881260a1aad2d86b53fa250d5d3f67d40/packages/adapter-prime-agent/README.md",
+    observed_at: "2026-08-08T11:05:11.000Z",
+    snapshot_sha256: "b".repeat(64),
+    availability: "available",
+    finding_ko: "현재 공개 구현은 전송·연결 계층이며 후속 단계가 남아 있습니다.",
+    ...overrides,
+  };
+}
+
+function allFactCheckReferences() {
+  return [
+    factCheckReference(),
+    factCheckReference({
+      kind: "prime_intellect_announcement",
+      label_ko: "Prime Intellect 공식 발표",
+      url: "https://www.primeintellect.ai/blog/prime-agent",
+      snapshot_sha256: null,
+    }),
+    factCheckReference({
+      kind: "prime_agent_release",
+      label_ko: "Prime Agent 공개 릴리스",
+      url: "https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.0",
+      snapshot_sha256: null,
+    }),
+    factCheckReference({
+      kind: "arc_community_leaderboard",
+      label_ko: "ARC 커뮤니티 리더보드",
+      url: "https://arcprize.org/api/leaderboards",
+      snapshot_sha256: "c".repeat(64),
+    }),
+    factCheckReference({
+      kind: "arc_methodology",
+      label_ko: "ARC-AGI-3 평가 방법론",
+      url: "https://arcprize.org/media/ARC_AGI_3_Technical_Report.pdf",
+      snapshot_sha256: null,
+    }),
+    factCheckReference({
+      kind: "scorecard_source",
+      label_ko: "Prime Agent 점수표 소스",
+      url: "https://github.com/PrimeIntellect-ai/arc-agi-3-prime-agent-scorecard/commit/aaee22436235de6f784df7b89302e1258aae9ab9",
+      snapshot_sha256: null,
+    }),
+  ];
+}
+
+function factCheckReferencesWithFirst(overrides: Record<string, unknown>) {
+  const references = allFactCheckReferences();
+  references[0] = factCheckReference(overrides);
+  return references;
+}
+
+function factCheckReferencesWithDuplicateKind() {
+  const references = allFactCheckReferences();
+  references[1] = factCheckReference({
+    url: "https://github.com/OriginTrail/dkg/commit/075e87d881260a1aad2d86b53fa250d5d3f67d40",
+  });
+  return references;
+}
+
+function factCheckPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "1.0",
+    policy_version: "origintrail-media-fact-evidence@1",
+    review_status: "qualified",
+    human_review_required: true,
+    verified_at: "2026-08-08T11:05:11.000Z",
+    source_url: SOURCE_URL,
+    source_content_sha256: sha256(SOURCE_CONTENT),
+    media: {
+      type: "video",
+      media_key: "13_2085781578374860800",
+      recorded_url: RECORDED_MEDIA_URL,
+      preview_url: PREVIEW_MEDIA_URL,
+      preview_url_sha256: sha256(PREVIEW_MEDIA_URL),
+      width: 1_920,
+      height: 1_920,
+      factual_evidence: false,
+    },
+    review_notes_ko: [
+      "미디어는 출처 고정용이며 사실 근거로 사용하지 않습니다.",
+      "성능 수치는 공급자 발표와 커뮤니티 점수표로 구분합니다.",
+    ],
+    official_references: allFactCheckReferences(),
+    ...overrides,
+  };
+}
+
+function factCheckEvidence(
+  payloadOverrides: Record<string, unknown> = {},
+  outerOverrides: Record<string, unknown> = {},
+) {
+  const payload = factCheckPayload(payloadOverrides);
+  return {
+    payload,
+    evidence_sha256: sha256(canonicalJson(payload)),
+    ...outerOverrides,
   };
 }
 
@@ -147,12 +271,19 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
       target_workspace_id: WORKSPACE_ID,
       target_job_id: JOB_ID,
     });
-    return Response.json(detailItem());
+    return Response.json(detailItem({ fact_check_evidence: factCheckEvidence() }));
   });
   assert.equal(item?.ref, `batch:${JOB_ID}`);
   assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
   assert.equal(item?.source_content, "OriginTrail이 공식 업데이트를 발표했습니다.");
   assert.equal(item?.actual_output_tokens, 220);
+  assert.equal(
+    item?.fact_check_evidence?.payload.policy_version,
+    "origintrail-media-fact-evidence@1",
+  );
+  assert.equal(item?.fact_check_evidence?.payload.review_status, "qualified");
+  assert.equal(item?.fact_check_evidence?.payload.media.factual_evidence, false);
+  assert.equal(item?.fact_check_evidence?.payload.official_references.length, 6);
 
   for (const invalid of [
     detailItem({ client_id: "yellow" }),
@@ -189,6 +320,105 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
         reviewConfig(),
         JOB_ID,
         async () => Response.json(invalid),
+      ),
+      (error: unknown) => (
+        error instanceof BatchReviewError
+        && error.code === "batch_review_invalid_response"
+      ),
+    );
+  }
+});
+
+test("Batch review detail keeps legacy evidence absence and explicit null compatible", async () => {
+  for (const legacy of [detailItem(), detailItem({ fact_check_evidence: null })]) {
+    const item = await getBatchReviewItem(
+      reviewConfig(),
+      JOB_ID,
+      async () => Response.json(legacy),
+    );
+    assert.equal(item?.fact_check_evidence, undefined);
+  }
+});
+
+test("Batch review detail fails closed on malformed or unbound fact evidence", async () => {
+  const invalidEvidence = [
+    factCheckEvidence({}, { unexpected: true }),
+    factCheckEvidence({ unexpected: true }),
+    factCheckEvidence({ schema_version: "2.0" }),
+    factCheckEvidence({ policy_version: "origintrail-media-fact-check@1" }),
+    factCheckEvidence({ review_status: "approved" }),
+    factCheckEvidence({ human_review_required: false }),
+    factCheckEvidence({ verified_at: "not-a-date" }),
+    factCheckEvidence({ verified_at: "2026-02-31T11:05:11Z" }),
+    factCheckEvidence({ verified_at: "2026-08-08T11:05:11+00:00" }),
+    factCheckEvidence({ source_url: "https://x.com.evil.example/origin_trail/status/123" }),
+    factCheckEvidence({ source_url: "http://x.com/origin_trail/status/123" }),
+    factCheckEvidence({ source_url: `${SOURCE_URL}?tracking=1` }),
+    factCheckEvidence({ source_content_sha256: "A".repeat(64) }),
+    factCheckEvidence({ source_content_sha256: "c".repeat(64) }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      unexpected: true,
+    } }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      factual_evidence: true,
+    } }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      preview_url: "https://evil.example/image.jpg?name=orig",
+      preview_url_sha256: sha256("https://evil.example/image.jpg?name=orig"),
+    } }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      preview_url_sha256: "d".repeat(64),
+    } }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      preview_url: `${RECORDED_MEDIA_URL}?name=small`,
+      preview_url_sha256: sha256(`${RECORDED_MEDIA_URL}?name=small`),
+    } }),
+    factCheckEvidence({ media: {
+      ...(factCheckPayload().media as Record<string, unknown>),
+      width: 0,
+    } }),
+    factCheckEvidence({ review_notes_ko: [] }),
+    factCheckEvidence({ review_notes_ko: [" "] }),
+    factCheckEvidence({ review_notes_ko: ["x".repeat(1_001)] }),
+    factCheckEvidence({ review_notes_ko: Array.from({ length: 9 }, () => "검토") }),
+    factCheckEvidence({ official_references: [] }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      unexpected: true,
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      kind: "unknown",
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      url: "https://github.com.evil.example/OriginTrail/dkg/blob/main/README.md",
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      url: "https://github.com/another-org/dkg/blob/main/README.md",
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      snapshot_sha256: "B".repeat(64),
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      availability: "unknown",
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithFirst({
+      observed_at: "2026-08-08T11:05:11+00:00",
+    }) }),
+    factCheckEvidence({ official_references: factCheckReferencesWithDuplicateKind() }),
+    factCheckEvidence({}, { evidence_sha256: "e".repeat(64) }),
+    factCheckEvidence({}, { evidence_sha256: "E".repeat(64) }),
+  ];
+
+  for (const fact_check_evidence of invalidEvidence) {
+    await assert.rejects(
+      () => getBatchReviewItem(
+        reviewConfig(),
+        JOB_ID,
+        async () => Response.json(detailItem({ fact_check_evidence })),
       ),
       (error: unknown) => (
         error instanceof BatchReviewError
@@ -254,7 +484,7 @@ test("authenticated Batch review endpoints are GET-only, no-store, and validate 
       return Response.json({ items: [listItem()], next_cursor: null });
     }
     if (request.url.endsWith("/rest/v1/rpc/get_agent_batch_review_item")) {
-      return Response.json(detailItem());
+      return Response.json(detailItem({ fact_check_evidence: factCheckEvidence() }));
     }
     throw new Error(`unexpected request ${request.url}`);
   };
@@ -290,6 +520,10 @@ test("authenticated Batch review endpoints are GET-only, no-store, and validate 
       assert.equal(detail.headers.get("cache-control"), "no-store");
       const detailPayload = await detail.json() as Record<string, any>;
       assert.equal(detailPayload.result_payload.headline_ko, "OriginTrail 업데이트");
+      assert.equal(
+        detailPayload.fact_check_evidence.payload.human_review_required,
+        true,
+      );
 
       const invalidId = await batchReviewItemHandler(new Request(
         "https://console.example/api/batch-review/not-a-uuid",
@@ -324,6 +558,7 @@ test("an authenticated archived Staging review survives deletion of its Preview 
       assert.equal(payload.source_evidence.storage, "hash_only_archive");
       assert.equal(payload.source_evidence.content_length, 6_661);
       assert.match(payload.source_evidence.content_sha256, /^[a-f0-9]{64}$/);
+      assert.equal(payload.fact_check_evidence, undefined);
       assert.equal(fetchCalls, 0);
     });
   } finally {

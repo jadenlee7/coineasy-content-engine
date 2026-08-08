@@ -33,6 +33,17 @@ Preview delivery is gated by `BUZZ_RESULT_PREVIEW_START_AT`: results completed
 before that exact timestamp are omitted so historical metadata-only receipts
 cannot conflict with the current message fingerprint.
 
+The reviewed-media extension keeps that Buzz contract unchanged. A media-backed
+OriginTrail source may enter Batch only when a private append-only registry
+matches the exact X body hash, raw provider media identity, canonical preview
+hash, standalone-post proof, and a human-qualified fact-evidence envelope. The
+media is explicitly non-factual provenance. Studio can show the sanitized
+limitations and official references, while Buzz still receives only the same
+headline, Telegram summary, source link, review link, and deterministic banner.
+Unknown media continues on the existing synchronous path and cannot enter the
+Batch/Buzz handoff. See
+[`ADR-013`](ADR-013-origintrail-reviewed-media-evidence.md).
+
 ## Operations
 
 Every worker run — including idle ones — opens by calling the server-side

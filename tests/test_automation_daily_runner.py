@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +30,7 @@ from core.automation.models import (
     StyleReference,
     StyleReferencePack,
 )
+from core.automation.origintrail_evidence import OriginTrailFactEvidence
 from core.automation.repository import AutomationRepositoryError
 from core.automation.settings import AUTOMATION_CLIENTS, AutomationSettings
 from core.batch.bridge import BatchQueueBridge
@@ -158,6 +161,8 @@ class FakeRepository:
         self.batch_recoveries = []
         self.batch_recovery_result = False
         self.batch_recovery_error = None
+        self.fact_evidence_by_job = {}
+        self.fact_evidence_calls = []
         self.execution_planes = {}
         self.failed = []
         self.complete_error = False
@@ -287,6 +292,10 @@ class FakeRepository:
             self.execution_planes[kwargs["job_id"]] = plane
         return plane
 
+    async def get_origintrail_reviewed_source_evidence(self, **kwargs):
+        self.fact_evidence_calls.append(kwargs)
+        return self.fact_evidence_by_job.get(kwargs["job_id"])
+
     async def complete_job(self, **kwargs):
         if self.complete_error:
             raise AutomationRepositoryError("automation_database_unavailable", retryable=True)
@@ -415,6 +424,36 @@ def runner(
         content_signals_client=content_signals_client,
         clients_dir=ROOT / "clients",
         now_factory=lambda: NOW,
+    )
+
+
+def reviewed_media_evidence(job: ClaimedJob) -> OriginTrailFactEvidence:
+    # The repository parser contract is exercised separately; this runner unit
+    # starts from the immutable value object returned after that validation.
+    preview_url = f"{job.source_image_url}?name=orig"
+    payload = {
+        "schema_version": "1.0",
+        "policy_version": "origintrail-media-fact-evidence@1",
+        "review_status": "qualified",
+        "human_review_required": True,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return OriginTrailFactEvidence(
+        canonical_json=canonical,
+        evidence_sha256=hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest(),
+        source_url=job.source_url,
+        source_content_sha256=hashlib.sha256(
+            job.source_content.encode("utf-8")
+        ).hexdigest(),
+        recorded_media_url=job.source_image_url,
+        preview_media_url=preview_url,
     )
 
 
@@ -850,7 +889,7 @@ async def test_fresh_squid_quote_photo_reaches_daily_news_render_path():
     assert squid_record["source_items"][0]["media"] == quote["media"]
     assert squid_record["source_items"][0]["is_retweet"] is False
     assert squid_record["source_items"][0]["is_reply"] is False
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
     assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
@@ -897,7 +936,7 @@ async def test_fresh_squid_quote_video_preview_reaches_remix_render_path():
         generation,
     ).run()
 
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
     assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
@@ -1266,15 +1305,26 @@ async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
         name: field["pattern"]
         for name, field in item.output_schema["properties"].items()
     } == {
-        "headline_ko": r"^[\s\S]{0,119}\S$",
+        "headline_ko": r"^[^@]{0,119}[^\s@]$",
         "body_ko": r"^[\s\S]{0,1799}\S$",
         "x_copy_ko": r"^[\s\S]{0,499}\S$",
-        "telegram_copy_ko": r"^[\s\S]{0,1799}\S$",
+        "telegram_copy_ko": r"^[^@]{0,1799}[^\s@]$",
     }
     assert all(
         "minLength" not in field and "maxLength" not in field
         for field in item.output_schema["properties"].values()
     )
+    for field_name in ("headline_ko", "telegram_copy_ko"):
+        pattern = item.output_schema["properties"][field_name]["pattern"]
+        assert re.fullmatch(pattern, "OriginTrail과 Prime Intellect 업데이트")
+        for invalid in (
+            "@PrimeIntellect 업데이트",
+            "Prime@Intellect 업데이트",
+            "PrimeIntellect 업데이트@",
+        ):
+            assert re.fullmatch(pattern, invalid) is None
+    assert "never emit the @ symbol" in item.instructions
+    assert "x_copy_ko may retain an official handle" in item.instructions
     assert queued["budget_key"] == "batch-general:2026-07-22"
     assert len(queued["idempotency_key"]) == 64
     assert (
@@ -1317,12 +1367,159 @@ async def test_image_backed_origintrail_source_stays_on_the_sync_plane():
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert generation.calls[0]["client_id"] == "origintrail"
     assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reviewed_origintrail_media_enters_batch_with_bound_evidence():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content=(
+            "Day 1: Prime Agent launches. Day 3: its fleets get Shared "
+            "Context Graphs on OriginTrail."
+        ),
+        source_url=(
+            "https://x.com/origin_trail/status/2085782218815775024"
+        ),
+        source_image_url=(
+            "https://pbs.twimg.com/amplify_video_thumb/"
+            "2085781578374860800/img/vH2LVZnApTMbJhq2.jpg"
+        ),
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+        origintrail_batch_eligible=True,
+    )
+    repo.claims.append(job)
+    repo.fact_evidence_by_job[job.job_id] = reviewed_media_evidence(job)
+    generation = FakeGenerationClient()
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 0
+    assert generation.calls == []
+    assert len(repo.fact_evidence_calls) == 1
+    evidence_call = repo.fact_evidence_calls[0]
+    assert evidence_call["workspace_id"] == WORKSPACE_ID
+    assert evidence_call["job_id"] == job.job_id
+    assert evidence_call["worker_id"].startswith("official-x:")
+    item = batch_repository.calls[0]["item"]
+    batch_input = json.loads(item.input_text)
+    assert batch_input["source"]["image_url"] == job.source_image_url
+    assert batch_input["fact_check_evidence"] == (
+        repo.fact_evidence_by_job[job.job_id].batch_envelope()
+    )
+    assert "provenance only" in item.instructions
+    assert "community scorecard" in item.instructions
+    assert len(item.output_schema["properties"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_reviewed_origintrail_media_fails_closed_without_evidence():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="A reviewed OriginTrail media update.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="https://pbs.twimg.com/media/origintrail.jpg",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+        origintrail_batch_eligible=True,
+    )
+    repo.claims.append(job)
+    batch_repository = FakeBatchQueueRepository()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+        batch_settings=active_batch_settings(),
+        batch_bridge=batch_bridge(batch_repository),
+    ).run()
+
+    assert summary.errors == 1
+    assert batch_repository.calls == []
+    assert repo.failed[0]["error_code"] == (
+        "origintrail_fact_evidence_unavailable"
+    )
+    assert repo.failed[0]["retryable"] is True
+
+
+def test_origintrail_media_batch_rejects_evidence_from_another_source():
+    job = ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id=(
+            "55555555-5555-4555-8555-555555555555"
+        ),
+        source_content="A reviewed OriginTrail media update.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="https://pbs.twimg.com/media/origintrail.jpg",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="official-x:test",
+        origintrail_batch_eligible=True,
+    )
+    evidence = replace(
+        reviewed_media_evidence(job),
+        source_url="https://x.com/origin_trail/status/999",
+    )
+    reference_pack = StyleReferencePack(
+        request_id=job.request_id,
+        primary_source_item_id=job.primary_source_item_id,
+        reference_pack_hash="a" * 32,
+        references=(),
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        OfficialXDailyRunner._origintrail_batch_item(
+            job=job,
+            reference_pack=reference_pack,
+            experiment_end_at=None,
+            fact_check_evidence=evidence,
+        )
 
 
 @pytest.mark.asyncio
@@ -1495,7 +1692,7 @@ async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == f"{preview_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == preview_url
     assert generation.calls[0]["source_image_url"] == f"{preview_url}?name=orig"
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []

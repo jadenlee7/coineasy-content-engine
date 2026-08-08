@@ -91,6 +91,106 @@ values (
     150000
 );
 
+-- The reviewed-media admission trigger requires every OriginTrail ledger row
+-- to be anchored to the public review-job boundary. This canary test uses a
+-- legacy text-only source because media admission is covered separately.
+insert into public.source_feeds (
+    id, workspace_id, client_id, provider, name, source_url, handle,
+    poll_interval_minutes, active, created_by
+)
+values (
+    'd4000000-0000-4000-8000-000000000001',
+    'd0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'x',
+    'OriginTrail canary test source',
+    'https://x.com/origin_trail',
+    '@origin_trail',
+    15,
+    true,
+    null
+);
+
+insert into public.source_items (
+    id, workspace_id, client_id, source_feed_id, external_id, source_type,
+    canonical_url, author_handle, published_at, body, media, raw_payload,
+    source_hash, ingested_by
+)
+values (
+    'd4100000-0000-4000-8000-000000000001',
+    'd0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'd4000000-0000-4000-8000-000000000001',
+    '1988888888888888888',
+    'tweet',
+    'https://x.com/origin_trail/status/1988888888888888888',
+    '@origin_trail',
+    statement_timestamp() - interval '1 hour',
+    'Pinned legacy text-only OriginTrail canary evidence.',
+    '[]'::jsonb,
+    '{"is_note_tweet":false,"metrics":{}}'::jsonb,
+    pg_catalog.md5('origintrail-canary-text-source'),
+    null
+);
+
+insert into private.origintrail_standalone_sources (
+    workspace_id, client_id, source_item_id, is_quote,
+    first_poll_request_id
+)
+values (
+    'd0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'd4100000-0000-4000-8000-000000000001',
+    false,
+    'd4200000-0000-4000-8000-000000000001'
+);
+
+insert into public.jobs (
+    id, workspace_id, client_id, job_kind, status, priority, input, output,
+    idempotency_key, attempts, max_attempts, available_at
+)
+select
+    fixture.job_id,
+    'd0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'generate',
+    'queued',
+    0,
+    jsonb_build_object(
+        'workflow', 'official_x_review_draft_v1',
+        'kst_date',
+            (statement_timestamp() at time zone 'Asia/Seoul')::date,
+        'source_item_ids', jsonb_build_array(
+            'd4100000-0000-4000-8000-000000000001'::uuid
+        ),
+        'content_kind', 'daily_news',
+        'request_id', fixture.request_id,
+        'source_content',
+            'Pinned legacy text-only OriginTrail canary evidence.',
+        'source_url',
+            'https://x.com/origin_trail/status/1988888888888888888',
+        'source_image_url', '',
+        'manual_only', false
+    ),
+    '{}'::jsonb,
+    'origintrail-canary-review:' || fixture.ordinal::text,
+    0,
+    3,
+    statement_timestamp()
+from (
+    values
+        (
+            'd1000000-0000-4000-8000-000000000001'::uuid,
+            'd5000000-0000-4000-8000-000000000001'::uuid,
+            1
+        ),
+        (
+            'd1000000-0000-4000-8000-000000000002'::uuid,
+            'd5000000-0000-4000-8000-000000000002'::uuid,
+            2
+        )
+) as fixture(job_id, request_id, ordinal);
+
 insert into agent_runtime.batch_jobs (
     job_id,
     workspace_id,
