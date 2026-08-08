@@ -80,6 +80,10 @@ export class BuzzDeliveryError extends Error {
   }
 }
 
+export type BuzzDeliverySupabaseConfig = ContentCatalogConfig & {
+  authorizationKey?: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -111,15 +115,15 @@ export function buzzDeliveryAccessConfigured(
 }
 
 // Adoption path for the scoped `coineasy_buzz_delivery` Postgres role: when
-// SUPABASE_BUZZ_DELIVERY_KEY is set, the five receipt RPCs authenticate with
-// it instead of the site-wide service-role key. Unset keeps today's behavior,
-// so rollback is deleting one variable.
+// SUPABASE_BUZZ_DELIVERY_KEY is a custom role JWT. Supabase requires custom
+// JWTs in Authorization while `apikey` remains a project API key. Unset keeps
+// today's service-role fallback, so rollback is deleting one variable.
 export function buzzDeliverySupabaseConfig(
   config: ContentCatalogConfig,
   getEnv: (name: string) => string | undefined,
-): ContentCatalogConfig {
+): BuzzDeliverySupabaseConfig {
   const scoped = (getEnv("SUPABASE_BUZZ_DELIVERY_KEY") || "").trim();
-  return scoped ? { ...config, serviceRoleKey: scoped } : config;
+  return scoped ? { ...config, authorizationKey: scoped } : config;
 }
 
 export function hasValidBuzzDeliveryAccess(
@@ -327,7 +331,7 @@ function validResponse(
 }
 
 export async function executeBuzzDeliveryAction(
-  config: ContentCatalogConfig,
+  config: BuzzDeliverySupabaseConfig,
   action: BuzzDeliveryAction,
   fetcher: typeof fetch = fetch,
   signal: AbortSignal = AbortSignal.timeout(10_000),
@@ -339,7 +343,7 @@ export async function executeBuzzDeliveryAction(
       method: "POST",
       headers: {
         apikey: config.serviceRoleKey,
-        Authorization: `Bearer ${config.serviceRoleKey}`,
+        Authorization: `Bearer ${config.authorizationKey ?? config.serviceRoleKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(rpc.body),

@@ -27,7 +27,9 @@ const RESULT_FIELD_LIMITS = {
   telegram_copy_ko: 1_800,
 } as const;
 
-export type BatchReviewConfig = ContentCatalogConfig;
+export type BatchReviewConfig = ContentCatalogConfig & {
+  authorizationKey?: string;
+};
 
 export type BatchReviewListItem = {
   ref: string;
@@ -201,7 +203,7 @@ function parseListItem(value: unknown): BatchReviewListItem | null {
 function rpcHeaders(config: BatchReviewConfig): Record<string, string> {
   return {
     apikey: config.serviceRoleKey,
-    Authorization: `Bearer ${config.serviceRoleKey}`,
+    Authorization: `Bearer ${config.authorizationKey ?? config.serviceRoleKey}`,
     "Content-Type": "application/json",
   };
 }

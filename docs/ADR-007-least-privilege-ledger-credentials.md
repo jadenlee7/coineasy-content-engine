@@ -94,9 +94,10 @@ and GET-only.
 
 Introduce three dedicated Postgres roles and grant each only the routines its
 component provably calls. PostgREST already switches roles from the JWT `role`
-claim, and `authenticator` is the role-switching entry point, so no application
-code changes: each component keeps its existing `apikey` + `Authorization`
-header shape and only the credential value changes.
+claim, and `authenticator` is the role-switching entry point. A custom role JWT
+belongs only in `Authorization`; `apikey` must remain a project API key. The
+Netlify adapters therefore keep `SUPABASE_SERVICE_ROLE_KEY` in `apikey` while
+using the per-function scoped JWT as the bearer.
 
 ```text
 coineasy_batch_dispatcher  -> 15 ledger routines
