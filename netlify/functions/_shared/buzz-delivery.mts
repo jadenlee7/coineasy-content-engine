@@ -26,9 +26,11 @@ const FAILURE_CODES = new Set([
 ]);
 const RESERVED_SECRET_ENVS = [
   "BUZZ_SHADOW_ACCESS_TOKEN",
+  "BUZZ_REVIEW_WORKER_TOKEN",
   "SUPABASE_SERVICE_ROLE_KEY",
   "SUPABASE_BUZZ_DELIVERY_KEY",
   "SUPABASE_BUZZ_SHADOW_KEY",
+  "SUPABASE_BUZZ_REVIEW_KEY",
   "STUDIO_ACCESS_TOKEN",
   "API_SECRET",
   "PUBLICATION_WORKER_TOKEN",
@@ -42,6 +44,7 @@ export type BuzzDeliveryAction =
       channel_id: string;
       message_sha256: string;
       request_sha256: string;
+      attachment_sha256: string | null;
       worker_id: string;
       lease_seconds: number;
     }
@@ -163,16 +166,24 @@ export function parseBuzzDeliveryAction(value: unknown): BuzzDeliveryAction {
     throw new BuzzDeliveryError("invalid_buzz_delivery_request");
   }
   if (value.action === "claim") {
+    const keys = Object.keys(value).sort();
+    const legacyKeys = [
+      "action", "event_id", "job_id", "channel_id", "message_sha256",
+      "request_sha256", "worker_id", "lease_seconds",
+    ].sort();
+    const reviewPackKeys = [...legacyKeys, "attachment_sha256"].sort();
+    const exactLegacy = keys.length === legacyKeys.length
+      && keys.every((key, index) => key === legacyKeys[index]);
+    const exactReviewPack = keys.length === reviewPackKeys.length
+      && keys.every((key, index) => key === reviewPackKeys[index]);
     if (
-      !exactKeys(value, [
-        "action", "event_id", "job_id", "channel_id", "message_sha256",
-        "request_sha256", "worker_id", "lease_seconds",
-      ])
+      (!exactLegacy && !exactReviewPack)
       || !hash(value.event_id)
       || !uuid(value.job_id)
       || !uuid(value.channel_id)
       || !hash(value.message_sha256)
       || !hash(value.request_sha256)
+      || (exactReviewPack && !hash(value.attachment_sha256))
       || !worker(value.worker_id)
       || !Number.isSafeInteger(value.lease_seconds)
       || Number(value.lease_seconds) < 180
@@ -185,6 +196,7 @@ export function parseBuzzDeliveryAction(value: unknown): BuzzDeliveryAction {
       channel_id: value.channel_id.toLowerCase(),
       message_sha256: value.message_sha256,
       request_sha256: value.request_sha256,
+      attachment_sha256: exactReviewPack ? value.attachment_sha256 as string : null,
       worker_id: value.worker_id,
       lease_seconds: Number(value.lease_seconds),
     };
@@ -239,20 +251,34 @@ export function parseBuzzDeliveryAction(value: unknown): BuzzDeliveryAction {
 function rpcRequest(
   action: BuzzDeliveryAction,
   workspaceId: string,
+  requireReviewPack: boolean,
 ): { name: string; body: Record<string, unknown> } {
-  if (action.action === "claim") return {
-    name: "claim_origintrail_buzz_delivery",
-    body: {
+  if (action.action === "claim") {
+    if (requireReviewPack && action.attachment_sha256 === null) {
+      throw new BuzzDeliveryError("invalid_buzz_delivery_request");
+    }
+    const body = {
       target_workspace_id: workspaceId,
       target_job_id: action.job_id,
       target_event_id: action.event_id,
       target_channel_id: action.channel_id,
       target_message_sha256: action.message_sha256,
       target_request_sha256: action.request_sha256,
+      ...(requireReviewPack
+        ? { target_attachment_sha256: action.attachment_sha256 }
+        : {}),
       target_worker_id: action.worker_id,
       target_lease_seconds: action.lease_seconds,
-    },
-  };
+    };
+    if (requireReviewPack) return {
+      name: "claim_origintrail_buzz_delivery_v2",
+      body,
+    };
+    return {
+      name: "claim_origintrail_buzz_delivery",
+      body,
+    };
+  }
   if (action.action === "attempt") return {
     name: "mark_origintrail_buzz_delivery_attempt",
     body: {
@@ -295,6 +321,7 @@ function validResponse(
   action: BuzzDeliveryAction,
   raw: unknown,
   workspaceId: string,
+  requireReviewPack: boolean,
 ): boolean {
   if (!isRecord(raw)) return false;
   if (action.action === "reconcile") {
@@ -316,6 +343,10 @@ function validResponse(
       && raw.channel_id === action.channel_id
       && raw.message_sha256 === action.message_sha256
       && raw.request_sha256 === action.request_sha256
+      && (!requireReviewPack || (
+        action.attachment_sha256 !== null
+        && raw.attachment_sha256 === action.attachment_sha256
+      ))
       && typeof raw.claim_granted === "boolean"
       && (raw.lease_expires_at === null || typeof raw.lease_expires_at === "string");
   }
@@ -335,8 +366,9 @@ export async function executeBuzzDeliveryAction(
   action: BuzzDeliveryAction,
   fetcher: typeof fetch = fetch,
   signal: AbortSignal = AbortSignal.timeout(10_000),
+  requireReviewPack = false,
 ): Promise<Record<string, unknown>> {
-  const rpc = rpcRequest(action, config.workspaceId);
+  const rpc = rpcRequest(action, config.workspaceId, requireReviewPack);
   let response: Response;
   try {
     response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${rpc.name}`, {
@@ -365,7 +397,7 @@ export async function executeBuzzDeliveryAction(
   } catch {
     throw new BuzzDeliveryError("buzz_delivery_invalid_response");
   }
-  if (!validResponse(action, raw, config.workspaceId)) {
+  if (!validResponse(action, raw, config.workspaceId, requireReviewPack)) {
     throw new BuzzDeliveryError("buzz_delivery_invalid_response");
   }
   return raw as Record<string, unknown>;

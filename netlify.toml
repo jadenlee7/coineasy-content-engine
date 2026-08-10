@@ -16,3 +16,6 @@
 
 [functions."buzz-shadow-origintrail-banner"]
   included_files = ["netlify/functions/_assets/fonts/**"]
+
+[functions."buzz-delivery-origintrail"]
+  included_files = ["netlify/functions/_assets/fonts/**"]

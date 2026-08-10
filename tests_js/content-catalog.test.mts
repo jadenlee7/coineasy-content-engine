@@ -5,6 +5,7 @@ import {
   contentAssetSignedUrl,
   contentCatalogConfig,
   contentStoragePath,
+  ContentCatalogError,
   downloadContentAsset,
   findGeneratedContent,
   recordGeneratedContent,
@@ -120,6 +121,29 @@ test("news assets validate private storage, active scope, PNG, and no-upsert upl
   await assert.rejects(
     () => uploadNewsCard(config(), "squid", ASSET_ID, new Uint8Array([1, 2, 3]).buffer, fetcher),
     (error: unknown) => (error as { code?: unknown }).code === "invalid_generated_png",
+  );
+});
+
+test("news card upload reuses only byte-identical deterministic storage objects", async () => {
+  let calls = 0;
+  const bytes = minimalPng().buffer;
+  const stored = await uploadNewsCard(config(), "origintrail", ASSET_ID, bytes, async () => {
+    calls += 1;
+    if (calls === 1) return new Response(null, { status: 409 });
+    return new Response(bytes, { status: 200 });
+  });
+  assert.equal(calls, 2);
+  assert.equal(stored.assetId, ASSET_ID);
+
+  calls = 0;
+  await assert.rejects(
+    () => uploadNewsCard(config(), "origintrail", ASSET_ID, bytes, async () => {
+      calls += 1;
+      if (calls === 1) return new Response(null, { status: 409 });
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }),
+    (error: unknown) => error instanceof ContentCatalogError
+      && error.code === "content_idempotency_conflict",
   );
 });
 

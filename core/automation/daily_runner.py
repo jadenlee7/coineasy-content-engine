@@ -75,7 +75,7 @@ _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
         },
         "telegram_copy_ko": {
             "type": "string",
-            "pattern": r"^[\s\S]{0,1799}\S$",
+            "pattern": r"^[\s\S]{0,1023}\S$",
         },
     },
     "required": [

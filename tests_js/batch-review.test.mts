@@ -49,6 +49,9 @@ function listItem(overrides: Record<string, unknown> = {}) {
 function detailItem(overrides: Record<string, unknown> = {}) {
   return {
     ...listItem(),
+    request_id: "33333333-3333-4333-8333-333333333333",
+    source_item_ids: ["44444444-4444-4444-8444-444444444444"],
+    result_sha256: "b".repeat(64),
     result_payload: resultPayload(),
     source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
     input_sha256: "a".repeat(64),
@@ -150,6 +153,9 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
     return Response.json(detailItem());
   });
   assert.equal(item?.ref, `batch:${JOB_ID}`);
+  assert.equal(item?.request_id, "33333333-3333-4333-8333-333333333333");
+  assert.deepEqual(item?.source_item_ids, ["44444444-4444-4444-8444-444444444444"]);
+  assert.equal(item?.result_sha256, "b".repeat(64));
   assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
   assert.equal(item?.source_content, "OriginTrail이 공식 업데이트를 발표했습니다.");
   assert.equal(item?.actual_output_tokens, 220);
@@ -172,7 +178,11 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
     detailItem({ result_payload: resultPayload({ headline_ko: "x".repeat(121) }) }),
     detailItem({ result_payload: resultPayload({ body_ko: "x".repeat(1_801) }) }),
     detailItem({ result_payload: resultPayload({ x_copy_ko: "x".repeat(501) }) }),
-    detailItem({ result_payload: resultPayload({ telegram_copy_ko: "x".repeat(1_801) }) }),
+    detailItem({ request_id: "not-a-uuid" }),
+    detailItem({ source_item_ids: [] }),
+    detailItem({ source_item_ids: ["not-a-uuid"] }),
+    detailItem({ result_sha256: "not-a-hash" }),
+    detailItem({ result_payload: resultPayload({ telegram_copy_ko: "x".repeat(1_025) }) }),
     detailItem({ result_payload: {
       headline_ko: "제목",
       body_ko: "본문",

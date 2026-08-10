@@ -11,12 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from core.buzz.models import BuzzAttachment, BuzzRelayReceipt, BuzzShadowEvent
+from core.buzz.models import (
+    BuzzAttachment,
+    BuzzRelayReceipt,
+    BuzzShadowEvent,
+    BuzzThreadMessage,
+)
 
 
 _EVENT_ID = re.compile(r"^[a-f0-9]{64}$")
 _MAX_PROCESS_OUTPUT = 65_536
-_MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@3"
+_MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@4"
 _PROCESS_TIMEOUT_SECONDS = 30.0
 BUZZ_CLI_RELEASE = "desktop-v0.5.4"
 _MAX_MESSAGE_BYTES = 1_024
@@ -25,6 +30,8 @@ _ATTACHMENT_FILENAME = re.compile(
 )
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 4 * 1_024 * 1_024
+_MAX_THREAD_EVENTS = 101
+_MAX_THREAD_CONTENT_BYTES = 4_096
 
 
 class BuzzCliError(RuntimeError):
@@ -131,6 +138,9 @@ def format_origintrail_message(event: BuzzShadowEvent, *, studio_origin: str) ->
         f"원문: {event.source_url}\n"
         f"검토: {studio_origin.rstrip('/')}{event.studio_review_path}\n"
         "검토 배너: 첨부됨\n"
+        "게시 승인(원문 사실·최종 문구·배너 확인):\n"
+        "게시 승인: 원문·최종물 확인\n"
+        "수정 요청: <사유>\n"
         "자동 발행: OFF"
     )
     fixed_bytes = len((prefix + suffix).encode("utf-8"))
@@ -252,9 +262,109 @@ class BuzzCliPublisher:
         return BuzzRelayReceipt(event_id=event_id)
 
 
+class BuzzCliReader:
+    def __init__(self, config: BuzzCliConfig, *, runner: CommandRunner = _run_command):
+        self.config = config
+        self.runner = runner
+
+    def _env(self) -> dict[str, str]:
+        env = {
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "BUZZ_RELAY_URL": self.config.relay_url,
+            "BUZZ_PRIVATE_KEY": self.config.private_key,
+        }
+        if self.config.auth_tag is not None:
+            env["BUZZ_AUTH_TAG"] = self.config.auth_tag
+        return env
+
+    async def read_thread(self, root_event_id: str) -> tuple[BuzzThreadMessage, ...]:
+        if not _EVENT_ID.fullmatch(root_event_id):
+            raise BuzzCliError("buzz_review_request_invalid")
+        result = await self.runner(
+            (
+                str(self.config.cli_path),
+                "--format",
+                "compact",
+                "messages",
+                "thread",
+                "--channel",
+                self.config.channel_id,
+                "--event",
+                root_event_id,
+                "--limit",
+                "100",
+                "--depth-limit",
+                "8",
+            ),
+            stdin=b"",
+            env=self._env(),
+        )
+        if result.returncode != 0:
+            raise BuzzCliError("buzz_review_thread_unavailable")
+        try:
+            parsed = json.loads(result.stdout)
+        except ValueError as exc:
+            raise BuzzCliError("buzz_review_thread_invalid") from exc
+        if not isinstance(parsed, list) or len(parsed) > _MAX_THREAD_EVENTS:
+            raise BuzzCliError("buzz_review_thread_invalid")
+
+        messages: list[BuzzThreadMessage] = []
+        for raw in parsed:
+            if not isinstance(raw, dict) or set(raw) != {
+                "id", "pubkey", "kind", "content", "created_at", "tags"
+            }:
+                raise BuzzCliError("buzz_review_thread_invalid")
+            event_id = raw["id"]
+            pubkey = raw["pubkey"]
+            kind = raw["kind"]
+            content = raw["content"]
+            created_at = raw["created_at"]
+            raw_tags = raw["tags"]
+            if (
+                not isinstance(event_id, str)
+                or not _EVENT_ID.fullmatch(event_id)
+                or not isinstance(pubkey, str)
+                or not _EVENT_ID.fullmatch(pubkey)
+                or isinstance(kind, bool)
+                or not isinstance(kind, int)
+                or not 0 <= kind <= 65_535
+                or not isinstance(content, str)
+                or len(content.encode("utf-8")) > _MAX_THREAD_CONTENT_BYTES
+                or isinstance(created_at, bool)
+                or not isinstance(created_at, int)
+                or not 1 <= created_at <= 4_294_967_295
+                or not isinstance(raw_tags, list)
+                or len(raw_tags) > 32
+            ):
+                raise BuzzCliError("buzz_review_thread_invalid")
+            tags: list[tuple[str, ...]] = []
+            for tag in raw_tags:
+                if (
+                    not isinstance(tag, list)
+                    or not 1 <= len(tag) <= 8
+                    or not all(
+                        isinstance(item, str)
+                        and len(item.encode("utf-8")) <= 1_024
+                        for item in tag
+                    )
+                ):
+                    raise BuzzCliError("buzz_review_thread_invalid")
+                tags.append(tuple(tag))
+            messages.append(BuzzThreadMessage(
+                event_id=event_id,
+                pubkey=pubkey,
+                kind=kind,
+                content=content,
+                created_at=created_at,
+                tags=tuple(tags),
+            ))
+        return tuple(messages)
+
+
 __all__ = [
     "BuzzCliConfig",
     "BuzzCliError",
+    "BuzzCliReader",
     "BuzzCliPublisher",
     "BUZZ_CLI_RELEASE",
     "CommandResult",

@@ -169,6 +169,42 @@ jobs:
             python -m scripts.run_origintrail_buzz_delivery --send-once \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "hold", "reason": "buzz_delivery_disabled", "provider_calls": False, "database_calls": False, "shadow_calls": False}'
 
+  buzz-review-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned Buzz review image
+        run: >-
+          docker build
+          --file Dockerfile.buzz-review
+          --tag coineasy-buzz-review-ci
+          .
+      - name: Prove the review scanner holds without network or credentials
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_REVIEW_ENABLED=false \
+            coineasy-buzz-review-ci \
+            python -m scripts.run_origintrail_buzz_review --scan-once \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "hold", "reason": "buzz_review_disabled", "provider_calls": False, "publication_calls": False, "database_calls": False, "relay_calls": False}'
+      - name: Validate every review identity and deployment fence without I/O
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_REVIEW_URL=https://console.example/api/buzz-review/origintrail \
+            --env BUZZ_REVIEW_WORKER_TOKEN=review-token-that-is-dedicated-and-long-enough \
+            --env BUZZ_RELAY_URL=https://buzz.example \
+            --env BUZZ_PRIVATE_KEY=1111111111111111111111111111111111111111111111111111111111111111 \
+            --env BUZZ_CHANNEL_ID=33333333-3333-4333-8333-333333333333 \
+            --env BUZZ_REVIEWER_PUBKEYS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env BUZZ_SERVICE_PUBKEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            --env RAILWAY_ENVIRONMENT_NAME=staging \
+            --env BUZZ_REVIEW_EXPECTED_ENVIRONMENT=staging \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env BUZZ_REVIEW_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env BUZZ_REVIEW_PROTOCOL_START_EPOCH=1700000000 \
+            coineasy-buzz-review-ci \
+            python -m scripts.run_origintrail_buzz_review --validate-only \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "origintrail", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "provider_calls": False, "publication_calls": False, "database_calls": False, "relay_calls": False}'
+
   publication-image:
     runs-on: ubuntu-latest
     steps:

@@ -56,10 +56,15 @@ declare
         ),
         'coineasy_buzz_delivery', jsonb_build_array(
             'claim_origintrail_buzz_delivery',
+            'claim_origintrail_buzz_delivery_v2',
             'mark_origintrail_buzz_delivery_attempt',
             'complete_origintrail_buzz_delivery',
             'fail_origintrail_buzz_delivery',
             'reconcile_origintrail_buzz_delivery_leases'
+        ),
+        'coineasy_buzz_review_decider', jsonb_build_array(
+            'list_origintrail_buzz_review_targets',
+            'record_origintrail_buzz_review_decision'
         )
     );
     role_name text;
@@ -193,6 +198,7 @@ begin
         'public.claim_origintrail_batch_canary_job(uuid,text,text,uuid,text,uuid,uuid,text,text,timestamp with time zone,bigint,integer,integer)',
         'public.register_origintrail_batch_provider_create(uuid,text,uuid,text,uuid,text,text,text,text,text,text)',
         'public.claim_origintrail_buzz_delivery(uuid,uuid,text,uuid,text,text,text,integer)',
+        'public.claim_origintrail_buzz_delivery_v2(uuid,uuid,text,uuid,text,text,text,text,integer)',
         'public.complete_origintrail_buzz_delivery(uuid,text,text,text,text)'
     ]
     loop

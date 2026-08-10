@@ -148,6 +148,7 @@ class OriginTrailBuzzDeliveryWorker:
                 channel_id=self.channel_id,
                 message_sha256=message_sha,
                 request_sha256=request_sha,
+                attachment_sha256=attachment.content_sha256,
                 worker_id=self.worker_id,
                 lease_seconds=self.lease_seconds,
             )

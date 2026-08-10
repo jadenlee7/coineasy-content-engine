@@ -1,4 +1,4 @@
-import type { Config } from "@netlify/functions";
+import type { Config, Context } from "@netlify/functions";
 
 import {
   buzzDeliveryAccessConfigured,
@@ -9,6 +9,10 @@ import {
   parseBuzzDeliveryAction,
 } from "./_shared/buzz-delivery.mts";
 import { contentCatalogConfig } from "./_shared/content-catalog.mts";
+import {
+  materializeOriginTrailReviewPack,
+  OriginTrailReviewPackError,
+} from "./_shared/origintrail-review-pack.mts";
 
 const MAX_BODY_BYTES = 2_048;
 
@@ -41,7 +45,16 @@ async function requestBody(request: Request): Promise<unknown> {
   }
 }
 
-export default async (request: Request): Promise<Response> => {
+function reviewPackMaterializationEnabled(
+  getEnv: (name: string) => string | undefined,
+): boolean {
+  const value = getEnv("BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED") || "false";
+  if (value === "true") return true;
+  if (value === "false" || value === "") return false;
+  throw new BuzzDeliveryError("invalid_buzz_delivery_request");
+}
+
+export default async (request: Request, context: Context): Promise<Response> => {
   if (request.method !== "POST") {
     return json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
   }
@@ -57,12 +70,29 @@ export default async (request: Request): Promise<Response> => {
 
   try {
     const action = parseBuzzDeliveryAction(await requestBody(request));
+    const requireReviewPack = reviewPackMaterializationEnabled(getEnv);
+    if (action.action === "claim" && requireReviewPack) {
+      if (action.attachment_sha256 === null) {
+        throw new BuzzDeliveryError("invalid_buzz_delivery_request");
+      }
+      const pack = await materializeOriginTrailReviewPack(
+        config,
+        action.job_id,
+        context.site.url,
+      );
+      if (pack.bannerSha256 !== action.attachment_sha256) {
+        throw new BuzzDeliveryError("buzz_delivery_receipt_conflict");
+      }
+    }
     return json(await executeBuzzDeliveryAction(
       buzzDeliverySupabaseConfig(config, getEnv),
       action,
+      fetch,
+      AbortSignal.timeout(10_000),
+      requireReviewPack,
     ));
   } catch (error) {
-    const code = error instanceof BuzzDeliveryError
+    const code = error instanceof BuzzDeliveryError || error instanceof OriginTrailReviewPackError
       ? error.code
       : "buzz_delivery_unavailable";
     const status = code === "invalid_buzz_delivery_request"

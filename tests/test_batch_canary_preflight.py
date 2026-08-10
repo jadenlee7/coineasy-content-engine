@@ -136,8 +136,25 @@ def test_live_preflight_constructs_no_database_or_provider_client(
     monkeypatch,
     capsys,
 ):
-    values = _live_env(datetime.now(timezone.utc))
+    # A 48-hour canary only accepts new provider work while more than 26 hours
+    # remain. Freeze this preflight test inside that safe interval instead of
+    # letting it become time-of-day dependent after 22:00 KST.
+    kst = ZoneInfo("Asia/Seoul")
+    safe_now = datetime.now(timezone.utc).astimezone(kst).replace(
+        hour=12,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ).astimezone(timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return safe_now if tz is None else safe_now.astimezone(tz)
+
+    values = _live_env(safe_now)
     _install_env(monkeypatch, values)
+    monkeypatch.setattr(batch_script, "datetime", FixedDateTime)
     monkeypatch.setattr(sys, "argv", ["run_batch_dispatcher", "--preflight-live"])
     monkeypatch.setattr(
         batch_script,

@@ -26,7 +26,7 @@ const RESULT_FIELD_LIMITS = {
   headline_ko: 120,
   body_ko: 1_800,
   x_copy_ko: 500,
-  telegram_copy_ko: 1_800,
+  telegram_copy_ko: 1_024,
 } as const;
 
 export type BatchReviewConfig = ContentCatalogConfig & {
@@ -68,6 +68,9 @@ export type BatchReviewPayload = {
 };
 
 export type BatchReviewDetail = BatchReviewListItem & {
+  request_id: string | null;
+  source_item_ids: string[];
+  result_sha256: string | null;
   result_payload: BatchReviewPayload;
   source_content: string | null;
   source_evidence: {
@@ -334,6 +337,22 @@ export async function getBatchReviewItem(
   const sourceContent = isRecord(result)
     ? exactSourceContent(result.source_content)
     : null;
+  const requestId = isRecord(result) && result.request_id !== undefined
+    ? (isCatalogUuid(result.request_id) ? String(result.request_id).toLowerCase() : undefined)
+    : null;
+  const sourceItemIds = isRecord(result) && result.source_item_ids !== undefined
+    && Array.isArray(result.source_item_ids)
+    && result.source_item_ids.length === 1
+    && result.source_item_ids.every(isCatalogUuid)
+    ? result.source_item_ids.map(value => String(value).toLowerCase())
+    : isRecord(result) && result.source_item_ids === undefined
+      ? []
+      : undefined;
+  const resultSha256 = isRecord(result) && result.result_sha256 !== undefined
+    ? (typeof result.result_sha256 === "string" && SHA256_PATTERN.test(result.result_sha256)
+      ? result.result_sha256
+      : undefined)
+    : null;
   if (
     !listFields
     || listFields.job_id !== normalizedJobId
@@ -343,10 +362,16 @@ export async function getBatchReviewItem(
     || !validBoundedInteger(result.actual_output_tokens, 128_000)
     || !resultPayload
     || !sourceContent
+    || requestId === undefined
+    || sourceItemIds === undefined
+    || resultSha256 === undefined
   ) throw new BatchReviewError("batch_review_invalid_response");
 
   return {
     ...listFields,
+    request_id: requestId,
+    source_item_ids: sourceItemIds,
+    result_sha256: resultSha256,
     result_payload: resultPayload,
     source_content: sourceContent,
     source_evidence: {

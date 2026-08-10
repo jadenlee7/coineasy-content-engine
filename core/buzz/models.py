@@ -37,6 +37,7 @@ class BuzzDeliveryClaim:
     channel_id: str
     message_sha256: str
     request_sha256: str
+    attachment_sha256: str
     status: str
     claim_granted: bool
     reused: bool
@@ -70,4 +71,59 @@ class BuzzDeliveryRunResult:
             result["error"] = self.error
         if self.reconcile is not None:
             result["reconcile"] = dict(self.reconcile)
+        return result
+
+
+@dataclass(frozen=True)
+class BuzzReviewTarget:
+    workspace_id: str
+    job_id: str
+    delivery_event_id: str
+    channel_id: str
+    root_relay_event_id: str
+    message_sha256: str
+    protocol_version: str
+    delivered_at_epoch: int
+
+
+@dataclass(frozen=True)
+class BuzzThreadMessage:
+    event_id: str
+    pubkey: str
+    kind: int
+    content: str
+    created_at: int
+    tags: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class BuzzReviewDecision:
+    target: BuzzReviewTarget
+    decision_event_id: str
+    reviewer_pubkey: str
+    decision: str
+    reason: str | None
+    command_sha256: str
+    command_created_at_epoch: int
+
+
+@dataclass(frozen=True)
+class BuzzReviewRunResult:
+    ok: bool
+    status: str
+    job_id: str | None = None
+    decision: str | None = None
+    reused: bool | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {"ok": self.ok, "status": self.status}
+        if self.job_id is not None:
+            result["job_id"] = self.job_id
+        if self.decision is not None:
+            result["decision"] = self.decision
+        if self.reused is not None:
+            result["reused"] = self.reused
+        if self.error is not None:
+            result["error"] = self.error
         return result

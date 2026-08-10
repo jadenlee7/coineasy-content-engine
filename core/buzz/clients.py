@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 import struct
@@ -10,7 +11,13 @@ from collections.abc import Mapping
 import httpx
 
 from core.buzz.errors import BuzzAdapterError
-from core.buzz.models import BuzzAttachment, BuzzDeliveryClaim, BuzzShadowEvent
+from core.buzz.models import (
+    BuzzAttachment,
+    BuzzDeliveryClaim,
+    BuzzReviewDecision,
+    BuzzReviewTarget,
+    BuzzShadowEvent,
+)
 
 
 _HASH = re.compile(r"^[a-f0-9]{64}$")
@@ -234,6 +241,7 @@ class BuzzDeliveryControlClient:
         channel_id: str,
         message_sha256: str,
         request_sha256: str,
+        attachment_sha256: str,
         worker_id: str,
         lease_seconds: int,
     ) -> BuzzDeliveryClaim:
@@ -244,6 +252,7 @@ class BuzzDeliveryControlClient:
             "channel_id": channel_id,
             "message_sha256": message_sha256,
             "request_sha256": request_sha256,
+            "attachment_sha256": attachment_sha256,
             "worker_id": worker_id,
             "lease_seconds": lease_seconds,
         })
@@ -254,6 +263,7 @@ class BuzzDeliveryControlClient:
             or raw.get("channel_id") != channel_id
             or raw.get("message_sha256") != message_sha256
             or raw.get("request_sha256") != request_sha256
+            or raw.get("attachment_sha256") not in (None, attachment_sha256)
             or status not in _STATUSES
             or not isinstance(raw.get("claim_granted"), bool)
             or not isinstance(raw.get("reused"), bool)
@@ -265,6 +275,7 @@ class BuzzDeliveryControlClient:
             channel_id=channel_id,
             message_sha256=message_sha256,
             request_sha256=request_sha256,
+            attachment_sha256=attachment_sha256,
             status=str(status),
             claim_granted=bool(raw["claim_granted"]),
             reused=bool(raw["reused"]),
@@ -353,3 +364,165 @@ class BuzzDeliveryControlClient:
                 raise BuzzAdapterError("buzz_delivery_control_invalid_response")
             counts[key] = value
         return counts
+
+
+class BuzzReviewControlClient:
+    def __init__(self, *, url: str, token: str, transport=None):
+        self.url = url
+        self.token = token
+        self.transport = transport
+
+    async def _post(
+        self,
+        body: Mapping[str, object],
+        *,
+        retry_commit_unknown: bool = False,
+    ) -> Mapping[str, object]:
+        encoded_body = json.dumps(
+            dict(body),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        max_attempts = 2 if retry_commit_unknown else 1
+        response: httpx.Response | None = None
+        async with httpx.AsyncClient(
+            timeout=10.0, follow_redirects=False, transport=self.transport
+        ) as client:
+            for attempt in range(max_attempts):
+                try:
+                    response = await client.post(
+                        self.url,
+                        headers={
+                            "x-coineasy-buzz-review-key": self.token,
+                            "content-type": "application/json",
+                        },
+                        content=encoded_body,
+                    )
+                except (httpx.TimeoutException, httpx.TransportError):
+                    if attempt + 1 < max_attempts:
+                        continue
+                    raise BuzzAdapterError(
+                        "buzz_review_control_unavailable"
+                    ) from None
+                if (
+                    500 <= response.status_code <= 599
+                    and attempt + 1 < max_attempts
+                ):
+                    continue
+                break
+        if response is None:
+            raise BuzzAdapterError("buzz_review_control_unavailable")
+        if response.status_code != 200:
+            raise BuzzAdapterError("buzz_review_control_unavailable")
+        try:
+            raw = response.json()
+        except ValueError as exc:
+            raise BuzzAdapterError("buzz_review_control_invalid_response") from exc
+        if not isinstance(raw, Mapping):
+            raise BuzzAdapterError("buzz_review_control_invalid_response")
+        return raw
+
+    async def first_target(self) -> BuzzReviewTarget | None:
+        raw = await self._post({"action": "list", "limit": 1})
+        targets = raw.get("targets")
+        workspace_id = raw.get("workspace_id")
+        if (
+            raw.get("schema_version") != "2.0"
+            or raw.get("mode") != "publish_intent_review"
+            or not isinstance(workspace_id, str)
+            or not isinstance(targets, list)
+            or len(targets) > 1
+        ):
+            raise BuzzAdapterError("buzz_review_control_invalid_response")
+        try:
+            uuid.UUID(workspace_id)
+        except ValueError:
+            raise BuzzAdapterError("buzz_review_control_invalid_response") from None
+        if not targets:
+            return None
+        target = targets[0]
+        if not isinstance(target, Mapping) or set(target) != {
+            "job_id",
+            "delivery_event_id",
+            "channel_id",
+            "root_relay_event_id",
+            "message_sha256",
+            "protocol_version",
+            "delivered_at_epoch",
+        }:
+            raise BuzzAdapterError("buzz_review_control_invalid_response")
+        try:
+            job_id = str(uuid.UUID(str(target["job_id"])))
+            channel_id = str(uuid.UUID(str(target["channel_id"])))
+        except (ValueError, AttributeError):
+            raise BuzzAdapterError("buzz_review_control_invalid_response") from None
+        delivery_event_id = target["delivery_event_id"]
+        root_relay_event_id = target["root_relay_event_id"]
+        message_sha256 = target["message_sha256"]
+        protocol_version = target["protocol_version"]
+        delivered_at_epoch = target["delivered_at_epoch"]
+        if (
+            not isinstance(delivery_event_id, str)
+            or not _HASH.fullmatch(delivery_event_id)
+            or not isinstance(root_relay_event_id, str)
+            or not _HASH.fullmatch(root_relay_event_id)
+            or not isinstance(message_sha256, str)
+            or not _HASH.fullmatch(message_sha256)
+            or protocol_version != "origintrail-buzz-review@2"
+            or isinstance(delivered_at_epoch, bool)
+            or not isinstance(delivered_at_epoch, int)
+            or not 1 <= delivered_at_epoch <= 4_294_967_295
+        ):
+            raise BuzzAdapterError("buzz_review_control_invalid_response")
+        return BuzzReviewTarget(
+            workspace_id=workspace_id,
+            job_id=job_id,
+            delivery_event_id=delivery_event_id,
+            channel_id=channel_id,
+            root_relay_event_id=root_relay_event_id,
+            message_sha256=message_sha256,
+            protocol_version=protocol_version,
+            delivered_at_epoch=delivered_at_epoch,
+        )
+
+    async def record(self, decision: BuzzReviewDecision) -> bool:
+        raw = await self._post(
+            {
+                "action": "record",
+                "job_id": decision.target.job_id,
+                "delivery_event_id": decision.target.delivery_event_id,
+                "channel_id": decision.target.channel_id,
+                "root_relay_event_id": decision.target.root_relay_event_id,
+                "message_sha256": decision.target.message_sha256,
+                "protocol_version": decision.target.protocol_version,
+                "decision_event_id": decision.decision_event_id,
+                "reviewer_pubkey": decision.reviewer_pubkey,
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "command_sha256": decision.command_sha256,
+                "command_created_at_epoch": decision.command_created_at_epoch,
+            },
+            retry_commit_unknown=True,
+        )
+        if (
+            raw.get("schema_version") != "2.0"
+            or raw.get("mode") != "publish_intent_review"
+            or raw.get("workspace_id") != decision.target.workspace_id
+            or raw.get("job_id") != decision.target.job_id
+            or raw.get("delivery_event_id") != decision.target.delivery_event_id
+            or raw.get("channel_id") != decision.target.channel_id
+            or raw.get("root_relay_event_id") != decision.target.root_relay_event_id
+            or raw.get("message_sha256") != decision.target.message_sha256
+            or raw.get("protocol_version") != decision.target.protocol_version
+            or raw.get("decision_event_id") != decision.decision_event_id
+            or raw.get("reviewer_pubkey") != decision.reviewer_pubkey
+            or raw.get("decision") != decision.decision
+            or raw.get("reason") != decision.reason
+            or raw.get("command_sha256") != decision.command_sha256
+            or raw.get("command_created_at_epoch")
+            != decision.command_created_at_epoch
+            or not isinstance(raw.get("reused"), bool)
+        ):
+            raise BuzzAdapterError("buzz_review_control_invalid_response")
+        return bool(raw["reused"])

@@ -100,7 +100,7 @@ test("Batch detail renders escaped plain text and offers no mutation controls", 
   assert.match(functionSource, /headline_ko: 120/);
   assert.match(functionSource, /body_ko: 1800/);
   assert.match(functionSource, /x_copy_ko: 500/);
-  assert.match(functionSource, /telegram_copy_ko: 1800/);
+  assert.match(functionSource, /telegram_copy_ko: 1024/);
   assert.match(functionSource, /resultKeys\.length === Object\.keys\(resultFieldLimits\)\.length/);
   assert.match(functionSource, /rawResultPayload\[key\]\.trim\(\)\.length >= 1/);
 

@@ -183,3 +183,40 @@ Official Buzz references:
 - [desktop v0.5.4 release](https://github.com/block/buzz/releases/tag/desktop-v0.5.4)
 - [`buzz-acp` configuration](https://github.com/block/buzz/blob/desktop-v0.5.4/crates/buzz-acp/README.md)
 - [`buzz` CLI](https://github.com/block/buzz/blob/desktop-v0.5.4/crates/buzz-cli/README.md)
+
+## Review decision scanner (not yet externally applied)
+
+The next bounded adapter is documented in
+[`ADR-013`](ADR-013-origintrail-buzz-review-action-loop.md). Its v2 protocol
+records only the exact `게시 승인: 원문·최종물 확인` command or
+`수정 요청: <reason>` from an allowlisted reviewer's direct reply to an
+eligible post-cutover Buzz message. It cannot publish, regenerate, call OpenAI,
+send an acknowledgement, deploy, or mutate the original Batch result. Because
+the Buzz CLI's normalized thread output does not include the Nostr signature,
+the stored row remains decision-only evidence and cannot authorize
+publication.
+
+The delivery endpoint also has a default-false
+`BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED` cutover. When enabled, it first
+binds the verified OriginTrail source and exact Batch result to one Content
+Studio version, renders the deterministic 1200x630 PNG, and records that
+PNG's SHA-256 as the delivery receipt `attachment_sha256`. The V2 claim accepts
+only that exact review pack; disabling the flag retains the V1 claim as the
+rollback path. This materialization neither authorizes nor performs
+publication. The normalized Buzz reply is still signature-stripped, so the
+next rollout step is one isolated staging result with publication disconnected.
+
+Safe local/hold commands:
+
+```bash
+python -m scripts.run_origintrail_buzz_review
+python -m scripts.run_origintrail_buzz_review --validate-only
+```
+
+Railway first runs `--validate-only` as a pre-deploy command. The scheduled
+entry point is reachable only with the service identity, environment, release,
+and protocol-cutoff fences configured, the literal
+`BUZZ_REVIEW_ENABLED=true` flag, and `--scan-once`. A successful decision run
+reports `status=recorded`; the exact replay reports `reused=true`, and later
+runs report `idle` because the immutable decision removes the job from the
+target list. Automatic publication remains OFF.
