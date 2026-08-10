@@ -54,6 +54,7 @@ function detailItem(overrides: Record<string, unknown> = {}) {
     result_sha256: "b".repeat(64),
     result_payload: resultPayload(),
     source_content: "OriginTrail이 공식 업데이트를 발표했습니다.",
+    source_evidence_kind: "x_post_text",
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_000,
     actual_output_tokens: 220,
@@ -158,6 +159,7 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
   assert.equal(item?.result_sha256, "b".repeat(64));
   assert.equal(item?.result_payload.headline_ko, "OriginTrail 업데이트");
   assert.equal(item?.source_content, "OriginTrail이 공식 업데이트를 발표했습니다.");
+  assert.equal(item?.source_evidence.kind, "x_post_text");
   assert.equal(item?.actual_output_tokens, 220);
 
   for (const invalid of [
@@ -182,6 +184,7 @@ test("Batch review detail accepts only bounded OriginTrail review results", asyn
     detailItem({ source_item_ids: [] }),
     detailItem({ source_item_ids: ["not-a-uuid"] }),
     detailItem({ result_sha256: "not-a-hash" }),
+    detailItem({ source_evidence_kind: "unknown" }),
     detailItem({ result_payload: resultPayload({ telegram_copy_ko: "x".repeat(1_025) }) }),
     detailItem({ result_payload: {
       headline_ko: "제목",

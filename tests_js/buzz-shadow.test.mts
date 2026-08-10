@@ -63,6 +63,7 @@ function reviewDetail() {
       telegram_copy_ko: "DKG V10과 Buzz 통합의 핵심 내용을 정리했습니다.",
     },
     source_content: "검증된 OriginTrail 공식 X Article 본문",
+    source_evidence_kind: "x_article",
     input_sha256: "a".repeat(64),
     actual_input_tokens: 1_942,
     actual_output_tokens: 595,

@@ -103,6 +103,7 @@ function exactMaterializationIdentity(detail: BatchReviewDetail): {
     || detail.result_sha256 === null
     || !SHA256_PATTERN.test(detail.result_sha256)
     || detail.source_content === null
+    || !new Set(["x_article", "x_post_text"]).has(detail.source_evidence.kind)
     || detail.source_evidence.storage !== "inline"
   ) throw new OriginTrailReviewPackError("origintrail_review_pack_evidence_required");
   return {
@@ -152,7 +153,7 @@ function catalogPayload(
       },
       source: {
         resolved_content: detail.source_content,
-        type: "x_article",
+        type: detail.source_evidence.kind,
         url: detail.source_url,
         mode: "provided",
         content_sha256: detail.source_evidence.content_sha256,
@@ -182,6 +183,7 @@ function catalogPayload(
       batch_input_sha256: detail.input_sha256,
       batch_result_sha256: detail.result_sha256,
       source_content_sha256: detail.source_evidence.content_sha256,
+      source_evidence_kind: detail.source_evidence.kind,
       banner_sha256: asset.sha256,
       review_pack_sha256: reviewPackSha256,
       review_pack_protocol: REVIEW_PACK_PROTOCOL,
