@@ -23,7 +23,7 @@ const LOGO = readFileSync(new URL(
 ));
 
 function detail(overrides: Record<string, unknown> = {}) {
-  const source = "[X Article]\nOriginTrail의 검증 가능한 지식 업데이트 본문입니다.";
+  const source = "OriginTrail의 검증 가능한 지식 업데이트 공식 게시물입니다.";
   return {
     job_id: JOB_ID,
     request_id: CONTENT_ID,
@@ -42,11 +42,12 @@ function detail(overrides: Record<string, unknown> = {}) {
     finished_at: "2026-08-08T01:00:00.000Z",
     source_url: "https://x.com/origin_trail/status/2082883998829752783",
     source_content: source,
+    source_evidence_kind: "x_post_text",
     result_payload: {
       headline_ko: "OriginTrail 검증 가능한 지식 업데이트",
-      body_ko: "공식 X Article의 핵심 내용을 한국어로 정리했습니다.",
+      body_ko: "공식 게시물의 핵심 내용을 한국어로 정리했습니다.",
       x_copy_ko: "OriginTrail 공식 업데이트를 확인하세요.",
-      telegram_copy_ko: "OriginTrail 공식 X Article의 핵심 내용을 확인하세요.",
+      telegram_copy_ko: "OriginTrail 공식 게시물의 핵심 내용을 확인하세요.",
     },
     input_sha256: INPUT_SHA,
     actual_input_tokens: 800,
@@ -161,8 +162,12 @@ test("one call materializes exact Batch copy, deterministic banner, catalog, and
     x: detail().result_payload.x_copy_ko,
   });
   const generationMeta = recordedBody.target_generation_meta as Record<string, unknown>;
+  const storedContent = recordedBody.target_content as Record<string, unknown>;
+  const storedSource = storedContent.source as Record<string, unknown>;
   assert.equal(generationMeta.mock_mode, false);
   assert.equal(generationMeta.source_content_sha256, sourceSha);
+  assert.equal(generationMeta.source_evidence_kind, "x_post_text");
+  assert.equal(storedSource.type, "x_post_text");
   assert.equal(generationMeta.banner_sha256, result.bannerSha256);
   assert.equal((generationMeta.fact_check as Record<string, unknown>).human_review_required, true);
   assert.equal(boundBody.target_content_item_id, CONTENT_ID);

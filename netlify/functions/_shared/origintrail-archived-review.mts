@@ -30,6 +30,7 @@ const ARCHIVED_REVIEW: BatchReviewDetail = Object.freeze({
   }),
   source_content: null,
   source_evidence: Object.freeze({
+    kind: "archive",
     storage: "hash_only_archive",
     content_length: 6_661,
     content_sha256: ORIGINTRAIL_ARCHIVED_SOURCE_SHA256,

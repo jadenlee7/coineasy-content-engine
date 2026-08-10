@@ -208,6 +208,7 @@ test("enabled review-pack claim materializes exact content and binds the same Bu
     finished_at: "2026-08-08T01:00:00.000Z",
     source_url: "https://x.com/origin_trail/status/2082883998829752783",
     source_content: sourceContent,
+    source_evidence_kind: "x_article",
     result_payload: resultPayload,
     input_sha256: "f".repeat(64),
     actual_input_tokens: 800,
@@ -217,6 +218,7 @@ test("enabled review-pack claim materializes exact content and binds the same Bu
     ...rawDetail,
     ref: `batch:${JOB_ID}`,
     source_evidence: {
+      kind: "x_article" as const,
       storage: "inline" as const,
       content_length: sourceContent.length,
       content_sha256: createHash("sha256")

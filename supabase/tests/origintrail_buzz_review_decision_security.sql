@@ -116,6 +116,24 @@ values (
     statement_timestamp() - interval '1 hour'
 );
 
+insert into private.official_x_poll_receipts (
+    workspace_id, client_id, poll_request_id, source_feed_id,
+    expected_cursor, next_cursor, payload_hash, source_item_ids,
+    inserted_count, polled_at
+)
+values (
+    'f0000000-0000-4000-8000-000000000001',
+    'origintrail',
+    'f6000000-0000-4000-8000-000000000001',
+    'f4000000-0000-4000-8000-000000000001',
+    null,
+    '2082883998829752783',
+    pg_catalog.md5('origintrail-buzz-review-poll'),
+    array['f5000000-0000-4000-8000-000000000001'::uuid],
+    1,
+    statement_timestamp() - interval '1 hour'
+);
+
 insert into private.origintrail_x_article_evidence (
     workspace_id, client_id, source_item_id, external_id, article_id,
     article_url, title, source_content_sha256, retrieval_method,

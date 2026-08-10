@@ -74,6 +74,7 @@ export type BatchReviewDetail = BatchReviewListItem & {
   result_payload: BatchReviewPayload;
   source_content: string | null;
   source_evidence: {
+    kind: "x_article" | "x_post_text" | "archive";
     storage: "inline" | "hash_only_archive";
     content_length: number;
     content_sha256: string;
@@ -353,6 +354,11 @@ export async function getBatchReviewItem(
       ? result.result_sha256
       : undefined)
     : null;
+  const sourceEvidenceKind = isRecord(result)
+    && (result.source_evidence_kind === "x_article"
+      || result.source_evidence_kind === "x_post_text")
+    ? result.source_evidence_kind
+    : undefined;
   if (
     !listFields
     || listFields.job_id !== normalizedJobId
@@ -365,6 +371,7 @@ export async function getBatchReviewItem(
     || requestId === undefined
     || sourceItemIds === undefined
     || resultSha256 === undefined
+    || sourceEvidenceKind === undefined
   ) throw new BatchReviewError("batch_review_invalid_response");
 
   return {
@@ -375,6 +382,7 @@ export async function getBatchReviewItem(
     result_payload: resultPayload,
     source_content: sourceContent,
     source_evidence: {
+      kind: sourceEvidenceKind,
       storage: "inline",
       content_length: sourceContent.length,
       content_sha256: createHash("sha256").update(sourceContent, "utf8").digest("hex"),

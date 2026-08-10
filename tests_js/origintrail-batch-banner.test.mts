@@ -45,7 +45,9 @@ function detail(sourceContent = "OriginTrail 공식 X Article 본문입니다.")
       telegram_copy_ko: "DKG V10과 Buzz 통합의 핵심 내용을 정리했습니다.",
     },
     source_content: sourceContent,
+    source_evidence_kind: "x_article",
     source_evidence: {
+      kind: "x_article",
       storage: "inline",
       content_length: sourceContent.length,
       content_sha256: createHash("sha256").update(sourceContent, "utf8").digest("hex"),
