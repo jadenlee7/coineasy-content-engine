@@ -91,7 +91,9 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
 
     def test_fixed_message_contains_bounded_preview_and_no_mentions(self):
         message = format_origintrail_message(
-            _event(), studio_origin="https://console.example"
+            _event(),
+            studio_origin="https://console.example",
+            attachment_sha256=_attachment().content_sha256,
         )
         self.assertNotIn("@", message)
         self.assertNotIn("prompt", message.lower())
@@ -100,6 +102,10 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("상태: needs_review", message)
         self.assertIn("실측 비용: $0.002200", message)
         self.assertIn("https://console.example/?batch=", message)
+        self.assertIn(
+            f"검토 배너 SHA-256: {_attachment().content_sha256}", message
+        )
+        self.assertEqual(message.count("검토 배너 SHA-256: "), 1)
         self.assertIn("자동 발행: OFF", message)
         self.assertLessEqual(len(message.encode("utf-8")), 1_024)
 
@@ -109,7 +115,9 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             **{**event.__dict__, "summary_ko": "검증 가능한 컨텍스트 " * 100}
         )
         message = format_origintrail_message(
-            event, studio_origin="https://console.example"
+            event,
+            studio_origin="https://console.example",
+            attachment_sha256=_attachment().content_sha256,
         )
         self.assertLessEqual(len(message.encode("utf-8")), 1_024)
         self.assertIn("…", message)
@@ -124,12 +132,28 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             BuzzCliError, "buzz_delivery_request_invalid"
         ):
             format_origintrail_message(
-                event, studio_origin="https://console.example"
+                event,
+                studio_origin="https://console.example",
+                attachment_sha256=_attachment().content_sha256,
             )
+
+    def test_message_rejects_noncanonical_attachment_hash(self):
+        for attachment_sha256 in ("A" * 64, "a" * 63, "not-a-hash"):
+            with self.subTest(attachment_sha256=attachment_sha256):
+                with self.assertRaisesRegex(
+                    BuzzCliError, "buzz_delivery_request_invalid"
+                ):
+                    format_origintrail_message(
+                        _event(),
+                        studio_origin="https://console.example",
+                        attachment_sha256=attachment_sha256,
+                    )
 
     def test_request_fingerprint_binds_relay_channel_and_message(self):
         message = format_origintrail_message(
-            _event(), studio_origin="https://console.example"
+            _event(),
+            studio_origin="https://console.example",
+            attachment_sha256=_attachment().content_sha256,
         )
         first = buzz_message_fingerprints(
             relay_url="https://buzz.example",
@@ -351,24 +375,63 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(runner.calls[0][1], b"")
 
-    async def test_thread_reader_uses_exact_bounded_read_only_command(self):
+    async def test_thread_reader_parses_production_shaped_full_json(self):
         root = "b" * 64
         reply = "c" * 64
         reviewer = "d" * 64
-        payload = json.dumps([{
-            "id": reply,
-            "pubkey": reviewer,
-            "kind": 9,
-            "content": "게시 승인: 원문·최종물 확인",
-            "created_at": 1_786_100_000,
-            "tags": [["h", CHANNEL_ID], ["e", root, "", "reply"]],
-        }]).encode()
+        service = "e" * 64
+        attachment = _attachment()
+        attachment_sha256 = attachment.content_sha256
+        media_url = f"https://buzz.example/media/{attachment_sha256}.png"
+        base_content = format_origintrail_message(
+            _event(),
+            studio_origin="https://console.example",
+            attachment_sha256=attachment_sha256,
+        )
+        payload = json.dumps([
+            {
+                "id": root,
+                "pubkey": service,
+                "kind": 9,
+                "content": f"{base_content}\n![image]({media_url})",
+                "created_at": 1_786_099_900,
+                "tags": [
+                    ["h", CHANNEL_ID],
+                    [
+                        "imeta",
+                        f"url {media_url}",
+                        "m image/png",
+                        f"x {attachment_sha256}",
+                        f"size {len(attachment.content)}",
+                        "dim 1200x630",
+                        "blurhash LKO2?U%2Tw=w]~RBVZRi};RPxuwH",
+                        (
+                            "thumb https://buzz.example/media/"
+                            f"{attachment_sha256}.thumb.jpg"
+                        ),
+                    ],
+                ],
+            },
+            {
+                "id": reply,
+                "pubkey": reviewer,
+                "kind": 9,
+                "content": "게시 승인: 원문·최종물 확인",
+                "created_at": 1_786_100_000,
+                "tags": [["h", CHANNEL_ID], ["e", root, "", "reply"]],
+            },
+        ]).encode()
         runner = FakeRunner([CommandResult(0, payload, b"")])
         reader = BuzzCliReader(_publisher(runner).config, runner=runner)
         messages = await reader.read_thread(root)
-        self.assertEqual(messages[0].content, "게시 승인: 원문·최종물 확인")
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].event_id, root)
+        self.assertEqual(messages[0].kind, 9)
+        self.assertEqual(messages[0].tags[1][0], "imeta")
+        self.assertEqual(messages[1].content, "게시 승인: 원문·최종물 확인")
+        self.assertEqual(messages[1].tags[1], ("e", root, "", "reply"))
         self.assertEqual(runner.calls[0][0], (
-            "/opt/coineasy/bin/buzz", "--format", "compact", "messages",
+            "/opt/coineasy/bin/buzz", "--format", "json", "messages",
             "thread", "--channel", CHANNEL_ID, "--event", root,
             "--limit", "100", "--depth-limit", "8",
         ))
@@ -391,6 +454,30 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
         reader = BuzzCliReader(_publisher(runner).config, runner=runner)
         with self.assertRaisesRegex(BuzzCliError, "buzz_review_thread_invalid"):
             await reader.read_thread("b" * 64)
+
+    async def test_thread_reader_rejects_lone_surrogates_fail_closed(self):
+        valid = {
+            "id": "b" * 64,
+            "pubkey": "d" * 64,
+            "kind": 9,
+            "content": "게시 승인: 원문·최종물 확인",
+            "created_at": 1_786_100_000,
+            "tags": [["h", CHANNEL_ID]],
+        }
+        malformed_values = (
+            {**valid, "content": "\ud800"},
+            {**valid, "tags": [["h", "\ud800"]]},
+        )
+        for malformed in malformed_values:
+            with self.subTest(malformed=malformed):
+                runner = FakeRunner([CommandResult(
+                    0, json.dumps([malformed]).encode(), b""
+                )])
+                reader = BuzzCliReader(_publisher(runner).config, runner=runner)
+                with self.assertRaisesRegex(
+                    BuzzCliError, "buzz_review_thread_invalid"
+                ):
+                    await reader.read_thread("b" * 64)
 
 
 class RunCommandTimeoutTests(unittest.IsolatedAsyncioTestCase):

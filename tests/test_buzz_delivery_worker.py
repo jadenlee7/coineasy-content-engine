@@ -183,6 +183,17 @@ class BuzzDeliveryWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event[0] for event in publisher.events], [
             "preflight", "send"
         ])
+        attachment_sha256 = _attachment().content_sha256
+        sent_message = publisher.events[1][1]
+        claim = control.events[1][1]
+        self.assertIn(
+            f"검토 배너 SHA-256: {attachment_sha256}", sent_message
+        )
+        self.assertEqual(claim["attachment_sha256"], attachment_sha256)
+        self.assertEqual(
+            claim["message_sha256"],
+            hashlib.sha256(sent_message.encode("utf-8")).hexdigest(),
+        )
 
     async def test_attempt_response_loss_never_calls_buzz(self):
         control = FakeControl(mark_error=RuntimeError("response lost"))
