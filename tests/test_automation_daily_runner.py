@@ -701,7 +701,7 @@ async def test_every_squid_photo_daily_news_family_reaches_generation_as_remix(
     assert summary.generated == 1
     assert generation.calls[0]["client_id"] == "squid"
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"].endswith("/official.jpg?name=orig")
+    assert generation.calls[0]["source_image_url"].endswith("/official.jpg")
 
 
 @pytest.mark.asyncio
@@ -850,10 +850,10 @@ async def test_fresh_squid_quote_photo_reaches_daily_news_render_path():
     assert squid_record["source_items"][0]["media"] == quote["media"]
     assert squid_record["source_items"][0]["is_retweet"] is False
     assert squid_record["source_items"][0]["is_reply"] is False
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert generation.calls[0]["source_image_url"] == image_url
 
 
 @pytest.mark.asyncio
@@ -897,10 +897,10 @@ async def test_fresh_squid_quote_video_preview_reaches_remix_render_path():
         generation,
     ).run()
 
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert summary.generated == 1
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert generation.calls[0]["source_image_url"] == image_url
 
 
 @pytest.mark.asyncio
@@ -1317,9 +1317,9 @@ async def test_image_backed_origintrail_source_stays_on_the_sync_plane():
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == image_url
     assert generation.calls[0]["client_id"] == "origintrail"
-    assert generation.calls[0]["source_image_url"] == f"{image_url}?name=orig"
+    assert generation.calls[0]["source_image_url"] == image_url
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []
@@ -1495,8 +1495,8 @@ async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
     ).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == f"{preview_url}?name=orig"
-    assert generation.calls[0]["source_image_url"] == f"{preview_url}?name=orig"
+    assert repo.queues[0]["source_image_url"] == preview_url
+    assert generation.calls[0]["source_image_url"] == preview_url
     assert set(repo.execution_planes.values()) == {"studio_sync"}
     assert batch_repository.calls == []
     assert batch_repository.budget_calls == []

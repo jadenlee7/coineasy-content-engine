@@ -105,9 +105,11 @@ def _pinned_source_image_url(source: Mapping[str, object]) -> str:
         raise ValueError("recorded source image is invalid")
     source_image_url = source_image_url.strip()
     if source_image_url:
-        source_image_url = normalize_x_media_url(source_image_url)
-        if not source_image_url:
+        if not normalize_x_media_url(source_image_url):
             raise ValueError("recorded source image is invalid")
+        # Preserve the exact URL pinned in source_items.media.  The queue RPC
+        # deliberately proves attachment with an exact match before reserving
+        # a draft; downstream remix generation canonicalizes the URL again.
         return source_image_url
 
     media = source.get("media", [])
@@ -122,9 +124,9 @@ def _pinned_source_image_url(source: Mapping[str, object]) -> str:
         if not isinstance(preview_url, str):
             raise ValueError("recorded source media is invalid")
         preview_url = preview_url.strip()
-        preview_url = normalize_x_media_url(preview_url)
-        if not preview_url:
+        if not normalize_x_media_url(preview_url):
             raise ValueError("recorded source media is invalid")
+        # Keep the immutable provider value for the same attachment proof.
         return preview_url
     return ""
 
