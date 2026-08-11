@@ -51,6 +51,16 @@ def buzz_review_enabled(environ: Mapping[str, str] | None = None) -> bool:
     raise ValueError("BUZZ_REVIEW_ENABLED must be literal true or false")
 
 
+def buzz_review_ack_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    raw = env.get("BUZZ_REVIEW_ACK_ENABLED", "false")
+    if raw == "true":
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise ValueError("BUZZ_REVIEW_ACK_ENABLED must be literal true or false")
+
+
 def _https_endpoint(value: str, expected_path: str) -> str:
     parsed = urlsplit(value.strip())
     local = (parsed.hostname or "").lower() in {"localhost", "127.0.0.1"}
@@ -267,6 +277,7 @@ class BuzzReviewSettings:
     deployment_environment: str
     release_sha: str
     protocol_start_epoch: int
+    acknowledgement_enabled: bool
 
     @classmethod
     def from_env(
@@ -369,6 +380,11 @@ class BuzzReviewSettings:
             or expected_environment != deployment_environment
         ):
             raise ValueError("Buzz review environment fence does not match")
+        acknowledgement_enabled = buzz_review_ack_enabled(env)
+        if acknowledgement_enabled and deployment_environment != "staging":
+            raise ValueError(
+                "Buzz review acknowledgement is restricted to staging"
+            )
         release_sha = env.get("RAILWAY_GIT_COMMIT_SHA", "").strip()
         expected_release_sha = env.get("BUZZ_REVIEW_RELEASE_SHA", "").strip()
         if (
@@ -397,4 +413,5 @@ class BuzzReviewSettings:
             deployment_environment=deployment_environment,
             release_sha=release_sha,
             protocol_start_epoch=protocol_start_epoch,
+            acknowledgement_enabled=acknowledgement_enabled,
         )

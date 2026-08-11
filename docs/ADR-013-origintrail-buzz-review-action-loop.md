@@ -52,6 +52,30 @@ the FORCE-RLS `agent_runtime.buzz_review_decisions` table. An exact replay
 returns `reused=true`; every different second decision conflicts. Updates and
 deletes are rejected by an immutable trigger.
 
+For the isolated staging proof, a fresh (`reused=false`) decision also receives
+one deterministic, text-only Buzz reply from the service identity. The reply is
+attached to the reviewer's exact command event and says either `게시 승인 접수`
+or `수정 요청 접수`. It always exposes that automatic publication is OFF (and,
+for a change request, that automatic regeneration is also OFF). The adapter
+rejects mentions, files, broadcasts, invalid reply IDs, and messages larger
+than 1024 UTF-8 bytes before invoking the Buzz CLI. It never reflects the
+reviewer's reason into the service reply; the reason remains in the original
+reply and immutable decision, preventing `@` or `nostr:npub1` text from being
+resolved into an unintended Buzz mention.
+
+This write path has a second default-false gate,
+`BUZZ_REVIEW_ACK_ENABLED`. The setting is rejected unless the environment
+identity fence is exactly `staging`; enabling the decision scanner alone still
+performs no relay write. Production cannot activate this first acknowledgement
+implementation through configuration.
+
+The immutable decision is committed before the acknowledgement is sent. This
+prevents a visible success receipt for a decision that failed to persist, but
+it also means the first staging version is intentionally best-effort: if the
+process dies or the relay result is unknown after the commit, the scanner does
+not retry and risk duplicate replies. Production promotion requires a durable
+acknowledgement outbox/receipt that can reconcile this commit-unknown window.
+
 ## Protocol cutoff and evidence gates
 
 `BUZZ_REVIEW_PROTOCOL_START_EPOCH` is a required integer Unix timestamp shared
@@ -135,8 +159,9 @@ treated as publication authority.
 An `approved` decision does not change `result_code`, create a Studio approval,
 or publish.
 A `changes_requested` decision records the reason but does not queue a new
-Batch. The scanner sends no Buzz acknowledgement and makes no OpenAI call.
-Those are separate transitions requiring their own durable fences and staging
+Batch. The staging acknowledgement is only a visible receipt; it makes no
+OpenAI call and does not queue regeneration, deployment, or publication. Those
+are separate transitions requiring their own durable fences and staging
 approval after this decision path is proven.
 
 ## Rollout
@@ -149,10 +174,14 @@ approval after this decision path is proven.
 2. Configure the same cutoff plus service identity, environment, and exact
    release fences in Railway. Deploy with `BUZZ_REVIEW_ENABLED=false`; the
    pre-deploy validation must pass and the scheduled command must return a
-   disabled hold without relay or database I/O.
+   disabled hold without relay or database I/O. Keep the independent
+   `BUZZ_REVIEW_ACK_ENABLED=false` gate until the isolated acknowledgement
+   test is explicitly approved.
 3. In isolated staging, enable the five-minute one-shot cron and reply to the
    fixed result with `게시 승인: 원문·최종물 확인`; verify one immutable row
-   and an idle next run. Verify that legacy `승인` remains ignored.
+   plus one direct `게시 승인 접수` reply, and an idle next run. Verify that an
+   exact database replay emits no duplicate acknowledgement and that legacy
+   `승인` remains ignored.
 4. Repeat once with a new fixed staging fixture and `수정 요청: ...`.
 5. Keep publication disconnected. For one isolated staging result only, enable
    the otherwise-default-false `BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED` flag

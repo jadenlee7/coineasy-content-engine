@@ -126,7 +126,9 @@ class OriginTrailBuzzDeliveryWorker:
             )
         try:
             message = format_origintrail_message(
-                event, studio_origin=self.studio_origin
+                event,
+                studio_origin=self.studio_origin,
+                attachment_sha256=attachment.content_sha256,
             )
             message_sha, request_sha = buzz_message_fingerprints(
                 relay_url=self.relay_url,

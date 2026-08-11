@@ -6,7 +6,10 @@ import json
 import os
 from collections.abc import Sequence
 
-from core.buzz.settings import BuzzReviewSettings, buzz_review_enabled
+from core.buzz.settings import (
+    BuzzReviewSettings,
+    buzz_review_enabled,
+)
 
 
 _VALIDATE_REQUIRED_ENV = (
@@ -19,6 +22,7 @@ _VALIDATE_REQUIRED_ENV = (
     "BUZZ_CHANNEL_ID",
     "BUZZ_CLI_PATH",
     "BUZZ_REVIEWER_PUBKEYS",
+    "BUZZ_REVIEW_ACK_ENABLED",
 )
 
 

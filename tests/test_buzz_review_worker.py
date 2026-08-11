@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import unittest
 
-from core.buzz.models import BuzzReviewTarget, BuzzThreadMessage
+from core.buzz.cli import BuzzCliError
+from core.buzz.models import BuzzRelayReceipt, BuzzReviewTarget, BuzzThreadMessage
 from core.buzz.review import (
     OriginTrailBuzzReviewWorker,
+    format_review_acknowledgement,
     parse_review_command,
     review_command_sha256,
 )
@@ -14,23 +16,32 @@ from core.buzz.review import (
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 JOB_ID = "22222222-2222-4222-8222-222222222222"
 CHANNEL_ID = "33333333-3333-4333-8333-333333333333"
+RELAY_URL = "https://buzz.example"
 DELIVERY_EVENT_ID = "a" * 64
 ROOT_ID = "b" * 64
 REVIEWER = "c" * 64
 OTHER = "d" * 64
+ATTACHMENT_SHA256 = "1" * 64
+MEDIA_URL = f"{RELAY_URL}/media/{ATTACHMENT_SHA256}.png"
+THUMB_URL = f"{RELAY_URL}/media/{ATTACHMENT_SHA256}.thumb.jpg"
+BLURHASH = "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+MEDIA_SIZE = 2_048
 NOW = 1_786_100_000
-ROOT_CONTENT = "OriginTrail review package v4"
+ROOT_CONTENT = (
+    "OriginTrail review package v5\n"
+    f"검토 배너 SHA-256: {ATTACHMENT_SHA256}"
+)
 ROOT_MESSAGE_SHA = hashlib.sha256(ROOT_CONTENT.encode()).hexdigest()
 
 
-def _target() -> BuzzReviewTarget:
+def _target(message_sha256: str = ROOT_MESSAGE_SHA) -> BuzzReviewTarget:
     return BuzzReviewTarget(
         workspace_id=WORKSPACE_ID,
         job_id=JOB_ID,
         delivery_event_id=DELIVERY_EVENT_ID,
         channel_id=CHANNEL_ID,
         root_relay_event_id=ROOT_ID,
-        message_sha256=ROOT_MESSAGE_SHA,
+        message_sha256=message_sha256,
         protocol_version="origintrail-buzz-review@2",
         delivered_at_epoch=NOW - 100,
     )
@@ -59,14 +70,51 @@ def _message(
     )
 
 
-def _root() -> BuzzThreadMessage:
+def _imeta(
+    *,
+    url: str = MEDIA_URL,
+    mime: str = "image/png",
+    sha256: str = ATTACHMENT_SHA256,
+    size: str = str(MEDIA_SIZE),
+    dim: str = "1200x630",
+    blurhash: str = BLURHASH,
+    thumb_url: str = THUMB_URL,
+    extra: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    return (
+        "imeta",
+        f"url {url}",
+        f"m {mime}",
+        f"x {sha256}",
+        f"size {size}",
+        f"dim {dim}",
+        f"blurhash {blurhash}",
+        f"thumb {thumb_url}",
+        *extra,
+    )
+
+
+def _root(
+    *,
+    pubkey: str = OTHER,
+    kind: int = 9,
+    base_content: str = ROOT_CONTENT,
+    media_url: str = MEDIA_URL,
+    signed_content: str | None = None,
+    imeta_tags: tuple[tuple[str, ...], ...] | None = None,
+    extra_tags: tuple[tuple[str, ...], ...] = (),
+) -> BuzzThreadMessage:
+    if signed_content is None:
+        signed_content = f"{base_content}\n![image]({media_url})"
+    if imeta_tags is None:
+        imeta_tags = (_imeta(url=media_url),)
     return BuzzThreadMessage(
         event_id=ROOT_ID,
-        pubkey=OTHER,
-        kind=40002,
-        content=ROOT_CONTENT,
+        pubkey=pubkey,
+        kind=kind,
+        content=signed_content,
         created_at=NOW - 120,
-        tags=(("h", CHANNEL_ID),),
+        tags=(("h", CHANNEL_ID),) + imeta_tags + extra_tags,
     )
 
 
@@ -94,10 +142,34 @@ class FakeReader:
         return self.messages
 
 
-def _worker(control: FakeControl, reader: FakeReader):
+class FakeAcknowledger:
+    def __init__(self, error: str | None = None):
+        self.error = error
+        self.replies = []
+
+    async def send_reply_once(self, message, reply_to):
+        self.replies.append((message, reply_to))
+        if self.error:
+            raise BuzzCliError(self.error)
+        return BuzzRelayReceipt(event_id="f" * 64)
+
+
+def _worker(
+    control: FakeControl,
+    reader: FakeReader,
+    acknowledger: FakeAcknowledger | None = None,
+    *,
+    acknowledgement_enabled: bool = True,
+):
     return OriginTrailBuzzReviewWorker(
         control=control,
         reader=reader,
+        acknowledger=(
+            acknowledger or FakeAcknowledger()
+            if acknowledgement_enabled
+            else None
+        ),
+        relay_url=RELAY_URL,
         channel_id=CHANNEL_ID,
         reviewer_pubkeys=frozenset({REVIEWER}),
         service_pubkey=OTHER,
@@ -144,6 +216,28 @@ class BuzzReviewCommandTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(len(first), 64)
 
+    def test_acknowledgement_copy_is_bounded_and_never_mentions(self):
+        self.assertIn(
+            "자동 발행: OFF",
+            format_review_acknowledgement("approved", None),
+        )
+        marker = "DO_NOT_REFLECT_7f3a"
+        message = format_review_acknowledgement(
+            "changes_requested",
+            (
+                marker
+                + " @origin_trail "
+                "nostr:npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw"
+                "038js35mp4dma8qzvjptg "
+                + ("가" * 500)
+            ),
+        )
+        self.assertNotIn(marker, message)
+        self.assertNotIn("@", message)
+        self.assertNotIn("nostr:npub1", message.lower())
+        self.assertIn("원문 답글", message)
+        self.assertLessEqual(len(message.encode("utf-8")), 1024)
+
 
 class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_does_not_read_relay(self):
@@ -153,16 +247,23 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.as_dict(), {"ok": True, "status": "idle"})
         self.assertEqual(reader.roots, [])
 
-    async def test_first_valid_allowed_direct_reply_is_recorded(self):
+    async def test_production_shaped_root_and_first_direct_reply_are_recorded(self):
         first = _message("e" * 64, "수정 요청: 숫자를 다시 확인", created_at=NOW - 20)
         later = _message(
             "f" * 64, "게시 승인: 원문·최종물 확인", created_at=NOW - 10
         )
         control = FakeControl(_target())
-        result = await _worker(control, FakeReader([later, _root(), first])).run_once()
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control, FakeReader([later, _root(), first]), acknowledger
+        ).run_once()
 
         self.assertEqual(result.status, "recorded")
         self.assertEqual(result.decision, "changes_requested")
+        self.assertEqual(result.acknowledgement_status, "accepted")
+        self.assertEqual(result.acknowledgement_event_id, "f" * 64)
+        self.assertEqual(acknowledger.replies[0][1], "e" * 64)
+        self.assertIn("수정 요청 접수", acknowledger.replies[0][0])
         self.assertEqual(len(control.recorded), 1)
         decision = control.recorded[0]
         self.assertEqual(decision.decision_event_id, "e" * 64)
@@ -178,6 +279,47 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
                 command_created_at_epoch=NOW - 20,
             ),
         )
+
+    async def test_reused_decision_never_sends_a_second_acknowledgement(self):
+        control = FakeControl(_target(), reused=True)
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledger,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertTrue(result.reused)
+        self.assertEqual(result.acknowledgement_status, "not_attempted")
+        self.assertEqual(acknowledger.replies, [])
+
+    async def test_default_off_acknowledgement_records_without_relay_write(self):
+        control = FakeControl(_target())
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledgement_enabled=False,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "recorded")
+        self.assertFalse(result.reused)
+        self.assertEqual(result.acknowledgement_status, "disabled")
+        self.assertEqual(len(control.recorded), 1)
+
+    async def test_ack_failure_never_retries_or_reverses_recorded_decision(self):
+        control = FakeControl(_target())
+        acknowledger = FakeAcknowledger("buzz_review_acknowledgement_unknown")
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "recorded")
+        self.assertEqual(result.error, "buzz_review_acknowledgement_unknown")
+        self.assertEqual(result.acknowledgement_status, "unknown")
+        self.assertEqual(len(control.recorded), 1)
+        self.assertEqual(len(acknowledger.replies), 1)
 
     async def test_wrong_author_channel_nested_future_and_noncommand_are_ignored(self):
         messages = [
@@ -217,13 +359,11 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "awaiting_review")
         self.assertEqual(control.recorded, [])
 
-        bad_root = BuzzThreadMessage(
-            event_id=ROOT_ID,
-            pubkey=OTHER,
-            kind=40_002,
-            content="tampered",
-            created_at=NOW - 120,
-            tags=(("h", CHANNEL_ID),),
+        bad_root = _root(
+            base_content=(
+                "tampered\n"
+                f"검토 배너 SHA-256: {ATTACHMENT_SHA256}"
+            )
         )
         result = await _worker(
             FakeControl(_target()), FakeReader([bad_root])
@@ -231,18 +371,214 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error, "buzz_review_thread_invalid")
 
     async def test_root_must_be_authored_by_the_fenced_service_identity(self):
-        foreign_root = BuzzThreadMessage(
-            event_id=ROOT_ID,
-            pubkey="e" * 64,
-            kind=40_002,
-            content=ROOT_CONTENT,
-            created_at=NOW - 120,
-            tags=(("h", CHANNEL_ID),),
-        )
+        foreign_root = _root(pubkey="e" * 64)
         result = await _worker(
             FakeControl(_target()), FakeReader([foreign_root])
         ).run_once()
         self.assertEqual(result.error, "buzz_review_thread_invalid")
+
+    async def test_root_must_be_kind_9_and_must_not_be_a_reply(self):
+        invalid_roots = (
+            _root(kind=40_002),
+            _root(
+                extra_tags=(("e", "f" * 64, "", "reply"),),
+            ),
+        )
+        for invalid_root in invalid_roots:
+            with self.subTest(kind=invalid_root.kind, tags=invalid_root.tags):
+                control = FakeControl(_target())
+                acknowledger = FakeAcknowledger()
+                result = await _worker(
+                    control, FakeReader([invalid_root]), acknowledger
+                ).run_once()
+                self.assertFalse(result.ok)
+                self.assertEqual(result.error, "buzz_review_thread_invalid")
+                self.assertEqual(control.recorded, [])
+                self.assertEqual(acknowledger.replies, [])
+
+    async def test_root_media_envelope_is_strictly_bound_and_fail_closed(self):
+        other_sha256 = "2" * 64
+        other_media_url = f"{RELAY_URL}/media/{other_sha256}.png"
+        evil_media_url = (
+            f"https://attacker.example/media/{ATTACHMENT_SHA256}.png"
+        )
+        missing_hash_base = "OriginTrail review package v5"
+        duplicate_hash_base = (
+            f"{ROOT_CONTENT}\n"
+            f"검토 배너 SHA-256: {ATTACHMENT_SHA256}"
+        )
+        cases = (
+            (
+                "missing suffix close",
+                _root(signed_content=f"{ROOT_CONTENT}\n![image]({MEDIA_URL}"),
+                _target(),
+            ),
+            (
+                "multiple suffixes",
+                _root(signed_content=(
+                    f"{ROOT_CONTENT}\n![image]({MEDIA_URL})"
+                    f"\n![image]({MEDIA_URL})"
+                )),
+                _target(),
+            ),
+            (
+                "suffix not trailing",
+                _root(signed_content=(
+                    f"{ROOT_CONTENT}\n![image]({MEDIA_URL})\n"
+                )),
+                _target(),
+            ),
+            ("missing imeta", _root(imeta_tags=()), _target()),
+            (
+                "duplicate imeta",
+                _root(imeta_tags=(_imeta(), _imeta())),
+                _target(),
+            ),
+            (
+                "mismatched imeta URL",
+                _root(imeta_tags=(_imeta(url=other_media_url),)),
+                _target(),
+            ),
+            (
+                "non-PNG MIME",
+                _root(imeta_tags=(_imeta(mime="video/mp4"),)),
+                _target(),
+            ),
+            (
+                "attachment hash mismatch",
+                _root(
+                    media_url=other_media_url,
+                    imeta_tags=(_imeta(
+                        url=other_media_url,
+                        sha256=other_sha256,
+                        thumb_url=(
+                            f"{RELAY_URL}/media/{other_sha256}.thumb.jpg"
+                        ),
+                    ),),
+                ),
+                _target(),
+            ),
+            (
+                "noncanonical size",
+                _root(imeta_tags=(_imeta(size="02048"),)),
+                _target(),
+            ),
+            (
+                "oversized media",
+                _root(imeta_tags=(_imeta(size=str(4 * 1_024 * 1_024 + 1)),)),
+                _target(),
+            ),
+            (
+                "wrong dimensions",
+                _root(imeta_tags=(_imeta(dim="1200x675"),)),
+                _target(),
+            ),
+            (
+                "unsafe media origin",
+                _root(
+                    media_url=evil_media_url,
+                    imeta_tags=(_imeta(
+                        url=evil_media_url,
+                        thumb_url=(
+                            "https://attacker.example/media/"
+                            f"{ATTACHMENT_SHA256}.thumb.jpg"
+                        ),
+                    ),),
+                ),
+                _target(),
+            ),
+            (
+                "media URL credentials",
+                _root(
+                    media_url=(
+                        "https://user@buzz.example/media/"
+                        f"{ATTACHMENT_SHA256}.png"
+                    ),
+                    imeta_tags=(_imeta(url=(
+                        "https://user@buzz.example/media/"
+                        f"{ATTACHMENT_SHA256}.png"
+                    )),),
+                ),
+                _target(),
+            ),
+            (
+                "media URL query",
+                _root(
+                    media_url=f"{MEDIA_URL}?download=1",
+                    imeta_tags=(_imeta(url=f"{MEDIA_URL}?download=1"),),
+                ),
+                _target(),
+            ),
+            (
+                "unsafe media extension",
+                _root(
+                    media_url=(
+                        f"{RELAY_URL}/media/{ATTACHMENT_SHA256}.jpg"
+                    ),
+                    imeta_tags=(_imeta(url=(
+                        f"{RELAY_URL}/media/{ATTACHMENT_SHA256}.jpg"
+                    )),),
+                ),
+                _target(),
+            ),
+            (
+                "missing blurhash",
+                _root(imeta_tags=(_imeta()[:6] + (_imeta()[7],),)),
+                _target(),
+            ),
+            (
+                "missing thumbnail",
+                _root(imeta_tags=(_imeta()[:-1],)),
+                _target(),
+            ),
+            (
+                "invalid blurhash",
+                _root(imeta_tags=(_imeta(blurhash="bad hash"),)),
+                _target(),
+            ),
+            (
+                "unsafe thumbnail",
+                _root(imeta_tags=(_imeta(thumb_url=(
+                    "https://attacker.example/media/"
+                    f"{ATTACHMENT_SHA256}.thumb.jpg"
+                )),)),
+                _target(),
+            ),
+            (
+                "wrong thumbnail path",
+                _root(imeta_tags=(_imeta(
+                    thumb_url=f"{RELAY_URL}/media/{other_sha256}.thumb.jpg"
+                ),)),
+                _target(),
+            ),
+            (
+                "unexpected duration field",
+                _root(imeta_tags=(_imeta(extra=("duration 10",)),)),
+                _target(),
+            ),
+            (
+                "missing banner hash line",
+                _root(base_content=missing_hash_base),
+                _target(hashlib.sha256(missing_hash_base.encode()).hexdigest()),
+            ),
+            (
+                "duplicate banner hash line",
+                _root(base_content=duplicate_hash_base),
+                _target(hashlib.sha256(duplicate_hash_base.encode()).hexdigest()),
+            ),
+        )
+
+        for name, invalid_root, target in cases:
+            with self.subTest(name=name):
+                control = FakeControl(target)
+                acknowledger = FakeAcknowledger()
+                result = await _worker(
+                    control, FakeReader([invalid_root]), acknowledger
+                ).run_once()
+                self.assertFalse(result.ok)
+                self.assertEqual(result.error, "buzz_review_thread_invalid")
+                self.assertEqual(control.recorded, [])
+                self.assertEqual(acknowledger.replies, [])
 
 
 if __name__ == "__main__":

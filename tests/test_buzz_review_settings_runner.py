@@ -5,13 +5,21 @@ import os
 import unittest
 from unittest.mock import patch
 
+from core.buzz.cli import BuzzCliPublisher
+from core.buzz.review import build_origintrail_buzz_review_worker
 from core.buzz.settings import BuzzReviewSettings
 from scripts import run_origintrail_buzz_review as runner
 
 
-def _env(*, enabled: str = "false") -> dict[str, str]:
+def _env(
+    *,
+    enabled: str = "false",
+    acknowledgement_enabled: str = "false",
+    deployment_environment: str = "staging",
+) -> dict[str, str]:
     return {
         "BUZZ_REVIEW_ENABLED": enabled,
+        "BUZZ_REVIEW_ACK_ENABLED": acknowledgement_enabled,
         "BUZZ_REVIEW_ALLOWED_CLIENTS": "origintrail",
         "BUZZ_REVIEW_URL": "https://console.example/api/buzz-review/origintrail",
         "BUZZ_REVIEW_WORKER_TOKEN": "review-token-that-is-dedicated-and-long-enough",
@@ -21,8 +29,8 @@ def _env(*, enabled: str = "false") -> dict[str, str]:
         "BUZZ_CLI_PATH": "/opt/coineasy/bin/buzz",
         "BUZZ_REVIEWER_PUBKEYS": ("a" * 64) + "," + ("b" * 64),
         "BUZZ_SERVICE_PUBKEY": "c" * 64,
-        "RAILWAY_ENVIRONMENT_NAME": "staging",
-        "BUZZ_REVIEW_EXPECTED_ENVIRONMENT": "staging",
+        "RAILWAY_ENVIRONMENT_NAME": deployment_environment,
+        "BUZZ_REVIEW_EXPECTED_ENVIRONMENT": deployment_environment,
         "RAILWAY_GIT_COMMIT_SHA": "d" * 40,
         "BUZZ_REVIEW_RELEASE_SHA": "d" * 40,
         "BUZZ_REVIEW_PROTOCOL_START_EPOCH": "1786100000",
@@ -112,6 +120,41 @@ class BuzzReviewSettingsRunnerTests(unittest.TestCase):
                 ValueError, "fence does not match"
             ):
                 BuzzReviewSettings.from_env_for_validation(values)
+
+    def test_acknowledgement_is_literal_default_off_and_staging_only(self):
+        self.assertFalse(
+            BuzzReviewSettings.from_env_for_validation(_env())
+            .acknowledgement_enabled
+        )
+        self.assertTrue(
+            BuzzReviewSettings.from_env_for_validation(
+                _env(acknowledgement_enabled="true")
+            ).acknowledgement_enabled
+        )
+        with self.assertRaisesRegex(ValueError, "restricted to staging"):
+            BuzzReviewSettings.from_env_for_validation(
+                _env(
+                    acknowledgement_enabled="true",
+                    deployment_environment="production",
+                )
+            )
+        values = _env()
+        values["BUZZ_REVIEW_ACK_ENABLED"] = "1"
+        with self.assertRaisesRegex(ValueError, "literal true or false"):
+            BuzzReviewSettings.from_env_for_validation(values)
+
+    def test_factory_wires_publisher_only_for_explicit_staging_ack(self):
+        disabled = build_origintrail_buzz_review_worker(
+            BuzzReviewSettings.from_env_for_validation(_env())
+        )
+        self.assertIsNone(disabled.acknowledger)
+
+        enabled = build_origintrail_buzz_review_worker(
+            BuzzReviewSettings.from_env_for_validation(
+                _env(acknowledgement_enabled="true")
+            )
+        )
+        self.assertIsInstance(enabled.acknowledger, BuzzCliPublisher)
 
 
 if __name__ == "__main__":
