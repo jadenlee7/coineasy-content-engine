@@ -8,7 +8,6 @@ from collections.abc import Sequence
 
 from core.buzz.settings import (
     BuzzReviewSettings,
-    buzz_review_ack_enabled,
     buzz_review_enabled,
 )
 
@@ -45,7 +44,6 @@ def _validate_only() -> dict[str, object]:
         "client_id": "origintrail",
         "channel_id": settings.channel_id,
         "reviewer_count": len(settings.reviewer_pubkeys),
-        "acknowledgement_enabled": buzz_review_ack_enabled(),
         "provider_calls": False,
         "publication_calls": False,
         "database_calls": False,

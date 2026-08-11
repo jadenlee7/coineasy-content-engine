@@ -50,7 +50,6 @@ class BuzzReviewSettingsRunnerTests(unittest.TestCase):
             "client_id": "origintrail",
             "channel_id": "33333333-3333-4333-8333-333333333333",
             "reviewer_count": 2,
-            "acknowledgement_enabled": False,
             "provider_calls": False,
             "publication_calls": False,
             "database_calls": False,
