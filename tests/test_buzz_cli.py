@@ -200,6 +200,130 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(BuzzCliError, "buzz_delivery_unknown"):
             await _publisher(runner).send_once("fixed message", _attachment())
 
+    async def test_reply_uses_exact_text_only_argv_and_stdin(self):
+        reply_to = "b" * 64
+        runner = FakeRunner([CommandResult(
+            0,
+            (
+                '{"event_id":"' + EVENT_ID
+                + '","accepted":true,"message":"ok","mention_pubkeys":[]}'
+            ).encode(),
+            b"",
+        )])
+
+        receipt = await _publisher(runner).send_reply_once(
+            "게시 승인: 원문·최종물 확인", reply_to
+        )
+
+        self.assertEqual(receipt.event_id, EVENT_ID)
+        argv, stdin, env = runner.calls[0]
+        self.assertEqual(argv, (
+            "/opt/coineasy/bin/buzz", "messages", "send", "--channel",
+            CHANNEL_ID, "--content", "-", "--reply-to", reply_to,
+        ))
+        self.assertEqual(stdin, "게시 승인: 원문·최종물 확인".encode("utf-8"))
+        self.assertFalse(any(
+            argument in {"--file", "--broadcast", "--mention", "--mentions"}
+            for argument in argv
+        ))
+        self.assertEqual(set(env), {"LANG", "BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"})
+
+    async def test_reply_rejects_invalid_text_or_target_before_cli(self):
+        invalid_inputs = (
+            ("", "b" * 64),
+            ("a" * 1_025, "b" * 64),
+            ("문의: owner@example.com", "b" * 64),
+            (
+                "승인 nostr:npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw"
+                "038js35mp4dma8qzvjptg",
+                "b" * 64,
+            ),
+            (
+                "승인 NOSTR:NPUB10ELFCS4FR0L0R8AF98JLMGDH9C8TCXJVZ9QKW"
+                "038JS35MP4DMA8QZVJPTG",
+                "b" * 64,
+            ),
+            ("\ud800", "b" * 64),
+            ("valid", "B" * 64),
+            ("valid", "b" * 63),
+            ("valid", "not-an-event-id"),
+        )
+        for message, reply_to in invalid_inputs:
+            with self.subTest(message=repr(message), reply_to=reply_to):
+                runner = FakeRunner([])
+                with self.assertRaisesRegex(
+                    BuzzCliError, "buzz_delivery_request_invalid"
+                ):
+                    await _publisher(runner).send_reply_once(message, reply_to)
+                self.assertEqual(runner.calls, [])
+
+    async def test_reply_utf8_limit_is_measured_in_bytes(self):
+        reply_to = "b" * 64
+        accepted_runner = FakeRunner([CommandResult(
+            0,
+            json.dumps({
+                "event_id": EVENT_ID,
+                "accepted": True,
+                "message": "ok",
+                "mention_pubkeys": [],
+            }).encode(),
+            b"",
+        )])
+        await _publisher(accepted_runner).send_reply_once(
+            "가" * 341 + "a", reply_to
+        )
+        self.assertEqual(len(accepted_runner.calls[0][1]), 1_024)
+
+        rejected_runner = FakeRunner([])
+        with self.assertRaisesRegex(
+            BuzzCliError, "buzz_delivery_request_invalid"
+        ):
+            await _publisher(rejected_runner).send_reply_once(
+                "가" * 342, reply_to
+            )
+        self.assertEqual(rejected_runner.calls, [])
+
+    async def test_reply_nonzero_or_invalid_output_is_unknown(self):
+        invalid_results = (
+            CommandResult(5, b"", b'{"error":"conflict"}'),
+            CommandResult(0, b"not-json", b""),
+            CommandResult(0, json.dumps([]).encode(), b""),
+            CommandResult(0, json.dumps({
+                "event_id": EVENT_ID,
+                "accepted": False,
+                "message": "not accepted",
+                "mention_pubkeys": [],
+            }).encode(), b""),
+            CommandResult(0, json.dumps({
+                "event_id": "invalid",
+                "accepted": True,
+                "message": "ok",
+                "mention_pubkeys": [],
+            }).encode(), b""),
+            CommandResult(0, json.dumps({
+                "event_id": EVENT_ID,
+                "accepted": True,
+                "message": "ok",
+                "mention_pubkeys": ["unexpected"],
+            }).encode(), b""),
+            CommandResult(0, json.dumps({
+                "event_id": EVENT_ID,
+                "accepted": True,
+                "message": 1,
+                "mention_pubkeys": [],
+            }).encode(), b""),
+        )
+        for result in invalid_results:
+            with self.subTest(result=result):
+                runner = FakeRunner([result])
+                with self.assertRaisesRegex(
+                    BuzzCliError, "buzz_delivery_unknown"
+                ):
+                    await _publisher(runner).send_reply_once(
+                        "fixed reply", "b" * 64
+                    )
+                self.assertEqual(len(runner.calls), 1)
+
     async def test_nonzero_send_is_unknown_even_for_write_conflict(self):
         runner = FakeRunner([CommandResult(5, b"", b'{"error":"conflict"}')])
         with self.assertRaisesRegex(BuzzCliError, "buzz_delivery_unknown"):

@@ -114,6 +114,8 @@ class BuzzReviewRunResult:
     job_id: str | None = None
     decision: str | None = None
     reused: bool | None = None
+    acknowledgement_status: str | None = None
+    acknowledgement_event_id: str | None = None
     error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -124,6 +126,10 @@ class BuzzReviewRunResult:
             result["decision"] = self.decision
         if self.reused is not None:
             result["reused"] = self.reused
+        if self.acknowledgement_status is not None:
+            result["acknowledgement_status"] = self.acknowledgement_status
+        if self.acknowledgement_event_id is not None:
+            result["acknowledgement_event_id"] = self.acknowledgement_event_id
         if self.error is not None:
             result["error"] = self.error
         return result

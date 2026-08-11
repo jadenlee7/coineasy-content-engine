@@ -261,6 +261,59 @@ class BuzzCliPublisher:
             raise BuzzCliError("buzz_delivery_unknown")
         return BuzzRelayReceipt(event_id=event_id)
 
+    async def send_reply_once(
+        self, message: str, reply_to: str
+    ) -> BuzzRelayReceipt:
+        if (
+            not isinstance(message, str)
+            or "@" in message
+            or "nostr:npub1" in message.lower()
+        ):
+            raise BuzzCliError("buzz_delivery_request_invalid")
+        try:
+            encoded_message = message.encode("utf-8")
+        except UnicodeEncodeError:
+            raise BuzzCliError("buzz_delivery_request_invalid") from None
+        if (
+            not 1 <= len(encoded_message) <= _MAX_MESSAGE_BYTES
+            or not isinstance(reply_to, str)
+            or not _EVENT_ID.fullmatch(reply_to)
+        ):
+            raise BuzzCliError("buzz_delivery_request_invalid")
+
+        result = await self.runner(
+            (
+                str(self.config.cli_path),
+                "messages",
+                "send",
+                "--channel",
+                self.config.channel_id,
+                "--content",
+                "-",
+                "--reply-to",
+                reply_to,
+            ),
+            stdin=encoded_message,
+            env=self._env(),
+        )
+        if result.returncode != 0:
+            raise BuzzCliError("buzz_delivery_unknown")
+        try:
+            parsed = json.loads(result.stdout)
+        except ValueError as exc:
+            raise BuzzCliError("buzz_delivery_unknown") from exc
+        event_id = parsed.get("event_id") if isinstance(parsed, dict) else None
+        if (
+            not isinstance(parsed, dict)
+            or parsed.get("accepted") is not True
+            or not isinstance(event_id, str)
+            or not _EVENT_ID.fullmatch(event_id)
+            or parsed.get("mention_pubkeys") != []
+            or not isinstance(parsed.get("message"), str)
+        ):
+            raise BuzzCliError("buzz_delivery_unknown")
+        return BuzzRelayReceipt(event_id=event_id)
+
 
 class BuzzCliReader:
     def __init__(self, config: BuzzCliConfig, *, runner: CommandRunner = _run_command):

@@ -88,6 +88,7 @@ def test_buzz_review_image_is_pinned_and_has_no_agent_or_publish_plane():
     assert "scripts/run_origintrail_buzz_review.py" in dockerfile
     assert "user 10001:10001" in lowered
     assert "buzz_review_enabled=false" in lowered
+    assert "buzz_review_ack_enabled=false" in lowered
     assert "buzz_review_allowed_clients=origintrail" in lowered
     assert "core/batch" not in lowered
     assert "core/publishers" not in lowered

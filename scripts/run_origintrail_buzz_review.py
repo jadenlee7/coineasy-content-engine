@@ -6,7 +6,11 @@ import json
 import os
 from collections.abc import Sequence
 
-from core.buzz.settings import BuzzReviewSettings, buzz_review_enabled
+from core.buzz.settings import (
+    BuzzReviewSettings,
+    buzz_review_ack_enabled,
+    buzz_review_enabled,
+)
 
 
 _VALIDATE_REQUIRED_ENV = (
@@ -19,6 +23,7 @@ _VALIDATE_REQUIRED_ENV = (
     "BUZZ_CHANNEL_ID",
     "BUZZ_CLI_PATH",
     "BUZZ_REVIEWER_PUBKEYS",
+    "BUZZ_REVIEW_ACK_ENABLED",
 )
 
 
@@ -40,6 +45,7 @@ def _validate_only() -> dict[str, object]:
         "client_id": "origintrail",
         "channel_id": settings.channel_id,
         "reviewer_count": len(settings.reviewer_pubkeys),
+        "acknowledgement_enabled": buzz_review_ack_enabled(),
         "provider_calls": False,
         "publication_calls": False,
         "database_calls": False,

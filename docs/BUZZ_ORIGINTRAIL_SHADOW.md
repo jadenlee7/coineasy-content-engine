@@ -191,10 +191,21 @@ The next bounded adapter is documented in
 records only the exact `게시 승인: 원문·최종물 확인` command or
 `수정 요청: <reason>` from an allowlisted reviewer's direct reply to an
 eligible post-cutover Buzz message. It cannot publish, regenerate, call OpenAI,
-send an acknowledgement, deploy, or mutate the original Batch result. Because
-the Buzz CLI's normalized thread output does not include the Nostr signature,
-the stored row remains decision-only evidence and cannot authorize
-publication.
+deploy, or mutate the original Batch result. In isolated staging, a fresh
+decision sends one bounded text-only reply (`게시 승인 접수` or
+`수정 요청 접수`) directly to the exact reviewer command so the operator sees
+that the decision was recorded. The reply always states that automatic
+publication is OFF, and it never repeats the user-controlled reason. The
+separate `BUZZ_REVIEW_ACK_ENABLED` gate defaults to false and is accepted only
+behind an exact staging environment fence. Because the Buzz CLI's normalized thread output does not
+include the Nostr signature, the stored row remains decision-only evidence and
+cannot authorize publication.
+
+The decision is stored before the visible reply. This avoids a false success
+message, but the first staging adapter deliberately does not retry an unknown
+relay outcome because it has no durable acknowledgement outbox yet. Keep this
+reply path staging-only until an acknowledgement receipt can reconcile that
+window without duplicate messages.
 
 The delivery endpoint also has a default-false
 `BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED` cutover. When enabled, it first
@@ -217,6 +228,9 @@ Railway first runs `--validate-only` as a pre-deploy command. The scheduled
 entry point is reachable only with the service identity, environment, release,
 and protocol-cutoff fences configured, the literal
 `BUZZ_REVIEW_ENABLED=true` flag, and `--scan-once`. A successful decision run
-reports `status=recorded`; the exact replay reports `reused=true`, and later
-runs report `idle` because the immutable decision removes the job from the
-target list. Automatic publication remains OFF.
+reports `status=recorded`, `acknowledgement_status=accepted`, and the
+acknowledgement event id. The exact replay reports `reused=true`,
+`acknowledgement_status=not_attempted`, and sends no second reply. A relay
+commit-unknown reports `acknowledgement_status=unknown`; operators must never
+manually resend it. Later runs report `idle` because the immutable decision
+removes the job from the target list. Automatic publication remains OFF.

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import unittest
 
-from core.buzz.models import BuzzReviewTarget, BuzzThreadMessage
+from core.buzz.cli import BuzzCliError
+from core.buzz.models import BuzzRelayReceipt, BuzzReviewTarget, BuzzThreadMessage
 from core.buzz.review import (
     OriginTrailBuzzReviewWorker,
+    format_review_acknowledgement,
     parse_review_command,
     review_command_sha256,
 )
@@ -94,10 +96,33 @@ class FakeReader:
         return self.messages
 
 
-def _worker(control: FakeControl, reader: FakeReader):
+class FakeAcknowledger:
+    def __init__(self, error: str | None = None):
+        self.error = error
+        self.replies = []
+
+    async def send_reply_once(self, message, reply_to):
+        self.replies.append((message, reply_to))
+        if self.error:
+            raise BuzzCliError(self.error)
+        return BuzzRelayReceipt(event_id="f" * 64)
+
+
+def _worker(
+    control: FakeControl,
+    reader: FakeReader,
+    acknowledger: FakeAcknowledger | None = None,
+    *,
+    acknowledgement_enabled: bool = True,
+):
     return OriginTrailBuzzReviewWorker(
         control=control,
         reader=reader,
+        acknowledger=(
+            acknowledger or FakeAcknowledger()
+            if acknowledgement_enabled
+            else None
+        ),
         channel_id=CHANNEL_ID,
         reviewer_pubkeys=frozenset({REVIEWER}),
         service_pubkey=OTHER,
@@ -144,6 +169,28 @@ class BuzzReviewCommandTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(len(first), 64)
 
+    def test_acknowledgement_copy_is_bounded_and_never_mentions(self):
+        self.assertIn(
+            "자동 발행: OFF",
+            format_review_acknowledgement("approved", None),
+        )
+        marker = "DO_NOT_REFLECT_7f3a"
+        message = format_review_acknowledgement(
+            "changes_requested",
+            (
+                marker
+                + " @origin_trail "
+                "nostr:npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw"
+                "038js35mp4dma8qzvjptg "
+                + ("가" * 500)
+            ),
+        )
+        self.assertNotIn(marker, message)
+        self.assertNotIn("@", message)
+        self.assertNotIn("nostr:npub1", message.lower())
+        self.assertIn("원문 답글", message)
+        self.assertLessEqual(len(message.encode("utf-8")), 1024)
+
 
 class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_does_not_read_relay(self):
@@ -159,10 +206,17 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
             "f" * 64, "게시 승인: 원문·최종물 확인", created_at=NOW - 10
         )
         control = FakeControl(_target())
-        result = await _worker(control, FakeReader([later, _root(), first])).run_once()
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control, FakeReader([later, _root(), first]), acknowledger
+        ).run_once()
 
         self.assertEqual(result.status, "recorded")
         self.assertEqual(result.decision, "changes_requested")
+        self.assertEqual(result.acknowledgement_status, "accepted")
+        self.assertEqual(result.acknowledgement_event_id, "f" * 64)
+        self.assertEqual(acknowledger.replies[0][1], "e" * 64)
+        self.assertIn("수정 요청 접수", acknowledger.replies[0][0])
         self.assertEqual(len(control.recorded), 1)
         decision = control.recorded[0]
         self.assertEqual(decision.decision_event_id, "e" * 64)
@@ -178,6 +232,47 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
                 command_created_at_epoch=NOW - 20,
             ),
         )
+
+    async def test_reused_decision_never_sends_a_second_acknowledgement(self):
+        control = FakeControl(_target(), reused=True)
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledger,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertTrue(result.reused)
+        self.assertEqual(result.acknowledgement_status, "not_attempted")
+        self.assertEqual(acknowledger.replies, [])
+
+    async def test_default_off_acknowledgement_records_without_relay_write(self):
+        control = FakeControl(_target())
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledgement_enabled=False,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, "recorded")
+        self.assertFalse(result.reused)
+        self.assertEqual(result.acknowledgement_status, "disabled")
+        self.assertEqual(len(control.recorded), 1)
+
+    async def test_ack_failure_never_retries_or_reverses_recorded_decision(self):
+        control = FakeControl(_target())
+        acknowledger = FakeAcknowledger("buzz_review_acknowledgement_unknown")
+        result = await _worker(
+            control,
+            FakeReader([_root(), _message("e" * 64, "게시 승인: 원문·최종물 확인")]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "recorded")
+        self.assertEqual(result.error, "buzz_review_acknowledgement_unknown")
+        self.assertEqual(result.acknowledgement_status, "unknown")
+        self.assertEqual(len(control.recorded), 1)
+        self.assertEqual(len(acknowledger.replies), 1)
 
     async def test_wrong_author_channel_nested_future_and_noncommand_are_ignored(self):
         messages = [

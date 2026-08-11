@@ -8,6 +8,7 @@ from typing import Callable, Protocol
 from core.buzz.cli import BuzzCliConfig, BuzzCliError, BuzzCliReader
 from core.buzz.errors import BuzzAdapterError
 from core.buzz.models import (
+    BuzzRelayReceipt,
     BuzzReviewDecision,
     BuzzReviewRunResult,
     BuzzReviewTarget,
@@ -31,6 +32,35 @@ class ThreadReader(Protocol):
     async def read_thread(
         self, root_event_id: str
     ) -> tuple[BuzzThreadMessage, ...]: ...
+
+
+class AcknowledgementPublisher(Protocol):
+    async def send_reply_once(
+        self, message: str, reply_to: str
+    ) -> BuzzRelayReceipt: ...
+
+
+def format_review_acknowledgement(
+    decision: str, reason: str | None
+) -> str:
+    if decision == "approved" and reason is None:
+        return (
+            "✅ 게시 승인 접수\n"
+            "원문·최종물 확인 결정을 기록했습니다.\n\n"
+            "현재 상태: 검토 결정 기록 완료\n"
+            "자동 발행: OFF"
+        )
+    if decision != "changes_requested" or not reason:
+        raise ValueError("Buzz review acknowledgement is invalid")
+    # The reviewer's reason is already preserved in the immutable decision and
+    # original signed reply. Never reflect user-controlled text into a service
+    # event because Buzz also resolves NIP-27 nostr:npub1 URIs into mentions.
+    return (
+        "🛠 수정 요청 접수\n"
+        "사유는 검토자의 원문 답글에 기록했습니다.\n\n"
+        "현재 상태: 수정 대기\n"
+        "자동 재생성·발행: OFF"
+    )
 
 
 def parse_review_command(content: str) -> tuple[str, str | None] | None:
@@ -101,6 +131,7 @@ class OriginTrailBuzzReviewWorker:
         *,
         control: ReviewControl,
         reader: ThreadReader,
+        acknowledger: AcknowledgementPublisher | None,
         channel_id: str,
         reviewer_pubkeys: frozenset[str],
         service_pubkey: str,
@@ -110,6 +141,7 @@ class OriginTrailBuzzReviewWorker:
             raise ValueError("Buzz review requires at least one reviewer")
         self.control = control
         self.reader = reader
+        self.acknowledger = acknowledger
         self.channel_id = channel_id
         self.reviewer_pubkeys = reviewer_pubkeys
         self.service_pubkey = service_pubkey
@@ -210,12 +242,50 @@ class OriginTrailBuzzReviewWorker:
             return BuzzReviewRunResult(
                 ok=False, status="failed", job_id=target.job_id, error=exc.code
             )
+        if reused:
+            return BuzzReviewRunResult(
+                ok=True,
+                status="recorded",
+                job_id=target.job_id,
+                decision=decision_name,
+                reused=True,
+                acknowledgement_status="not_attempted",
+            )
+        if self.acknowledger is None:
+            return BuzzReviewRunResult(
+                ok=True,
+                status="recorded",
+                job_id=target.job_id,
+                decision=decision_name,
+                reused=False,
+                acknowledgement_status="disabled",
+            )
+        acknowledgement = format_review_acknowledgement(decision_name, reason)
+        try:
+            receipt = await self.acknowledger.send_reply_once(
+                acknowledgement, message.event_id
+            )
+        except BuzzCliError as exc:
+            # The immutable review decision is already committed. Never retry
+            # the command or change publication state merely to obtain a UI
+            # acknowledgement.
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=target.job_id,
+                decision=decision_name,
+                reused=False,
+                acknowledgement_status="unknown",
+                error=exc.code,
+            )
         return BuzzReviewRunResult(
             ok=True,
             status="recorded",
             job_id=target.job_id,
             decision=decision_name,
-            reused=reused,
+            reused=False,
+            acknowledgement_status="accepted",
+            acknowledgement_event_id=receipt.event_id,
         )
 
 
@@ -223,6 +293,7 @@ def build_origintrail_buzz_review_worker(
     settings: BuzzReviewSettings,
 ) -> OriginTrailBuzzReviewWorker:
     from core.buzz.clients import BuzzReviewControlClient
+    from core.buzz.cli import BuzzCliPublisher
 
     config = BuzzCliConfig(
         cli_path=settings.cli_path,
@@ -236,6 +307,11 @@ def build_origintrail_buzz_review_worker(
             url=settings.review_url, token=settings.review_token
         ),
         reader=BuzzCliReader(config),
+        acknowledger=(
+            BuzzCliPublisher(config)
+            if settings.acknowledgement_enabled
+            else None
+        ),
         channel_id=settings.channel_id,
         reviewer_pubkeys=settings.reviewer_pubkeys,
         service_pubkey=settings.service_pubkey,
@@ -245,6 +321,7 @@ def build_origintrail_buzz_review_worker(
 __all__ = [
     "OriginTrailBuzzReviewWorker",
     "build_origintrail_buzz_review_worker",
+    "format_review_acknowledgement",
     "parse_review_command",
     "review_command_sha256",
 ]
