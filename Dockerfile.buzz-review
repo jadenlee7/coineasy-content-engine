@@ -27,6 +27,8 @@ RUN chmod 0555 /opt/coineasy/bin/buzz \
 ENV BUZZ_CLI_PATH=/opt/coineasy/bin/buzz \
     BUZZ_REVIEW_ENABLED=false \
     BUZZ_REVIEW_ACK_ENABLED=false \
+    BUZZ_REVIEW_DURABLE_ACK_ENABLED=false \
+    BUZZ_REVIEW_ACK_LEASE_SECONDS=180 \
     BUZZ_REVIEW_ALLOWED_CLIENTS=origintrail \
     PYTHONUNBUFFERED=1
 

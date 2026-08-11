@@ -61,6 +61,20 @@ def buzz_review_ack_enabled(environ: Mapping[str, str] | None = None) -> bool:
     raise ValueError("BUZZ_REVIEW_ACK_ENABLED must be literal true or false")
 
 
+def buzz_review_durable_ack_enabled(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    env = os.environ if environ is None else environ
+    raw = env.get("BUZZ_REVIEW_DURABLE_ACK_ENABLED", "false")
+    if raw == "true":
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise ValueError(
+        "BUZZ_REVIEW_DURABLE_ACK_ENABLED must be literal true or false"
+    )
+
+
 def _https_endpoint(value: str, expected_path: str) -> str:
     parsed = urlsplit(value.strip())
     local = (parsed.hostname or "").lower() in {"localhost", "127.0.0.1"}
@@ -278,6 +292,8 @@ class BuzzReviewSettings:
     release_sha: str
     protocol_start_epoch: int
     acknowledgement_enabled: bool
+    durable_acknowledgement_enabled: bool
+    acknowledgement_lease_seconds: int
 
     @classmethod
     def from_env(
@@ -381,6 +397,11 @@ class BuzzReviewSettings:
         ):
             raise ValueError("Buzz review environment fence does not match")
         acknowledgement_enabled = buzz_review_ack_enabled(env)
+        durable_acknowledgement_enabled = buzz_review_durable_ack_enabled(env)
+        if acknowledgement_enabled != durable_acknowledgement_enabled:
+            raise ValueError(
+                "Buzz review acknowledgement and durable outbox must be enabled together"
+            )
         if acknowledgement_enabled and deployment_environment != "staging":
             raise ValueError(
                 "Buzz review acknowledgement is restricted to staging"
@@ -414,4 +435,8 @@ class BuzzReviewSettings:
             release_sha=release_sha,
             protocol_start_epoch=protocol_start_epoch,
             acknowledgement_enabled=acknowledgement_enabled,
+            durable_acknowledgement_enabled=durable_acknowledgement_enabled,
+            acknowledgement_lease_seconds=_bounded_int(
+                env, "BUZZ_REVIEW_ACK_LEASE_SECONDS", 180, 180, 600
+            ),
         )

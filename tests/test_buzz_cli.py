@@ -8,12 +8,14 @@ from pathlib import Path
 
 from core.buzz.cli import (
     BUZZ_CLI_RELEASE,
+    BUZZ_REVIEW_ACK_TEMPLATE_VERSION,
     BuzzCliConfig,
     BuzzCliError,
     BuzzCliPublisher,
     BuzzCliReader,
     CommandResult,
     buzz_message_fingerprints,
+    buzz_reply_fingerprints,
     format_origintrail_message,
 )
 from core.buzz.models import BuzzAttachment, BuzzShadowEvent
@@ -226,17 +228,20 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reply_uses_exact_text_only_argv_and_stdin(self):
         reply_to = "b" * 64
+        message = "게시 승인: 원문·최종물 확인"
         runner = FakeRunner([CommandResult(
             0,
-            (
-                '{"event_id":"' + EVENT_ID
-                + '","accepted":true,"message":"ok","mention_pubkeys":[]}'
-            ).encode(),
+            json.dumps({
+                "event_id": EVENT_ID,
+                "accepted": True,
+                "message": message,
+                "mention_pubkeys": [],
+            }, ensure_ascii=False).encode(),
             b"",
         )])
 
         receipt = await _publisher(runner).send_reply_once(
-            "게시 승인: 원문·최종물 확인", reply_to
+            message, reply_to
         )
 
         self.assertEqual(receipt.event_id, EVENT_ID)
@@ -283,18 +288,19 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reply_utf8_limit_is_measured_in_bytes(self):
         reply_to = "b" * 64
+        accepted_message = "가" * 341 + "a"
         accepted_runner = FakeRunner([CommandResult(
             0,
             json.dumps({
                 "event_id": EVENT_ID,
                 "accepted": True,
-                "message": "ok",
+                "message": accepted_message,
                 "mention_pubkeys": [],
             }).encode(),
             b"",
         )])
         await _publisher(accepted_runner).send_reply_once(
-            "가" * 341 + "a", reply_to
+            accepted_message, reply_to
         )
         self.assertEqual(len(accepted_runner.calls[0][1]), 1_024)
 
@@ -333,7 +339,7 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             CommandResult(0, json.dumps({
                 "event_id": EVENT_ID,
                 "accepted": True,
-                "message": 1,
+                "message": "different reply",
                 "mention_pubkeys": [],
             }).encode(), b""),
         )
@@ -347,6 +353,43 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
                         "fixed reply", "b" * 64
                     )
                 self.assertEqual(len(runner.calls), 1)
+
+    def test_reply_fingerprint_binds_durable_send_identity(self):
+        message = "게시 승인: 원문·최종물 확인"
+        reply_to = "b" * 64
+        first = buzz_reply_fingerprints(
+            relay_url="https://buzz.example/",
+            channel_id=CHANNEL_ID,
+            service_pubkey="c" * 64,
+            release_sha="a" * 40,
+            reply_to=reply_to,
+            message=message,
+        )
+        self.assertEqual(BUZZ_REVIEW_ACK_TEMPLATE_VERSION, "origintrail-buzz-review-ack@1")
+        self.assertEqual(first, buzz_reply_fingerprints(
+            relay_url="https://buzz.example",
+            channel_id=CHANNEL_ID,
+            service_pubkey="c" * 64,
+            release_sha="a" * 40,
+            reply_to=reply_to,
+            message=message,
+        ))
+        self.assertNotEqual(first, buzz_reply_fingerprints(
+            relay_url="https://buzz.example",
+            channel_id=CHANNEL_ID,
+            service_pubkey="d" * 64,
+            release_sha="a" * 40,
+            reply_to=reply_to,
+            message=message,
+        ))
+        self.assertNotEqual(first, buzz_reply_fingerprints(
+            relay_url="https://buzz.example",
+            channel_id=CHANNEL_ID,
+            service_pubkey="c" * 64,
+            release_sha="b" * 40,
+            reply_to=reply_to,
+            message=message,
+        ))
 
     async def test_nonzero_send_is_unknown_even_for_write_conflict(self):
         runner = FakeRunner([CommandResult(5, b"", b'{"error":"conflict"}')])

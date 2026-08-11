@@ -108,6 +108,33 @@ class BuzzReviewDecision:
 
 
 @dataclass(frozen=True)
+class BuzzReviewRecordResult:
+    reused: bool
+    acknowledgement_status: str
+
+
+@dataclass(frozen=True)
+class BuzzReviewAcknowledgement:
+    workspace_id: str
+    job_id: str
+    channel_id: str
+    root_relay_event_id: str
+    decision_event_id: str
+    decision: str
+    reason: str | None
+    command_created_at_epoch: int
+    template_version: str
+    message: str
+    message_sha256: str
+    status: str
+    claim_granted: bool
+    reused: bool
+    request_sha256: str | None = None
+    delivery_started_at_epoch: int | None = None
+    relay_event_id: str | None = None
+
+
+@dataclass(frozen=True)
 class BuzzReviewRunResult:
     ok: bool
     status: str

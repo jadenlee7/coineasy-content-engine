@@ -18,6 +18,12 @@ from core.buzz.models import BuzzReviewDecision, BuzzReviewTarget, BuzzShadowEve
 
 JOB_ID = "22222222-2222-4222-8222-222222222222"
 TOKEN = "shadow-token-that-is-dedicated-and-long-enough"
+ACK_MESSAGE = (
+    "✅ 게시 승인 접수\n"
+    "원문·최종물 확인 결정을 기록했습니다.\n\n"
+    "현재 상태: 검토 결정 기록 완료\n"
+    "자동 발행: OFF"
+)
 
 
 def _event() -> BuzzShadowEvent:
@@ -92,6 +98,34 @@ def _review_record_response(
         "command_sha256": decision.command_sha256,
         "command_created_at_epoch": decision.command_created_at_epoch,
         "reused": reused,
+    }
+
+
+def _ack_object(
+    *,
+    status: str = "claimed",
+    claim_granted: bool = True,
+    request_sha256: str | None = None,
+    delivery_started_at_epoch: int | None = None,
+    relay_event_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "job_id": JOB_ID,
+        "channel_id": "33333333-3333-4333-8333-333333333333",
+        "root_relay_event_id": "b" * 64,
+        "decision_event_id": "c" * 64,
+        "decision": "approved",
+        "reason": None,
+        "command_created_at_epoch": 1_786_100_100,
+        "template_version": "origintrail-buzz-review-ack@1",
+        "message": ACK_MESSAGE,
+        "status": status,
+        "claim_granted": claim_granted,
+        "reused": False,
+        "message_sha256": hashlib.sha256(ACK_MESSAGE.encode()).hexdigest(),
+        "request_sha256": request_sha256,
+        "delivery_started_at_epoch": delivery_started_at_epoch,
+        "relay_event_id": relay_event_id,
     }
 
 
@@ -287,7 +321,160 @@ class BuzzReviewControlClientTests(unittest.IsolatedAsyncioTestCase):
             token=TOKEN,
             transport=httpx.MockTransport(handler),
         )
-        self.assertFalse(await client.record(decision))
+        result = await client.record(decision)
+        self.assertFalse(result.reused)
+        self.assertEqual(result.acknowledgement_status, "disabled")
+
+    async def test_record_with_ack_requires_durable_status_and_exact_action(self):
+        decision = _review_decision()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            self.assertEqual(body["action"], "record_with_ack")
+            response = _review_record_response(decision, reused=False)
+            response["acknowledgement_status"] = "pending"
+            return httpx.Response(200, json=response)
+
+        client = BuzzReviewControlClient(
+            url="https://console.example/api/buzz-review/origintrail",
+            token=TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        result = await client.record(decision, durable_acknowledgement=True)
+        self.assertFalse(result.reused)
+        self.assertEqual(result.acknowledgement_status, "pending")
+
+    async def test_durable_ack_claim_validates_stored_message_and_hash(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(json.loads(request.content), {
+                "action": "ack_claim",
+                "job_id": JOB_ID,
+                "worker_id": "origintrail-buzz-review:test-worker",
+                "lease_seconds": 180,
+            })
+            return httpx.Response(200, json={
+                "schema_version": "1.0",
+                "mode": "durable_review_acknowledgement",
+                "workspace_id": "11111111-1111-4111-8111-111111111111",
+                "acknowledgement": _ack_object(),
+            })
+
+        client = BuzzReviewControlClient(
+            url="https://console.example/api/buzz-review/origintrail",
+            token=TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        acknowledgement = await client.claim_acknowledgement(
+            job_id=JOB_ID,
+            worker_id="origintrail-buzz-review:test-worker",
+            lease_seconds=180,
+        )
+        self.assertIsNotNone(acknowledgement)
+        assert acknowledgement is not None
+        self.assertEqual(acknowledgement.message, ACK_MESSAGE)
+        self.assertEqual(
+            acknowledgement.message_sha256,
+            hashlib.sha256(ACK_MESSAGE.encode()).hexdigest(),
+        )
+
+    async def test_ack_attempt_complete_and_reconcile_require_exact_echoes(self):
+        request_sha256 = "9" * 64
+        relay_event_id = "8" * 64
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            base = {
+                "schema_version": "1.0",
+                "mode": "durable_review_acknowledgement",
+                "workspace_id": "11111111-1111-4111-8111-111111111111",
+            }
+            if body["action"] == "ack_attempt":
+                return httpx.Response(200, json={
+                    **base,
+                    "job_id": JOB_ID,
+                    "status": "attempt_started",
+                    "message_sha256": body["message_sha256"],
+                    "request_sha256": request_sha256,
+                    "authorized_once": True,
+                    "reused": False,
+                })
+            if body["action"] == "ack_complete":
+                self.assertTrue(body["reconciled"])
+                return httpx.Response(200, json={
+                    **base,
+                    "job_id": JOB_ID,
+                    "status": "delivered",
+                    "request_sha256": request_sha256,
+                    "relay_event_id": relay_event_id,
+                    "reused": False,
+                })
+            return httpx.Response(200, json={
+                **base,
+                "reconciled_count": 1,
+                "pending_count": 0,
+                "failed_count": 0,
+                "delivery_unknown_count": 1,
+            })
+
+        client = BuzzReviewControlClient(
+            url="https://console.example/api/buzz-review/origintrail",
+            token=TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        self.assertTrue(await client.mark_acknowledgement_attempt(
+            JOB_ID,
+            worker_id="origintrail-buzz-review:test-worker",
+            message_sha256=hashlib.sha256(ACK_MESSAGE.encode()).hexdigest(),
+            request_sha256=request_sha256,
+        ))
+        await client.complete_acknowledgement(
+            JOB_ID,
+            worker_id="origintrail-buzz-review:test-worker",
+            request_sha256=request_sha256,
+            relay_event_id=relay_event_id,
+            reconciled=True,
+        )
+        self.assertEqual(
+            (await client.reconcile_acknowledgements(limit=25))[
+                "delivery_unknown_count"
+            ],
+            1,
+        )
+
+    async def test_ack_complete_retries_commit_unknown_with_identical_body(self):
+        request_sha256 = "9" * 64
+        relay_event_id = "8" * 64
+        attempts: list[bytes] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(bytes(request.content))
+            if len(attempts) == 1:
+                raise httpx.ConnectError("commit unknown", request=request)
+            return httpx.Response(200, json={
+                "schema_version": "1.0",
+                "mode": "durable_review_acknowledgement",
+                "workspace_id": "11111111-1111-4111-8111-111111111111",
+                "job_id": JOB_ID,
+                "status": "delivered",
+                "request_sha256": request_sha256,
+                "relay_event_id": relay_event_id,
+                "reused": True,
+            })
+
+        client = BuzzReviewControlClient(
+            url="https://console.example/api/buzz-review/origintrail",
+            token=TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        await client.complete_acknowledgement(
+            JOB_ID,
+            worker_id="origintrail-buzz-review:test-worker",
+            request_sha256=request_sha256,
+            relay_event_id=relay_event_id,
+            reconciled=False,
+        )
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
 
     async def test_record_retries_transport_once_and_exposes_reused(self):
         decision = _review_decision()
@@ -307,7 +494,8 @@ class BuzzReviewControlClientTests(unittest.IsolatedAsyncioTestCase):
             token=TOKEN,
             transport=httpx.MockTransport(handler),
         )
-        self.assertTrue(await client.record(decision))
+        result = await client.record(decision)
+        self.assertTrue(result.reused)
         self.assertEqual(len(request_bodies), 2)
         self.assertEqual(request_bodies[0], request_bodies[1])
 

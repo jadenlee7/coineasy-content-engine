@@ -28,6 +28,12 @@ BUZZ_REVIEW_ROLE_MIGRATION = (
     / "migrations"
     / "20260808133000_buzz_review_decider_role.sql"
 ).read_text()
+BUZZ_REVIEW_ACK_ROLE_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260811161000_buzz_review_ack_role.sql"
+).read_text()
 REVIEW_PACK_ROLE_MIGRATION = (
     ROOT
     / "supabase"
@@ -114,15 +120,14 @@ def test_buzz_delivery_grant_matches_the_netlify_adapter_exactly():
 
 def test_buzz_review_grant_matches_the_netlify_adapter_exactly():
     called = frozenset(
-        re.findall(r'name: "([a-z_]+)"', BUZZ_REVIEW_ADAPTER)
+        re.findall(
+            r'"((?:list|record|claim|mark|complete|fail|reconcile)_origintrail_buzz_[a-z_]+)"',
+            BUZZ_REVIEW_ADAPTER,
+        )
     )
-    assert called == {
-        "list_origintrail_buzz_review_targets",
-        "record_origintrail_buzz_review_decision",
-    }
     granted = frozenset(re.findall(
         r"'public[.]([a-z_]+)[(]",
-        BUZZ_REVIEW_ROLE_MIGRATION,
+        BUZZ_REVIEW_ACK_ROLE_MIGRATION,
     ))
     assert granted == called, (
         "buzz review grant drifted from the adapter's RPCs -- "
@@ -137,14 +142,17 @@ def test_migration_applies_after_every_routine_it_grants():
     review_role = [n for n in migrations if "buzz_review_decider_role" in n]
     final_role = [n for n in migrations if "origintrail_review_pack_roles" in n]
     evidence_role = [n for n in migrations if "origintrail_review_evidence_roles" in n]
+    acknowledgement_role = [n for n in migrations if "buzz_review_ack_role" in n]
     assert len(least_privilege) == 1, least_privilege
     assert len(review_role) == 1, review_role
     assert len(final_role) == 1, final_role
     assert len(evidence_role) == 1, evidence_role
+    assert len(acknowledgement_role) == 1, acknowledgement_role
     assert least_privilege[0] < review_role[0]
     assert review_role[0] < final_role[0]
     assert final_role[0] < evidence_role[0]
-    assert migrations[-1] == evidence_role[0], (
+    assert evidence_role[0] < acknowledgement_role[0]
+    assert migrations[-1] == acknowledgement_role[0], (
         "the newest least-privilege grant migration must sort last so its "
         f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
     )
