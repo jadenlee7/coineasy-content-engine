@@ -57,6 +57,8 @@ def test_news_card_prompt_includes_official_voice_lock_and_factual_boundary():
     assert "Natural 해요체 is allowed" in prompt
     assert '"CANTON × SQUID"' in prompt
     assert "간편하게 탐색할 수 있습니다" in prompt
+    assert "8-16 Korean characters" in prompt
+    assert 'fixed "Squid" word' in prompt
     assert "maximum two visual lines" in prompt
 
 

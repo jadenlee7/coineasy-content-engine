@@ -7,9 +7,9 @@ export type SquidCreativeFamily =
   | "product_proof"
   | "worldbuilding";
 
-export const SQUID_GENERATED_EDITABLE_TEMPLATE_VERSION = "squid-generated-gtm@4";
+export const SQUID_GENERATED_EDITABLE_TEMPLATE_VERSION = "squid-generated-gtm@5";
 export const SQUID_GENERATED_EDITABLE_PROFILE_ID = "squid/full-bleed-character-type";
-export const SQUID_GENERATED_EDITABLE_PROFILE_VERSION = 1;
+export const SQUID_GENERATED_EDITABLE_PROFILE_VERSION = 2;
 
 const SQUID_GENERATED_EDITABLE_FAMILIES = new Set<string>([
   "editorial_big_type",
@@ -661,9 +661,9 @@ function squidGeneratedStageSvg(
   assets: SquidGeneratedAssets,
 ): string {
   const hasMetric = assets.family === "milestone_metric" && Boolean(spec.visualMetric);
-  const maximumHeadlineSize = hasMetric ? 160 : 168;
+  const maximumHeadlineSize = hasMetric ? 168 : 176;
   const headline = fitSvgText(spec.headline, {
-    // The v4 composition treats the Korean headline as the lower display
+    // The v5 composition treats the Korean headline as the lower display
     // object. Its tight leading and overlap with SQUIB are intentional.
     // This is a virtual measurement width calibrated against the HTML
     // renderer's condensed display face and negative tracking. It keeps the
@@ -673,7 +673,7 @@ function squidGeneratedStageSvg(
     maxLines: 2,
     maxFontSize: maximumHeadlineSize,
     minFontSize: 74,
-    lineHeightRatio: .82,
+    lineHeightRatio: .86,
   });
   const metric = hasMetric
     ? fitSvgText(spec.visualMetric, {
@@ -684,10 +684,7 @@ function squidGeneratedStageSvg(
       lineHeightRatio: .83,
     })
     : null;
-  const headlineX = headline.fontSize >= 150 ? 120 : 68;
-  const headlineLineHeight = headline.fontSize >= 150
-    ? Math.round(headline.fontSize * 1.04)
-    : headline.lineHeight;
+  const headlineLineHeight = headline.lineHeight;
   return `<defs>
     <linearGradient id="Squid-Base-Lavender" x1="-26.75" y1="29.70" x2="1106.75" y2="1050.30" gradientUnits="userSpaceOnUse">
       <stop stop-color="#C99AF0"/>
@@ -712,15 +709,14 @@ function squidGeneratedStageSvg(
     <rect id="Canvas-Background" width="1080" height="1080" fill="url(#Squid-Base-Lavender)"/>
     <rect id="Lower-White-Bloom" width="1080" height="1080" fill="url(#Squid-Lower-White-Bloom)"/>
     <rect id="Full-Bleed-Lavender-Halo" width="1080" height="1080" fill="url(#Squid-Full-Bleed-Lavender-Halo)"/>
-    <image id="Squid-Official-Form-Language" x="-340" y="-360" width="1760" height="1760" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".24" transform="rotate(74 540 520)"/>
-    <image id="Squid-Official-Bubbles" x="690" y="220" width="520" height="520" href="${escapeXml(assets.squidBubbles)}" preserveAspectRatio="xMidYMid meet" opacity=".88"/>
+    <image id="Squid-Official-Form-Language" x="-340" y="-360" width="1760" height="1760" href="${escapeXml(assets.squidFormLanguage)}" preserveAspectRatio="xMidYMid meet" opacity=".08" transform="rotate(74 540 520)"/>
     <g id="Oversized-Brand-Type" aria-hidden="true">
-      <text id="Stage-Word-Top" x="170" y="206" transform="translate(170 0) scale(1.48 1) translate(-170 0)" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="220" font-weight="900" letter-spacing="-10">Squid</text>
+      <text id="Stage-Word-Top" x="180" y="210" transform="translate(180 0) scale(1.22 1) translate(-180 0)" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="224" font-weight="900" letter-spacing="-10">Squid</text>
     </g>
-    <image id="Squid-Official-SQUIB" x="-110" y="-40" width="1200" height="1200" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Squid-SQUIB-Shadow)"/>
+    <image id="Squid-Official-SQUIB" x="-330" y="-285" width="1500" height="1500" href="${escapeXml(assets.squidSquib)}" preserveAspectRatio="xMidYMid meet" filter="url(#Squid-SQUIB-Shadow)"/>
     <g id="Story">
       ${metric ? `<g id="Metric">${textLayers("Metric", metric.lines, 1020, 360, metric.lineHeight, `text-anchor="end" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${metric.fontSize}" font-weight="900" letter-spacing="-8"`)}</g>` : ""}
-      <g id="Headline">${textLayers("Headline", headline.lines, headlineX, 704 + Math.round(headline.fontSize * .76), headlineLineHeight, `fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-5.2"`)}</g>
+      <g id="Headline">${textLayers("Headline", headline.lines, 540, 840, headlineLineHeight, `text-anchor="middle" fill="${SQUID_GENERATED_TOKENS.black}" font-family="${escapeXml(brand.displayFont)}, Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-5.6"`)}</g>
     </g>
   </g>`;
 }
