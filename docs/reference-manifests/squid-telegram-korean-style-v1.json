@@ -32,7 +32,7 @@
   },
   "design_profile": {
     "profile_id": "squid/full-bleed-character-type",
-    "version": 1,
+    "version": 2,
     "approved_copy_direction": [
       "Squid가",
       "텔레그램에",
@@ -44,7 +44,8 @@
       "acid-lime SQUIB dominating the center-left",
       "oversized condensed black display type",
       "deliberate type-to-character overlap",
-      "tight stacked leading and assertive edge crop"
+      "tight stacked leading and assertive edge crop",
+      "centered lower headline for short Korean hooks"
     ],
     "optional_cues_requiring_an_approved_asset": [
       "white paper plane in the upper-right"
@@ -53,6 +54,7 @@
       "adding generous whitespace around the headline",
       "separating all type from the character",
       "shrinking the character into a decorative corner asset",
+      "adding decorative bubbles that compete with the selected poster silhouette",
       "adding a publisher panel, footer, or CoinEasy mark"
     ]
   },
