@@ -6,6 +6,8 @@ import test from "node:test";
 import newsCardHandler, {
   deadlineSignal as newsCardDeadlineSignal,
   MAX_NEWS_CARD_BYTES,
+  NEWS_BRAND_PROFILE_POLICY_VERSION,
+  NEWS_BRAND_PROFILES,
   SQUID_CREATIVE_FAMILY_POLICY_VERSION,
   SQUID_GENERATED_DESIGN_PROFILE_ID,
   SQUID_GENERATED_DESIGN_PROFILE_VERSION,
@@ -16,6 +18,7 @@ import newsCardHandler, {
   normalizedFigmaTemplate,
   storedNewsTemplatePair,
   validNewsTemplatePair,
+  validStandardNewsBrandMetadata,
   validSquidCreativeMetadata,
   validSquidNativeOutputSpec,
 } from "../netlify/functions/news-card.mts";
@@ -274,7 +277,8 @@ test("news card request hash binds every submitted generation input", () => {
   );
 
   const nonSquid = { ...input, clientId: "yellow" };
-  const legacyHash = createHash("sha256").update(JSON.stringify({
+  const yellowProfile = NEWS_BRAND_PROFILES.yellow;
+  const brandedHash = createHash("sha256").update(JSON.stringify({
     client_id: nonSquid.clientId,
     source_content: nonSquid.sourceContent,
     source_type: nonSquid.sourceType,
@@ -283,8 +287,55 @@ test("news card request hash binds every submitted generation input", () => {
     template_style: nonSquid.templateStyle,
     style_references: [],
     style_reference_pack_hash: "",
+    brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+    brand_tokens_version: yellowProfile.brandTokensVersion,
+    template_version: "yellow-news-classic@1",
+    asset_pack_version: yellowProfile.assetPackVersion,
+    visual_design_profile_id: yellowProfile.designProfileId,
+    visual_design_profile_version: yellowProfile.designProfileVersion,
   }), "utf8").digest("hex");
-  assert.equal(newsCardRequestHash(nonSquid), legacyHash);
+  assert.equal(newsCardRequestHash(nonSquid), brandedHash);
+});
+
+test("accepts only the selected client's server-owned news brand profile", () => {
+  for (const clientId of ["yellow", "origintrail", "babylon"] as const) {
+    const profile = NEWS_BRAND_PROFILES[clientId];
+    const spec = {
+      brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+      render_strategy: "brand_native",
+      channel_profile: "x_square",
+      brand_tokens_version: profile.brandTokensVersion,
+      template_version: `${clientId}-news-classic@1`,
+      asset_pack_version: profile.assetPackVersion,
+      visual_design_profile_id: profile.designProfileId,
+      visual_design_profile_version: profile.designProfileVersion,
+    };
+    assert.equal(validStandardNewsBrandMetadata(spec, clientId, "classic"), true);
+    assert.equal(validStandardNewsBrandMetadata(spec, "squid", "classic"), false);
+    for (const otherClientId of ["yellow", "origintrail", "babylon"] as const) {
+      if (otherClientId !== clientId) {
+        assert.equal(
+          validStandardNewsBrandMetadata(spec, otherClientId, "classic"),
+          false,
+          `${clientId} metadata must not validate as ${otherClientId}`,
+        );
+      }
+    }
+  }
+
+  const yellow = NEWS_BRAND_PROFILES.yellow;
+  const remix = {
+    brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+    render_strategy: "source_remix",
+    channel_profile: "x_square",
+    brand_tokens_version: yellow.brandTokensVersion,
+    template_version: "yellow-news-remix@1",
+    asset_pack_version: yellow.assetPackVersion,
+    visual_design_profile_id: yellow.designProfileId,
+    visual_design_profile_version: yellow.designProfileVersion,
+  };
+  assert.equal(validStandardNewsBrandMetadata(remix, "yellow", "remix"), true);
+  assert.equal(validStandardNewsBrandMetadata(remix, "yellow", "classic"), false);
 });
 
 test("recognizes only canonical official Squid X status URLs", () => {

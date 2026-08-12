@@ -23,6 +23,8 @@ official creative.
 
 ## Enforcement
 
+- News-card profile IDs, token versions, voice anchors, and cross-client
+  isolation are defined in [CLIENT_BRAND_PROFILES.md](./CLIENT_BRAND_PROFILES.md).
 - `tests/test_official_brand_assets.py` pins the reviewed SHA-256 values and
   verifies every public copy.
 - Server-rendered news cards and Netlify article/editable SVG endpoints fail
