@@ -203,7 +203,7 @@ jobs:
             --env BUZZ_REVIEW_PROTOCOL_START_EPOCH=1700000000 \
             coineasy-buzz-review-ci \
             python -m scripts.run_origintrail_buzz_review --validate-only \
-          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "origintrail", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "provider_calls": False, "publication_calls": False, "database_calls": False, "relay_calls": False}'
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "origintrail", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "acknowledgement_enabled": False, "durable_acknowledgement_enabled": False, "provider_calls": False, "publication_calls": False, "database_calls": False, "relay_calls": False}'
 
   publication-image:
     runs-on: ubuntu-latest

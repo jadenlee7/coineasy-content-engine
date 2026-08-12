@@ -7,6 +7,7 @@ import os
 import re
 import struct
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -20,10 +21,12 @@ from core.buzz.models import (
 
 
 _EVENT_ID = re.compile(r"^[a-f0-9]{64}$")
+_RELEASE_SHA = re.compile(r"^[a-f0-9]{40}$")
 _MAX_PROCESS_OUTPUT = 65_536
 _MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@5"
 _PROCESS_TIMEOUT_SECONDS = 30.0
 BUZZ_CLI_RELEASE = "desktop-v0.5.4"
+BUZZ_REVIEW_ACK_TEMPLATE_VERSION = "origintrail-buzz-review-ack@1"
 _MAX_MESSAGE_BYTES = 1_024
 _ATTACHMENT_FILENAME = re.compile(
     r"^origintrail-review-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[.]png$"
@@ -202,6 +205,59 @@ def _validate_attachment(attachment: BuzzAttachment) -> None:
         raise BuzzCliError("buzz_delivery_attachment_invalid")
 
 
+def _validated_reply_bytes(message: str, reply_to: str) -> bytes:
+    if (
+        not isinstance(message, str)
+        or "@" in message
+        or "nostr:npub1" in message.lower()
+        or not isinstance(reply_to, str)
+        or not _EVENT_ID.fullmatch(reply_to)
+    ):
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    try:
+        encoded_message = message.encode("utf-8")
+    except UnicodeEncodeError:
+        raise BuzzCliError("buzz_delivery_request_invalid") from None
+    if not 1 <= len(encoded_message) <= _MAX_MESSAGE_BYTES:
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    return encoded_message
+
+
+def buzz_reply_fingerprints(
+    *,
+    relay_url: str,
+    channel_id: str,
+    service_pubkey: str,
+    release_sha: str,
+    reply_to: str,
+    message: str,
+) -> tuple[str, str]:
+    encoded_message = _validated_reply_bytes(message, reply_to)
+    if (
+        not _EVENT_ID.fullmatch(service_pubkey)
+        or not _RELEASE_SHA.fullmatch(release_sha)
+    ):
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    try:
+        canonical_channel_id = str(uuid.UUID(channel_id))
+    except (ValueError, AttributeError):
+        raise BuzzCliError("buzz_delivery_request_invalid") from None
+    normalized_relay = relay_url.strip().rstrip("/")
+    if not normalized_relay:
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    message_sha = hashlib.sha256(encoded_message).hexdigest()
+    request_sha = hashlib.sha256(
+        (
+            "coineasy-buzz-review-ack\0"
+            f"{BUZZ_REVIEW_ACK_TEMPLATE_VERSION}\0{BUZZ_CLI_RELEASE}\0"
+            f"{release_sha}\0{normalized_relay}\0{canonical_channel_id}\0"
+            f"{service_pubkey}\0"
+            f"{reply_to}\0{message_sha}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return message_sha, request_sha
+
+
 class BuzzCliPublisher:
     def __init__(self, config: BuzzCliConfig, *, runner: CommandRunner = _run_command):
         self.config = config
@@ -285,22 +341,7 @@ class BuzzCliPublisher:
     async def send_reply_once(
         self, message: str, reply_to: str
     ) -> BuzzRelayReceipt:
-        if (
-            not isinstance(message, str)
-            or "@" in message
-            or "nostr:npub1" in message.lower()
-        ):
-            raise BuzzCliError("buzz_delivery_request_invalid")
-        try:
-            encoded_message = message.encode("utf-8")
-        except UnicodeEncodeError:
-            raise BuzzCliError("buzz_delivery_request_invalid") from None
-        if (
-            not 1 <= len(encoded_message) <= _MAX_MESSAGE_BYTES
-            or not isinstance(reply_to, str)
-            or not _EVENT_ID.fullmatch(reply_to)
-        ):
-            raise BuzzCliError("buzz_delivery_request_invalid")
+        encoded_message = _validated_reply_bytes(message, reply_to)
 
         result = await self.runner(
             (
@@ -330,7 +371,7 @@ class BuzzCliPublisher:
             or not isinstance(event_id, str)
             or not _EVENT_ID.fullmatch(event_id)
             or parsed.get("mention_pubkeys") != []
-            or not isinstance(parsed.get("message"), str)
+            or parsed.get("message") != message
         ):
             raise BuzzCliError("buzz_delivery_unknown")
         return BuzzRelayReceipt(event_id=event_id)
@@ -431,6 +472,7 @@ class BuzzCliReader:
 
 
 __all__ = [
+    "BUZZ_REVIEW_ACK_TEMPLATE_VERSION",
     "BuzzCliConfig",
     "BuzzCliError",
     "BuzzCliReader",
@@ -438,5 +480,6 @@ __all__ = [
     "BUZZ_CLI_RELEASE",
     "CommandResult",
     "buzz_message_fingerprints",
+    "buzz_reply_fingerprints",
     "format_origintrail_message",
 ]

@@ -63,18 +63,22 @@ reviewer's reason into the service reply; the reason remains in the original
 reply and immutable decision, preventing `@` or `nostr:npub1` text from being
 resolved into an unintended Buzz mention.
 
-This write path has a second default-false gate,
-`BUZZ_REVIEW_ACK_ENABLED`. The setting is rejected unless the environment
-identity fence is exactly `staging`; enabling the decision scanner alone still
-performs no relay write. Production cannot activate this first acknowledgement
-implementation through configuration.
+The isolated proof originally used one default-false staging gate,
+`BUZZ_REVIEW_ACK_ENABLED`. ADR-015 replaces that best-effort path with an
+additive durable acknowledgement outbox. Railway now requires both
+`BUZZ_REVIEW_ACK_ENABLED=true` and
+`BUZZ_REVIEW_DURABLE_ACK_ENABLED=true`, while Netlify independently requires
+`BUZZ_REVIEW_ACK_OUTBOX_ENABLED=true`. All three default to false, and the two
+Railway settings are still rejected outside the exact staging environment
+fence. Enabling the decision scanner alone therefore performs no relay write.
 
-The immutable decision is committed before the acknowledgement is sent. This
-prevents a visible success receipt for a decision that failed to persist, but
-it also means the first staging version is intentionally best-effort: if the
-process dies or the relay result is unknown after the commit, the scanner does
-not retry and risk duplicate replies. Production promotion requires a durable
-acknowledgement outbox/receipt that can reconcile this commit-unknown window.
+A fresh decision and its pending acknowledgement are committed atomically.
+Only a fresh durable attempt marker authorizes one Buzz CLI call. Pre-attempt
+failures may retry; an unknown outcome after the marker becomes terminal
+`delivery_unknown` and never automatically resends. Exact read-only thread
+reconciliation may mark one matching service reply delivered. See
+[`ADR-015`](ADR-015-origintrail-buzz-durable-review-acknowledgements.md).
+Production activation remains separately unapproved.
 
 ## Protocol cutoff and evidence gates
 
@@ -175,13 +179,17 @@ approval after this decision path is proven.
    release fences in Railway. Deploy with `BUZZ_REVIEW_ENABLED=false`; the
    pre-deploy validation must pass and the scheduled command must return a
    disabled hold without relay or database I/O. Keep the independent
-   `BUZZ_REVIEW_ACK_ENABLED=false` gate until the isolated acknowledgement
-   test is explicitly approved.
-3. In isolated staging, enable the five-minute one-shot cron and reply to the
+   `BUZZ_REVIEW_ACK_ENABLED=false` and
+   `BUZZ_REVIEW_DURABLE_ACK_ENABLED=false` gates until the isolated durable
+   acknowledgement test is explicitly approved. Keep Netlify's independent
+   `BUZZ_REVIEW_ACK_OUTBOX_ENABLED=false` as well.
+3. On a disposable Preview branch, apply the ADR-015 outbox migrations and
+   verify bounded RPC-only grants and zero table privileges. In isolated
+   staging, enable all three gates for one five-minute one-shot cron and reply to the
    fixed result with `게시 승인: 원문·최종물 확인`; verify one immutable row
-   plus one direct `게시 승인 접수` reply, and an idle next run. Verify that an
-   exact database replay emits no duplicate acknowledgement and that legacy
-   `승인` remains ignored.
+   plus one durable receipt and one direct `게시 승인 접수` reply. Verify that
+   transport loss, exact replay, and a worker restart emit no duplicate
+   acknowledgement and that legacy `승인` remains ignored.
 4. Repeat once with a new fixed staging fixture and `수정 요청: ...`.
 5. Keep publication disconnected. For one isolated staging result only, enable
    the otherwise-default-false `BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED` flag

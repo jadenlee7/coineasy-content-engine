@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from dataclasses import replace
 
-from core.buzz.cli import BuzzCliError
-from core.buzz.models import BuzzRelayReceipt, BuzzReviewTarget, BuzzThreadMessage
+from core.buzz.cli import BuzzCliError, buzz_reply_fingerprints
+from core.buzz.errors import BuzzAdapterError
+from core.buzz.models import (
+    BuzzRelayReceipt,
+    BuzzReviewAcknowledgement,
+    BuzzReviewRecordResult,
+    BuzzReviewTarget,
+    BuzzThreadMessage,
+)
 from core.buzz.review import (
     OriginTrailBuzzReviewWorker,
     format_review_acknowledgement,
@@ -119,17 +127,98 @@ def _root(
 
 
 class FakeControl:
-    def __init__(self, target: BuzzReviewTarget | None = None, reused: bool = False):
+    def __init__(
+        self,
+        target: BuzzReviewTarget | None = None,
+        reused: bool = False,
+        *,
+        acknowledgement: BuzzReviewAcknowledgement | None = None,
+        unknown: BuzzReviewAcknowledgement | None = None,
+    ):
         self.target = target
         self.reused = reused
         self.recorded = []
+        self.acknowledgement = acknowledgement
+        self.unknown = unknown
+        self.reconcile_calls = []
+        self.claims = []
+        self.attempts = []
+        self.completions = []
+        self.failures = []
 
     async def first_target(self):
         return self.target
 
-    async def record(self, decision):
+    async def record(self, decision, *, durable_acknowledgement=False):
         self.recorded.append(decision)
-        return self.reused
+        if durable_acknowledgement and self.acknowledgement is None:
+            self.acknowledgement = _acknowledgement(
+                decision=decision.decision,
+                reason=decision.reason,
+                decision_event_id=decision.decision_event_id,
+            )
+        return BuzzReviewRecordResult(
+            reused=self.reused,
+            acknowledgement_status=(
+                "pending" if durable_acknowledgement else "disabled"
+            ),
+        )
+
+    async def reconcile_acknowledgements(self, *, limit):
+        self.reconcile_calls.append(limit)
+        return {
+            "reconciled_count": 0,
+            "pending_count": 0,
+            "failed_count": 0,
+            "delivery_unknown_count": 0,
+        }
+
+    async def first_unknown_acknowledgement(self):
+        return self.unknown
+
+    async def claim_acknowledgement(self, *, job_id, worker_id, lease_seconds):
+        self.claims.append((job_id, worker_id, lease_seconds))
+        if self.acknowledgement is None:
+            return None
+        if job_id is not None and self.acknowledgement.job_id != job_id:
+            return None
+        result = self.acknowledgement
+        self.acknowledgement = None
+        return result
+
+    async def mark_acknowledgement_attempt(
+        self, job_id, *, worker_id, message_sha256, request_sha256
+    ):
+        self.attempts.append(
+            (job_id, worker_id, message_sha256, request_sha256)
+        )
+        return True
+
+    async def complete_acknowledgement(
+        self,
+        job_id,
+        *,
+        worker_id,
+        request_sha256,
+        relay_event_id,
+        reconciled,
+    ):
+        self.completions.append((
+            job_id, worker_id, request_sha256, relay_event_id, reconciled
+        ))
+
+    async def fail_acknowledgement(
+        self,
+        job_id,
+        *,
+        worker_id,
+        error_code,
+        retryable_before_attempt,
+    ):
+        self.failures.append((
+            job_id, worker_id, error_code, retryable_before_attempt
+        ))
+        return "pending" if retryable_before_attempt else "delivery_unknown"
 
 
 class FakeReader:
@@ -143,15 +232,70 @@ class FakeReader:
 
 
 class FakeAcknowledger:
-    def __init__(self, error: str | None = None):
+    def __init__(
+        self,
+        error: str | None = None,
+        *,
+        preflight_error: str | None = None,
+    ):
         self.error = error
+        self.preflight_error = preflight_error
+        self.preflights = 0
         self.replies = []
+
+    async def preflight(self):
+        self.preflights += 1
+        if self.preflight_error:
+            raise BuzzCliError(
+                self.preflight_error,
+                retryable_before_attempt=True,
+            )
 
     async def send_reply_once(self, message, reply_to):
         self.replies.append((message, reply_to))
         if self.error:
             raise BuzzCliError(self.error)
         return BuzzRelayReceipt(event_id="f" * 64)
+
+
+def _acknowledgement(
+    *,
+    decision: str = "approved",
+    reason: str | None = None,
+    decision_event_id: str = "e" * 64,
+    status: str = "claimed",
+    claim_granted: bool = True,
+    relay_event_id: str | None = None,
+) -> BuzzReviewAcknowledgement:
+    message = format_review_acknowledgement(decision, reason)
+    message_sha256, request_sha256 = buzz_reply_fingerprints(
+        relay_url=RELAY_URL,
+        channel_id=CHANNEL_ID,
+        service_pubkey=OTHER,
+        release_sha="a" * 40,
+        reply_to=decision_event_id,
+        message=message,
+    )
+    attempted = status in {"attempt_started", "delivered", "delivery_unknown"}
+    return BuzzReviewAcknowledgement(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        channel_id=CHANNEL_ID,
+        root_relay_event_id=ROOT_ID,
+        decision_event_id=decision_event_id,
+        decision=decision,
+        reason=reason,
+        command_created_at_epoch=NOW - 10,
+        template_version="origintrail-buzz-review-ack@1",
+        message=message,
+        message_sha256=message_sha256,
+        status=status,
+        claim_granted=claim_granted,
+        reused=False,
+        request_sha256=request_sha256 if attempted else None,
+        delivery_started_at_epoch=NOW - 5 if attempted else None,
+        relay_event_id=relay_event_id,
+    )
 
 
 def _worker(
@@ -173,6 +317,9 @@ def _worker(
         channel_id=CHANNEL_ID,
         reviewer_pubkeys=frozenset({REVIEWER}),
         service_pubkey=OTHER,
+        release_sha="a" * 40,
+        durable_acknowledgement_enabled=acknowledgement_enabled,
+        worker_id="origintrail-buzz-review:test-worker",
         clock=lambda: NOW,
     )
 
@@ -280,7 +427,7 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_reused_decision_never_sends_a_second_acknowledgement(self):
+    async def test_reused_decision_recovers_pending_outbox_once(self):
         control = FakeControl(_target(), reused=True)
         acknowledger = FakeAcknowledger()
         result = await _worker(
@@ -290,8 +437,10 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
         ).run_once()
         self.assertTrue(result.ok)
         self.assertTrue(result.reused)
-        self.assertEqual(result.acknowledgement_status, "not_attempted")
-        self.assertEqual(acknowledger.replies, [])
+        self.assertEqual(result.acknowledgement_status, "accepted")
+        self.assertEqual(len(acknowledger.replies), 1)
+        self.assertEqual(len(control.attempts), 1)
+        self.assertEqual(len(control.completions), 1)
 
     async def test_default_off_acknowledgement_records_without_relay_write(self):
         control = FakeControl(_target())
@@ -320,6 +469,199 @@ class BuzzReviewWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.acknowledgement_status, "unknown")
         self.assertEqual(len(control.recorded), 1)
         self.assertEqual(len(acknowledger.replies), 1)
+        self.assertEqual(len(control.attempts), 1)
+        self.assertEqual(control.failures[0][3], False)
+
+    async def test_preflight_failure_is_before_attempt_and_may_requeue(self):
+        control = FakeControl(_target())
+        acknowledger = FakeAcknowledger(
+            preflight_error="buzz_cli_preflight_failed"
+        )
+        result = await _worker(
+            control,
+            FakeReader([
+                _root(),
+                _message("e" * 64, "게시 승인: 원문·최종물 확인"),
+            ]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.acknowledgement_status, "queued")
+        self.assertEqual(control.attempts, [])
+        self.assertEqual(acknowledger.replies, [])
+        self.assertEqual(control.failures[0][3], True)
+
+    async def test_attempt_fence_reuse_never_calls_relay(self):
+        control = FakeControl(_target())
+
+        async def already_started(*_args, **_kwargs):
+            return False
+
+        control.mark_acknowledgement_attempt = already_started
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([
+                _root(),
+                _message("e" * 64, "게시 승인: 원문·최종물 확인"),
+            ]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.acknowledgement_status, "unknown")
+        self.assertEqual(acknowledger.replies, [])
+
+    async def test_completion_failure_is_unknown_and_never_resends_inline(self):
+        control = FakeControl(_target())
+
+        async def unavailable(*_args, **_kwargs):
+            raise BuzzAdapterError("completion unavailable")
+
+        control.complete_acknowledgement = unavailable
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([
+                _root(),
+                _message("e" * 64, "게시 승인: 원문·최종물 확인"),
+            ]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "buzz_review_ack_completion_unavailable")
+        self.assertEqual(len(acknowledger.replies), 1)
+
+    async def test_unknown_exact_thread_receipt_reconciles_without_send(self):
+        unknown = _acknowledgement(
+            status="delivery_unknown",
+            claim_granted=False,
+        )
+        relay_ack = BuzzThreadMessage(
+            event_id="f" * 64,
+            pubkey=OTHER,
+            kind=9,
+            content=unknown.message,
+            created_at=NOW - 1,
+            tags=(
+                ("h", CHANNEL_ID),
+                ("e", ROOT_ID, "", "root"),
+                ("e", unknown.decision_event_id, "", "reply"),
+            ),
+        )
+        control = FakeControl(unknown=unknown)
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([_root(), relay_ack]),
+            acknowledger,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.acknowledgement_status, "accepted")
+        self.assertEqual(result.acknowledgement_event_id, "f" * 64)
+        self.assertEqual(acknowledger.replies, [])
+        self.assertTrue(control.completions[0][4])
+
+    async def test_unknown_without_receipt_blocks_send_and_stays_unknown(self):
+        unknown = _acknowledgement(
+            status="delivery_unknown",
+            claim_granted=False,
+        )
+        control = FakeControl(
+            target=_target(),
+            acknowledgement=_acknowledgement(),
+            unknown=unknown,
+        )
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([_root()]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.acknowledgement_status, "unknown")
+        self.assertEqual(acknowledger.replies, [])
+        self.assertEqual(control.recorded, [])
+
+    async def test_unknown_reconcile_requires_exact_channel_and_nested_tags(self):
+        unknown = _acknowledgement(
+            status="delivery_unknown",
+            claim_granted=False,
+        )
+        invalid_tags = (
+            (
+                ("h", CHANNEL_ID, "extra"),
+                ("e", ROOT_ID, "", "root"),
+                ("e", unknown.decision_event_id, "", "reply"),
+            ),
+            (
+                ("h", CHANNEL_ID),
+                ("e", ROOT_ID, "wss://relay.example", "root"),
+                ("e", unknown.decision_event_id, "", "reply"),
+            ),
+            (
+                ("h", CHANNEL_ID),
+                ("e", ROOT_ID, "", "root"),
+                ("e", unknown.decision_event_id, "wss://relay.example", "reply"),
+            ),
+        )
+        for tags in invalid_tags:
+            with self.subTest(tags=tags):
+                relay_ack = BuzzThreadMessage(
+                    event_id="f" * 64,
+                    pubkey=OTHER,
+                    kind=9,
+                    content=unknown.message,
+                    created_at=NOW - 1,
+                    tags=tags,
+                )
+                control = FakeControl(unknown=unknown)
+                acknowledger = FakeAcknowledger()
+                result = await _worker(
+                    control,
+                    FakeReader([_root(), relay_ack]),
+                    acknowledger,
+                ).run_once()
+                self.assertFalse(result.ok)
+                self.assertEqual(
+                    result.error, "buzz_review_acknowledgement_unknown"
+                )
+                self.assertEqual(control.completions, [])
+                self.assertEqual(acknowledger.replies, [])
+
+    async def test_stored_ack_message_drift_fails_before_attempt(self):
+        acknowledgement = replace(
+            _acknowledgement(),
+            message="tampered acknowledgement",
+        )
+        control = FakeControl(acknowledgement=acknowledgement)
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([]),
+            acknowledger,
+        ).run_once()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "buzz_delivery_request_invalid")
+        self.assertEqual(control.attempts, [])
+        self.assertEqual(acknowledger.replies, [])
+
+    async def test_preexisting_outbox_bounds_run_to_one_relay_attempt(self):
+        control = FakeControl(
+            target=_target(),
+            acknowledgement=_acknowledgement(),
+        )
+        acknowledger = FakeAcknowledger()
+        result = await _worker(
+            control,
+            FakeReader([
+                _root(),
+                _message("e" * 64, "게시 승인: 원문·최종물 확인"),
+            ]),
+            acknowledger,
+        ).run_once()
+        self.assertTrue(result.ok)
+        self.assertEqual(len(acknowledger.replies), 1)
+        self.assertEqual(control.recorded, [])
 
     async def test_wrong_author_channel_nested_future_and_noncommand_are_ignored(self):
         messages = [

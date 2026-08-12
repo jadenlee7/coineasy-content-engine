@@ -15,11 +15,14 @@ def _env(
     *,
     enabled: str = "false",
     acknowledgement_enabled: str = "false",
+    durable_acknowledgement_enabled: str = "false",
     deployment_environment: str = "staging",
 ) -> dict[str, str]:
     return {
         "BUZZ_REVIEW_ENABLED": enabled,
         "BUZZ_REVIEW_ACK_ENABLED": acknowledgement_enabled,
+        "BUZZ_REVIEW_DURABLE_ACK_ENABLED": durable_acknowledgement_enabled,
+        "BUZZ_REVIEW_ACK_LEASE_SECONDS": "180",
         "BUZZ_REVIEW_ALLOWED_CLIENTS": "origintrail",
         "BUZZ_REVIEW_URL": "https://console.example/api/buzz-review/origintrail",
         "BUZZ_REVIEW_WORKER_TOKEN": "review-token-that-is-dedicated-and-long-enough",
@@ -50,6 +53,8 @@ class BuzzReviewSettingsRunnerTests(unittest.TestCase):
             "client_id": "origintrail",
             "channel_id": "33333333-3333-4333-8333-333333333333",
             "reviewer_count": 2,
+            "acknowledgement_enabled": False,
+            "durable_acknowledgement_enabled": False,
             "provider_calls": False,
             "publication_calls": False,
             "database_calls": False,
@@ -128,19 +133,46 @@ class BuzzReviewSettingsRunnerTests(unittest.TestCase):
         )
         self.assertTrue(
             BuzzReviewSettings.from_env_for_validation(
-                _env(acknowledgement_enabled="true")
+                _env(
+                    acknowledgement_enabled="true",
+                    durable_acknowledgement_enabled="true",
+                )
             ).acknowledgement_enabled
         )
         with self.assertRaisesRegex(ValueError, "restricted to staging"):
             BuzzReviewSettings.from_env_for_validation(
                 _env(
                     acknowledgement_enabled="true",
+                    durable_acknowledgement_enabled="true",
                     deployment_environment="production",
                 )
             )
         values = _env()
         values["BUZZ_REVIEW_ACK_ENABLED"] = "1"
         with self.assertRaisesRegex(ValueError, "literal true or false"):
+            BuzzReviewSettings.from_env_for_validation(values)
+
+        for acknowledgement_enabled, durable_enabled in (
+            ("true", "false"),
+            ("false", "true"),
+        ):
+            with self.subTest(
+                acknowledgement_enabled=acknowledgement_enabled,
+                durable_enabled=durable_enabled,
+            ), self.assertRaisesRegex(ValueError, "enabled together"):
+                BuzzReviewSettings.from_env_for_validation(_env(
+                    acknowledgement_enabled=acknowledgement_enabled,
+                    durable_acknowledgement_enabled=durable_enabled,
+                ))
+
+        values = _env()
+        values["BUZZ_REVIEW_DURABLE_ACK_ENABLED"] = "1"
+        with self.assertRaisesRegex(ValueError, "literal true or false"):
+            BuzzReviewSettings.from_env_for_validation(values)
+
+        values = _env()
+        values["BUZZ_REVIEW_ACK_LEASE_SECONDS"] = "179"
+        with self.assertRaisesRegex(ValueError, "between 180 and 600"):
             BuzzReviewSettings.from_env_for_validation(values)
 
     def test_factory_wires_publisher_only_for_explicit_staging_ack(self):
@@ -151,7 +183,10 @@ class BuzzReviewSettingsRunnerTests(unittest.TestCase):
 
         enabled = build_origintrail_buzz_review_worker(
             BuzzReviewSettings.from_env_for_validation(
-                _env(acknowledgement_enabled="true")
+                _env(
+                    acknowledgement_enabled="true",
+                    durable_acknowledgement_enabled="true",
+                )
             )
         )
         self.assertIsInstance(enabled.acknowledger, BuzzCliPublisher)

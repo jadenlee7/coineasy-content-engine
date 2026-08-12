@@ -201,11 +201,19 @@ behind an exact staging environment fence. Because the Buzz CLI's normalized thr
 include the Nostr signature, the stored row remains decision-only evidence and
 cannot authorize publication.
 
-The decision is stored before the visible reply. This avoids a false success
-message, but the first staging adapter deliberately does not retry an unknown
-relay outcome because it has no durable acknowledgement outbox yet. Keep this
-reply path staging-only until an acknowledgement receipt can reconcile that
-window without duplicate messages.
+The first staging proof stored the decision before a best-effort visible reply.
+The current candidate replaces that path with the durable outbox in
+[`ADR-015`](ADR-015-origintrail-buzz-durable-review-acknowledgements.md). A
+fresh decision and pending reply are atomic; only a fresh attempt marker can
+authorize one relay write, and a post-attempt unknown result is never
+automatically resent. The durable path remains staging-only and requires all
+three explicit gates:
+
+- Railway `BUZZ_REVIEW_ACK_ENABLED=true`
+- Railway `BUZZ_REVIEW_DURABLE_ACK_ENABLED=true`
+- Netlify `BUZZ_REVIEW_ACK_OUTBOX_ENABLED=true`
+
+Keep them false outside one approved disposable-Preview test.
 
 The delivery endpoint also has a default-false
 `BUZZ_REVIEW_PACK_MATERIALIZATION_ENABLED` cutover. When enabled, it first
@@ -229,8 +237,8 @@ entry point is reachable only with the service identity, environment, release,
 and protocol-cutoff fences configured, the literal
 `BUZZ_REVIEW_ENABLED=true` flag, and `--scan-once`. A successful decision run
 reports `status=recorded`, `acknowledgement_status=accepted`, and the
-acknowledgement event id. The exact replay reports `reused=true`,
-`acknowledgement_status=not_attempted`, and sends no second reply. A relay
-commit-unknown reports `acknowledgement_status=unknown`; operators must never
-manually resend it. Later runs report `idle` because the immutable decision
-removes the job from the target list. Automatic publication remains OFF.
+acknowledgement event id. A commit-unknown replay recovers the same
+pending/delivered outbox instead of creating a second reply. A relay write with
+an unknown result reports `acknowledgement_status=unknown`; later runs may only
+perform exact read-only thread reconciliation and must never resend it.
+Automatic publication remains OFF.

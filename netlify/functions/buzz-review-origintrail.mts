@@ -2,11 +2,13 @@ import type { Config } from "@netlify/functions";
 
 import {
   buzzReviewAccessConfigured,
+  buzzReviewAckOutboxEnabled,
   BuzzReviewError,
   buzzReviewSupabaseConfig,
   configuredBuzzReviewers,
   executeBuzzReviewAction,
   hasValidBuzzReviewAccess,
+  isBuzzReviewAckOutboxAction,
   parseBuzzReviewAction,
 } from "./_shared/buzz-review.mts";
 import { contentCatalogConfig } from "./_shared/content-catalog.mts";
@@ -62,6 +64,10 @@ export default async (request: Request): Promise<Response> => {
 
   try {
     const action = parseBuzzReviewAction(await requestBody(request), reviewers);
+    if (
+      isBuzzReviewAckOutboxAction(action)
+      && !buzzReviewAckOutboxEnabled(getEnv)
+    ) throw new BuzzReviewError("invalid_buzz_review_request");
     return json(await executeBuzzReviewAction(
       config,
       action,
@@ -73,6 +79,7 @@ export default async (request: Request): Promise<Response> => {
     const status = code === "invalid_buzz_review_request"
       ? 400
       : code === "buzz_review_decision_conflict"
+        || code === "buzz_review_acknowledgement_conflict"
       ? 409
       : 502;
     return json({ error: code }, status);

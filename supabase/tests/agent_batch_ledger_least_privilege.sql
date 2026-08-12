@@ -64,7 +64,14 @@ declare
         ),
         'coineasy_buzz_review_decider', jsonb_build_array(
             'list_origintrail_buzz_review_targets',
-            'record_origintrail_buzz_review_decision'
+            'record_origintrail_buzz_review_decision',
+            'record_origintrail_buzz_review_decision_with_ack',
+            'claim_origintrail_buzz_review_ack',
+            'mark_origintrail_buzz_review_ack_attempt',
+            'complete_origintrail_buzz_review_ack',
+            'fail_origintrail_buzz_review_ack',
+            'reconcile_origintrail_buzz_review_ack_leases',
+            'list_origintrail_buzz_review_ack_unknown'
         )
     );
     role_name text;

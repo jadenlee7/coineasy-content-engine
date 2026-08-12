@@ -23,6 +23,8 @@ _VALIDATE_REQUIRED_ENV = (
     "BUZZ_CLI_PATH",
     "BUZZ_REVIEWER_PUBKEYS",
     "BUZZ_REVIEW_ACK_ENABLED",
+    "BUZZ_REVIEW_DURABLE_ACK_ENABLED",
+    "BUZZ_REVIEW_ACK_LEASE_SECONDS",
 )
 
 
@@ -44,6 +46,10 @@ def _validate_only() -> dict[str, object]:
         "client_id": "origintrail",
         "channel_id": settings.channel_id,
         "reviewer_count": len(settings.reviewer_pubkeys),
+        "acknowledgement_enabled": settings.acknowledgement_enabled,
+        "durable_acknowledgement_enabled": (
+            settings.durable_acknowledgement_enabled
+        ),
         "provider_calls": False,
         "publication_calls": False,
         "database_calls": False,

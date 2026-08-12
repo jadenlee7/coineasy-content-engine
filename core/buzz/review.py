@@ -3,14 +3,23 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+import uuid
 from typing import Callable, Protocol
 from urllib.parse import urlsplit
 
-from core.buzz.cli import BuzzCliConfig, BuzzCliError, BuzzCliReader
+from core.buzz.cli import (
+    BUZZ_REVIEW_ACK_TEMPLATE_VERSION,
+    BuzzCliConfig,
+    BuzzCliError,
+    BuzzCliReader,
+    buzz_reply_fingerprints,
+)
 from core.buzz.errors import BuzzAdapterError
 from core.buzz.models import (
     BuzzRelayReceipt,
+    BuzzReviewAcknowledgement,
     BuzzReviewDecision,
+    BuzzReviewRecordResult,
     BuzzReviewRunResult,
     BuzzReviewTarget,
     BuzzThreadMessage,
@@ -34,7 +43,20 @@ _MAX_MEDIA_BYTES = 4 * 1_024 * 1_024
 
 class ReviewControl(Protocol):
     async def first_target(self) -> BuzzReviewTarget | None: ...
-    async def record(self, decision: BuzzReviewDecision) -> bool: ...
+    async def record(
+        self,
+        decision: BuzzReviewDecision,
+        *,
+        durable_acknowledgement: bool = False,
+    ) -> BuzzReviewRecordResult: ...
+    async def claim_acknowledgement(self, **kwargs): ...
+    async def mark_acknowledgement_attempt(self, job_id: str, **kwargs) -> bool: ...
+    async def complete_acknowledgement(self, job_id: str, **kwargs) -> None: ...
+    async def fail_acknowledgement(self, job_id: str, **kwargs) -> str: ...
+    async def reconcile_acknowledgements(self, **kwargs) -> dict[str, int]: ...
+    async def first_unknown_acknowledgement(
+        self,
+    ) -> BuzzReviewAcknowledgement | None: ...
 
 
 class ThreadReader(Protocol):
@@ -44,6 +66,7 @@ class ThreadReader(Protocol):
 
 
 class AcknowledgementPublisher(Protocol):
+    async def preflight(self) -> None: ...
     async def send_reply_once(
         self, message: str, reply_to: str
     ) -> BuzzRelayReceipt: ...
@@ -124,14 +147,34 @@ def _tag_values(message: BuzzThreadMessage, name: str) -> tuple[str, ...]:
 
 
 def _exact_channel(message: BuzzThreadMessage, channel_id: str) -> bool:
-    values = _tag_values(message, "h")
-    return values == (channel_id,)
+    tags = tuple(tag for tag in message.tags if tag and tag[0] == "h")
+    return tags == (("h", channel_id),)
 
 
 def _direct_reply(message: BuzzThreadMessage, root_event_id: str) -> bool:
     tags = tuple(tag for tag in message.tags if tag and tag[0] == "e")
     return len(tags) == 1 and len(tags[0]) == 4 \
-        and tags[0][1] == root_event_id and tags[0][3] == "reply"
+        and tags[0][1] == root_event_id and tags[0][2] == "" \
+        and tags[0][3] == "reply"
+
+
+def _nested_reply(
+    message: BuzzThreadMessage,
+    root_event_id: str,
+    parent_event_id: str,
+) -> bool:
+    tags = tuple(tag for tag in message.tags if tag and tag[0] == "e")
+    return (
+        len(tags) == 2
+        and len(tags[0]) == 4
+        and tags[0][1] == root_event_id
+        and tags[0][2] == ""
+        and tags[0][3] == "root"
+        and len(tags[1]) == 4
+        and tags[1][1] == parent_event_id
+        and tags[1][2] == ""
+        and tags[1][3] == "reply"
+    )
 
 
 def _valid_root_media(
@@ -264,10 +307,29 @@ class OriginTrailBuzzReviewWorker:
         channel_id: str,
         reviewer_pubkeys: frozenset[str],
         service_pubkey: str,
+        release_sha: str,
+        durable_acknowledgement_enabled: bool = False,
+        acknowledgement_lease_seconds: int = 180,
+        worker_id: str | None = None,
+        acknowledgement_reconcile_limit: int = 25,
         clock: Callable[[], float] = time.time,
     ):
         if not reviewer_pubkeys:
             raise ValueError("Buzz review requires at least one reviewer")
+        if not re.fullmatch(r"[a-f0-9]{40}", release_sha):
+            raise ValueError("Buzz review release SHA is invalid")
+        if durable_acknowledgement_enabled != (acknowledger is not None):
+            raise ValueError(
+                "Buzz durable acknowledgement requires an explicit publisher"
+            )
+        if not 180 <= acknowledgement_lease_seconds <= 600:
+            raise ValueError(
+                "Buzz acknowledgement lease must be between 180 and 600 seconds"
+            )
+        if not 1 <= acknowledgement_reconcile_limit <= 100:
+            raise ValueError(
+                "Buzz acknowledgement reconcile limit must be between 1 and 100"
+            )
         self.control = control
         self.reader = reader
         self.acknowledger = acknowledger
@@ -275,9 +337,420 @@ class OriginTrailBuzzReviewWorker:
         self.channel_id = channel_id
         self.reviewer_pubkeys = reviewer_pubkeys
         self.service_pubkey = service_pubkey
+        self.release_sha = release_sha
+        self.durable_acknowledgement_enabled = durable_acknowledgement_enabled
+        self.acknowledgement_lease_seconds = acknowledgement_lease_seconds
+        self.worker_id = worker_id or f"origintrail-buzz-review:{uuid.uuid4()}"
+        self.acknowledgement_reconcile_limit = acknowledgement_reconcile_limit
         self.clock = clock
 
+    def _acknowledgement_fingerprints(
+        self,
+        acknowledgement: BuzzReviewAcknowledgement,
+    ) -> tuple[str, str]:
+        expected_message = format_review_acknowledgement(
+            acknowledgement.decision,
+            acknowledgement.reason,
+        )
+        if (
+            acknowledgement.template_version
+            != BUZZ_REVIEW_ACK_TEMPLATE_VERSION
+            or acknowledgement.message != expected_message
+            or acknowledgement.channel_id != self.channel_id
+        ):
+            raise BuzzCliError("buzz_delivery_request_invalid")
+        message_sha256, request_sha256 = buzz_reply_fingerprints(
+            relay_url=self.relay_url,
+            channel_id=self.channel_id,
+            service_pubkey=self.service_pubkey,
+            release_sha=self.release_sha,
+            reply_to=acknowledgement.decision_event_id,
+            message=acknowledgement.message,
+        )
+        if (
+            acknowledgement.message_sha256 != message_sha256
+            or (
+                acknowledgement.request_sha256 is not None
+                and acknowledgement.request_sha256 != request_sha256
+            )
+        ):
+            raise BuzzCliError("buzz_delivery_request_invalid")
+        return message_sha256, request_sha256
+
+    def _acknowledgement_result(
+        self,
+        acknowledgement: BuzzReviewAcknowledgement,
+        *,
+        decision_reused: bool | None = None,
+    ) -> BuzzReviewRunResult:
+        if acknowledgement.status == "delivered":
+            return BuzzReviewRunResult(
+                ok=True,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="accepted",
+                acknowledgement_event_id=acknowledgement.relay_event_id,
+            )
+        if acknowledgement.status == "delivery_unknown":
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_acknowledgement_unknown",
+            )
+        if acknowledgement.status == "failed":
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="failed",
+                error="buzz_review_acknowledgement_failed",
+            )
+        return BuzzReviewRunResult(
+            ok=True,
+            status="recorded",
+            job_id=acknowledgement.job_id,
+            decision=acknowledgement.decision,
+            reused=decision_reused,
+            acknowledgement_status="queued",
+        )
+
+    async def _fail_acknowledgement_before_attempt(
+        self,
+        acknowledgement: BuzzReviewAcknowledgement,
+        *,
+        code: str,
+        retryable: bool,
+        decision_reused: bool | None,
+    ) -> BuzzReviewRunResult:
+        try:
+            status = await self.control.fail_acknowledgement(
+                acknowledgement.job_id,
+                worker_id=self.worker_id,
+                error_code=code,
+                retryable_before_attempt=retryable,
+            )
+        except Exception:
+            status = "failed"
+            code = "buzz_review_ack_failure_record_unavailable"
+        return BuzzReviewRunResult(
+            ok=False,
+            status="recorded",
+            job_id=acknowledgement.job_id,
+            decision=acknowledgement.decision,
+            reused=decision_reused,
+            acknowledgement_status=(
+                "queued" if status in {"pending", "claimed"} else "failed"
+            ),
+            error=code,
+        )
+
+    async def _deliver_acknowledgement(
+        self,
+        acknowledgement: BuzzReviewAcknowledgement,
+        *,
+        decision_reused: bool | None = None,
+    ) -> BuzzReviewRunResult:
+        if not acknowledgement.claim_granted:
+            return self._acknowledgement_result(
+                acknowledgement,
+                decision_reused=decision_reused,
+            )
+        if self.acknowledger is None:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="failed",
+                error="buzz_review_acknowledgement_disabled",
+            )
+        try:
+            message_sha256, request_sha256 = (
+                self._acknowledgement_fingerprints(acknowledgement)
+            )
+        except (BuzzCliError, ValueError):
+            return await self._fail_acknowledgement_before_attempt(
+                acknowledgement,
+                code="buzz_delivery_request_invalid",
+                retryable=False,
+                decision_reused=decision_reused,
+            )
+
+        try:
+            await self.acknowledger.preflight()
+        except BuzzCliError as exc:
+            return await self._fail_acknowledgement_before_attempt(
+                acknowledgement,
+                code="buzz_cli_preflight_failed",
+                retryable=exc.retryable_before_attempt,
+                decision_reused=decision_reused,
+            )
+        except Exception:
+            return await self._fail_acknowledgement_before_attempt(
+                acknowledgement,
+                code="buzz_cli_preflight_failed",
+                retryable=False,
+                decision_reused=decision_reused,
+            )
+
+        try:
+            authorized = await self.control.mark_acknowledgement_attempt(
+                acknowledgement.job_id,
+                worker_id=self.worker_id,
+                message_sha256=message_sha256,
+                request_sha256=request_sha256,
+            )
+        except Exception:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_attempt_fence_unavailable",
+            )
+        if not authorized:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_attempt_already_started",
+            )
+
+        try:
+            receipt = await self.acknowledger.send_reply_once(
+                acknowledgement.message,
+                acknowledgement.decision_event_id,
+            )
+        except Exception:
+            try:
+                await self.control.fail_acknowledgement(
+                    acknowledgement.job_id,
+                    worker_id=self.worker_id,
+                    error_code="buzz_delivery_unknown",
+                    retryable_before_attempt=False,
+                )
+            except Exception:
+                pass
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_acknowledgement_unknown",
+            )
+
+        try:
+            await self.control.complete_acknowledgement(
+                acknowledgement.job_id,
+                worker_id=self.worker_id,
+                request_sha256=request_sha256,
+                relay_event_id=receipt.event_id,
+                reconciled=False,
+            )
+        except Exception:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                reused=decision_reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_completion_unavailable",
+            )
+        return BuzzReviewRunResult(
+            ok=True,
+            status="recorded",
+            job_id=acknowledgement.job_id,
+            decision=acknowledgement.decision,
+            reused=decision_reused,
+            acknowledgement_status="accepted",
+            acknowledgement_event_id=receipt.event_id,
+        )
+
+    async def _reconcile_unknown_acknowledgement(
+        self,
+        acknowledgement: BuzzReviewAcknowledgement,
+    ) -> BuzzReviewRunResult:
+        try:
+            message_sha256, request_sha256 = (
+                self._acknowledgement_fingerprints(acknowledgement)
+            )
+        except (BuzzCliError, ValueError):
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_receipt_invalid",
+            )
+        if (
+            acknowledgement.delivery_started_at_epoch is None
+            or acknowledgement.request_sha256 != request_sha256
+            or acknowledgement.message_sha256 != message_sha256
+        ):
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_receipt_invalid",
+            )
+        try:
+            messages = await self.reader.read_thread(
+                acknowledgement.root_relay_event_id
+            )
+        except BuzzCliError as exc:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error=exc.code,
+            )
+        if len({message.event_id for message in messages}) != len(messages):
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error="buzz_review_thread_invalid",
+            )
+        now_epoch = int(self.clock())
+        started_at = acknowledgement.delivery_started_at_epoch
+        roots = tuple(
+            message for message in messages
+            if message.event_id == acknowledgement.root_relay_event_id
+        )
+        if (
+            len(roots) != 1
+            or roots[0].kind != 9
+            or roots[0].pubkey != self.service_pubkey
+            or not _exact_channel(roots[0], acknowledgement.channel_id)
+            or any(tag and tag[0] == "e" for tag in roots[0].tags)
+        ):
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error="buzz_review_thread_invalid",
+            )
+        candidates = tuple(
+            message for message in messages
+            if message.kind == 9
+            and message.pubkey == self.service_pubkey
+            and _exact_channel(message, acknowledgement.channel_id)
+            and _nested_reply(
+                message,
+                acknowledgement.root_relay_event_id,
+                acknowledgement.decision_event_id,
+            )
+            and message.content == acknowledgement.message
+            and hashlib.sha256(message.content.encode("utf-8")).hexdigest()
+                == acknowledgement.message_sha256
+            and message.created_at >= started_at - 300
+            and message.created_at <= now_epoch + 300
+        )
+        if len(candidates) != 1:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error=(
+                    "buzz_review_acknowledgement_unknown"
+                    if not candidates
+                    else "buzz_review_acknowledgement_duplicate"
+                ),
+            )
+        relay_event_id = candidates[0].event_id
+        try:
+            await self.control.complete_acknowledgement(
+                acknowledgement.job_id,
+                worker_id=self.worker_id,
+                request_sha256=request_sha256,
+                relay_event_id=relay_event_id,
+                reconciled=True,
+            )
+        except Exception:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=acknowledgement.job_id,
+                decision=acknowledgement.decision,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_completion_unavailable",
+            )
+        return BuzzReviewRunResult(
+            ok=True,
+            status="recorded",
+            job_id=acknowledgement.job_id,
+            decision=acknowledgement.decision,
+            acknowledgement_status="accepted",
+            acknowledgement_event_id=relay_event_id,
+        )
+
+    async def _run_durable_acknowledgement_before_scan(
+        self,
+    ) -> BuzzReviewRunResult | None:
+        try:
+            await self.control.reconcile_acknowledgements(
+                limit=self.acknowledgement_reconcile_limit
+            )
+            unknown = await self.control.first_unknown_acknowledgement()
+        except Exception:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="failed",
+                error="buzz_review_ack_reconcile_unavailable",
+            )
+        if unknown is not None:
+            return await self._reconcile_unknown_acknowledgement(unknown)
+        try:
+            pending = await self.control.claim_acknowledgement(
+                job_id=None,
+                worker_id=self.worker_id,
+                lease_seconds=self.acknowledgement_lease_seconds,
+            )
+        except Exception:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="failed",
+                error="buzz_review_ack_claim_unavailable",
+            )
+        if pending is None:
+            return None
+        return await self._deliver_acknowledgement(pending)
+
     async def run_once(self) -> BuzzReviewRunResult:
+        if self.durable_acknowledgement_enabled:
+            acknowledgement_result = (
+                await self._run_durable_acknowledgement_before_scan()
+            )
+            if acknowledgement_result is not None:
+                return acknowledgement_result
         try:
             target = await self.control.first_target()
         except BuzzAdapterError as exc:
@@ -371,55 +844,52 @@ class OriginTrailBuzzReviewWorker:
             command_created_at_epoch=message.created_at,
         )
         try:
-            reused = await self.control.record(decision)
+            record = await self.control.record(
+                decision,
+                durable_acknowledgement=self.durable_acknowledgement_enabled,
+            )
         except BuzzAdapterError as exc:
             return BuzzReviewRunResult(
                 ok=False, status="failed", job_id=target.job_id, error=exc.code
             )
-        if reused:
+        if not self.durable_acknowledgement_enabled:
             return BuzzReviewRunResult(
                 ok=True,
                 status="recorded",
                 job_id=target.job_id,
                 decision=decision_name,
-                reused=True,
-                acknowledgement_status="not_attempted",
-            )
-        if self.acknowledger is None:
-            return BuzzReviewRunResult(
-                ok=True,
-                status="recorded",
-                job_id=target.job_id,
-                decision=decision_name,
-                reused=False,
+                reused=record.reused,
                 acknowledgement_status="disabled",
             )
-        acknowledgement = format_review_acknowledgement(decision_name, reason)
         try:
-            receipt = await self.acknowledger.send_reply_once(
-                acknowledgement, message.event_id
+            acknowledgement = await self.control.claim_acknowledgement(
+                job_id=target.job_id,
+                worker_id=self.worker_id,
+                lease_seconds=self.acknowledgement_lease_seconds,
             )
-        except BuzzCliError as exc:
-            # The immutable review decision is already committed. Never retry
-            # the command or change publication state merely to obtain a UI
-            # acknowledgement.
+        except Exception:
             return BuzzReviewRunResult(
                 ok=False,
                 status="recorded",
                 job_id=target.job_id,
                 decision=decision_name,
-                reused=False,
+                reused=record.reused,
                 acknowledgement_status="unknown",
-                error=exc.code,
+                error="buzz_review_ack_claim_unavailable",
             )
-        return BuzzReviewRunResult(
-            ok=True,
-            status="recorded",
-            job_id=target.job_id,
-            decision=decision_name,
-            reused=False,
-            acknowledgement_status="accepted",
-            acknowledgement_event_id=receipt.event_id,
+        if acknowledgement is None:
+            return BuzzReviewRunResult(
+                ok=False,
+                status="recorded",
+                job_id=target.job_id,
+                decision=decision_name,
+                reused=record.reused,
+                acknowledgement_status="unknown",
+                error="buzz_review_ack_outbox_missing",
+            )
+        return await self._deliver_acknowledgement(
+            acknowledgement,
+            decision_reused=record.reused,
         )
 
 
@@ -443,13 +913,24 @@ def build_origintrail_buzz_review_worker(
         reader=BuzzCliReader(config),
         acknowledger=(
             BuzzCliPublisher(config)
-            if settings.acknowledgement_enabled
+            if (
+                settings.acknowledgement_enabled
+                and settings.durable_acknowledgement_enabled
+            )
             else None
         ),
         relay_url=settings.relay_url,
         channel_id=settings.channel_id,
         reviewer_pubkeys=settings.reviewer_pubkeys,
         service_pubkey=settings.service_pubkey,
+        release_sha=settings.release_sha,
+        durable_acknowledgement_enabled=(
+            settings.acknowledgement_enabled
+            and settings.durable_acknowledgement_enabled
+        ),
+        acknowledgement_lease_seconds=(
+            settings.acknowledgement_lease_seconds
+        ),
     )
 
 
