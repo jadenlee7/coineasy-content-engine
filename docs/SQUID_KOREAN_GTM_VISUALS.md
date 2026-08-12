@@ -115,7 +115,7 @@ from an official-source `remix`.
 browser and LLM cannot select or override the family. New results store the
 family, policy version, reviewed reference-pack ID/version, channel profile,
 template/asset/token versions, and font status in the immutable spec. Generated
-cards additionally bind `squid/full-bleed-character-type@1`; source-remix specs
+cards additionally bind `squid/full-bleed-character-type@2`; source-remix specs
 must not contain that generated design profile. PNG and editable SVG consume
 the same contract.
 
@@ -136,8 +136,11 @@ logo, fake product UI, or public CoinEasy mark. A milestone shows a large
 number only when the exact scaled metric was copied from the source. Product
 proof uses official form language, not a fabricated screen.
 
-The Korea-stage geometry is versioned as `squid-generated-gtm@4`. The version
-is stored in the immutable spec and idempotency inputs so a prior `@3` result
+The Korea-stage geometry is versioned as `squid-generated-gtm@5`. This version
+promotes the user-selected Telegram direction into the generated-card geometry:
+the official SQUIB is larger and higher, decorative bubbles are removed from
+the visible stage, and short Korean hooks are centered in the lower type stack.
+The version is stored in the immutable spec and idempotency inputs so a prior `@4` result
 cannot be replayed as if it used the reviewed stage geometry.
 
 Verified official media always changes the render strategy to `source_remix`,

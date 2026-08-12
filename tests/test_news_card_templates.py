@@ -112,15 +112,15 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "size > minimum" in classic_html
     assert ".canvas--legacy" in classic_html
     assert "linear-gradient(132deg, #C99AF0" in classic_html
-    assert "width: 1200px" in classic_html
-    assert "top: -40px" in classic_html
+    assert "width: 1500px" in classic_html
+    assert "top: -285px" in classic_html
     assert "white oval" not in classic_html.lower()
     assert 'class="stage-word stage-word--top"' in classic_html
     assert 'class="stage-word stage-word--bottom"' not in classic_html
     assert "window.__evaluateSquidGeneratedHeadlineLayout = async () =>" in classic_html
     assert "await document.fonts.ready" in classic_html
     assert "if (!generatedFamilies.has(variant))" in classic_html
-    assert "headline.style.lineHeight = size >= 150 ? '1.04' : '.82'" in classic_html
+    assert "headline.style.lineHeight = '.86'" in classic_html
     legacy_fit_branch = classic_html.split("if (!generatedFamilies.has(variant))", 1)[1].split(
         "headline.style.fontSize = `${size}px`;", 1
     )[0]
@@ -143,11 +143,11 @@ def test_squid_generated_headline_guard_excludes_source_remix_audit_family():
 
 
 def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():
-    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@4"
+    assert _SQUID_GENERATED_TEMPLATE_VERSION == "squid-generated-gtm@5"
 
     netlify_source = Path("netlify/functions/news-card.mts").read_text()
-    assert '"squid-generated-gtm@4"' in netlify_source
-    assert '"squid-generated-gtm@3"' not in netlify_source
+    assert '"squid-generated-gtm@5"' in netlify_source
+    assert '"squid-generated-gtm@4"' not in netlify_source
     assert "payload.template_version = SQUID_GENERATED_TEMPLATE_VERSION" in netlify_source
 
 
@@ -236,9 +236,11 @@ def test_squid_generated_html_routes_the_same_four_public_families_as_editable_s
         assert "#E6FA36" in html
         assert "#BC8EE4" in html
         assert "linear-gradient(132deg, #C99AF0" in html
-        assert "left: -110px" in html
-        assert "width: 1200px" in html
-        assert "font-size: 168px" in html
+        assert "left: -330px" in html
+        assert "width: 1500px" in html
+        assert "font-size: 176px" in html
+        assert "text-align: center" in html
+        assert ".canvas:not(.canvas--legacy) .bubbles {\n    display: none;" in html
         assert (
             '<div class="stage-word stage-word--top" aria-hidden="true">Squid</div>'
             in html
@@ -465,8 +467,8 @@ async def test_squid_generic_template_requests_use_the_official_classic(
         result.spec["visual_design_profile_id"]
         == "squid/full-bleed-character-type"
     )
-    assert result.spec["visual_design_profile_version"] == 1
-    assert result.spec["template_version"] == "squid-generated-gtm@4"
+    assert result.spec["visual_design_profile_version"] == 2
+    assert result.spec["template_version"] == "squid-generated-gtm@5"
     assert result.spec["asset_pack_version"] == "squid-local-approved@1"
     display_font_path = get_client_config("squid").font_display_file_path
     assert result.spec["font_status"] == (

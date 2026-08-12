@@ -79,9 +79,15 @@ def test_selected_direction_preserves_dense_type_character_hierarchy():
     design_profile = manifest["design_profile"]
 
     assert isinstance(design_profile, dict)
+    assert design_profile["version"] == 2
     required_cues = design_profile["required_cues"]
     forbidden_cleanup = design_profile["forbidden_cleanup"]
     assert "deliberate type-to-character overlap" in required_cues
     assert "tight stacked leading and assertive edge crop" in required_cues
+    assert "centered lower headline for short Korean hooks" in required_cues
     assert "adding generous whitespace around the headline" in forbidden_cleanup
     assert "separating all type from the character" in forbidden_cleanup
+    assert (
+        "adding decorative bubbles that compete with the selected poster silhouette"
+        in forbidden_cleanup
+    )

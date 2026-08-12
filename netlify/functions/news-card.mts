@@ -94,10 +94,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
 export const SQUID_CREATIVE_FAMILY_POLICY_VERSION = "squid-visual-routing@1";
-export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@4";
+export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@5";
 export const SQUID_VISUAL_REFERENCE_PACK_VERSION = 2;
 export const SQUID_GENERATED_DESIGN_PROFILE_ID = "squid/full-bleed-character-type";
-export const SQUID_GENERATED_DESIGN_PROFILE_VERSION = 1;
+export const SQUID_GENERATED_DESIGN_PROFILE_VERSION = 2;
 const SQUID_VISUAL_REFERENCE_PACKS = {
   editorial_big_type: {
     id: "squid/editorial-big-type",

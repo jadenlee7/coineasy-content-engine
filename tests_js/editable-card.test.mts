@@ -11,9 +11,9 @@ import {
 } from "../netlify/functions/_shared/studio-session.mts";
 
 const SQUID_GENERATED_PROFILE = {
-  template_version: "squid-generated-gtm@4",
+  template_version: "squid-generated-gtm@5",
   visual_design_profile_id: "squid/full-bleed-character-type",
-  visual_design_profile_version: 1,
+  visual_design_profile_version: 2,
 } as const;
 
 const TRANSLATED_SQUID_REQUEST = {
@@ -25,7 +25,7 @@ const TRANSLATED_SQUID_REQUEST = {
   },
 };
 
-test("does not fetch a publisher logo for generated Squid v4", () => {
+test("does not fetch a publisher logo for generated Squid v5", () => {
   for (const family of [
     "editorial_big_type",
     "milestone_metric",

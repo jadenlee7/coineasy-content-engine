@@ -32,9 +32,9 @@ const SQUID_ASSETS = {
 };
 
 const SQUID_GENERATED_PROFILE = {
-  template_version: "squid-generated-gtm@4",
+  template_version: "squid-generated-gtm@5",
   visual_design_profile_id: "squid/full-bleed-character-type",
-  visual_design_profile_version: 1,
+  visual_design_profile_version: 2,
 } as const;
 
 function assertTransparentSquidCaptions(
@@ -200,11 +200,11 @@ test("renders the four approved generated Squid creative families without publis
     assert.match(svg, /id="Full-Bleed-Lavender-Halo"[^>]+url\(#Squid-Full-Bleed-Lavender-Halo\)/);
     assert.match(svg, /id="Lower-White-Bloom"[^>]+url\(#Squid-Lower-White-Bloom\)/);
     assert.doesNotMatch(svg, /White-Oval|Stage-Word-Bottom/);
-    assert.match(svg, /id="Stage-Word-Top"[^>]+x="170" y="206"[^>]+scale\(1\.48 1\)[^>]+font-size="220"[^>]*>Squid<\/text>/);
-    assert.match(svg, /id="Squid-Official-Form-Language" x="-340" y="-360" width="1760" height="1760"[^>]+opacity="\.24"[^>]+rotate\(74 540 520\)/);
-    assert.match(svg, /id="Squid-Official-Bubbles" x="690" y="220" width="520" height="520"/);
-    assert.match(svg, /id="Squid-Official-SQUIB" x="-110" y="-40" width="1200" height="1200"/);
-    assert.match(svg, /id="Headline-Line-1"[^>]+x="(?:68|120)"[^>]+font-family="Bagoss Condensed, Pretendard, sans-serif"[^>]+font-weight="900"/);
+    assert.match(svg, /id="Stage-Word-Top"[^>]+x="180" y="210"[^>]+scale\(1\.22 1\)[^>]+font-size="224"[^>]*>Squid<\/text>/);
+    assert.match(svg, /id="Squid-Official-Form-Language" x="-340" y="-360" width="1760" height="1760"[^>]+opacity="\.08"[^>]+rotate\(74 540 520\)/);
+    assert.doesNotMatch(svg, /id="Squid-Official-Bubbles"/);
+    assert.match(svg, /id="Squid-Official-SQUIB" x="-330" y="-285" width="1500" height="1500"/);
+    assert.match(svg, /id="Headline-Line-1"[^>]+x="540" y="840"[^>]+text-anchor="middle"[^>]+font-family="Bagoss Condensed, Pretendard, sans-serif"[^>]+font-weight="900"/);
     assert.doesNotMatch(svg, /Brand-Logo|Eyebrow|Lime-Divider|Support-Line|Public-Source-Metadata|Source-URL|id="Date"/);
     if (contract.hasMetric) {
       assert.match(svg, /id="Metric-Line-1"[^>]+x="1020" y="360"[^>]+text-anchor="end"[^>]+font-size="184"[^>]*>5M<\/text>/);
@@ -213,7 +213,6 @@ test("renders the four approved generated Squid creative families without publis
     }
     const assetLayerIds = [
       "Squid-Official-Form-Language",
-      "Squid-Official-Bubbles",
       "Squid-Official-SQUIB",
     ];
     const assetLayerPositions = assetLayerIds.map((id) => svg.indexOf(`id="${id}"`));
@@ -260,7 +259,7 @@ test("keeps the 24-character Squid generated headline boundary complete", () => 
   assert.doesNotMatch(rendered, /…/);
 });
 
-test("requires the three visible official stage assets for every generated Squid family", () => {
+test("requires the reviewed official asset pack for every generated Squid family", () => {
   const generatedSpec = {
     ...SPEC,
     render_strategy: "generated_gtm",
@@ -343,14 +342,14 @@ test("uses official form language for product proof and fails closed for worldbu
   );
 });
 
-test("rejects stale Squid generated editable specs instead of replaying them as v4", () => {
+test("rejects stale Squid generated editable specs instead of replaying them as v5", () => {
   assert.throws(
     () => buildEditableSvg("squid", "classic", {
       ...SPEC,
       render_strategy: "generated_gtm",
       creative_family: "editorial_big_type",
-      template_version: "squid-generated-gtm@3",
-      visual_design_profile_id: "squid/figma-korea-stage",
+      template_version: "squid-generated-gtm@4",
+      visual_design_profile_id: "squid/full-bleed-character-type",
       visual_design_profile_version: 1,
     }, SQUID_ASSETS),
     /unsupported_squid_generated_profile/,
