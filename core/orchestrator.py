@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from core.client_config import get_client_config
+from core.brand_profiles import apply_news_brand_profile
 from core.figma_template_registry import approved_figma_template
 from core.llm.edu_carousel_pipeline import generate_carousel_spec
 from core.llm.news_card_pipeline import (
@@ -743,6 +744,11 @@ async def generate_news_card(
             spec["source_text_visible"] = False
             spec["translation_regions"] = []
             spec["visual_localization_status"] = "cleanup_failed"
+    else:
+        # Copy generation is model-owned; branding is not. Bind every other
+        # client to its reviewed token, asset, and visual profile after the
+        # actual render style (including remix fallback) is known.
+        apply_news_brand_profile(spec, client_id, actual_template_style)
 
     print(f"  → label: {spec['label']} · theme: {spec['theme']}")
     visual_cache_hit = spec.pop("_visual_localization_cache_hit", False) is True

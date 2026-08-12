@@ -12,6 +12,11 @@ from core.orchestrator import (
     _align_regions_to_detected_text,
     generate_news_card,
 )
+from core.brand_profiles import (
+    NEWS_BRAND_PROFILE_POLICY_VERSION,
+    NEWS_BRAND_PROFILES,
+    apply_news_brand_profile,
+)
 from core.client_config import get_client_config
 from core.llm.news_card_pipeline import _minimum_squid_font_percent
 from core.renderers.playwright_renderer import (
@@ -129,6 +134,75 @@ def test_news_card_templates_are_allowlisted_and_present():
     renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
     assert "window.__evaluateSquidGeneratedHeadlineLayout()" in renderer_source
     assert "Squid generated headline did not pass browser layout" in renderer_source
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "origintrail", "babylon"])
+def test_standard_news_brand_profiles_are_server_owned_and_never_cross_clients(
+    client_id,
+):
+    spec = {
+        "brand_profile_policy_version": "rogue-policy",
+        "render_strategy": "rogue",
+        "channel_profile": "rogue",
+        "brand_tokens_version": "another-client@999",
+        "template_version": "rogue@999",
+        "asset_pack_version": "rogue@999",
+        "visual_design_profile_id": "rogue/profile",
+        "visual_design_profile_version": 999,
+    }
+
+    apply_news_brand_profile(spec, client_id, "classic")
+    profile = NEWS_BRAND_PROFILES[client_id]
+
+    assert spec == profile.spec_metadata("classic")
+    assert spec["brand_profile_policy_version"] == NEWS_BRAND_PROFILE_POLICY_VERSION
+    assert spec["visual_design_profile_id"].startswith(f"{client_id}/")
+    assert spec["template_version"] == f"{client_id}-news-classic@1"
+    assert spec["render_strategy"] == "brand_native"
+    for other_client_id, other_profile in NEWS_BRAND_PROFILES.items():
+        if other_client_id != client_id:
+            assert spec["visual_design_profile_id"] != other_profile.design_profile_id
+            assert spec["asset_pack_version"] != other_profile.asset_pack_version
+
+
+def test_standard_news_brand_profile_marks_remix_as_source_bound():
+    spec = {}
+    apply_news_brand_profile(spec, "yellow", "remix")
+    assert spec["render_strategy"] == "source_remix"
+    assert spec["template_version"] == "yellow-news-remix@1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["yellow", "origintrail", "babylon"])
+async def test_standard_news_generation_binds_the_selected_brand_profile(
+    monkeypatch,
+    tmp_path,
+    client_id,
+):
+    captured = {}
+
+    async def fake_render_png(**kwargs):
+        captured.update(kwargs)
+        kwargs["output_path"].write_bytes(b"png")
+
+    monkeypatch.setattr("core.orchestrator.render_png", fake_render_png)
+    result = await generate_news_card(
+        client_id=client_id,
+        source_content="Official source material with enough detail for a branded update.",
+        output_dir=tmp_path / client_id,
+        mock_mode=True,
+        mock_response={
+            **MOCK_SPEC,
+            "visual_design_profile_id": "rogue/profile",
+            "brand_tokens_version": "rogue@999",
+        },
+        template_style="classic",
+    )
+
+    expected = NEWS_BRAND_PROFILES[client_id].spec_metadata("classic")
+    for field, value in expected.items():
+        assert result.spec[field] == value
+        assert captured["slots"][field] == value
 
 
 def test_squid_generated_headline_guard_excludes_source_remix_audit_family():

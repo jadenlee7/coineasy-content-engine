@@ -98,6 +98,34 @@ export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@5";
 export const SQUID_VISUAL_REFERENCE_PACK_VERSION = 2;
 export const SQUID_GENERATED_DESIGN_PROFILE_ID = "squid/full-bleed-character-type";
 export const SQUID_GENERATED_DESIGN_PROFILE_VERSION = 2;
+export const NEWS_BRAND_PROFILE_POLICY_VERSION = "client-news-brand-profiles@1";
+type StandardNewsBrandClient = Exclude<ContentCatalogClient, "squid">;
+type StandardNewsBrandProfile = {
+  designProfileId: string;
+  designProfileVersion: number;
+  brandTokensVersion: string;
+  assetPackVersion: string;
+};
+export const NEWS_BRAND_PROFILES: Record<StandardNewsBrandClient, StandardNewsBrandProfile> = {
+  yellow: {
+    designProfileId: "yellow/institutional-market-infrastructure",
+    designProfileVersion: 1,
+    brandTokensVersion: "yellow-brand-tokens@1",
+    assetPackVersion: "yellow-official-brand-assets@1",
+  },
+  origintrail: {
+    designProfileId: "origintrail/verifiable-knowledge",
+    designProfileVersion: 1,
+    brandTokensVersion: "origintrail-brand-tokens@1",
+    assetPackVersion: "origintrail-official-brand-assets@1",
+  },
+  babylon: {
+    designProfileId: "babylon/bitcoin-native-infrastructure",
+    designProfileVersion: 1,
+    brandTokensVersion: "babylon-brand-tokens@1",
+    assetPackVersion: "babylon-official-brand-assets@1",
+  },
+};
 const SQUID_VISUAL_REFERENCE_PACKS = {
   editorial_big_type: {
     id: "squid/editorial-big-type",
@@ -230,7 +258,7 @@ type NewsCardRequestHashInput = {
 
 function buildNewsCardRequestHash(
   input: NewsCardRequestHashInput,
-  includeSquidCreativePolicy: boolean,
+  includeBrandPolicy: boolean,
 ): string {
   const payload: Record<string, unknown> = {
     client_id: input.clientId,
@@ -245,7 +273,7 @@ function buildNewsCardRequestHash(
   // The Squid generated visual is server-routed from immutable source text.
   // Bind the routing policy to idempotency so a reviewed older family cannot
   // be silently reused after the deterministic policy changes.
-  if (input.clientId === "squid" && includeSquidCreativePolicy) {
+  if (input.clientId === "squid" && includeBrandPolicy) {
     payload.creative_family_policy_version = SQUID_CREATIVE_FAMILY_POLICY_VERSION;
     payload.visual_reference_pack_version = SQUID_VISUAL_REFERENCE_PACK_VERSION;
     // A generated-stage geometry change must not replay a durable PNG rendered
@@ -255,9 +283,18 @@ function buildNewsCardRequestHash(
       payload.visual_design_profile_id = SQUID_GENERATED_DESIGN_PROFILE_ID;
       payload.visual_design_profile_version = SQUID_GENERATED_DESIGN_PROFILE_VERSION;
     }
+  } else if (includeBrandPolicy && input.clientId in NEWS_BRAND_PROFILES) {
+    const clientId = input.clientId as StandardNewsBrandClient;
+    const profile = NEWS_BRAND_PROFILES[clientId];
+    payload.brand_profile_policy_version = NEWS_BRAND_PROFILE_POLICY_VERSION;
+    payload.brand_tokens_version = profile.brandTokensVersion;
+    payload.template_version = `${clientId}-news-${input.templateStyle}@1`;
+    payload.asset_pack_version = profile.assetPackVersion;
+    payload.visual_design_profile_id = profile.designProfileId;
+    payload.visual_design_profile_version = profile.designProfileVersion;
   }
   // The automation-only pinned URL extends the idempotency identity when it
-  // is present. Non-Squid requests retain their pre-pinning hash contract.
+  // is present.
   if (input.sourceImageUrl) payload.source_image_url = input.sourceImageUrl;
   return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
 }
@@ -266,7 +303,7 @@ export function newsCardRequestHash(input: NewsCardRequestHashInput): string {
   return buildNewsCardRequestHash(input, true);
 }
 
-function legacySquidNewsCardRequestHash(input: NewsCardRequestHashInput): string {
+function legacyNewsCardRequestHash(input: NewsCardRequestHashInput): string {
   return buildNewsCardRequestHash(input, false);
 }
 
@@ -274,6 +311,11 @@ function isLegacySquidCreativeRecord(existing: ContentCatalogLookup): boolean {
   const spec = objectValue(existing.content.spec);
   return !Object.hasOwn(spec, "creative_family_policy_version")
     && !Object.hasOwn(spec, "creative_family");
+}
+
+function isLegacyStandardBrandRecord(existing: ContentCatalogLookup): boolean {
+  const spec = objectValue(existing.content.spec);
+  return !Object.hasOwn(spec, "brand_profile_policy_version");
 }
 
 export function isOfficialSquidXStatusUrl(value: string): boolean {
@@ -386,6 +428,27 @@ export function validSquidCreativeMetadata(
     )
   ) return false;
   return true;
+}
+
+export function validStandardNewsBrandMetadata(
+  spec: Record<string, unknown>,
+  clientId: string,
+  templateStyle: string,
+): boolean {
+  if (!(clientId in NEWS_BRAND_PROFILES)) return false;
+  if (!["classic", "editorial", "signal", "remix"].includes(templateStyle)) {
+    return false;
+  }
+  const standardClientId = clientId as StandardNewsBrandClient;
+  const profile = NEWS_BRAND_PROFILES[standardClientId];
+  return spec.brand_profile_policy_version === NEWS_BRAND_PROFILE_POLICY_VERSION
+    && spec.render_strategy === (templateStyle === "remix" ? "source_remix" : "brand_native")
+    && spec.channel_profile === "x_square"
+    && spec.brand_tokens_version === profile.brandTokensVersion
+    && spec.template_version === `${standardClientId}-news-${templateStyle}@1`
+    && spec.asset_pack_version === profile.assetPackVersion
+    && spec.visual_design_profile_id === profile.designProfileId
+    && spec.visual_design_profile_version === profile.designProfileVersion;
 }
 
 function catalogRequestHash(existing: ContentCatalogLookup): string | null {
@@ -763,10 +826,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   if (existingGeneration) {
     const storedRequestHash = catalogRequestHash(existingGeneration);
-    const isCompatibleLegacySquidRetry = clientId === "squid"
-      && isLegacySquidCreativeRecord(existingGeneration)
-      && storedRequestHash === legacySquidNewsCardRequestHash(requestHashInput);
-    if (storedRequestHash !== requestHash && !isCompatibleLegacySquidRetry) {
+    const isCompatibleLegacyBrandRetry = (
+      clientId === "squid"
+        ? isLegacySquidCreativeRecord(existingGeneration)
+        : isLegacyStandardBrandRecord(existingGeneration)
+    ) && storedRequestHash === legacyNewsCardRequestHash(requestHashInput);
+    if (storedRequestHash !== requestHash && !isCompatibleLegacyBrandRetry) {
       return json({ error: "news_card_idempotency_conflict" }, 409);
     }
     if (!requiresVerifiedSquidSource || pinnedSourceImageUrl) {
@@ -976,6 +1041,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     if (
+      clientId !== "squid"
+      && !validStandardNewsBrandMetadata(
+        result.spec,
+        clientId,
+        actualTemplateStyle,
+      )
+    ) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    if (
       clientId === "squid"
       && actualTemplateStyle === "classic"
       && result.figma_template != null
@@ -1028,7 +1103,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const resultSpec = result.spec;
-    const squidCreativeAudit = clientId === "squid"
+    const brandProfileAudit = clientId === "squid"
       ? {
         creative_family: resultSpec.creative_family,
         render_strategy: resultSpec.render_strategy,
@@ -1043,7 +1118,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
         visual_design_profile_id: resultSpec.visual_design_profile_id,
         visual_design_profile_version: resultSpec.visual_design_profile_version,
       }
-      : {};
+      : {
+        brand_profile_policy_version: resultSpec.brand_profile_policy_version,
+        render_strategy: resultSpec.render_strategy,
+        channel_profile: resultSpec.channel_profile,
+        brand_tokens_version: resultSpec.brand_tokens_version,
+        template_version: resultSpec.template_version,
+        asset_pack_version: resultSpec.asset_pack_version,
+        visual_design_profile_id: resultSpec.visual_design_profile_id,
+        visual_design_profile_version: resultSpec.visual_design_profile_version,
+      };
     const channelCopy = buildChannelCopy(
       clientId,
       resultSpec,
@@ -1138,7 +1222,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
             source_image_used: result.source_image_used === true,
             source_visual_file: sourceVisualFile,
             figma_template: figmaTemplate,
-            ...squidCreativeAudit,
+            ...brandProfileAudit,
           },
         },
         channelCopy,
@@ -1151,7 +1235,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           ...referenceAudit,
           ...reviewGuidanceAudit,
           figma_template_version: figmaTemplate?.version || null,
-          ...squidCreativeAudit,
+          ...brandProfileAudit,
           brand_qa: brandQa,
           fact_check: factCheck,
         },
