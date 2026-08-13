@@ -236,7 +236,10 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             json.dumps({
                 "event_id": EVENT_ID,
                 "accepted": True,
-                "message": message,
+                # Buzz v0.5.4 exposes the relay acknowledgement here, not
+                # the submitted content. The durable request fingerprint
+                # already binds the exact reply body before this call.
+                "message": "stored",
                 "mention_pubkeys": [],
             }, ensure_ascii=False).encode(),
             b"",
@@ -341,7 +344,7 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             CommandResult(0, json.dumps({
                 "event_id": EVENT_ID,
                 "accepted": True,
-                "message": "different reply",
+                "message": 7,
                 "mention_pubkeys": [],
             }).encode(), b""),
         )

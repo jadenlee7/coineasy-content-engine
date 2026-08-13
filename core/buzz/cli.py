@@ -409,7 +409,7 @@ class BuzzCliPublisher:
             or not isinstance(event_id, str)
             or not _EVENT_ID.fullmatch(event_id)
             or parsed.get("mention_pubkeys") != []
-            or parsed.get("message") != message
+            or not isinstance(parsed.get("message"), str)
         ):
             raise BuzzCliError("buzz_delivery_unknown")
         return BuzzRelayReceipt(event_id=event_id)
