@@ -48,6 +48,7 @@ from core.publishers.telegram import TelegramPublisher
 from core.publishers.telegram_review import (
     decode_review_image_data_url,
     send_telegram_review,
+    telegram_content_ops_relay_config,
     telegram_review_config,
 )
 from core.publishers.typefully import TypefullyPublisher
@@ -536,8 +537,10 @@ async def notify_telegram_review(
     config = telegram_review_config()
     if config is None:
         raise HTTPException(503, "telegram_review_not_configured")
+    collaboration_config = telegram_content_ops_relay_config(config)
     result = await send_telegram_review(
         config=config,
+        collaboration_config=collaboration_config,
         caption_html=req.caption_html,
         message_html=req.message_html,
         review_url=req.review_url,

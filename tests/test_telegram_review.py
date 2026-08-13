@@ -6,14 +6,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.publishers.telegram_review import (
+    TelegramContentOpsRelayConfig,
     TelegramReviewConfig,
     decode_review_image_data_url,
     send_telegram_review,
+    telegram_content_ops_relay_config,
     telegram_review_config,
 )
 
 
 BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345"
+RELAY_BOT_TOKEN = "987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345"
 CHAT_ID = "123456789"
 COLLABORATION_CHAT_ID = "-1001234567890"
 ITEM_ID = "22222222-2222-4222-8222-222222222222"
@@ -82,21 +85,31 @@ def notification_payload(**overrides):
 def test_review_config_requires_a_numeric_private_target(monkeypatch):
     monkeypatch.setenv("TELEGRAM_REVIEW_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("TELEGRAM_REVIEW_CHAT_ID", CHAT_ID)
-    monkeypatch.setenv(
-        "TELEGRAM_COLLAB_REVIEW_CHAT_ID", COLLABORATION_CHAT_ID
-    )
-    assert telegram_review_config() == TelegramReviewConfig(
-        BOT_TOKEN,
-        CHAT_ID,
-        COLLABORATION_CHAT_ID,
-    )
+    assert telegram_review_config() == TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
 
-    monkeypatch.setenv("TELEGRAM_COLLAB_REVIEW_CHAT_ID", "@private_group")
-    assert telegram_review_config() is None
-
-    monkeypatch.delenv("TELEGRAM_COLLAB_REVIEW_CHAT_ID")
     monkeypatch.setenv("TELEGRAM_REVIEW_CHAT_ID", "@public_channel")
     assert telegram_review_config() is None
+
+
+def test_content_ops_relay_requires_a_separate_bot_and_room(monkeypatch):
+    primary = TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", RELAY_BOT_TOKEN)
+    monkeypatch.setenv(
+        "TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", COLLABORATION_CHAT_ID
+    )
+    assert telegram_content_ops_relay_config(primary) == (
+        TelegramContentOpsRelayConfig(RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID)
+    )
+
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", BOT_TOKEN)
+    assert telegram_content_ops_relay_config(primary) is None
+
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", RELAY_BOT_TOKEN)
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", CHAT_ID)
+    assert telegram_content_ops_relay_config(primary) is None
+
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", "@private_group")
+    assert telegram_content_ops_relay_config(primary) is None
 
 
 def test_review_image_data_url_is_bounded_and_validated():
@@ -160,10 +173,9 @@ async def test_review_sender_copies_the_exact_packet_to_the_collaboration_room(
     )
 
     result = await send_telegram_review(
-        config=TelegramReviewConfig(
-            BOT_TOKEN,
-            CHAT_ID,
-            COLLABORATION_CHAT_ID,
+        config=TelegramReviewConfig(BOT_TOKEN, CHAT_ID),
+        collaboration_config=TelegramContentOpsRelayConfig(
+            RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
         ),
         caption_html="🔎 <b>검토 요청 · Squid</b>",
         message_html="검토할 내용",
@@ -179,6 +191,10 @@ async def test_review_sender_copies_the_exact_packet_to_the_collaboration_room(
         call["data"]["chat_id"] if call["data"] else call["json"]["chat_id"]
         for call in fake.calls
     ] == [CHAT_ID, CHAT_ID, COLLABORATION_CHAT_ID, COLLABORATION_CHAT_ID]
+    assert all(f"/bot{BOT_TOKEN}/" in call["url"] for call in fake.calls[:2])
+    assert all(
+        f"/bot{RELAY_BOT_TOKEN}/" in call["url"] for call in fake.calls[2:]
+    )
 
 
 @pytest.mark.asyncio
@@ -195,10 +211,9 @@ async def test_collaboration_failure_does_not_hide_primary_review_delivery(
     )
 
     result = await send_telegram_review(
-        config=TelegramReviewConfig(
-            BOT_TOKEN,
-            CHAT_ID,
-            COLLABORATION_CHAT_ID,
+        config=TelegramReviewConfig(BOT_TOKEN, CHAT_ID),
+        collaboration_config=TelegramContentOpsRelayConfig(
+            RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
         ),
         caption_html="검토 요청",
         message_html="검토할 내용",
@@ -222,6 +237,8 @@ def api_client(monkeypatch):
     )
     monkeypatch.setenv("TELEGRAM_REVIEW_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("TELEGRAM_REVIEW_CHAT_ID", CHAT_ID)
+    monkeypatch.delenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", raising=False)
     return TestClient(server.app)
 
 
@@ -265,4 +282,5 @@ def test_review_relay_is_admin_only_and_validates_targets(api_client, monkeypatc
     }
     assert len(calls) == 1
     assert calls[0]["config"] == TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
+    assert calls[0]["collaboration_config"] is None
     assert calls[0]["image_data_url"] == IMAGE_DATA_URL

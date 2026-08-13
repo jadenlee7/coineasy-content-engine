@@ -25,30 +25,47 @@ _DATA_URL_PATTERN = re.compile(
 class TelegramReviewConfig:
     bot_token: str
     chat_id: str
-    collaboration_chat_id: str = ""
+
+
+@dataclass(frozen=True)
+class TelegramContentOpsRelayConfig:
+    """Dedicated internal relay with no client-publication authority."""
+
+    bot_token: str
+    chat_id: str
 
 
 def telegram_review_config() -> Optional[TelegramReviewConfig]:
     bot_token = os.environ.get("TELEGRAM_REVIEW_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_REVIEW_CHAT_ID", "").strip()
-    collaboration_chat_id = os.environ.get(
-        "TELEGRAM_COLLAB_REVIEW_CHAT_ID", ""
-    ).strip()
     if not _BOT_TOKEN_PATTERN.fullmatch(bot_token):
         return None
     if not _CHAT_ID_PATTERN.fullmatch(chat_id):
         return None
-    if collaboration_chat_id and not _CHAT_ID_PATTERN.fullmatch(
-        collaboration_chat_id
-    ):
-        return None
-    if collaboration_chat_id == chat_id:
-        collaboration_chat_id = ""
     return TelegramReviewConfig(
         bot_token=bot_token,
         chat_id=chat_id,
-        collaboration_chat_id=collaboration_chat_id,
     )
+
+
+def telegram_content_ops_relay_config(
+    primary: TelegramReviewConfig | None = None,
+) -> Optional[TelegramContentOpsRelayConfig]:
+    """Load the separate team-room bot; never reuse the personal-review bot."""
+
+    bot_token = os.environ.get(
+        "TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", ""
+    ).strip()
+    chat_id = os.environ.get("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", "").strip()
+    if not _BOT_TOKEN_PATTERN.fullmatch(bot_token):
+        return None
+    if not _CHAT_ID_PATTERN.fullmatch(chat_id):
+        return None
+    if primary is not None and (
+        bot_token == primary.bot_token or chat_id == primary.chat_id
+    ):
+        return None
+    return TelegramContentOpsRelayConfig(bot_token=bot_token, chat_id=chat_id)
 
 
 def _valid_image_bytes(mime_type: str, image_bytes: bytes) -> bool:
@@ -82,7 +99,7 @@ def decode_review_image_data_url(value: str) -> tuple[str, bytes] | None:
 
 
 async def _telegram_post(
-    config: TelegramReviewConfig,
+    config: TelegramReviewConfig | TelegramContentOpsRelayConfig,
     method: str,
     *,
     json_body: dict[str, Any] | None = None,
@@ -113,13 +130,16 @@ async def _telegram_post(
 async def send_telegram_review(
     *,
     config: TelegramReviewConfig,
+    collaboration_config: TelegramContentOpsRelayConfig | None = None,
     caption_html: str,
     message_html: str,
     review_url: str,
     image_url: str = "",
     image_data_url: str = "",
 ) -> dict[str, bool]:
-    async def send_to_chat(chat_id: str) -> tuple[bool, bool]:
+    async def send_to_chat(
+        destination: TelegramReviewConfig | TelegramContentOpsRelayConfig,
+    ) -> tuple[bool, bool]:
         photo_sent = False
         if image_data_url:
             decoded = decode_review_image_data_url(image_data_url)
@@ -132,10 +152,10 @@ async def send_telegram_review(
                 "image/webp": "webp",
             }[mime_type]
             photo_sent = await _telegram_post(
-                config,
+                destination,
                 "sendPhoto",
                 data={
-                    "chat_id": chat_id,
+                    "chat_id": destination.chat_id,
                     "caption": caption_html,
                     "parse_mode": "HTML",
                 },
@@ -149,10 +169,10 @@ async def send_telegram_review(
             )
         elif image_url:
             photo_sent = await _telegram_post(
-                config,
+                destination,
                 "sendPhoto",
                 json_body={
-                    "chat_id": chat_id,
+                    "chat_id": destination.chat_id,
                     "photo": image_url,
                     "caption": caption_html,
                     "parse_mode": "HTML",
@@ -160,10 +180,10 @@ async def send_telegram_review(
             )
 
         text_sent = await _telegram_post(
-            config,
+            destination,
             "sendMessage",
             json_body={
-                "chat_id": chat_id,
+                "chat_id": destination.chat_id,
                 "text": message_html,
                 "parse_mode": "HTML",
                 "link_preview_options": {"is_disabled": True},
@@ -177,18 +197,18 @@ async def send_telegram_review(
         )
         return photo_sent, text_sent
 
-    collaboration_configured = bool(config.collaboration_chat_id)
+    collaboration_configured = collaboration_config is not None
     collaboration_photo_sent = False
     collaboration_text_sent = False
-    if config.collaboration_chat_id:
+    if collaboration_config is not None:
         primary_result, collaboration_result = await asyncio.gather(
-            send_to_chat(config.chat_id),
-            send_to_chat(config.collaboration_chat_id),
+            send_to_chat(config),
+            send_to_chat(collaboration_config),
         )
         photo_sent, text_sent = primary_result
         collaboration_photo_sent, collaboration_text_sent = collaboration_result
     else:
-        photo_sent, text_sent = await send_to_chat(config.chat_id)
+        photo_sent, text_sent = await send_to_chat(config)
     return {
         "sent": text_sent,
         "photo_sent": photo_sent,
