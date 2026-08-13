@@ -181,7 +181,8 @@ begin
         result->>'message_sha256', response_relay_event_id
     );
     update agent_runtime.buzz_operations_commands
-    set lease_expires_at = statement_timestamp() - interval '1 second'
+    set locked_at = statement_timestamp() - interval '2 minutes',
+        lease_expires_at = statement_timestamp() - interval '1 second'
     where workspace_id = workspace and command_event_id = event_id;
     perform public.reconcile_origintrail_buzz_operations_leases(workspace, 100);
     if (
