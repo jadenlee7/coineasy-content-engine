@@ -11,6 +11,63 @@ const CONNECTOR_TOKEN_MAX_BYTES = 512;
 const QA_RELAY_TIMEOUT_MS = 18_000;
 const MAX_BANNER_BYTES = 3_000_000;
 const URL_LIMIT = 8;
+const PRIVATE_JSON_KEY = /(?:^|_)(?:url|urls|path|paths|storage_path|source_visual_file|request_hash|submitted_content|resolved_content|raw_source|raw_payload|token|secret|cookie|authorization|headers?)$/i;
+const PRIVATE_TEXT_VALUE = /(?:\/storage\/v1\/object\/sign\/|[?&](?:token|signature|sig|key)=[^&\s]+|(?:authorization|api[_-]?key|api[_-]?secret|access[_-]?token|service[_-]?role)["'\s]*[:=]["'\s]*(?:bearer\s+)?[A-Za-z0-9._~+/-]{8,})/i;
+
+const GROK_QA_BRAND_CONTRACTS = {
+  yellow: {
+    profile_version: "yellow/brand-review@1",
+    identity: [
+      "Institutional, analytical, infrastructure-led, and evidence-aware.",
+      "Explain the market friction before Yellow's clearing or settlement role.",
+    ],
+    avoid: [
+      "Meme-first language, generic hype, or unsupported adoption/compliance claims.",
+      "Changing the source thesis, causal order, certainty, or restrained energy.",
+    ],
+    x_rule: "Preserve the original thesis, paragraph count, causal order, and precise terminology.",
+    banner_rule: "Preserve official composition, co-brand marks, hierarchy, and the highlighted Yellow line; localize only compact source-supported copy.",
+  },
+  origintrail: {
+    profile_version: "origintrail/brand-review@1",
+    identity: [
+      "Trust, provenance, verifiability, and technically credible proof first.",
+      "Keep the source's problem-to-proof logic and concrete mechanism.",
+    ],
+    avoid: [
+      "Token-price language, unverifiable superlatives, or generic Web3/AI hype.",
+      "Abstract DKG benefits without a source, mechanism, or example.",
+    ],
+    x_rule: "Preserve exact terminology and the source's problem-to-proof causal chain.",
+    banner_rule: "Preserve official composition, marks, contrast, and proof hierarchy; add only compact source-supported Korean context.",
+  },
+  squid: {
+    profile_version: "squid/brand-review@1",
+    identity: [
+      "Short, playful, unmistakably human, and product-sharp.",
+      "Mirror the official post's brevity, deliberate line breaks, humor, and energy.",
+    ],
+    avoid: [
+      "Corporate press-release tone, long explanations, or generic cross-chain hype.",
+      "Duplicate logos, unrelated headline panels, badges, CTAs, or invented claims.",
+    ],
+    x_rule: "Do not expand a one-liner into an explainer; preserve product names and source rhythm.",
+    banner_rule: "Treat official creative as the final composition: replace only meaningful source copy in its exact area and hierarchy; otherwise preserve the character and visual untouched.",
+  },
+  babylon: {
+    profile_version: "babylon/brand-review@1",
+    identity: [
+      "Bitcoin-native, technically precise, measured, and direct about product state.",
+      "Keep custody, collateral, staking, reward, and network terms exact.",
+    ],
+    avoid: [
+      "Price/yield framing or unsupported mainnet, reward, or Korea availability claims.",
+      "Implying custody, wrapping, or bridging when the source says otherwise.",
+    ],
+    x_rule: "Preserve the original product state, guide structure, and Bitcoin terminology.",
+    banner_rule: "Preserve official composition, Bitcoin motif, marks, typography, and product-state hierarchy; add only compact source-supported Korean context.",
+  },
+} as const;
 
 export const GROK_QA_DECISIONS = ["PASS", "WARN", "BLOCK"] as const;
 export const GROK_QA_NEXT_ACTIONS = [
@@ -65,6 +122,13 @@ export type GrokQaReviewPackage = {
     brand_qa: Record<string, unknown> | null;
     fact_check: Record<string, unknown> | null;
   };
+  brand_contract: {
+    profile_version: string;
+    identity: readonly string[];
+    avoid: readonly string[];
+    x_rule: string;
+    banner_rule: string;
+  };
   source_urls: string[];
   banner: {
     available: boolean;
@@ -85,17 +149,19 @@ export type GrokQaVerdictReceipt = {
 
 export type GrokQaRelayConfig = {
   railwayUrl: string;
-  apiSecret: string;
+  relayToken: string;
 };
+
+export type GrokQaRelayOutcome = "sent" | "failed" | "delivery_unknown";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function safeText(value: unknown, maximum: number): string {
-  return typeof value === "string"
-    ? value.replace(/\r\n?/g, "\n").trim().slice(0, maximum)
-    : "";
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\r\n?/g, "\n").trim().slice(0, maximum);
+  return PRIVATE_TEXT_VALUE.test(normalized) ? "" : normalized;
 }
 
 function safeTextList(value: unknown, maximumItems: number, maximumText: number): string[] {
@@ -103,7 +169,8 @@ function safeTextList(value: unknown, maximumItems: number, maximumText: number)
   return value
     .filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
     .slice(0, maximumItems)
-    .map((item) => safeText(item, maximumText));
+    .map((item) => safeText(item, maximumText))
+    .filter(Boolean);
 }
 
 function safeUrl(value: unknown): string | null {
@@ -132,6 +199,7 @@ function safeJson(value: unknown, depth = 0): unknown {
   if (!isRecord(value)) return null;
   return Object.fromEntries(
     Object.entries(value)
+      .filter(([key]) => !PRIVATE_JSON_KEY.test(key))
       .slice(0, 100)
       .map(([key, item]) => [key.slice(0, 120), safeJson(item, depth + 1)]),
   );
@@ -143,10 +211,9 @@ function safeGeneratedJson(value: unknown, depth = 0): unknown {
     return value.slice(0, 100).map((item) => safeGeneratedJson(item, depth + 1));
   }
   if (!isRecord(value)) return safeJson(value, depth);
-  const blockedKey = /(?:^|_)(?:url|urls|storage_path|request_hash|submitted_content|resolved_content|token|secret|cookie)$/i;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => !blockedKey.test(key))
+      .filter(([key]) => !PRIVATE_JSON_KEY.test(key))
       .slice(0, 100)
       .map(([key, item]) => [key.slice(0, 120), safeGeneratedJson(item, depth + 1)]),
   );
@@ -220,7 +287,7 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
     content_version_id: detail.current_version_id,
     client_id: detail.client_id,
     content_kind: detail.content_kind,
-    title: safeText(detail.title, 200),
+    title: safeText(detail.current_version.title, 200),
     status: "needs_review",
     version_number: detail.current_version.version_number,
     locale: safeText(detail.current_version.locale, 32),
@@ -231,6 +298,7 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
       brand_qa: isRecord(brandQa) ? safeJson(brandQa) as Record<string, unknown> : null,
       fact_check: isRecord(factCheck) ? safeJson(factCheck) as Record<string, unknown> : null,
     },
+    brand_contract: GROK_QA_BRAND_CONTRACTS[detail.client_id],
     source_urls: grokQaSourceUrls(detail),
     banner: {
       available: Boolean(banner),
@@ -384,7 +452,30 @@ export function grokQaRelayConfig(
   getEnv: (name: string) => string | undefined,
 ): GrokQaRelayConfig | null {
   const railwayUrl = (getEnv("RAILWAY_API_URL") || "").trim().replace(/\/+$/, "");
-  const apiSecret = (getEnv("API_SECRET") || "").trim();
+  const relayToken = getEnv("GROK_QA_RELAY_TOKEN") || "";
+  const tokenBytes = Buffer.byteLength(relayToken, "utf8");
+  const forbidden = [
+    "API_SECRET",
+    "STUDIO_ACCESS_TOKEN",
+    "STUDIO_AUTOMATION_TOKEN",
+    "GROK_QA_CONNECTOR_TOKEN",
+    "GROK_QA_DISPATCH_TOKEN",
+    "PUBLICATION_WORKER_TOKEN",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "XAI_API_KEY",
+    "X_BEARER_TOKEN",
+    "TYPEFULLY_API_KEY",
+    "TELEGRAM_REVIEW_BOT_TOKEN",
+    "TELEGRAM_CONTENT_OPS_BOT_TOKEN",
+    "TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN",
+    "TELEGRAM_BOT_TOKEN_SQUID",
+    "TELEGRAM_BOT_TOKEN_YELLOW",
+    "TELEGRAM_BOT_TOKEN_ORIGINTRAIL",
+    "TELEGRAM_BOT_TOKEN_BABYLON",
+  ].some((name) => {
+    const existing = (getEnv(name) || "").trim();
+    return Boolean(existing) && existing === relayToken;
+  });
   try {
     const url = new URL(railwayUrl);
     if (
@@ -394,12 +485,71 @@ export function grokQaRelayConfig(
       || (url.pathname !== "/" && url.pathname !== "")
       || url.search
       || url.hash
-      || apiSecret.length < 16
+      || tokenBytes < 32
+      || tokenBytes > 512
+      || /[^\x21-\x7e]/.test(relayToken)
+      || forbidden
     ) return null;
   } catch {
     return null;
   }
-  return { railwayUrl, apiSecret };
+  return { railwayUrl, relayToken };
+}
+
+export async function sendGrokQaVerdictOutcome(
+  config: GrokQaRelayConfig,
+  detail: ContentLibraryDetail,
+  verdict: GrokQaVerdict,
+  reviewUrl: string,
+  fetcher: typeof fetch = fetch,
+  expectedBannerSha256: string | null = null,
+  verifiedBanner: GrokQaBannerImage | null = null,
+): Promise<GrokQaRelayOutcome> {
+  try {
+    // Re-fetch and verify the exact current-version PNG immediately before the
+    // private relay. Never forward a signed storage URL or an unverified image.
+    const banner = verifiedBanner
+      || await grokQaBannerImage(detail, fetcher, expectedBannerSha256);
+    if (
+      !banner
+      || (expectedBannerSha256 !== null
+        && banner.sha256 !== expectedBannerSha256)
+    ) return "failed";
+    const response = await fetcher(`${config.railwayUrl}/internal/grok-qa-verdict`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Grok-QA-Relay-Token": config.relayToken,
+      },
+      body: JSON.stringify({
+        content_item_id: detail.content_item_id,
+        content_version_id: detail.current_version_id,
+        client_id: detail.client_id,
+        content_kind: detail.content_kind,
+        title: detail.current_version.title,
+        ...verdict,
+        review_url: reviewUrl,
+        image_data_url: `data:${banner.mimeType};base64,${banner.data}`,
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(QA_RELAY_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // Railway maps an ambiguous Telegram transport result to 504. Other
+      // unexpected 5xx responses are also fail-closed because the relay may
+      // have completed before its response path failed. A 502 is the explicit
+      // provider rejection returned before success was observed.
+      return response.status >= 500 && response.status !== 502
+        ? "delivery_unknown"
+        : "failed";
+    }
+    const result = await response.json() as Record<string, unknown>;
+    return result.sent === true ? "sent" : "failed";
+  } catch {
+    // The relay may have accepted and delivered the message before the response
+    // was lost. Never convert that ambiguous state into a retryable failure.
+    return "delivery_unknown";
+  }
 }
 
 export async function sendGrokQaVerdict(
@@ -409,36 +559,14 @@ export async function sendGrokQaVerdict(
   reviewUrl: string,
   fetcher: typeof fetch = fetch,
 ): Promise<boolean> {
-  try {
-    const response = await fetcher(`${config.railwayUrl}/internal/grok-qa-verdict`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": config.apiSecret,
-      },
-      body: JSON.stringify({
-        content_item_id: detail.content_item_id,
-        content_version_id: detail.current_version_id,
-        client_id: detail.client_id,
-        content_kind: detail.content_kind,
-        title: detail.title,
-        ...verdict,
-        review_url: reviewUrl,
-      }),
-      signal: AbortSignal.timeout(QA_RELAY_TIMEOUT_MS),
-    });
-    if (!response.ok) return false;
-    const result = await response.json() as Record<string, unknown>;
-    return result.sent === true;
-  } catch {
-    return false;
-  }
+  return await sendGrokQaVerdictOutcome(config, detail, verdict, reviewUrl, fetcher) === "sent";
 }
 
 export async function grokQaBannerImage(
   detail: ContentLibraryDetail,
   fetcher: typeof fetch = fetch,
-): Promise<{ data: string; mimeType: "image/png" } | null> {
+  expectedSha256: string | null = null,
+): Promise<GrokQaBannerImage | null> {
   const asset = detail.assets.find((candidate) => (
     candidate.asset_kind === "png"
     && candidate.mime_type === "image/png"
@@ -447,12 +575,16 @@ export async function grokQaBannerImage(
     && candidate.byte_size <= MAX_BANNER_BYTES
     && typeof candidate.sha256 === "string"
     && /^[a-f0-9]{64}$/.test(candidate.sha256)
+    && (expectedSha256 === null || candidate.sha256 === expectedSha256)
     && safeUrl(candidate.url) !== null
   ));
   if (!asset) return null;
   let response: Response;
   try {
-    response = await fetcher(asset.url, { signal: AbortSignal.timeout(10_000) });
+    response = await fetcher(asset.url, {
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
   } catch {
     return null;
   }
@@ -462,7 +594,12 @@ export async function grokQaBannerImage(
   }
   const declared = Number(response.headers.get("content-length") || 0);
   if (declared > MAX_BANNER_BYTES) return null;
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
   if (
     bytes.byteLength > MAX_BANNER_BYTES
     || bytes.byteLength !== asset.byte_size
@@ -470,5 +607,15 @@ export async function grokQaBannerImage(
     || ![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
       .every((byte, index) => bytes[index] === byte)
   ) return null;
-  return { data: Buffer.from(bytes).toString("base64"), mimeType: "image/png" };
+  return {
+    data: Buffer.from(bytes).toString("base64"),
+    mimeType: "image/png",
+    sha256: asset.sha256,
+  };
 }
+
+export type GrokQaBannerImage = {
+  data: string;
+  mimeType: "image/png";
+  sha256: string;
+};

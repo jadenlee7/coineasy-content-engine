@@ -13,7 +13,7 @@ def test_railway_cron_is_short_lived_and_uses_the_small_worker_image():
     assert config["build"]["dockerfilePath"] == "Dockerfile.automation"
     assert config["deploy"] == {
         "startCommand": "python -m scripts.run_official_x_daily",
-        "cronSchedule": "*/15 23,0-2 * * *",
+        "cronSchedule": "*/15 * * * *",
         "restartPolicyType": "NEVER",
     }
 

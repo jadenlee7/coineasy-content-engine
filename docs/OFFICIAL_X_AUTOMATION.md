@@ -160,13 +160,14 @@ The dedicated service uses:
 - config path: `/railway.official-x-cron.json`
 - image: `Dockerfile.automation`
 - command: `python -m scripts.run_official_x_daily`
-- schedule: `*/15 23,0-2 * * *`
+- schedule: `*/15 * * * *`
 - restart policy: `NEVER`
 
-Railway evaluates cron expressions in UTC, so this is a KST morning retry
-window. The database reservation guarantees that repeated starts do not create
-repeated daily drafts. The process exits after each run; Railway skips a new
-cron start if the previous execution is still active.
+Railway evaluates cron expressions in UTC, so this polls continuously every 15
+minutes. The database reservation still guarantees at most one draft per
+client and four drafts per KST day; feed cursors and source IDs suppress repeat
+intake. The process exits after each run, and Railway skips a new cron start if
+the previous execution is still active.
 
 References: [Railway Cron Jobs](https://docs.railway.com/cron-jobs),
 [Railway Config as Code](https://docs.railway.com/config-as-code/reference).
@@ -246,6 +247,17 @@ editable export, review a version, or publish it.
    version receives a review recommendation. Verify a stale version, another
    account, another channel, and another URL fail closed. Do not enable any
    publisher or Figma credential for this smoke test.
+
+The optional advisory Grok QA dispatcher is downstream of a completed
+`needs_review` Daily News version and uses its own durable outbox. This release
+does not enqueue Article or Tutorial versions: they remain in manual Studio
+review until they have a canonical durable banner contract. It is not part of the X
+poller and must not receive `X_BEARER_TOKEN`, Studio credentials, database
+credentials, or publication credentials. See
+[`ADR-016`](ADR-016-official-x-grok-qa-dispatch.md) and
+[`GROK_QA_DISPATCH_RUNBOOK.md`](GROK_QA_DISPATCH_RUNBOOK.md). The older
+[`GROK_AGENT_REVIEW_RUNBOOK.md`](GROK_AGENT_REVIEW_RUNBOOK.md) remains the
+manual Grok Routine procedure; it is not the durable production queue.
 
 Rollback is consumer-first and leaves official-X drafting available. Disable or
 remove `EASYFARM_CONTENT_SIGNALS_URL` and

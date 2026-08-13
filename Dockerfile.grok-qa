@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements-grok-qa.txt .
+RUN pip install --no-cache-dir -r requirements-grok-qa.txt
+
+COPY core/__init__.py ./core/__init__.py
+COPY core/grok_qa ./core/grok_qa
+COPY scripts/run_grok_qa_dispatch.py ./scripts/run_grok_qa_dispatch.py
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "scripts.run_grok_qa_dispatch", "--run-once"]

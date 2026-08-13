@@ -19,7 +19,7 @@ import {
   grokQaRelayConfig,
   grokQaSourceUrls,
   hasGrokQaConnectorAccess,
-  sendGrokQaVerdict,
+  sendGrokQaVerdictOutcome,
   type GrokQaVerdict,
 } from "./_shared/grok-qa.mts";
 
@@ -208,7 +208,11 @@ function mcpServer(): McpServer {
         return {
           content: [
             ...jsonContent(output),
-            ...(image ? [{ type: "image" as const, ...image }] : []),
+            ...(image ? [{
+              type: "image" as const,
+              data: image.data,
+              mimeType: image.mimeType,
+            }] : []),
           ],
           structuredContent: output,
         };
@@ -274,6 +278,12 @@ function mcpServer(): McpServer {
           }
         }
 
+        // Fetch and verify the exact current-version banner before consuming a
+        // receipt. Keep these bytes for the relay so a bannerless or swapped
+        // asset cannot poison the durable per-version delivery receipt.
+        const banner = await grokQaBannerImage(detail);
+        if (!banner) return toolError("qa_banner_unavailable");
+
         const receipt = await claimGrokQaVerdict(
           catalog,
           itemId,
@@ -297,12 +307,19 @@ function mcpServer(): McpServer {
         }
         if (!receipt.payload_sha256) return toolError("qa_receipt_invalid_response");
 
-        const sent = await sendGrokQaVerdict(
+        const relayOutcome = await sendGrokQaVerdictOutcome(
           relay,
           detail,
           verdict as GrokQaVerdict,
           studioReviewUrl(itemId),
+          fetch,
+          banner.sha256,
+          banner,
         );
+        if (relayOutcome === "delivery_unknown") {
+          return toolError("qa_delivery_state_unknown_no_retry");
+        }
+        const sent = relayOutcome === "sent";
         try {
           await finalizeGrokQaVerdict(
             catalog,
