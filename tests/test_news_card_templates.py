@@ -18,7 +18,10 @@ from core.brand_profiles import (
     apply_news_brand_profile,
 )
 from core.client_config import get_client_config
-from core.llm.news_card_pipeline import _minimum_squid_font_percent
+from core.llm.news_card_pipeline import (
+    _get_default_mock,
+    _minimum_squid_font_percent,
+)
 from core.renderers.playwright_renderer import (
     TranslationLayoutError,
     _build_font_head,
@@ -42,6 +45,31 @@ MOCK_SPEC = {
 def test_squid_minimum_font_matches_the_source_native_viewport():
     assert _minimum_squid_font_percent(1600, 900) == 2.0
     assert _minimum_squid_font_percent(480, 320) == pytest.approx(14 / 480 * 100)
+
+
+@pytest.mark.parametrize(
+    ("client_id", "display_name"),
+    [
+        ("yellow", "Yellow Network"),
+        ("origintrail", "OriginTrail"),
+        ("babylon", "Babylon"),
+        ("squid", "Squid"),
+    ],
+)
+def test_default_news_card_mock_is_client_specific(client_id, display_name):
+    mock = _get_default_mock(client_id)
+
+    assert display_name in mock["headline"]
+    assert "브랜드 검토용 샘플" in mock["headline"]
+    assert 1 <= len(mock["body_lines"]) <= 3
+    for other_display_name in {"Yellow Network", "OriginTrail", "Babylon", "Squid"}:
+        if other_display_name != display_name:
+            assert other_display_name not in json.dumps(mock, ensure_ascii=False)
+
+
+def test_default_news_card_mock_fails_closed_for_unknown_client():
+    with pytest.raises(ValueError, match="No default news-card mock"):
+        _get_default_mock("unknown")
 
 
 def test_news_card_templates_are_allowlisted_and_present():
