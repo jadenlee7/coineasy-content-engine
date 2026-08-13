@@ -15,6 +15,7 @@ from core.publishers.telegram_review import (
 
 BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345"
 CHAT_ID = "123456789"
+COLLABORATION_CHAT_ID = "-1001234567890"
 ITEM_ID = "22222222-2222-4222-8222-222222222222"
 VERSION_ID = "33333333-3333-4333-8333-333333333333"
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00"
@@ -81,8 +82,19 @@ def notification_payload(**overrides):
 def test_review_config_requires_a_numeric_private_target(monkeypatch):
     monkeypatch.setenv("TELEGRAM_REVIEW_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("TELEGRAM_REVIEW_CHAT_ID", CHAT_ID)
-    assert telegram_review_config() == TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
+    monkeypatch.setenv(
+        "TELEGRAM_COLLAB_REVIEW_CHAT_ID", COLLABORATION_CHAT_ID
+    )
+    assert telegram_review_config() == TelegramReviewConfig(
+        BOT_TOKEN,
+        CHAT_ID,
+        COLLABORATION_CHAT_ID,
+    )
 
+    monkeypatch.setenv("TELEGRAM_COLLAB_REVIEW_CHAT_ID", "@private_group")
+    assert telegram_review_config() is None
+
+    monkeypatch.delenv("TELEGRAM_COLLAB_REVIEW_CHAT_ID")
     monkeypatch.setenv("TELEGRAM_REVIEW_CHAT_ID", "@public_channel")
     assert telegram_review_config() is None
 
@@ -111,7 +123,14 @@ async def test_review_sender_posts_banner_then_copy_without_exposing_config(monk
         image_data_url=IMAGE_DATA_URL,
     )
 
-    assert result == {"sent": True, "photo_sent": True, "text_sent": True}
+    assert result == {
+        "sent": True,
+        "photo_sent": True,
+        "text_sent": True,
+        "collaboration_configured": False,
+        "collaboration_sent": False,
+        "collaboration_photo_sent": False,
+    }
     assert len(fake.calls) == 2
     assert fake.calls[0]["url"].endswith("/sendPhoto")
     assert fake.calls[0]["data"]["chat_id"] == CHAT_ID
@@ -123,6 +142,73 @@ async def test_review_sender_posts_banner_then_copy_without_exposing_config(monk
     )
     assert "bot_token" not in result
     assert "chat_id" not in result
+
+
+@pytest.mark.asyncio
+async def test_review_sender_copies_the_exact_packet_to_the_collaboration_room(
+    monkeypatch,
+):
+    fake = _FakeAsyncClient([
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 1}}),
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 2}}),
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 3}}),
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 4}}),
+    ])
+    monkeypatch.setattr(
+        "core.publishers.telegram_review.httpx.AsyncClient",
+        lambda *args, **kwargs: fake,
+    )
+
+    result = await send_telegram_review(
+        config=TelegramReviewConfig(
+            BOT_TOKEN,
+            CHAT_ID,
+            COLLABORATION_CHAT_ID,
+        ),
+        caption_html="🔎 <b>검토 요청 · Squid</b>",
+        message_html="검토할 내용",
+        review_url=notification_payload()["review_url"],
+        image_data_url=IMAGE_DATA_URL,
+    )
+
+    assert result["text_sent"] is True
+    assert result["collaboration_configured"] is True
+    assert result["collaboration_sent"] is True
+    assert result["collaboration_photo_sent"] is True
+    assert [
+        call["data"]["chat_id"] if call["data"] else call["json"]["chat_id"]
+        for call in fake.calls
+    ] == [CHAT_ID, CHAT_ID, COLLABORATION_CHAT_ID, COLLABORATION_CHAT_ID]
+
+
+@pytest.mark.asyncio
+async def test_collaboration_failure_does_not_hide_primary_review_delivery(
+    monkeypatch,
+):
+    fake = _FakeAsyncClient([
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 1}}),
+        _FakeResponse(500, {"ok": False}),
+    ])
+    monkeypatch.setattr(
+        "core.publishers.telegram_review.httpx.AsyncClient",
+        lambda *args, **kwargs: fake,
+    )
+
+    result = await send_telegram_review(
+        config=TelegramReviewConfig(
+            BOT_TOKEN,
+            CHAT_ID,
+            COLLABORATION_CHAT_ID,
+        ),
+        caption_html="검토 요청",
+        message_html="검토할 내용",
+        review_url=notification_payload()["review_url"],
+    )
+
+    assert result["sent"] is True
+    assert result["text_sent"] is True
+    assert result["collaboration_configured"] is True
+    assert result["collaboration_sent"] is False
 
 
 @pytest.fixture
