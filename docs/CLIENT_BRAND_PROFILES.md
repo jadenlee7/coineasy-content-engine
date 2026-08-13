@@ -10,7 +10,9 @@ visual profile.
 | Yellow | `yellow/institutional-market-infrastructure@2` | `yellow-brand-tokens@1` | `yellow-official-brand-assets@1` | Institutional, analytical clearing and settlement infrastructure |
 | Yellow source remix | `yellow/institutional-market-infrastructure@2` | `yellow-brand-tokens@1` | `yellow-official-brand-assets@1` | Preserve the full verified official creative with a compact Yellow/black Korean context panel |
 | OriginTrail | `origintrail/verifiable-knowledge@1` | `origintrail-brand-tokens@1` | `origintrail-official-brand-assets@1` | Trust, provenance, connected context, and verifiable proof |
+| OriginTrail source remix | `origintrail/verifiable-knowledge@1` | `origintrail-brand-tokens@1` | `origintrail-official-brand-assets@1` | Preserve the official problem-to-proof poster and add only compact Korean context |
 | Babylon | `babylon/bitcoin-native-infrastructure@1` | `babylon-brand-tokens@1` | `babylon-official-brand-assets@1` | Bitcoin-native, technically precise product status and mechanics |
+| Babylon source remix | `babylon/bitcoin-native-infrastructure@1` | `babylon-brand-tokens@1` | `babylon-official-brand-assets@1` | Preserve the official Bitcoin composition and exact product-state hierarchy with compact Korean context |
 | Squid generated | `squid/full-bleed-character-type@2` | `squid-brand-tokens@1` | `squid-local-approved@1` | Official SQUIB/form-language world with sparse, direct Korean copy |
 | Squid source remix | Source-native; no generated profile | `squid-brand-tokens@1` | `official-source-media@1` | Preserve the exact official creative and localize only verified copy regions |
 
@@ -35,9 +37,9 @@ and the unapproved OriginTrail/Babylon classic layouts remain at version `1`.
   `1966:2389` in CoinEasy Management. Its layout follows the approved cream
   canvas, Yellow logo tile, large left-aligned headline, restrained support
   copy, and source footer while retaining the repository's official wordmark.
-- OriginTrail and Babylon Figma frames remain reference-only. Their visual
-  grammar may inform local candidate previews, but their active templates and
-  registry entries cannot change before an explicit canonical-frame approval.
+- OriginTrail and Babylon Figma frames remain reference-only for generated
+  `classic` changes. Their verified official X media can use the approved
+  source-heavy remix, but the source composition itself must not be rebuilt.
 
 ## Change control
 
@@ -47,9 +49,11 @@ branding rigor” means that every client stays inside its own system:
 - Yellow: yellow/black, restrained institutional structure, no crypto hype;
   verified official media stays compositionally dominant and is never rebuilt.
 - OriginTrail: purple/navy, traceable problem-to-proof logic, no abstract AI
-  spectacle without source evidence.
+  spectacle without source evidence; official media remains compositionally
+  dominant and is never rebuilt.
 - Babylon: orange/dark blue, exact Bitcoin custody/collateral/staking language,
-  no price, yield, reward, or availability implications absent from the source.
+  no price, yield, reward, or availability implications absent from the source;
+  official media remains compositionally dominant and is never rebuilt.
 - Squid: the approved v5 full-bleed composition or exact official source remix;
   no generic publisher card and no invented character/brand assets.
 

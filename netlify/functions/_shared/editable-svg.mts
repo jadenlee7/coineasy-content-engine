@@ -503,17 +503,27 @@ function logoChipLayer(
   href: string | undefined,
   right = 1036,
   centerY = 753,
+  scale = 1,
 ): string {
-  const box = OFFICIAL_LOGO_BOXES.remix[brand.id];
-  const paddingX = 10;
-  const paddingY = 7;
+  const baseBox = OFFICIAL_LOGO_BOXES.remix[brand.id];
+  const box = {
+    width: Math.round(baseBox.width * scale),
+    height: Math.round(baseBox.height * scale),
+  };
+  const paddingX = Math.round(10 * scale);
+  const paddingY = Math.round(7 * scale);
   const chipWidth = box.width + paddingX * 2;
   const chipHeight = box.height + paddingY * 2;
   const x = right - chipWidth;
   const y = centerY - chipHeight / 2;
+  const logoX = right - paddingX - box.width;
+  const logoY = centerY - box.height / 2;
+  const logo = href
+    ? imageLayer("Brand-Logo", href, logoX, logoY, box.width, box.height)
+    : `<text id="Brand-Logo-Fallback" x="${right - paddingX}" y="${centerY + 7}" text-anchor="end" fill="#FFFFFF" font-family="${escapeXml(brand.font)}, sans-serif" font-size="${Math.round(24 * scale)}" font-weight="800">${escapeXml(brand.name)}</text>`;
   return `<g id="Official-Logo-Safe-Area">
   <rect id="Logo-Chip" x="${x}" y="${y}" width="${chipWidth}" height="${chipHeight}" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#FFFFFF" stroke-opacity="0.18"/>
-  ${logoLayer(brand, href, right - paddingX, centerY, "remix", "#FFFFFF")}
+  ${logo}
 </g>`;
 }
 
@@ -878,25 +888,37 @@ function signalSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsset
 }
 
 function remixSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAssets): string {
-  const headlineLines = wrapSvgText(spec.headline, 43, 2);
+  const sourceHeavy = brand.id === "origintrail" || brand.id === "babylon";
+  const visualHeight = sourceHeavy ? 780 : 710;
+  const panelHeight = 1080 - visualHeight;
+  const labelY = sourceHeavy ? 802 : 738;
+  const labelTextY = sourceHeavy ? 826 : 763;
+  const headlineY = sourceHeavy ? 891 : 839;
+  const headlineLineHeight = sourceHeavy ? 46 : 52;
+  const headlineFontSize = sourceHeavy ? 40 : 45;
+  const insightY = sourceHeavy ? 982 : 951;
+  const insightTextY = sourceHeavy ? 988 : 957;
+  const insightFontSize = sourceHeavy ? 16 : 18;
+  const insightLineHeight = sourceHeavy ? 23 : 26;
+  const headlineLines = wrapSvgText(spec.headline, sourceHeavy ? 48 : 43, 2);
   const bodyLines = spec.bodyLines.slice(0, 2);
   const body = bodyLines.map((line, index) => {
     const x = 44 + index * 496;
-    const lines = wrapSvgText(line, 39, 2);
-    return `<g id="Insight-${index + 1}"><circle id="Insight-${index + 1}-Bullet" cx="${x + 4}" cy="951" r="4" fill="${brand.primary}"/>${textLayers(`Insight-${index + 1}-Text`, lines, x + 18, 957, 26, `fill="#FFFFFF" fill-opacity="0.78" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="18" font-weight="600"`)}</g>`;
+    const lines = wrapSvgText(line, sourceHeavy ? 43 : 39, 2);
+    return `<g id="Insight-${index + 1}"><circle id="Insight-${index + 1}-Bullet" cx="${x + 4}" cy="${insightY}" r="4" fill="${brand.primary}"/>${textLayers(`Insight-${index + 1}-Text`, lines, x + 18, insightTextY, insightLineHeight, `fill="#FFFFFF" fill-opacity="0.78" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${insightFontSize}" font-weight="600"`)}</g>`;
   }).join("\n");
   const visual = assets.sourceImage
-    ? `<rect id="Source-Visual-Background" x="0" y="0" width="1080" height="710" fill="#111820"/>${imageLayer("Source-Visual", assets.sourceImage, 0, 0, 1080, 710)}<rect id="Source-Visual-Shade" x="0" y="0" width="1080" height="710" fill="#05080C" fill-opacity="0.18"/>`
-    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="710" fill="#17242B"/>`;
+    ? `<rect id="Source-Visual-Background" x="0" y="0" width="1080" height="${visualHeight}" fill="#111820"/>${imageLayer("Source-Visual", assets.sourceImage, 0, 0, 1080, visualHeight)}<rect id="Source-Visual-Shade" x="0" y="0" width="1080" height="${visualHeight}" fill="#05080C" fill-opacity="${sourceHeavy ? 0 : 0.18}"/>`
+    : `<rect id="Source-Visual-Placeholder" x="0" y="0" width="1080" height="${visualHeight}" fill="#17242B"/>`;
   const panelLogo = spec.sourceLogoVisible
     ? ""
-    : logoChipLayer(brand, assets.logoDark);
+    : logoChipLayer(brand, assets.logoDark, 1036, sourceHeavy ? 820 : 753, sourceHeavy ? 0.72 : 1);
   return `<rect id="Canvas-Background" width="1080" height="1080" fill="${brand.dark}"/>
   <g id="Source-Visual-Layer">${visual}</g>
-  <g id="Localized-Content-Panel"><rect id="Panel-Background" x="0" y="710" width="1080" height="370" fill="${brand.dark}"/><rect id="Panel-Accent" x="44" y="710" width="992" height="5" rx="2.5" fill="${brand.primary}"/>
-    <g id="Label"><rect id="Label-Background" x="44" y="738" width="148" height="38" rx="8" fill="${brand.primary}"/><text id="Label-Text" x="118" y="763" text-anchor="middle" fill="${brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="16" font-weight="800">${escapeXml(spec.label)}</text></g>
+  <g id="Localized-Content-Panel"><rect id="Panel-Background" x="0" y="${visualHeight}" width="1080" height="${panelHeight}" fill="${brand.dark}"/><rect id="Panel-Accent" x="44" y="${visualHeight}" width="992" height="5" rx="2.5" fill="${brand.primary}"/>
+    <g id="Label"><rect id="Label-Background" x="44" y="${labelY}" width="148" height="${sourceHeavy ? 36 : 38}" rx="8" fill="${brand.primary}"/><text id="Label-Text" x="118" y="${labelTextY}" text-anchor="middle" fill="${brand.ink}" font-family="${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${sourceHeavy ? 15 : 16}" font-weight="800">${escapeXml(spec.label)}</text></g>
     ${panelLogo}
-    <g id="Headline">${textLayers("Headline", headlineLines, 44, 839, 52, `fill="#FFFFFF" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="45" font-weight="800"`)}</g>
+    <g id="Headline">${textLayers("Headline", headlineLines, 44, headlineY, headlineLineHeight, `fill="#FFFFFF" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="${headlineFontSize}" font-weight="800"`)}</g>
     <g id="Insights">${body}</g>
     ${footer(spec, 1054, "#FFFFFF", 44, 74)}
   </g>`;

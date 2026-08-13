@@ -94,7 +94,15 @@ const ALLOWED_CLIENTS = new Set<ContentCatalogClient>([
 const OFFICIAL_SOURCE_REMIX_CLIENTS = new Set<OfficialSourceClient>([
   "squid",
   "yellow",
+  "origintrail",
+  "babylon",
 ]);
+const OFFICIAL_SOURCE_X_HANDLES: Record<OfficialSourceClient, string> = {
+  squid: "squidrouter",
+  yellow: "yellow",
+  origintrail: "origin_trail",
+  babylon: "babylonlabs_io",
+};
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
@@ -351,7 +359,7 @@ export function isOfficialClientXStatusUrl(
 ): boolean {
   const canonical = canonicalXStatusUrl(value);
   if (!canonical) return false;
-  return new RegExp(`^/${clientId === "squid" ? "squidrouter" : "yellow"}/status/\\d+$`, "i")
+  return new RegExp(`^/${OFFICIAL_SOURCE_X_HANDLES[clientId]}/status/\\d+$`, "i")
     .test(new URL(canonical).pathname);
 }
 

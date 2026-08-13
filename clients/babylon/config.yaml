@@ -45,7 +45,7 @@ brand_voice:
   channel_guidance:
     x: "Preserve the original product status, question or guide structure, and Bitcoin terminology; do not add reward or launch implications."
     telegram: "Add a concise Korean user takeaway, then exact steps or mechanics, CTA, original link, and focused hashtags."
-    banner: "Lead with the verified product state and one Bitcoin-native benefit explicitly present in the source."
+    banner: "When official media is attached, preserve its full composition, Bitcoin motif, official marks, typography, and product-state hierarchy as the dominant visual; add only compact source-supported Korean context and never reconstruct the creative. Without official media, use the Babylon classic profile."
     education: "Explain custody, collateral, staking, and security mechanics precisely with no investment framing."
     article: >-
       Lead with the verified product state or direct Bitcoin question, then explain

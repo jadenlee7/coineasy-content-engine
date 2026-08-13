@@ -410,6 +410,51 @@ test("binds official Yellow provenance to the verified account behind the refere
   assert.deepEqual(source.xProvenance?.mediaUrls, [`${mediaUrl}?name=orig`]);
 });
 
+test("binds OriginTrail and Babylon media to their immutable official accounts", async () => {
+  const cases = [
+    {
+      clientId: "origintrail" as const,
+      sourceUrl: "https://x.com/origin_trail/status/2078063452996661578",
+      statusId: "2078063452996661578",
+      handle: "origin_trail",
+      userId: "2501522515",
+      mediaUrl: "https://pbs.twimg.com/amplify_video_thumb/2078063257005297664/img/EPQKd9Qdhj1jnb4b.jpg",
+    },
+    {
+      clientId: "babylon" as const,
+      sourceUrl: "https://x.com/babylonlabs_io/status/2061801513488429361",
+      statusId: "2061801513488429361",
+      handle: "babylonlabs_io",
+      userId: "1558731723243810816",
+      mediaUrl: "https://pbs.twimg.com/amplify_video_thumb/2061784960877379584/img/M1uFEGmcnaA1hgZc.jpg",
+    },
+  ];
+
+  for (const item of cases) {
+    const source = await resolveSourceInput(
+      "Use this manually provided official source context.",
+      item.sourceUrl,
+      (async () => Response.json({
+        id_str: item.statusId,
+        text: "Official source post with verified first-party media.",
+        user: { id_str: item.userId, screen_name: item.handle },
+        video: { poster: item.mediaUrl },
+      })) as typeof fetch,
+      true,
+    );
+
+    assert.equal(hasVerifiedOfficialClientXProvenance(source, item.clientId), true);
+    assert.equal(
+      hasVerifiedOfficialClientXProvenance(
+        source,
+        item.clientId === "origintrail" ? "babylon" : "origintrail",
+      ),
+      false,
+    );
+    assert.deepEqual(source.xProvenance?.mediaUrls, [`${item.mediaUrl}?name=orig`]);
+  }
+});
+
 test("withholds syndicated media unless tweet and author identities are valid", async () => {
   const sourceUrl = "https://x.com/partner/status/123";
   const mediaUrl = "https://pbs.twimg.com/media/partner.jpg";

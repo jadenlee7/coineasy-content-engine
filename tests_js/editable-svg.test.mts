@@ -800,6 +800,21 @@ test("places one official logo in the safe area when the source visual lacks it"
   assert.doesNotMatch(svg, /CoinEasy|COINEASY/i);
 });
 
+test("keeps more canvas for OriginTrail and Babylon official source creatives", () => {
+  const assets = { sourceImage: "data:image/jpeg;base64,aW1hZ2U=" };
+  for (const clientId of ["origintrail", "babylon"] as const) {
+    const svg = buildEditableSvg(clientId, "remix", SPEC, assets);
+    assert.match(svg, /id="Source-Visual-Background" x="0" y="0" width="1080" height="780"/);
+    assert.match(svg, /id="Source-Visual-Shade"[^>]*fill-opacity="0"/);
+    assert.match(svg, /id="Panel-Background" x="0" y="780" width="1080" height="300"/);
+    assert.match(svg, /id="Panel-Accent" x="44" y="780"/);
+  }
+
+  const yellow = buildEditableSvg("yellow", "remix", SPEC, assets);
+  assert.match(yellow, /id="Source-Visual-Background" x="0" y="0" width="1080" height="710"/);
+  assert.match(yellow, /id="Panel-Background" x="0" y="710" width="1080" height="370"/);
+});
+
 test("supports all four editable layout styles", () => {
   for (const style of ["classic", "editorial", "signal", "remix"] as const) {
     const svg = buildEditableSvg("babylon", style, SPEC);

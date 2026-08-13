@@ -55,6 +55,7 @@ without changing the mechanism.
 - **We are not:** abstract without proof, token-price-led, or detached from provenance.
 - **Default structure:** short contrast or trust problem → causal break → verifiable context → real-world proof.
 - **Language:** strong contrast hooks, traceability, shared context, concrete examples.
+- **Banner localization:** preserve the full official composition, contrast, motion-poster frame, and proof hierarchy as the dominant layer. Add only compact Korean context without rebuilding the graph, agent, or provenance visual.
 - **Evidence:** [shared context contrast](https://x.com/origin_trail/status/2078063452996661578), [medical provenance](https://x.com/origin_trail/status/2076973514217709978), [threat analysis mechanism](https://x.com/origin_trail/status/2076757788097724762).
 - **Confidence:** High for social cadence and terminology; Medium for tutorials.
 
@@ -74,6 +75,7 @@ without changing the mechanism.
 - **We are not:** speculative, yield-promising, vague about custody, or loose with launch status.
 - **Default structure:** product state or user question → exact Bitcoin mechanism → steps or one-line CTA.
 - **Language:** custody, collateral, staking status, network, and testnet/mainnet terms remain exact.
+- **Banner localization:** preserve the full official Bitcoin composition, palette, typography, and product-state hierarchy as the dominant layer. Add only compact Korean context without redrawing the Bitcoin or custody/collateral visual.
 - **Evidence:** [native borrowing launch](https://x.com/babylonlabs_io/status/2061801513488429361), [staking status guide](https://x.com/babylonlabs_io/status/2077787192668160499), [one-line CTA](https://x.com/babylonlabs_io/status/2077787195469918330).
 - **Confidence:** High for product and guide posts; Medium for broader thought leadership.
 
