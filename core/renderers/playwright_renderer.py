@@ -61,6 +61,14 @@ def _expects_squid_generated_headline_layout(slots: dict[str, Any]) -> bool:
     )
 
 
+def _expects_yellow_headline_layout(
+    client_id: str,
+    template_path: str,
+) -> bool:
+    """Return whether the approved Yellow classic owns the browser headline."""
+    return client_id == "yellow" and template_path == "news/news_title_card.html"
+
+
 async def render_png(
     client_id: str,
     template_path: str,
@@ -137,6 +145,25 @@ async def render_png(
                         )
                 else:
                     await page.set_content(html, wait_until="networkidle")
+                    if _expects_yellow_headline_layout(client_id, template_path):
+                        await page.wait_for_function(
+                            "document.fonts.status === 'loaded'",
+                            timeout=2_500,
+                        )
+                        headline_layout_status = await page.evaluate(
+                            "window.__evaluateYellowHeadlineLayout "
+                            "? window.__evaluateYellowHeadlineLayout() : null"
+                        )
+                        if (
+                            not isinstance(headline_layout_status, dict)
+                            or headline_layout_status.get("safe") is not True
+                            or not 1
+                            <= headline_layout_status.get("renderedLines", 0)
+                            <= 2
+                        ):
+                            raise TranslationLayoutError(
+                                "Yellow headline did not pass browser layout"
+                            )
                 await page.wait_for_timeout(wait_ms)
                 expects_translation_layout = (
                     client_id == "squid"

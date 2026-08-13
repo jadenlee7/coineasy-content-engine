@@ -47,3 +47,12 @@ def test_template_reference_requires_matching_client_kind_and_renderer():
         content_kind="daily_news",
         template_style="classic",
     ) is None
+
+    yellow = approved_figma_template(
+        "yellow",
+        content_kind="daily_news",
+        template_style="classic",
+    )
+    assert yellow is not None
+    assert yellow["node_id"] == "1966:2389"
+    assert yellow["version"] == "2026-08-13.1"

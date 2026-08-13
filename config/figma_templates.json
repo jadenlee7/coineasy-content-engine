@@ -19,12 +19,12 @@
       "content_kind": "daily_news",
       "status": "approved",
       "page_name": "Daily content",
-      "node_id": "1507:12",
+      "node_id": "1966:2389",
       "frame_name": "[KEEP] Banner_Yellow_Sample",
       "width": 1080,
       "height": 1080,
       "content_engine_style": "classic",
-      "version": "2026-07-30.1"
+      "version": "2026-08-13.1"
     }
   },
   "pending_clients": [

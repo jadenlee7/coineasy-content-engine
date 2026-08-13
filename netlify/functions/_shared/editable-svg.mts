@@ -549,6 +549,54 @@ function classicSvg(brand: Brand, spec: NormalizedSpec, assets: EditableCardAsse
     <g id="Headline">${textLayers("Headline", headlineLines, 96, 278, 62, `fill="${brand.ink}" font-family="${escapeXml(brand.displayFont)}, ${escapeXml(brand.font)}, Pretendard, sans-serif" font-size="52" font-weight="800"`)}</g>
     <g id="Body">${body}</g>
     ${footer(spec, 986, "#70747B")}
+</g>`;
+}
+
+function yellowClassicSvg(
+  brand: Brand,
+  spec: NormalizedSpec,
+  assets: EditableCardAssets,
+): string {
+  const headline = fitSvgText(spec.headline, {
+    // fitSvgText's cross-brand Hangul unit is deliberately conservative for
+    // regular-weight cards. Yellow's approved display stack uses tightly
+    // tracked 900-weight Pretendard; 1280 unit-width maps to the measured
+    // 960px browser box without shrinking the editable headline one tier.
+    maxWidth: 1280,
+    maxLines: 2,
+    maxFontSize: 100,
+    minFontSize: 64,
+    lineHeightRatio: 0.98,
+  });
+  const bodyLines = spec.bodyLines.slice(0, 3).map((line) => (
+    line.length > 52 ? `${line.slice(0, 51)}…` : line
+  ));
+  const body = bodyLines.map((line, index) => (
+    `<text id="Body-Line-${index + 1}" x="60" y="${849 + index * 38}" fill="#514A40" font-family="Pretendard, sans-serif" font-size="30" font-weight="620" letter-spacing="-1">${escapeXml(line)}</text>`
+  )).join("\n");
+  const source = spec.sourceUrl
+    .replace(/^https?:\/\//, "")
+    .slice(0, 82);
+  return `<rect id="Canvas-Background" width="1080" height="1080" fill="#F7F0E2"/>
+  <g id="Brand-Meta">
+    <text id="Brand-Name" x="60" y="118" fill="#000000" font-family="Pretendard, sans-serif" font-size="58" font-weight="900" letter-spacing="-2.4">YELLOW</text>
+    <text id="Date" x="60" y="168" fill="#514A40" font-family="Pretendard, sans-serif" font-size="27" font-weight="520">${escapeXml(spec.date)}</text>
+  </g>
+  <g id="Official-Logo-Tile">
+    <rect id="Logo-Tile-Background" x="740" y="60" width="280" height="280" fill="#FDDA16"/>
+    ${imageLayer("Brand-Logo", assets.logoLight, 779, 161, 202, 78)}
+  </g>
+  <g id="Story">
+    <text id="Eyebrow" x="60" y="468" fill="#514A40" font-family="Pretendard, sans-serif" font-size="20" font-weight="780" letter-spacing="1.8">${escapeXml(spec.label.toUpperCase())}</text>
+    ${textLayers("Headline", headline.lines, 60, 584, headline.lineHeight, `fill="#000000" font-family="Pretendard, sans-serif" font-size="${headline.fontSize}" font-weight="900" letter-spacing="-5"`)}
+  </g>
+  <g id="Support">
+    <rect id="Accent-Line" x="60" y="786" width="320" height="8" fill="#FDDA16"/>
+    ${body}
+  </g>
+  <g id="Footer">
+    <text id="CoinEasy" x="60" y="1037" fill="#F7931A" font-family="Pretendard, sans-serif" font-size="18" font-weight="820">CoinEasy</text>
+    <text id="Source-URL" x="218" y="1037" fill="#665F55" font-family="Pretendard, sans-serif" font-size="18" font-weight="520">${escapeXml(source ? `출처: ${source}` : "")}</text>
   </g>`;
 }
 
@@ -969,7 +1017,9 @@ export function buildEditableSvg(
           : remixSvg(brand, spec, assets)
         : clientId === "squid"
           ? squidClassicSvg(brand, spec, assets)
-          : classicSvg(brand, spec, assets);
+          : clientId === "yellow"
+            ? yellowClassicSvg(brand, spec, assets)
+            : classicSvg(brand, spec, assets);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}" viewBox="0 0 ${canvasWidth} ${canvasHeight}" role="img" aria-labelledby="Title Description">
   <title id="Title">${escapeXml(brand.name)} editable Korean news card</title>

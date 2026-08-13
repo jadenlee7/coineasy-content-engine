@@ -26,6 +26,7 @@ from core.renderers.playwright_renderer import (
     TranslationLayoutError,
     _build_font_head,
     _expects_squid_generated_headline_layout,
+    _expects_yellow_headline_layout,
     _inject_brand_slots,
 )
 from core.sources.source_image import PreparedSourceImage, SourceImageError
@@ -163,6 +164,18 @@ def test_news_card_templates_are_allowlisted_and_present():
     assert "window.__evaluateSquidGeneratedHeadlineLayout()" in renderer_source
     assert "Squid generated headline did not pass browser layout" in renderer_source
 
+    yellow_classic = Path("clients/yellow/overrides/news/news_title_card.html")
+    assert yellow_classic.is_file()
+    yellow_html = yellow_classic.read_text()
+    assert "yellow/institutional-market-infrastructure@2" in yellow_html
+    assert "#F7F0E2" in yellow_html
+    assert "#FDDA16" in yellow_html
+    assert "logo_light_path" in yellow_html
+    assert "body-item" not in yellow_html
+    assert "main-card" not in yellow_html
+    assert "window.__evaluateYellowHeadlineLayout" in yellow_html
+    assert "await document.fonts.ready" in yellow_html
+
 
 @pytest.mark.parametrize("client_id", ["yellow", "origintrail", "babylon"])
 def test_standard_news_brand_profiles_are_server_owned_and_never_cross_clients(
@@ -185,7 +198,10 @@ def test_standard_news_brand_profiles_are_server_owned_and_never_cross_clients(
     assert spec == profile.spec_metadata("classic")
     assert spec["brand_profile_policy_version"] == NEWS_BRAND_PROFILE_POLICY_VERSION
     assert spec["visual_design_profile_id"].startswith(f"{client_id}/")
-    assert spec["template_version"] == f"{client_id}-news-classic@1"
+    expected_classic_version = 2 if client_id == "yellow" else 1
+    assert spec["template_version"] == (
+        f"{client_id}-news-classic@{expected_classic_version}"
+    )
     assert spec["render_strategy"] == "brand_native"
     for other_client_id, other_profile in NEWS_BRAND_PROFILES.items():
         if other_client_id != client_id:
@@ -242,6 +258,25 @@ def test_squid_generated_headline_guard_excludes_source_remix_audit_family():
         "creative_family": "product_proof",
         "render_strategy": "generated_gtm",
     }) is True
+
+
+def test_yellow_headline_guard_is_scoped_to_the_approved_classic():
+    assert _expects_yellow_headline_layout(
+        "yellow",
+        "news/news_title_card.html",
+    ) is True
+    assert _expects_yellow_headline_layout(
+        "yellow",
+        "news/news_editorial_card.html",
+    ) is False
+    assert _expects_yellow_headline_layout(
+        "origintrail",
+        "news/news_title_card.html",
+    ) is False
+
+    renderer_source = Path("core/renderers/playwright_renderer.py").read_text()
+    assert "window.__evaluateYellowHeadlineLayout()" in renderer_source
+    assert "Yellow headline did not pass browser layout" in renderer_source
 
 
 def test_squid_generated_template_version_invalidates_the_prior_stage_geometry():

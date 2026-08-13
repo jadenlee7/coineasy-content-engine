@@ -20,6 +20,7 @@ class NewsBrandProfile:
     design_profile_version: int
     brand_tokens_version: str
     asset_pack_version: str
+    classic_template_version: int = 1
 
     def spec_metadata(self, template_style: str) -> dict[str, object]:
         if template_style not in {"classic", "editorial", "signal", "remix"}:
@@ -31,7 +32,10 @@ class NewsBrandProfile:
             ),
             "channel_profile": "x_square",
             "brand_tokens_version": self.brand_tokens_version,
-            "template_version": f"{self.client_id}-news-{template_style}@1",
+            "template_version": (
+                f"{self.client_id}-news-{template_style}@"
+                f"{self.classic_template_version if template_style == 'classic' else 1}"
+            ),
             "asset_pack_version": self.asset_pack_version,
             "visual_design_profile_id": self.design_profile_id,
             "visual_design_profile_version": self.design_profile_version,
@@ -42,9 +46,10 @@ NEWS_BRAND_PROFILES = {
     "yellow": NewsBrandProfile(
         client_id="yellow",
         design_profile_id="yellow/institutional-market-infrastructure",
-        design_profile_version=1,
+        design_profile_version=2,
         brand_tokens_version="yellow-brand-tokens@1",
         asset_pack_version="yellow-official-brand-assets@1",
+        classic_template_version=2,
     ),
     "origintrail": NewsBrandProfile(
         client_id="origintrail",

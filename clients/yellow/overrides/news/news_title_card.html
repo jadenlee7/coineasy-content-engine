@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Yellow Korea · Daily News 1080×1080</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+    font-family: "Pretendard Variable", Pretendard, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .canvas {
+    width: 1080px;
+    height: 1080px;
+    position: relative;
+    overflow: hidden;
+    color: #19191C;
+    background: #F7F0E2;
+  }
+
+  .brand-meta {
+    position: absolute;
+    left: 60px;
+    top: 68px;
+  }
+
+  .brand-name {
+    font-size: 58px;
+    line-height: .96;
+    font-weight: 900;
+    letter-spacing: -2.4px;
+  }
+
+  .date {
+    margin-top: 22px;
+    color: #514A40;
+    font-size: 27px;
+    line-height: 1;
+    font-weight: 520;
+    letter-spacing: .2px;
+  }
+
+  .logo-tile {
+    position: absolute;
+    top: 60px;
+    right: 60px;
+    width: 280px;
+    height: 280px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #FDDA16;
+  }
+
+  .brand-logo {
+    width: 202px;
+    height: 78px;
+    display: block;
+    object-fit: contain;
+  }
+
+  .story {
+    position: absolute;
+    left: 60px;
+    right: 60px;
+    top: 448px;
+  }
+
+  .eyebrow {
+    margin-bottom: 24px;
+    color: #514A40;
+    font-size: 20px;
+    line-height: 1;
+    font-weight: 780;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+  }
+
+  .headline {
+    width: 960px;
+    height: 224px;
+    overflow: hidden;
+    color: #000000;
+    font-size: 100px;
+    line-height: .98;
+    font-weight: 900;
+    letter-spacing: -5px;
+    word-break: keep-all;
+    overflow-wrap: normal;
+  }
+
+  .support {
+    position: absolute;
+    left: 60px;
+    right: 60px;
+    top: 786px;
+  }
+
+  .accent-line {
+    width: 320px;
+    height: 8px;
+    margin-bottom: 26px;
+    background: #FDDA16;
+  }
+
+  .body-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    color: #514A40;
+  }
+
+  .body-line {
+    max-width: 940px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 30px;
+    line-height: 1.28;
+    font-weight: 620;
+    letter-spacing: -1px;
+  }
+
+  .footer {
+    position: absolute;
+    left: 60px;
+    right: 60px;
+    bottom: 43px;
+    display: flex;
+    align-items: center;
+    gap: 58px;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .credit {
+    color: #F7931A;
+    font-weight: 820;
+  }
+
+  .source {
+    max-width: 760px;
+    overflow: hidden;
+    color: #665F55;
+    font-weight: 520;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<main class="canvas" data-client="yellow" data-profile="yellow/institutional-market-infrastructure@2">
+  <header>
+    <div class="brand-meta">
+      <div class="brand-name">YELLOW</div>
+      <div class="date">{{ date | default('') }}</div>
+    </div>
+    <div class="logo-tile">
+      <img class="brand-logo" src="{{ logo_light_path }}" alt="Yellow Network">
+    </div>
+  </header>
+
+  <section class="story">
+    {% if label %}<div class="eyebrow">{{ label | safe }}</div>{% endif %}
+    {% if headline %}<h1 class="headline" id="headline">{{ headline | safe }}</h1>{% endif %}
+  </section>
+
+  <section class="support">
+    <div class="accent-line"></div>
+    {% if body_lines %}
+    <div class="body-list">
+      {% for line in body_lines[:3] %}<div class="body-line">{{ line | safe }}</div>{% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <footer class="footer">
+    <div class="credit">CoinEasy</div>
+    {% if source_url %}<div class="source">출처: {{ source_url | replace('https://', '') | replace('http://', '') }}</div>{% endif %}
+  </footer>
+</main>
+<script>
+  window.__evaluateYellowHeadlineLayout = async () => {
+    await document.fonts.ready;
+    const headline = document.getElementById('headline');
+    if (!headline) return { safe: true, renderedLines: 0, fontSize: 0 };
+    let size = 100;
+    const minimum = 64;
+    const renderedLines = () => {
+      const range = document.createRange();
+      range.selectNodeContents(headline);
+      return new Set(Array.from(range.getClientRects()).map(rect => Math.round(rect.top))).size;
+    };
+    while (size > minimum && (headline.scrollHeight > headline.clientHeight || renderedLines() > 2)) {
+      size -= 2;
+      headline.style.fontSize = `${size}px`;
+    }
+    const lines = renderedLines();
+    const safe = headline.scrollHeight <= headline.clientHeight && lines <= 2;
+    return { safe, renderedLines: lines, fontSize: size };
+  };
+  window.__evaluateYellowHeadlineLayout();
+</script>
+</body>
+</html>
