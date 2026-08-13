@@ -142,6 +142,61 @@ def test_buzz_review_adr_number_and_decision_only_boundary_are_current():
     assert "cannot authorize publication" in content
 
 
+def test_buzz_operations_is_a_bounded_disabled_by_default_cron():
+    config = json.loads((ROOT / "railway.buzz-operations.json").read_text())
+    assert config == {
+        "$schema": "https://railway.com/railway.schema.json",
+        "build": {
+            "builder": "DOCKERFILE",
+            "dockerfilePath": "Dockerfile.buzz-operations",
+        },
+        "deploy": {
+            "preDeployCommand": (
+                "python -m scripts.run_origintrail_buzz_operations --validate-only"
+            ),
+            "startCommand": (
+                "python -m scripts.run_origintrail_buzz_operations --scan-once"
+            ),
+            "cronSchedule": "*/2 * * * *",
+            "restartPolicyType": "NEVER",
+        },
+    }
+
+
+def test_buzz_operations_image_has_no_creative_or_publication_plane():
+    dockerfile = (ROOT / "Dockerfile.buzz-operations").read_text()
+    lowered = dockerfile.lower()
+    assert BUZZ_RELEASE in dockerfile
+    assert f"--checksum=sha256:{BUZZ_DEB_SHA256}" in dockerfile
+    assert "scripts/run_origintrail_buzz_operations.py" in dockerfile
+    assert "user 10001:10001" in lowered
+    assert "buzz_operations_enabled=false" in lowered
+    assert "buzz_operations_response_enabled=false" in lowered
+    assert "buzz_operations_allowed_clients=origintrail" in lowered
+    assert "core/batch" not in lowered
+    assert "core/publishers" not in lowered
+    assert "openai_api_key" not in lowered
+    assert "supabase_service_role_key" not in lowered
+
+
+def test_ci_builds_and_holds_operations_image_without_network():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert "buzz-operations-image:" in workflow
+    assert "--file Dockerfile.buzz-operations" in workflow
+    assert "BUZZ_OPERATIONS_ENABLED=false" in workflow
+    assert "buzz_operations_disabled" in workflow
+    assert "scripts.run_origintrail_buzz_operations --validate-only" in workflow
+    for fence in (
+        "BUZZ_SERVICE_PUBKEY",
+        "RAILWAY_ENVIRONMENT_NAME",
+        "BUZZ_OPERATIONS_EXPECTED_ENVIRONMENT",
+        "RAILWAY_GIT_COMMIT_SHA",
+        "BUZZ_OPERATIONS_RELEASE_SHA",
+        "BUZZ_OPERATIONS_PROTOCOL_START_EPOCH",
+    ):
+        assert f"--env {fence}=" in workflow
+
+
 def test_review_pack_delivery_bundles_the_deterministic_hangul_font():
     config = (ROOT / "netlify.toml").read_text()
     assert (

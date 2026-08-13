@@ -143,16 +143,19 @@ def test_migration_applies_after_every_routine_it_grants():
     final_role = [n for n in migrations if "origintrail_review_pack_roles" in n]
     evidence_role = [n for n in migrations if "origintrail_review_evidence_roles" in n]
     acknowledgement_role = [n for n in migrations if "buzz_review_ack_role" in n]
+    operations_role = [n for n in migrations if "buzz_operations_role" in n]
     assert len(least_privilege) == 1, least_privilege
     assert len(review_role) == 1, review_role
     assert len(final_role) == 1, final_role
     assert len(evidence_role) == 1, evidence_role
     assert len(acknowledgement_role) == 1, acknowledgement_role
+    assert len(operations_role) == 1, operations_role
     assert least_privilege[0] < review_role[0]
     assert review_role[0] < final_role[0]
     assert final_role[0] < evidence_role[0]
     assert evidence_role[0] < acknowledgement_role[0]
-    assert migrations[-1] == acknowledgement_role[0], (
+    assert acknowledgement_role[0] < operations_role[0]
+    assert migrations[-1] == operations_role[0], (
         "the newest least-privilege grant migration must sort last so its "
         f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
     )

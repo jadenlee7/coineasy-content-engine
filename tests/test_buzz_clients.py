@@ -9,11 +9,17 @@ import httpx
 
 from core.buzz.clients import (
     BuzzDeliveryControlClient,
+    BuzzOperationsControlClient,
     BuzzReviewControlClient,
     BuzzShadowClient,
 )
 from core.buzz.errors import BuzzAdapterError
-from core.buzz.models import BuzzReviewDecision, BuzzReviewTarget, BuzzShadowEvent
+from core.buzz.models import (
+    BuzzOperationsCommand,
+    BuzzReviewDecision,
+    BuzzReviewTarget,
+    BuzzShadowEvent,
+)
 
 
 JOB_ID = "22222222-2222-4222-8222-222222222222"
@@ -560,6 +566,94 @@ class BuzzReviewControlClientTests(unittest.IsolatedAsyncioTestCase):
         ):
             await client.first_target()
         self.assertEqual(calls, 1)
+
+
+class BuzzOperationsControlClientTests(unittest.IsolatedAsyncioTestCase):
+    def _command(self) -> BuzzOperationsCommand:
+        return BuzzOperationsCommand(
+            event_id="a" * 64,
+            reviewer_pubkey="b" * 64,
+            command="status",
+            command_sha256="c" * 64,
+            created_at_epoch=1_786_100_000,
+        )
+
+    @staticmethod
+    def _response(**extra):
+        message = "CoinEasy 운영 상태\n대기 기획: 0 · 보류: 0\n자동 발행: OFF"
+        value = {
+            "workspace_id": "11111111-1111-4111-8111-111111111111",
+            "command_event_id": "a" * 64,
+            "channel_id": "33333333-3333-4333-8333-333333333333",
+            "reply_to_event_id": "a" * 64,
+            "thread_root_event_id": "a" * 64,
+            "command": "status",
+            "task_id": None,
+            "message": message,
+            "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
+            "status": "pending",
+            "claim_granted": False,
+            "reused": False,
+            "authorized_once": False,
+            "request_sha256": None,
+            "delivery_started_at_epoch": None,
+            "relay_event_id": None,
+        }
+        value.update(extra)
+        return value
+
+    async def test_record_retries_commit_unknown_and_validates_response(self):
+        bodies: list[bytes] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(bytes(request.content))
+            if len(bodies) == 1:
+                raise httpx.ConnectError("unknown", request=request)
+            return httpx.Response(200, json=self._response(reused=True))
+
+        client = BuzzOperationsControlClient(
+            url="https://console.example/api/buzz-operations/origintrail",
+            token="operations-token-that-is-long-and-dedicated",
+            transport=httpx.MockTransport(handler),
+        )
+        result = await client.record(
+            self._command(),
+            channel_id="33333333-3333-4333-8333-333333333333",
+        )
+        self.assertTrue(result.reused)
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[0], bodies[1])
+
+    async def test_claim_null_and_malformed_response_fail_closed(self):
+        client = BuzzOperationsControlClient(
+            url="https://console.example/api/buzz-operations/origintrail",
+            token="operations-token-that-is-long-and-dedicated",
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200, content=b"null", headers={"content-type": "application/json"}
+                )
+            ),
+        )
+        self.assertIsNone(await client.claim_response(
+            command_event_id=None,
+            worker_id="origintrail-operations:staging",
+            lease_seconds=180,
+        ))
+
+        invalid = BuzzOperationsControlClient(
+            url="https://console.example/api/buzz-operations/origintrail",
+            token="operations-token-that-is-long-and-dedicated",
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"status": "pending"})
+            ),
+        )
+        with self.assertRaisesRegex(
+            BuzzAdapterError, "buzz_operations_control_invalid_response"
+        ):
+            await invalid.record(
+                self._command(),
+                channel_id="33333333-3333-4333-8333-333333333333",
+            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,9 @@ _MESSAGE_TEMPLATE_VERSION = "origintrail-batch-review-ready@5"
 _PROCESS_TIMEOUT_SECONDS = 30.0
 BUZZ_CLI_RELEASE = "desktop-v0.5.4"
 BUZZ_REVIEW_ACK_TEMPLATE_VERSION = "origintrail-buzz-review-ack@1"
+BUZZ_OPERATIONS_RESPONSE_TEMPLATE_VERSION = (
+    "origintrail-buzz-operations-response@1"
+)
 _MAX_MESSAGE_BYTES = 1_024
 _ATTACHMENT_FILENAME = re.compile(
     r"^origintrail-review-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[.]png$"
@@ -35,6 +38,7 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 4 * 1_024 * 1_024
 _MAX_THREAD_EVENTS = 101
 _MAX_THREAD_CONTENT_BYTES = 4_096
+_MAX_CHANNEL_EVENTS = 100
 
 
 class BuzzCliError(RuntimeError):
@@ -258,6 +262,40 @@ def buzz_reply_fingerprints(
     return message_sha, request_sha
 
 
+def buzz_operations_reply_fingerprints(
+    *,
+    relay_url: str,
+    channel_id: str,
+    service_pubkey: str,
+    release_sha: str,
+    reply_to: str,
+    message: str,
+) -> tuple[str, str]:
+    encoded_message = _validated_reply_bytes(message, reply_to)
+    if (
+        not _EVENT_ID.fullmatch(service_pubkey)
+        or not _RELEASE_SHA.fullmatch(release_sha)
+    ):
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    try:
+        canonical_channel_id = str(uuid.UUID(channel_id))
+    except (ValueError, AttributeError):
+        raise BuzzCliError("buzz_delivery_request_invalid") from None
+    normalized_relay = relay_url.strip().rstrip("/")
+    if not normalized_relay:
+        raise BuzzCliError("buzz_delivery_request_invalid")
+    message_sha = hashlib.sha256(encoded_message).hexdigest()
+    request_sha = hashlib.sha256(
+        (
+            "coineasy-buzz-operations-response\0"
+            f"{BUZZ_OPERATIONS_RESPONSE_TEMPLATE_VERSION}\0{BUZZ_CLI_RELEASE}\0"
+            f"{release_sha}\0{normalized_relay}\0{canonical_channel_id}\0"
+            f"{service_pubkey}\0{reply_to}\0{message_sha}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return message_sha, request_sha
+
+
 class BuzzCliPublisher:
     def __init__(self, config: BuzzCliConfig, *, runner: CommandRunner = _run_command):
         self.config = config
@@ -371,7 +409,7 @@ class BuzzCliPublisher:
             or not isinstance(event_id, str)
             or not _EVENT_ID.fullmatch(event_id)
             or parsed.get("mention_pubkeys") != []
-            or parsed.get("message") != message
+            or not isinstance(parsed.get("message"), str)
         ):
             raise BuzzCliError("buzz_delivery_unknown")
         return BuzzRelayReceipt(event_id=event_id)
@@ -420,15 +458,68 @@ class BuzzCliReader:
             parsed = json.loads(result.stdout)
         except ValueError as exc:
             raise BuzzCliError("buzz_review_thread_invalid") from exc
-        if not isinstance(parsed, list) or len(parsed) > _MAX_THREAD_EVENTS:
-            raise BuzzCliError("buzz_review_thread_invalid")
+        return self._parse_messages(
+            parsed,
+            maximum_events=_MAX_THREAD_EVENTS,
+            error_code="buzz_review_thread_invalid",
+        )
+
+    async def read_channel(
+        self, *, since_epoch: int, limit: int = _MAX_CHANNEL_EVENTS
+    ) -> tuple[BuzzThreadMessage, ...]:
+        if (
+            isinstance(since_epoch, bool)
+            or not isinstance(since_epoch, int)
+            or not 1 <= since_epoch <= 4_294_967_295
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _MAX_CHANNEL_EVENTS
+        ):
+            raise BuzzCliError("buzz_operations_request_invalid")
+        result = await self.runner(
+            (
+                str(self.config.cli_path),
+                "--format",
+                "json",
+                "messages",
+                "get",
+                "--channel",
+                self.config.channel_id,
+                "--since",
+                str(since_epoch),
+                "--limit",
+                str(limit),
+                "--kinds",
+                "9",
+            ),
+            stdin=b"",
+            env=self._env(),
+        )
+        if result.returncode != 0:
+            raise BuzzCliError("buzz_operations_channel_unavailable")
+        try:
+            parsed = json.loads(result.stdout)
+        except ValueError as exc:
+            raise BuzzCliError("buzz_operations_channel_invalid") from exc
+        return self._parse_messages(
+            parsed,
+            maximum_events=limit,
+            error_code="buzz_operations_channel_invalid",
+        )
+
+    @staticmethod
+    def _parse_messages(
+        parsed: object, *, maximum_events: int, error_code: str
+    ) -> tuple[BuzzThreadMessage, ...]:
+        if not isinstance(parsed, list) or len(parsed) > maximum_events:
+            raise BuzzCliError(error_code)
 
         messages: list[BuzzThreadMessage] = []
         for raw in parsed:
             if not isinstance(raw, dict) or set(raw) != {
                 "id", "pubkey", "kind", "content", "created_at", "tags"
             }:
-                raise BuzzCliError("buzz_review_thread_invalid")
+                raise BuzzCliError(error_code)
             event_id = raw["id"]
             pubkey = raw["pubkey"]
             kind = raw["kind"]
@@ -450,7 +541,7 @@ class BuzzCliReader:
                 or not isinstance(raw_tags, list)
                 or len(raw_tags) > 32
             ):
-                raise BuzzCliError("buzz_review_thread_invalid")
+                raise BuzzCliError(error_code)
             tags: list[tuple[str, ...]] = []
             for tag in raw_tags:
                 if (
@@ -458,7 +549,7 @@ class BuzzCliReader:
                     or not 1 <= len(tag) <= 8
                     or not all(_is_bounded_utf8(item, 1_024) for item in tag)
                 ):
-                    raise BuzzCliError("buzz_review_thread_invalid")
+                    raise BuzzCliError(error_code)
                 tags.append(tuple(tag))
             messages.append(BuzzThreadMessage(
                 event_id=event_id,
@@ -472,6 +563,7 @@ class BuzzCliReader:
 
 
 __all__ = [
+    "BUZZ_OPERATIONS_RESPONSE_TEMPLATE_VERSION",
     "BUZZ_REVIEW_ACK_TEMPLATE_VERSION",
     "BuzzCliConfig",
     "BuzzCliError",
@@ -480,6 +572,7 @@ __all__ = [
     "BUZZ_CLI_RELEASE",
     "CommandResult",
     "buzz_message_fingerprints",
+    "buzz_operations_reply_fingerprints",
     "buzz_reply_fingerprints",
     "format_origintrail_message",
 ]

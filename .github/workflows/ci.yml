@@ -205,6 +205,46 @@ jobs:
             python -m scripts.run_origintrail_buzz_review --validate-only \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "origintrail", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "acknowledgement_enabled": False, "durable_acknowledgement_enabled": False, "provider_calls": False, "publication_calls": False, "database_calls": False, "relay_calls": False}'
 
+  buzz-operations-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned Buzz operations image
+        run: >-
+          docker build
+          --file Dockerfile.buzz-operations
+          --tag coineasy-buzz-operations-ci
+          .
+      - name: Prove the operations scanner holds without network or credentials
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_OPERATIONS_ENABLED=false \
+            coineasy-buzz-operations-ci \
+            python -m scripts.run_origintrail_buzz_operations --scan-once \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "hold", "enabled": False, "reason": "buzz_operations_disabled", "database_calls": False, "relay_calls": False, "openai_calls": False, "batch_calls": False, "publication_calls": False}'
+      - name: Validate operations identity and release fences without I/O
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_OPERATIONS_ENABLED=false \
+            --env BUZZ_OPERATIONS_RESPONSE_ENABLED=false \
+            --env BUZZ_OPERATIONS_ALLOWED_CLIENTS=origintrail \
+            --env BUZZ_OPERATIONS_URL=https://console.example/api/buzz-operations/origintrail \
+            --env BUZZ_OPERATIONS_WORKER_TOKEN=operations-token-that-is-dedicated-and-long \
+            --env BUZZ_OPERATIONS_REVIEWER_PUBKEYS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env BUZZ_OPERATIONS_PROTOCOL_START_EPOCH=1700000000 \
+            --env BUZZ_OPERATIONS_RESPONSE_LEASE_SECONDS=180 \
+            --env BUZZ_RELAY_URL=https://buzz.example \
+            --env BUZZ_PRIVATE_KEY=1111111111111111111111111111111111111111111111111111111111111111 \
+            --env BUZZ_CHANNEL_ID=33333333-3333-4333-8333-333333333333 \
+            --env BUZZ_SERVICE_PUBKEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            --env RAILWAY_ENVIRONMENT_NAME=staging \
+            --env BUZZ_OPERATIONS_EXPECTED_ENVIRONMENT=staging \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env BUZZ_OPERATIONS_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            coineasy-buzz-operations-ci \
+            python -m scripts.run_origintrail_buzz_operations --validate-only \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "response_enabled": False, "client_id": "origintrail", "environment": "staging", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "release_sha": "dddddddddddddddddddddddddddddddddddddddd", "database_calls": False, "relay_calls": False, "openai_calls": False, "batch_calls": False, "publication_calls": False}'
+
   publication-image:
     runs-on: ubuntu-latest
     steps:
