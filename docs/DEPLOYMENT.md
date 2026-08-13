@@ -101,8 +101,9 @@ Content Studio가 생성한 실제 결과를 한 명의 검토자에게 배너�
 ```bash
 railway variable set 'TELEGRAM_REVIEW_BOT_TOKEN=${{coineasytgtracker.TG_BOT_TOKEN}}' --service coineasy-content-engine
 railway variable set 'TELEGRAM_REVIEW_CHAT_ID=${{coineasytgtracker.TG_NOTIFY_USER_ID}}' --service coineasy-content-engine
-# 선택: 개인 DM과 별도로 미승인 검수 패킷을 보낼 비공개 팀 방의 숫자 chat ID
-# railway variable set 'TELEGRAM_COLLAB_REVIEW_CHAT_ID=-100...' --service coineasy-content-engine
+# 선택: 개인 DM과 별도인 전용 검수 릴레이 봇 + 비공개 팀 방
+# railway variable set 'TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN=...' --service coineasy-content-engine
+# railway variable set 'TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID=-100...' --service coineasy-content-engine
 ```
 
 검토자는 먼저 해당 봇과 개인 대화를 시작해야 합니다. 공개 채널명은
@@ -111,12 +112,12 @@ railway variable set 'TELEGRAM_REVIEW_CHAT_ID=${{coineasytgtracker.TG_NOTIFY_USE
 인증된 검토 패키지만 relay하며 Telegram token이나 chat ID를 저장하지
 않습니다.
 
-`TELEGRAM_COLLAB_REVIEW_CHAT_ID`를 설정하면 동일한 저장 버전과 배너가
-개인 DM 및 팀 검수방에 함께 전달됩니다. 초대 링크나 방 이름은 환경변수나
-저장소에 넣지 않습니다. 알림 봇을 비공개 방에 추가한 뒤 Bot API로 확인한
-음수 숫자 chat ID만 Railway secret에 저장합니다. 팀 방 전송 실패는 개인
-검수 DM이나 Content Studio 저장 결과를 롤백하지 않으며 공개 발행 권한도
-부여하지 않습니다.
+전용 릴레이 봇 토큰과 숫자 chat ID를 함께 설정하면 동일한 저장 버전과
+배너가 개인 DM 및 팀 검수방에 서로 다른 봇으로 전달됩니다. 초대 링크나 방
+이름은 환경변수나 저장소에 넣지 않습니다. 릴레이 봇은 비공개 방의 메시지·
+미디어 전송만 허용하고 관리자 또는 고객 공지방 발행 권한은 주지 않습니다.
+팀 방 전송 실패는 개인 검수 DM이나 Content Studio 저장 결과를 롤백하지
+않습니다.
 
 ### Squid 승인본 공개 발행
 

@@ -50,10 +50,12 @@ On every run:
 
 1. Keep the existing personal reviewer DM configured with
    `TELEGRAM_REVIEW_CHAT_ID`.
-2. Add the same review bot to the private team room. It needs permission to send
-   messages and media, not administrator or publication rights.
-3. Obtain the room's negative numeric chat ID through the Bot API and store it
-   only on Railway as `TELEGRAM_COLLAB_REVIEW_CHAT_ID`.
+2. Create a separate internal relay bot for the private team room. It needs
+   permission to send messages and media, not administrator or publication
+   rights. Do not reuse the personal-review bot or a client publication bot.
+3. Store its token and the room's negative numeric chat ID only on Railway as
+   `TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN` and
+   `TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID`.
 4. Keep the Grok routine inactive until a production-safe test item reaches the
    room and the operator confirms the target and formatting.
 

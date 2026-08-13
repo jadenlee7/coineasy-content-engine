@@ -24,3 +24,7 @@ review agents.
 
 For Grok Bot review and Telegram collaboration, follow
 `docs/GROK_AGENT_REVIEW_RUNBOOK.md`.
+
+For the employee-role content workflow, dedicated internal relay, design
+handoff, and draft-only Typefully boundary, follow
+`docs/CONTENT_OPS_AGENT_RELAY.md`.
