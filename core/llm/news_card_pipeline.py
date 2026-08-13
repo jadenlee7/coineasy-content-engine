@@ -2845,14 +2845,45 @@ def _validate_result(result: dict):
 
 
 def _get_default_mock(client_id: str) -> dict:
+    client_copy = {
+        "yellow": {
+            "label": "기관급 거래 인프라",
+            "headline": "Yellow Network 브랜드 검토용 샘플",
+            "body_lines": [
+                "Nitrolite 기반 상태 채널 구조",
+                "공식 옐로우 톤과 정보 위계 확인",
+            ],
+        },
+        "origintrail": {
+            "label": "검증 가능한 지식",
+            "headline": "OriginTrail 브랜드 검토용 샘플",
+            "body_lines": [
+                "검증 가능한 지식 그래프 구조",
+                "공식 퍼플·네이비 톤과 로고 확인",
+            ],
+        },
+        "babylon": {
+            "label": "비트코인 보안",
+            "headline": "Babylon 브랜드 검토용 샘플",
+            "body_lines": [
+                "비트코인 네이티브 보안 메시지 구조",
+                "공식 오렌지·딥틸 톤과 로고 확인",
+            ],
+        },
+        "squid": {
+            "label": "체인 연결 경험",
+            "headline": "Squid 브랜드 검토용 샘플",
+            "body_lines": [
+                "공식 캐릭터와 풀블리드 구성 확인",
+                "한국어 헤드라인 위계 확인",
+            ],
+        },
+    }.get(client_id)
+    if client_copy is None:
+        raise ValueError(f"No default news-card mock for client: {client_id}")
     return {
-        "label": "이더리움 메인넷 라이브",
-        "date": "2026.06.23",
-        "headline": "Yellow가 이더리움 메인넷에서 라이브됩니다",
-        "body_lines": [
-            "Nitrolite 상태 채널로 오프체인 정산",
-            "모든 EVM 네트워크 지원",
-        ],
+        **copy.deepcopy(client_copy),
+        "date": "2026.08.13",
         "source_url": "https://example.com",
         "theme": "dark",
         "source_logo_visible": False,
