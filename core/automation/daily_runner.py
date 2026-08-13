@@ -58,6 +58,8 @@ _KST = ZoneInfo("Asia/Seoul")
 _MAX_CLAIMS_PER_RUN = 8
 _FACT_CHECK_GENERATION_POLICY_VERSION = "double-fact-check@1"
 _SOURCE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_OFFICIAL_SOURCE_REMIX_CLIENTS = frozenset({"squid", "yellow"})
+_YELLOW_SOURCE_VISUAL_POLICY_VERSION = "yellow-source-visual-routing@1"
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -139,13 +141,13 @@ def choose_automation_template_style(
 ) -> str:
     """Choose the safest client-specific visual path for a scheduled draft.
 
-    Squid's official creative is part of the message, so a photo-backed news
-    post must enter the audited in-place localization path. Other clients keep
-    the deterministic editorial card until their own canonical remix rules are
-    approved.
+    Squid and Yellow have approved official-source visual rules, so a
+    photo-backed news post keeps the verified original creative dominant.
+    Other clients retain the deterministic editorial card until their own
+    canonical remix rules are approved.
     """
     if (
-        client_id == "squid"
+        client_id in _OFFICIAL_SOURCE_REMIX_CLIENTS
         and content_kind == "daily_news"
         and source_image_url.strip()
     ):
@@ -1000,7 +1002,12 @@ class OfficialXDailyRunner:
         policy_identity = (
             f"v3:{_FACT_CHECK_GENERATION_POLICY_VERSION}:{SQUID_VISUAL_POLICY_VERSION}"
             if client_id == "squid" and content_kind == "daily_news"
-            else f"v2:{_FACT_CHECK_GENERATION_POLICY_VERSION}"
+            else (
+                f"v3:{_FACT_CHECK_GENERATION_POLICY_VERSION}:"
+                f"{_YELLOW_SOURCE_VISUAL_POLICY_VERSION}"
+                if client_id == "yellow" and content_kind == "daily_news"
+                else f"v2:{_FACT_CHECK_GENERATION_POLICY_VERSION}"
+            )
         )
         return str(uuid.uuid5(
             namespace,

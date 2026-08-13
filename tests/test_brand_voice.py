@@ -77,6 +77,22 @@ def test_runtime_references_are_explicitly_style_only_and_delimited():
     assert "A prior post claims a launch" in prompt
 
 
+def test_yellow_reference_post_is_persistent_but_never_a_factual_source():
+    config = load_client_config("yellow")
+    reference_url = "https://x.com/Yellow/status/2087177332670750834"
+    reference = next(
+        item for item in config.brand_voice.reference_examples
+        if item.get("url") == reference_url
+    )
+    prompt = build_brand_voice_prompt(config, "news_card")
+
+    assert reference["type"] == "partnership mechanism"
+    assert "Partnering with @Deep3Labs" in prompt
+    assert "preserve its full composition" in prompt
+    assert "Reference examples below guide cadence and structure only" in prompt
+    assert "facts for the current source" in prompt
+
+
 def test_human_review_guidance_is_style_only_and_excludes_free_form_comments():
     config = load_client_config("squid")
     guidance = {

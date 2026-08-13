@@ -2,10 +2,11 @@ import type { Config, Context } from "@netlify/functions";
 import { createHash, randomUUID } from "node:crypto";
 import {
   canonicalXStatusUrl,
-  hasVerifiedOfficialSquidXProvenance,
+  hasVerifiedOfficialClientXProvenance,
   normalizeXImageUrl,
   resolveSourceInput,
   SourceInputError,
+  type OfficialSourceClient,
   type ResolvedSource,
 } from "./_shared/source-content.mts";
 import { buildChannelCopy } from "./_shared/channel-copy.mts";
@@ -89,6 +90,10 @@ const ALLOWED_CLIENTS = new Set<ContentCatalogClient>([
   "origintrail",
   "squid",
   "babylon",
+]);
+const OFFICIAL_SOURCE_REMIX_CLIENTS = new Set<OfficialSourceClient>([
+  "squid",
+  "yellow",
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -334,10 +339,24 @@ function isLegacyStandardBrandRecord(existing: ContentCatalogLookup): boolean {
   return !Object.hasOwn(spec, "brand_profile_policy_version");
 }
 
-export function isOfficialSquidXStatusUrl(value: string): boolean {
+function isOfficialSourceClient(
+  clientId: ContentCatalogClient,
+): clientId is OfficialSourceClient {
+  return OFFICIAL_SOURCE_REMIX_CLIENTS.has(clientId as OfficialSourceClient);
+}
+
+export function isOfficialClientXStatusUrl(
+  value: string,
+  clientId: OfficialSourceClient,
+): boolean {
   const canonical = canonicalXStatusUrl(value);
   if (!canonical) return false;
-  return /^\/squidrouter\/status\/\d+$/i.test(new URL(canonical).pathname);
+  return new RegExp(`^/${clientId === "squid" ? "squidrouter" : "yellow"}/status/\\d+$`, "i")
+    .test(new URL(canonical).pathname);
+}
+
+export function isOfficialSquidXStatusUrl(value: string): boolean {
+  return isOfficialClientXStatusUrl(value, "squid");
 }
 
 export function validSquidNativeOutputSpec(
@@ -770,9 +789,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
     pinnedSourceImageUrl = normalizeXImageUrl(sourceImageCandidate);
     if (
       !pinnedSourceImageUrl
-      || clientId !== "squid"
+      || !isOfficialSourceClient(clientId)
       || templateStyle !== "remix"
-      || !isOfficialSquidXStatusUrl(sourceUrl)
+      || !isOfficialClientXStatusUrl(sourceUrl, clientId)
     ) {
       return json({ error: "invalid_source_image_url" }, 422);
     }
@@ -795,7 +814,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return json({ error: code }, 422);
   }
   const mockMode = body.mock_mode === true;
-  const requiresVerifiedSquidSource = clientId === "squid" && templateStyle === "remix";
+  const requiresVerifiedOfficialSource = isOfficialSourceClient(clientId)
+    && templateStyle === "remix";
   const requestHashInput = {
     clientId,
     sourceContent,
@@ -850,7 +870,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     if (storedRequestHash !== requestHash && !isCompatibleLegacyBrandRetry) {
       return json({ error: "news_card_idempotency_conflict" }, 409);
     }
-    if (!requiresVerifiedSquidSource || pinnedSourceImageUrl) {
+    if (!requiresVerifiedOfficialSource || pinnedSourceImageUrl) {
       try {
         return json(await catalogRetryResponse(
           existingGeneration,
@@ -907,10 +927,20 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
     return json({ error: "source_fetch_failed" }, 422);
   }
-  if (requiresVerifiedSquidSource && !hasVerifiedOfficialSquidXProvenance(resolvedSource)) {
+  if (
+    requiresVerifiedOfficialSource
+    && !hasVerifiedOfficialClientXProvenance(
+      resolvedSource,
+      clientId as OfficialSourceClient,
+    )
+  ) {
     return resolvedSource.mediaStatus === "unavailable"
       ? json({ error: "source_media_unavailable" }, 422)
-      : json({ error: "source_not_official_squid" }, 422);
+      : json({
+        error: clientId === "squid"
+          ? "source_not_official_squid"
+          : "source_not_official_client",
+      }, 422);
   }
   if (
     pinnedSourceImageUrl
@@ -925,7 +955,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       mediaStatus: "present",
     };
   }
-  if (requiresVerifiedSquidSource && !resolvedSource.imageUrl) {
+  if (requiresVerifiedOfficialSource && !resolvedSource.imageUrl) {
     return resolvedSource.mediaStatus === "unavailable"
       ? json({ error: "source_media_unavailable" }, 422)
       : json({ error: "source_image_required" }, 422);
@@ -938,7 +968,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         storageConfig,
         clientId,
         requestDeadline,
-        requiresVerifiedSquidSource ? resolvedSource.imageUrl : "",
+        requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
       ));
     } catch (error) {
       const code = error instanceof ContentCatalogError
@@ -1036,7 +1066,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       ? result.source_image_sha256
       : "";
     if (
-      clientId === "squid"
+      isOfficialSourceClient(clientId)
       && actualTemplateStyle === "remix"
       && (
         result.source_image_used !== true
@@ -1328,7 +1358,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
               storageConfig,
               clientId,
               requestDeadline,
-              requiresVerifiedSquidSource ? resolvedSource.imageUrl : "",
+              requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
             ));
           }
           return json({ error: "news_card_idempotency_conflict" }, 409);

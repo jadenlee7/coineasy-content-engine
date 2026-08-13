@@ -13,6 +13,7 @@ import newsCardHandler, {
   SQUID_GENERATED_DESIGN_PROFILE_VERSION,
   SQUID_GENERATED_TEMPLATE_VERSION,
   SQUID_VISUAL_REFERENCE_PACK_VERSION,
+  isOfficialClientXStatusUrl,
   isOfficialSquidXStatusUrl,
   newsCardRequestHash,
   normalizedFigmaTemplate,
@@ -343,6 +344,30 @@ test("recognizes only canonical official Squid X status URLs", () => {
   assert.equal(isOfficialSquidXStatusUrl("https://twitter.com/SquidRouter/status/123"), true);
   assert.equal(isOfficialSquidXStatusUrl("https://x.com/partner/status/123"), false);
   assert.equal(isOfficialSquidXStatusUrl("https://example.com/squidrouter/status/123"), false);
+});
+
+test("recognizes the exact official Yellow account for source-dominant remix", () => {
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/Yellow/status/2087177332670750834?s=20",
+      "yellow",
+    ),
+    true,
+  );
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/partner/status/2087177332670750834",
+      "yellow",
+    ),
+    false,
+  );
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/Yellow/status/2087177332670750834",
+      "squid",
+    ),
+    false,
+  );
 });
 
 test("binds a Squid native-output spec to the exact PNG dimensions", () => {
@@ -730,6 +755,109 @@ test("automation pins the exact official Squid X image through generation and st
     });
     assert.equal(recordBody.target_content.request_hash, expectedHash);
     assert.equal(recordBody.target_generation_meta.request_hash, expectedHash);
+  });
+});
+
+test("automation pins an official Yellow creative and keeps it in the source-dominant remix", async () => {
+  const yellowSourceUrl = "https://x.com/Yellow/status/2087177332670750834";
+  const submittedImage = "https://pbs.twimg.com/media/HPckuPQXAAAj0cx.jpg";
+  const pinnedImage = `${submittedImage}?name=orig`;
+  const yellowSource = (
+    "Yellow and Deep3Labs describe an AI-agent partnership in which Yellow's "
+    + "clearing layer addresses source-stated cost and latency constraints."
+  );
+  const profile = NEWS_BRAND_PROFILES.yellow;
+  let upstreamBody: Record<string, unknown> = {};
+  let recordBody: Record<string, any> = {};
+
+  await withEnvironment(async (input, init) => {
+    const url = String(input);
+    if (url.includes("cdn.syndication.twimg.com")) {
+      return Response.json({
+        id_str: "2087177332670750834",
+        text: "Official Yellow partnership source post with verified media.",
+        user: { id_str: "2651", screen_name: "Yellow" },
+        photos: [{ url: submittedImage }],
+      });
+    }
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "yellow", active: true }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+    if (url.endsWith("/clients/yellow/generate/news-card")) {
+      upstreamBody = JSON.parse(String(init?.body));
+      return Response.json({
+        client_id: "yellow",
+        content_type: "news_card",
+        spec: {
+          brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+          render_strategy: "source_remix",
+          channel_profile: "x_square",
+          brand_tokens_version: profile.brandTokensVersion,
+          template_version: "yellow-news-remix@1",
+          asset_pack_version: profile.assetPackVersion,
+          visual_design_profile_id: profile.designProfileId,
+          visual_design_profile_version: profile.designProfileVersion,
+          label: "파트너십",
+          date: "2026.08.13",
+          headline: "AI 에이전트의 실행 제약을 낮추는 인프라",
+          body_lines: ["원문이 설명한 비용과 지연 제약에 집중합니다"],
+          source_url: yellowSourceUrl,
+          source_logo_visible: true,
+          theme: "dark",
+        },
+        png_path: "/app/output/yellow/news_456/news_card_remix.png",
+        template_style: "remix",
+        requested_template_style: "remix",
+        source_image_used: true,
+        source_image_url: pinnedImage,
+        source_image_sha256: SOURCE_IMAGE_SHA256,
+        source_visual_path: null,
+        figma_template: null,
+        manifest_path: "/app/output/yellow/news_456/manifest.json",
+        duration_ms: 987,
+      });
+    }
+    if (url.endsWith("/files/yellow/news_456/news_card_remix.png")) {
+      return new Response(minimalPng(), { headers: { "content-type": "image/png" } });
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && init?.method === "POST") {
+      return Response.json({ Key: "stored" });
+    }
+    if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+      recordBody = JSON.parse(String(init?.body));
+      const asset = recordBody.target_asset as { asset_id?: string };
+      return Response.json({
+        content_item_id: REQUEST_ID,
+        content_version_id: VERSION_ID,
+        asset_ids: [asset.asset_id],
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest({
+      source_content: yellowSource,
+      source_type: "tweet",
+      source_url: yellowSourceUrl,
+      mock_mode: false,
+      template_style: "remix",
+      source_image_url: submittedImage,
+    }, true, true), {
+      params: { clientId: "yellow" },
+    } as never);
+
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    const result = await response.json();
+    assert.equal(upstreamBody.source_image_url, pinnedImage);
+    assert.equal(upstreamBody.template_style, "remix");
+    assert.equal(result.source_image_url, pinnedImage);
+    assert.equal(result.source_image_used, true);
+    assert.equal(result.template_style, "remix");
+    assert.equal(recordBody.target_content.source.image_url, pinnedImage);
+    assert.equal(recordBody.target_content.render.template_style, "remix");
   });
 });
 

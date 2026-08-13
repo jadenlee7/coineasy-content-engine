@@ -8,8 +8,9 @@
 
 The generation prompts treat the submitted source text as the factual boundary,
 and the existing brand QA checks source presence plus a bounded set of numeric
-claims. Squid source-remix requests additionally prove that the X status,
-account identity, and selected media belong together. Those controls do not
+claims. Squid and Yellow scheduled source-remix requests additionally prove
+that the X status, immutable account identity, and selected media belong
+together. Those controls do not
 prove that manually submitted text matches the linked post, and they do not
 require a reviewer to record that every final public claim was compared with
 the official source.

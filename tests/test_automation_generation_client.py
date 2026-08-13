@@ -109,7 +109,17 @@ async def test_daily_news_uses_review_generation_route_and_classic_by_default():
 
 
 @pytest.mark.asyncio
-async def test_squid_remix_forwards_only_the_official_x_image():
+@pytest.mark.parametrize(
+    ("client_id", "source_url"),
+    [
+        ("squid", "https://x.com/SquidRouter/status/123"),
+        ("yellow", "https://x.com/Yellow/status/2087177332670750834"),
+    ],
+)
+async def test_source_dominant_remix_forwards_only_the_official_x_image(
+    client_id,
+    source_url,
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -135,11 +145,11 @@ async def test_squid_remix_forwards_only_the_official_x_image():
         transport=capable_transport(handler),
     )
     await client.generate(
-        client_id="squid",
+        client_id=client_id,
         content_kind="daily_news",
         request_id=REQUEST_ID,
         source_content="Squid official product update",
-        source_url="https://x.com/SquidRouter/status/123",
+        source_url=source_url,
         source_image_url="https://pbs.twimg.com/media/source.jpg",
         template_style="remix",
     )
@@ -149,7 +159,17 @@ async def test_squid_remix_forwards_only_the_official_x_image():
 
 
 @pytest.mark.asyncio
-async def test_squid_remix_rejects_a_result_without_the_pinned_source_proof():
+@pytest.mark.parametrize(
+    ("client_id", "source_url"),
+    [
+        ("squid", "https://x.com/SquidRouter/status/123"),
+        ("yellow", "https://x.com/Yellow/status/2087177332670750834"),
+    ],
+)
+async def test_source_dominant_remix_rejects_a_result_without_pinned_source_proof(
+    client_id,
+    source_url,
+):
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "content_item_id": REQUEST_ID,
@@ -173,11 +193,11 @@ async def test_squid_remix_rejects_a_result_without_the_pinned_source_proof():
     )
     with pytest.raises(GenerationRequestError, match="studio_generation_invalid_response") as error:
         await client.generate(
-            client_id="squid",
+            client_id=client_id,
             content_kind="daily_news",
             request_id=REQUEST_ID,
             source_content="Squid official product update",
-            source_url="https://x.com/SquidRouter/status/123",
+            source_url=source_url,
             source_image_url=SOURCE_IMAGE_URL,
             template_style="remix",
         )
