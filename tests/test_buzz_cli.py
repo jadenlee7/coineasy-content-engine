@@ -8,6 +8,7 @@ from pathlib import Path
 
 from core.buzz.cli import (
     BUZZ_CLI_RELEASE,
+    BUZZ_OPERATIONS_RESPONSE_TEMPLATE_VERSION,
     BUZZ_REVIEW_ACK_TEMPLATE_VERSION,
     BuzzCliConfig,
     BuzzCliError,
@@ -15,6 +16,7 @@ from core.buzz.cli import (
     BuzzCliReader,
     CommandResult,
     buzz_message_fingerprints,
+    buzz_operations_reply_fingerprints,
     buzz_reply_fingerprints,
     format_origintrail_message,
 )
@@ -391,6 +393,26 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
             message=message,
         ))
 
+    def test_operations_reply_has_a_separate_release_bound_domain(self):
+        values = {
+            "relay_url": "https://buzz.example",
+            "channel_id": CHANNEL_ID,
+            "service_pubkey": "c" * 64,
+            "release_sha": "a" * 40,
+            "reply_to": "b" * 64,
+            "message": "CoinEasy 운영 상태\n자동 발행: OFF",
+        }
+        operations = buzz_operations_reply_fingerprints(**values)
+        review = buzz_reply_fingerprints(**values)
+        self.assertEqual(
+            BUZZ_OPERATIONS_RESPONSE_TEMPLATE_VERSION,
+            "origintrail-buzz-operations-response@1",
+        )
+        self.assertNotEqual(operations, review)
+        self.assertNotEqual(operations, buzz_operations_reply_fingerprints(
+            **{**values, "release_sha": "d" * 40}
+        ))
+
     async def test_nonzero_send_is_unknown_even_for_write_conflict(self):
         runner = FakeRunner([CommandResult(5, b"", b'{"error":"conflict"}')])
         with self.assertRaisesRegex(BuzzCliError, "buzz_delivery_unknown"):
@@ -521,6 +543,62 @@ class BuzzCliTests(unittest.IsolatedAsyncioTestCase):
                     BuzzCliError, "buzz_review_thread_invalid"
                 ):
                     await reader.read_thread("b" * 64)
+
+    async def test_channel_reader_uses_bounded_kind_nine_query(self):
+        event = {
+            "id": "b" * 64,
+            "pubkey": "d" * 64,
+            "kind": 9,
+            "content": "오늘 기획",
+            "created_at": 1_786_100_000,
+            "tags": [["h", CHANNEL_ID]],
+        }
+        runner = FakeRunner([CommandResult(
+            0, json.dumps([event]).encode(), b""
+        )])
+        reader = BuzzCliReader(_publisher(runner).config, runner=runner)
+        messages = await reader.read_channel(
+            since_epoch=1_786_099_000, limit=25
+        )
+        self.assertEqual(messages[0].content, "오늘 기획")
+        self.assertEqual(runner.calls[0][0], (
+            "/opt/coineasy/bin/buzz", "--format", "json", "messages",
+            "get", "--channel", CHANNEL_ID, "--since", "1786099000",
+            "--limit", "25", "--kinds", "9",
+        ))
+        self.assertEqual(runner.calls[0][1], b"")
+
+    async def test_channel_reader_rejects_invalid_bounds_without_io(self):
+        reader = BuzzCliReader(
+            _publisher(FakeRunner([])).config, runner=FakeRunner([])
+        )
+        for since_epoch, limit in ((0, 1), (True, 1), (1, 0), (1, 101)):
+            with self.subTest(since_epoch=since_epoch, limit=limit):
+                with self.assertRaisesRegex(
+                    BuzzCliError, "buzz_operations_request_invalid"
+                ):
+                    await reader.read_channel(
+                        since_epoch=since_epoch, limit=limit
+                    )
+
+    async def test_channel_reader_rejects_malformed_event_fail_closed(self):
+        runner = FakeRunner([CommandResult(
+            0,
+            json.dumps([{
+                "id": "b" * 64,
+                "pubkey": "d" * 64,
+                "kind": 9,
+                "content": "\ud800",
+                "created_at": 1_786_100_000,
+                "tags": [["h", CHANNEL_ID]],
+            }]).encode(),
+            b"",
+        )])
+        reader = BuzzCliReader(_publisher(runner).config, runner=runner)
+        with self.assertRaisesRegex(
+            BuzzCliError, "buzz_operations_channel_invalid"
+        ):
+            await reader.read_channel(since_epoch=1_786_099_000)
 
 
 class RunCommandTimeoutTests(unittest.IsolatedAsyncioTestCase):

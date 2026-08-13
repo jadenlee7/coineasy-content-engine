@@ -160,3 +160,62 @@ class BuzzReviewRunResult:
         if self.error is not None:
             result["error"] = self.error
         return result
+
+
+@dataclass(frozen=True)
+class BuzzOperationsCommand:
+    event_id: str
+    reviewer_pubkey: str
+    command: str
+    command_sha256: str
+    created_at_epoch: int
+    reply_to_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BuzzOperationsResponse:
+    workspace_id: str
+    command_event_id: str
+    channel_id: str
+    reply_to_event_id: str
+    thread_root_event_id: str
+    command: str
+    task_id: str | None
+    message: str
+    message_sha256: str
+    status: str
+    claim_granted: bool
+    reused: bool
+    request_sha256: str | None = None
+    delivery_started_at_epoch: int | None = None
+    relay_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BuzzOperationsRunResult:
+    ok: bool
+    status: str
+    command: str | None = None
+    command_event_id: str | None = None
+    task_id: str | None = None
+    reused: bool | None = None
+    response_status: str | None = None
+    response_event_id: str | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {"ok": self.ok, "status": self.status}
+        for key in (
+            "command",
+            "command_event_id",
+            "task_id",
+            "response_status",
+            "response_event_id",
+            "error",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                result[key] = value
+        if self.reused is not None:
+            result["reused"] = self.reused
+        return result

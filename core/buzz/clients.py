@@ -19,6 +19,8 @@ from core.buzz.models import (
     BuzzReviewRecordResult,
     BuzzReviewTarget,
     BuzzShadowEvent,
+    BuzzOperationsCommand,
+    BuzzOperationsResponse,
 )
 
 
@@ -32,6 +34,7 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_BANNER_BYTES = 4 * 1_024 * 1_024
 _ACK_TEMPLATE_VERSION = "origintrail-buzz-review-ack@1"
 _ACK_MODE = "durable_review_acknowledgement"
+_OPERATIONS_PROTOCOL = "origintrail-buzz-operations@1"
 
 
 def _uuid(value: object, name: str) -> str:
@@ -873,3 +876,310 @@ class BuzzReviewControlClient:
         if parsed.status != "delivery_unknown" or parsed.claim_granted:
             raise BuzzAdapterError("buzz_review_control_invalid_response")
         return parsed
+
+
+class BuzzOperationsControlClient:
+    def __init__(self, *, url: str, token: str, transport=None):
+        self.url = url
+        self.token = token
+        self.transport = transport
+
+    async def _post(
+        self,
+        body: Mapping[str, object],
+        *,
+        retry_commit_unknown: bool = False,
+    ) -> object:
+        encoded = json.dumps(
+            dict(body), allow_nan=False, ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        attempts = 2 if retry_commit_unknown else 1
+        response: httpx.Response | None = None
+        async with httpx.AsyncClient(
+            timeout=10.0, follow_redirects=False, transport=self.transport
+        ) as client:
+            for attempt in range(attempts):
+                try:
+                    response = await client.post(
+                        self.url,
+                        headers={
+                            "x-coineasy-buzz-operations-key": self.token,
+                            "content-type": "application/json",
+                        },
+                        content=encoded,
+                    )
+                except (httpx.TimeoutException, httpx.TransportError):
+                    if attempt + 1 < attempts:
+                        continue
+                    raise BuzzAdapterError(
+                        "buzz_operations_control_unavailable"
+                    ) from None
+                if 500 <= response.status_code <= 599 and attempt + 1 < attempts:
+                    continue
+                break
+        if response is None or response.status_code != 200:
+            raise BuzzAdapterError("buzz_operations_control_unavailable")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise BuzzAdapterError(
+                "buzz_operations_control_invalid_response"
+            ) from exc
+
+    @staticmethod
+    def _response(raw: object) -> tuple[BuzzOperationsResponse, bool]:
+        expected = {
+            "workspace_id", "command_event_id", "channel_id",
+            "reply_to_event_id", "thread_root_event_id", "command",
+            "task_id", "message", "message_sha256", "status",
+            "claim_granted", "reused", "authorized_once",
+            "request_sha256", "delivery_started_at_epoch", "relay_event_id",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        try:
+            workspace_id = str(uuid.UUID(str(raw["workspace_id"])))
+            channel_id = str(uuid.UUID(str(raw["channel_id"])))
+            task_id = (
+                None if raw["task_id"] is None
+                else str(uuid.UUID(str(raw["task_id"])))
+            )
+        except (ValueError, AttributeError):
+            raise BuzzAdapterError(
+                "buzz_operations_control_invalid_response"
+            ) from None
+        command_event_id = raw["command_event_id"]
+        reply_to_event_id = raw["reply_to_event_id"]
+        thread_root_event_id = raw["thread_root_event_id"]
+        message = raw["message"]
+        message_sha = raw["message_sha256"]
+        request_sha = raw["request_sha256"]
+        relay_event_id = raw["relay_event_id"]
+        started = raw["delivery_started_at_epoch"]
+        status = raw["status"]
+        try:
+            message_size = len(message.encode("utf-8"))
+        except (AttributeError, UnicodeEncodeError):
+            message_size = 0
+        if (
+            not isinstance(command_event_id, str)
+            or not _HASH.fullmatch(command_event_id)
+            or reply_to_event_id != command_event_id
+            or not isinstance(thread_root_event_id, str)
+            or not _HASH.fullmatch(thread_root_event_id)
+            or raw["command"] not in {"status", "plan_today", "next_task", "hold"}
+            or not isinstance(message, str)
+            or not 1 <= message_size <= 1_024
+            or "@" in message
+            or "nostr:npub1" in message.lower()
+            or not isinstance(message_sha, str)
+            or not _HASH.fullmatch(message_sha)
+            or hashlib.sha256(message.encode("utf-8")).hexdigest() != message_sha
+            or status not in _STATUSES
+            or not isinstance(raw["claim_granted"], bool)
+            or not isinstance(raw["reused"], bool)
+            or not isinstance(raw["authorized_once"], bool)
+            or (
+                request_sha is not None
+                and (not isinstance(request_sha, str) or not _HASH.fullmatch(request_sha))
+            )
+            or (
+                relay_event_id is not None
+                and (
+                    not isinstance(relay_event_id, str)
+                    or not _HASH.fullmatch(relay_event_id)
+                )
+            )
+            or (
+                started is not None
+                and (
+                    isinstance(started, bool) or not isinstance(started, int)
+                    or not 1 <= started <= 4_294_967_295
+                )
+            )
+            or (
+                status in {"attempt_started", "delivered", "delivery_unknown"}
+                and (request_sha is None or started is None)
+            )
+            or (status == "delivered") != (relay_event_id is not None)
+        ):
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return BuzzOperationsResponse(
+            workspace_id=workspace_id,
+            command_event_id=command_event_id,
+            channel_id=channel_id,
+            reply_to_event_id=command_event_id,
+            thread_root_event_id=thread_root_event_id,
+            command=str(raw["command"]),
+            task_id=task_id,
+            message=message,
+            message_sha256=message_sha,
+            status=str(status),
+            claim_granted=bool(raw["claim_granted"]),
+            reused=bool(raw["reused"]),
+            request_sha256=(str(request_sha) if request_sha is not None else None),
+            delivery_started_at_epoch=started,
+            relay_event_id=(
+                str(relay_event_id) if relay_event_id is not None else None
+            ),
+        ), bool(raw["authorized_once"])
+
+    async def record(
+        self,
+        command: BuzzOperationsCommand,
+        *,
+        channel_id: str,
+    ) -> BuzzOperationsResponse:
+        raw = await self._post({
+            "action": "record",
+            "channel_id": channel_id,
+            "command_event_id": command.event_id,
+            "reviewer_pubkey": command.reviewer_pubkey,
+            "protocol_version": _OPERATIONS_PROTOCOL,
+            "command": command.command,
+            "command_sha256": command.command_sha256,
+            "command_created_at_epoch": command.created_at_epoch,
+            "reply_to_event_id": command.reply_to_event_id,
+        }, retry_commit_unknown=True)
+        response, authorized = self._response(raw)
+        if response.command_event_id != command.event_id or authorized:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return response
+
+    async def claim_response(
+        self,
+        *,
+        command_event_id: str | None,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> BuzzOperationsResponse | None:
+        raw = await self._post({
+            "action": "response_claim",
+            "command_event_id": command_event_id,
+            "worker_id": worker_id,
+            "lease_seconds": lease_seconds,
+        })
+        if raw is None:
+            return None
+        response, authorized = self._response(raw)
+        if (
+            authorized
+            or not response.claim_granted
+            or response.status != "claimed"
+            or (
+                command_event_id is not None
+                and response.command_event_id != command_event_id
+            )
+        ):
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return response
+
+    async def mark_response_attempt(
+        self,
+        response: BuzzOperationsResponse,
+        *,
+        worker_id: str,
+        request_sha256: str,
+    ) -> bool:
+        raw = await self._post({
+            "action": "response_attempt",
+            "command_event_id": response.command_event_id,
+            "worker_id": worker_id,
+            "message_sha256": response.message_sha256,
+            "request_sha256": request_sha256,
+        })
+        parsed, authorized = self._response(raw)
+        if (
+            parsed.command_event_id != response.command_event_id
+            or parsed.message_sha256 != response.message_sha256
+            or parsed.request_sha256 != request_sha256
+        ):
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return authorized and not parsed.reused
+
+    async def complete_response(
+        self,
+        response: BuzzOperationsResponse,
+        *,
+        worker_id: str,
+        request_sha256: str,
+        relay_event_id: str,
+        reconciled: bool,
+    ) -> None:
+        raw = await self._post({
+            "action": "response_complete",
+            "command_event_id": response.command_event_id,
+            "worker_id": worker_id,
+            "request_sha256": request_sha256,
+            "relay_event_id": relay_event_id,
+            "reconciled": reconciled,
+        }, retry_commit_unknown=True)
+        parsed, authorized = self._response(raw)
+        if (
+            authorized
+            or parsed.status != "delivered"
+            or parsed.request_sha256 != request_sha256
+            or parsed.relay_event_id != relay_event_id
+        ):
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+
+    async def fail_response(
+        self,
+        response: BuzzOperationsResponse,
+        *,
+        worker_id: str,
+        error_code: str,
+        retryable_before_attempt: bool,
+    ) -> str:
+        raw = await self._post({
+            "action": "response_fail",
+            "command_event_id": response.command_event_id,
+            "worker_id": worker_id,
+            "error_code": error_code,
+            "retryable_before_attempt": retryable_before_attempt,
+        })
+        parsed, authorized = self._response(raw)
+        if authorized or parsed.command_event_id != response.command_event_id:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return parsed.status
+
+    async def reconcile(self, *, limit: int) -> dict[str, int]:
+        raw = await self._post({"action": "response_reconcile", "limit": limit})
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "ok", "workspace_id", "requeued_count", "failed_count", "unknown_count"
+        } or raw.get("ok") is not True:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        try:
+            uuid.UUID(str(raw["workspace_id"]))
+        except (ValueError, AttributeError):
+            raise BuzzAdapterError(
+                "buzz_operations_control_invalid_response"
+            ) from None
+        counts: dict[str, int] = {}
+        for key in ("requeued_count", "failed_count", "unknown_count"):
+            value = raw[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise BuzzAdapterError("buzz_operations_control_invalid_response")
+            counts[key] = value
+        return counts
+
+    async def first_unknown(self) -> BuzzOperationsResponse | None:
+        raw = await self._post({"action": "response_unknown", "limit": 1})
+        if not isinstance(raw, Mapping) or set(raw) != {"workspace_id", "items"}:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        try:
+            uuid.UUID(str(raw["workspace_id"]))
+        except (ValueError, AttributeError):
+            raise BuzzAdapterError(
+                "buzz_operations_control_invalid_response"
+            ) from None
+        items = raw["items"]
+        if not isinstance(items, list) or len(items) > 1:
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        if not items:
+            return None
+        response, authorized = self._response(items[0])
+        if authorized or response.status != "delivery_unknown":
+            raise BuzzAdapterError("buzz_operations_control_invalid_response")
+        return response
