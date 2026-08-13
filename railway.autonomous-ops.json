@@ -1,0 +1,13 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.autonomous-ops"
+  },
+  "deploy": {
+    "preDeployCommand": "python -m scripts.run_origintrail_autonomous_ops --validate-only",
+    "startCommand": "python -m scripts.run_origintrail_autonomous_ops --run-once",
+    "cronSchedule": "*/15 * * * *",
+    "restartPolicyType": "NEVER"
+  }
+}

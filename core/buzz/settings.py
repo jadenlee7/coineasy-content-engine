@@ -24,6 +24,7 @@ _RESERVED_SECRET_NAMES = (
     "SUPABASE_BUZZ_SHADOW_KEY",
     "SUPABASE_BUZZ_REVIEW_KEY",
     "BUZZ_REVIEW_WORKER_TOKEN",
+    "BUZZ_OPERATIONS_WORKER_TOKEN",
     "STUDIO_ACCESS_TOKEN",
     "API_SECRET",
     "PUBLICATION_WORKER_TOKEN",
@@ -72,6 +73,30 @@ def buzz_review_durable_ack_enabled(
         return False
     raise ValueError(
         "BUZZ_REVIEW_DURABLE_ACK_ENABLED must be literal true or false"
+    )
+
+
+def buzz_operations_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    raw = env.get("BUZZ_OPERATIONS_ENABLED", "false")
+    if raw == "true":
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise ValueError("BUZZ_OPERATIONS_ENABLED must be literal true or false")
+
+
+def buzz_operations_response_enabled(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    env = os.environ if environ is None else environ
+    raw = env.get("BUZZ_OPERATIONS_RESPONSE_ENABLED", "false")
+    if raw == "true":
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise ValueError(
+        "BUZZ_OPERATIONS_RESPONSE_ENABLED must be literal true or false"
     )
 
 
@@ -337,6 +362,7 @@ class BuzzReviewSettings:
             "API_SECRET",
             "PUBLICATION_WORKER_TOKEN",
             "OPENAI_API_KEY",
+            "BUZZ_OPERATIONS_WORKER_TOKEN",
         )
         if any(
             env.get(name, "")
@@ -438,5 +464,171 @@ class BuzzReviewSettings:
             durable_acknowledgement_enabled=durable_acknowledgement_enabled,
             acknowledgement_lease_seconds=_bounded_int(
                 env, "BUZZ_REVIEW_ACK_LEASE_SECONDS", 180, 180, 600
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class BuzzOperationsSettings:
+    operations_url: str
+    operations_token: str
+    relay_url: str
+    private_key: str
+    auth_tag: str | None
+    channel_id: str
+    cli_path: Path
+    reviewer_pubkeys: frozenset[str]
+    service_pubkey: str
+    deployment_environment: str
+    release_sha: str
+    protocol_start_epoch: int
+    response_enabled: bool
+    response_lease_seconds: int
+
+    @classmethod
+    def from_env(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> "BuzzOperationsSettings":
+        return cls._from_env(environ, require_enabled=True)
+
+    @classmethod
+    def from_env_for_validation(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> "BuzzOperationsSettings":
+        return cls._from_env(environ, require_enabled=False)
+
+    @classmethod
+    def _from_env(
+        cls,
+        environ: Mapping[str, str] | None,
+        *,
+        require_enabled: bool,
+    ) -> "BuzzOperationsSettings":
+        env = os.environ if environ is None else environ
+        enabled = buzz_operations_enabled(env)
+        response_enabled = buzz_operations_response_enabled(env)
+        if require_enabled and not enabled:
+            raise ValueError("BUZZ_OPERATIONS_ENABLED must be true")
+        if enabled != response_enabled:
+            raise ValueError(
+                "Buzz operations scanner and response gates must match"
+            )
+        if env.get("BUZZ_OPERATIONS_ALLOWED_CLIENTS", "") != "origintrail":
+            raise ValueError(
+                "BUZZ_OPERATIONS_ALLOWED_CLIENTS must be origintrail"
+            )
+        operations_url = _https_endpoint(
+            env.get("BUZZ_OPERATIONS_URL", ""),
+            "/api/buzz-operations/origintrail",
+        )
+        operations_token = _token(env, "BUZZ_OPERATIONS_WORKER_TOKEN")
+        reserved_names = (
+            "BUZZ_REVIEW_WORKER_TOKEN",
+            "BUZZ_SHADOW_ACCESS_TOKEN",
+            "BUZZ_DELIVERY_WORKER_TOKEN",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "SUPABASE_BUZZ_DELIVERY_KEY",
+            "SUPABASE_BUZZ_SHADOW_KEY",
+            "SUPABASE_BUZZ_REVIEW_KEY",
+            "SUPABASE_BUZZ_OPERATIONS_KEY",
+            "STUDIO_ACCESS_TOKEN",
+            "API_SECRET",
+            "PUBLICATION_WORKER_TOKEN",
+            "OPENAI_API_KEY",
+        )
+        if any(
+            env.get(name, "")
+            and secrets.compare_digest(operations_token, env[name])
+            for name in reserved_names
+        ):
+            raise ValueError("Buzz operations token must be a dedicated secret")
+
+        private_key = env.get("BUZZ_PRIVATE_KEY", "").strip()
+        if not (_HEX_KEY.fullmatch(private_key) or _NSEC_KEY.fullmatch(private_key)):
+            raise ValueError("BUZZ_PRIVATE_KEY has an invalid format")
+        raw_auth = env.get("BUZZ_AUTH_TAG", "").strip()
+        auth_tag: str | None = None
+        if raw_auth:
+            if len(raw_auth.encode("utf-8")) > 8_192:
+                raise ValueError("BUZZ_AUTH_TAG is too large")
+            try:
+                decoded = json.loads(raw_auth)
+            except ValueError as exc:
+                raise ValueError("BUZZ_AUTH_TAG must be JSON") from exc
+            auth_tag = json.dumps(
+                _nip_oa_auth_tag(decoded), separators=(",", ":")
+            )
+        if secrets.compare_digest(operations_token, private_key) or (
+            raw_auth and secrets.compare_digest(operations_token, raw_auth)
+        ):
+            raise ValueError("Buzz operations token must be a dedicated secret")
+
+        try:
+            channel_id = str(uuid.UUID(env.get("BUZZ_CHANNEL_ID", "").strip()))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("BUZZ_CHANNEL_ID must be a UUID") from exc
+        cli_path = Path(env.get("BUZZ_CLI_PATH", ""))
+        if not cli_path.is_absolute() or cli_path.name != "buzz":
+            raise ValueError("BUZZ_CLI_PATH must be an absolute buzz executable path")
+
+        reviewer_values = [
+            item.strip()
+            for item in env.get("BUZZ_OPERATIONS_REVIEWER_PUBKEYS", "").split(",")
+        ]
+        if (
+            not 1 <= len(reviewer_values) <= 5
+            or any(not _LOWER_HEX_64.fullmatch(item) for item in reviewer_values)
+            or len(set(reviewer_values)) != len(reviewer_values)
+        ):
+            raise ValueError(
+                "BUZZ_OPERATIONS_REVIEWER_PUBKEYS must contain 1 to 5 distinct keys"
+            )
+        service_pubkey = env.get("BUZZ_SERVICE_PUBKEY", "").strip()
+        if not _LOWER_HEX_64.fullmatch(service_pubkey):
+            raise ValueError("BUZZ_SERVICE_PUBKEY must be a lowercase hex key")
+        if service_pubkey in reviewer_values:
+            raise ValueError("Buzz service identity cannot command itself")
+
+        deployment_environment = env.get("RAILWAY_ENVIRONMENT_NAME", "").strip()
+        expected_environment = env.get(
+            "BUZZ_OPERATIONS_EXPECTED_ENVIRONMENT", ""
+        ).strip()
+        if (
+            deployment_environment not in {"staging", "production"}
+            or expected_environment != deployment_environment
+        ):
+            raise ValueError("Buzz operations environment fence does not match")
+        if enabled and deployment_environment != "staging":
+            raise ValueError("Buzz operations v1 is restricted to staging")
+
+        release_sha = env.get("RAILWAY_GIT_COMMIT_SHA", "").strip()
+        expected_release_sha = env.get(
+            "BUZZ_OPERATIONS_RELEASE_SHA", ""
+        ).strip()
+        if (
+            not re.fullmatch(r"[a-f0-9]{40}", release_sha)
+            or release_sha != expected_release_sha
+        ):
+            raise ValueError("Buzz operations release SHA fence does not match")
+
+        return cls(
+            operations_url=operations_url,
+            operations_token=operations_token,
+            relay_url=_relay_url(env.get("BUZZ_RELAY_URL", "")),
+            private_key=private_key,
+            auth_tag=auth_tag,
+            channel_id=channel_id,
+            cli_path=cli_path,
+            reviewer_pubkeys=frozenset(reviewer_values),
+            service_pubkey=service_pubkey,
+            deployment_environment=deployment_environment,
+            release_sha=release_sha,
+            protocol_start_epoch=_bounded_int(
+                env, "BUZZ_OPERATIONS_PROTOCOL_START_EPOCH", 0,
+                1_700_000_000, 4_294_967_295,
+            ),
+            response_enabled=response_enabled,
+            response_lease_seconds=_bounded_int(
+                env, "BUZZ_OPERATIONS_RESPONSE_LEASE_SECONDS", 180, 180, 600
             ),
         )
