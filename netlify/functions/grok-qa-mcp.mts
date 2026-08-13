@@ -27,6 +27,15 @@ import { grokQaOauthConfig } from "./_shared/grok-qa-oauth.mts";
 const PRODUCTION_HOST = "coineasy-newscard.netlify.app";
 const MAX_MCP_REQUEST_BYTES = 128 * 1024;
 
+function validConnectorHost(requestUrl: URL): boolean {
+  const host = requestUrl.hostname.toLowerCase();
+  if (host === PRODUCTION_HOST || host === "localhost" || host === "127.0.0.1") return true;
+  if (Netlify.env.get("CONTEXT") !== "deploy-preview") return false;
+  const prime = (Netlify.env.get("DEPLOY_PRIME_URL") || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/deploy-preview-\d+--coineasy-newscard\.netlify\.app$/.test(prime)
+    && requestUrl.origin === prime;
+}
+
 const clientSchema = z.enum(["yellow", "origintrail", "squid", "babylon"]);
 const kindSchema = z.enum(["daily_news", "article", "tutorial"]);
 const decisionSchema = z.enum(["PASS", "WARN", "BLOCK"]);
@@ -370,8 +379,7 @@ function jsonResponse(body: Record<string, unknown>, status: number, headers = {
 
 export default async (req: Request, _context: Context): Promise<Response> => {
   const requestUrl = new URL(req.url);
-  const host = requestUrl.hostname.toLowerCase();
-  if (host !== PRODUCTION_HOST && host !== "localhost" && host !== "127.0.0.1") {
+  if (!validConnectorHost(requestUrl)) {
     return jsonResponse({ error: "invalid_connector_host" }, 421);
   }
   const config = grokQaConnectorConfig((name) => Netlify.env.get(name));

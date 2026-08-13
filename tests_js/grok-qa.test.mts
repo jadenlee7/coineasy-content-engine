@@ -120,6 +120,19 @@ function mcpRequest(body: Record<string, unknown>, token = TOKEN): Request {
   });
 }
 
+function mcpRequestAt(url: string, body: Record<string, unknown>, token = TOKEN): Request {
+  return new Request(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2025-06-18",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 async function sseJson(response: Response): Promise<Record<string, any>> {
   const text = await response.text();
   const data = text.split("\n").find((line) => line.startsWith("data: "));
@@ -258,6 +271,40 @@ test("MCP advertises exactly the bounded review tools and rejects a wrong bearer
     assert.doesNotMatch(names.join(" "), /approve|publish|typefully/);
     assert.equal(payload.result.tools[0].annotations.readOnlyHint, true);
     assert.equal(payload.result.tools[2].annotations.idempotentHint, true);
+  });
+});
+
+test("MCP accepts only the exact Netlify deploy-preview prime URL in deploy-preview context", async () => {
+  const preview = "https://deploy-preview-139--coineasy-newscard.netlify.app";
+  const body = { jsonrpc: "2.0", id: 21, method: "tools/list", params: {} };
+  await withNetlifyEnvironment({
+    GROK_QA_CONNECTOR_TOKEN: TOKEN,
+    CONTEXT: "deploy-preview",
+    DEPLOY_PRIME_URL: preview,
+  }, async () => {
+    const exact = await grokQaHandler(mcpRequestAt(`${preview}/api/grok-qa/mcp`, body), {} as never);
+    assert.equal(exact.status, 200);
+    const wrongPreview = await grokQaHandler(
+      mcpRequestAt("https://deploy-preview-140--coineasy-newscard.netlify.app/api/grok-qa/mcp", body),
+      {} as never,
+    );
+    assert.equal(wrongPreview.status, 421);
+    const customHost = await grokQaHandler(
+      mcpRequestAt("https://preview.attacker.example/api/grok-qa/mcp", body),
+      {} as never,
+    );
+    assert.equal(customHost.status, 421);
+  });
+  await withNetlifyEnvironment({
+    GROK_QA_CONNECTOR_TOKEN: TOKEN,
+    CONTEXT: "production",
+    DEPLOY_PRIME_URL: preview,
+  }, async () => {
+    const productionContext = await grokQaHandler(
+      mcpRequestAt(`${preview}/api/grok-qa/mcp`, body),
+      {} as never,
+    );
+    assert.equal(productionContext.status, 421);
   });
 });
 
