@@ -56,7 +56,7 @@ security definer
 set search_path = ''
 as $function$
 declare
-    current_time constant timestamptz := clock_timestamp();
+    observed_at constant timestamptz := clock_timestamp();
 begin
     if target_code_sha256 !~ '^[a-f0-9]{64}$'
         or target_client_id_sha256 !~ '^[a-f0-9]{64}$'
@@ -69,8 +69,8 @@ begin
         or target_resource ~ '[[:cntrl:][:space:]]'
         or target_scope <> 'coineasy.qa'
         or target_code_challenge !~ '^[A-Za-z0-9_-]{43,128}$'
-        or target_expires_at <= current_time
-        or target_expires_at > current_time + interval '10 minutes'
+        or target_expires_at <= observed_at
+        or target_expires_at > observed_at + interval '10 minutes'
     then
         raise exception 'invalid Grok QA OAuth authorization code request';
     end if;
@@ -79,7 +79,7 @@ begin
     where expired.code_sha256 in (
         select candidate.code_sha256
         from private.grok_qa_oauth_codes as candidate
-        where candidate.expires_at < current_time - interval '1 day'
+        where candidate.expires_at < observed_at - interval '1 day'
         order by candidate.expires_at
         limit 50
         for update skip locked
@@ -124,7 +124,7 @@ security definer
 set search_path = ''
 as $function$
 declare
-    current_time constant timestamptz := clock_timestamp();
+    observed_at constant timestamptz := clock_timestamp();
     authorization_code private.grok_qa_oauth_codes%rowtype;
 begin
     if target_code_sha256 !~ '^[a-f0-9]{64}$'
@@ -143,7 +143,7 @@ begin
 
     if not found
         or authorization_code.consumed_at is not null
-        or authorization_code.expires_at <= current_time
+        or authorization_code.expires_at <= observed_at
         or authorization_code.client_id_sha256 <> target_client_id_sha256
         or authorization_code.redirect_uri <> target_redirect_uri
         or authorization_code.resource <> target_resource
@@ -154,7 +154,7 @@ begin
     end if;
 
     update private.grok_qa_oauth_codes
-    set consumed_at = current_time
+    set consumed_at = observed_at
     where code_sha256 = target_code_sha256
         and consumed_at is null;
 

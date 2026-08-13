@@ -40,7 +40,7 @@ def test_authorization_codes_are_private_force_rls_and_relation_grant_free():
 def test_code_creation_is_short_lived_bounded_and_collision_closed():
     create = _function("create_grok_qa_oauth_code")
     assert "security definer\nset search_path = ''" in create
-    assert "target_expires_at > current_time + interval '10 minutes'" in create
+    assert "target_expires_at > observed_at + interval '10 minutes'" in create
     assert "limit 50\n        for update skip locked" in create
     assert "insert into private.grok_qa_oauth_codes" in create
     assert "when unique_violation then" in create
@@ -60,7 +60,7 @@ def test_code_consumption_binds_pkce_client_redirect_resource_and_scope_once():
     ):
         assert binding in consume
     assert "authorization_code.consumed_at is not null" in consume
-    assert "set consumed_at = current_time" in consume
+    assert "set consumed_at = observed_at" in consume
     assert "and consumed_at is null" in consume
     assert "'authorized', true, 'status', 'consumed'" in consume
 
