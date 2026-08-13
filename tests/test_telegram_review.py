@@ -150,6 +150,10 @@ async def test_review_sender_posts_banner_then_copy_without_exposing_config(monk
     assert fake.calls[0]["files"]["photo"][1] == PNG_BYTES
     assert fake.calls[1]["url"].endswith("/sendMessage")
     assert (
+        fake.calls[1]["json"]["reply_markup"]["inline_keyboard"][0][0]["text"]
+        == "콘텐츠 스튜디오 열기"
+    )
+    assert (
         fake.calls[1]["json"]["reply_markup"]["inline_keyboard"][0][0]["url"]
         == notification_payload()["review_url"]
     )

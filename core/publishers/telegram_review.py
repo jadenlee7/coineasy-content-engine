@@ -189,7 +189,11 @@ async def send_telegram_review(
                 "link_preview_options": {"is_disabled": True},
                 "reply_markup": {
                     "inline_keyboard": [[{
-                        "text": "✅ 승인·수정 확인",
+                        # Opening the Studio is not itself an approval action.
+                        # Keep the CTA factual for smoke packets and real
+                        # review items alike; the authenticated Studio screen
+                        # owns the separate approve/request-changes action.
+                        "text": "콘텐츠 스튜디오 열기",
                         "url": review_url,
                     }]],
                 },
