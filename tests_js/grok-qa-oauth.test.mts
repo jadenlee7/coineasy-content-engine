@@ -81,6 +81,10 @@ test("OAuth configuration is exact, scoped, and secret-disjoint", () => {
     ...environment,
     SUPABASE_SERVICE_ROLE_KEY: CONNECTOR_TOKEN,
   })[name], ORIGIN), null);
+  assert.equal(grokQaOauthConfig((name) => ({
+    ...environment,
+    GROK_QA_RELAY_TOKEN: CONNECTOR_TOKEN,
+  })[name], ORIGIN), null);
   assert.equal(grokQaOauthConfig((name) => environment[name], "https://evil.example"), null);
 });
 

@@ -128,10 +128,15 @@ async function sseJson(response: Response): Promise<Record<string, any>> {
 }
 
 test("Grok review package exposes generated QA evidence but never raw source or signed URLs", () => {
-  const reviewPackage = buildGrokQaReviewPackage(detail());
+  const item = detail();
+  item.title = "mutable item title must not reach Grok";
+  const reviewPackage = buildGrokQaReviewPackage(item);
+  assert.equal(reviewPackage.title, "Squid가 Telegram에서 열렸어요");
   assert.deepEqual(reviewPackage.source_urls, [SOURCE_URL]);
   assert.equal(reviewPackage.banner.available, true);
   assert.equal(reviewPackage.generated_content.spec.headline, "텔레그램에서도 Squid를 만나보세요");
+  assert.equal(reviewPackage.brand_contract.profile_version, "squid/brand-review@1");
+  assert.match(reviewPackage.brand_contract.banner_rule, /final composition/);
   const serialized = JSON.stringify(reviewPackage);
   assert.doesNotMatch(serialized, /private raw source|private resolved source/);
   assert.doesNotMatch(serialized, /signed-source|storage\/v1\/object\/sign|token=secret/);
@@ -150,6 +155,11 @@ test("Grok connector requires its own bounded constant-time bearer", () => {
   )), null);
   assert.equal(grokQaConnectorConfig((name) => (
     ["GROK_QA_CONNECTOR_TOKEN", "GROK_QA_OAUTH_SIGNING_SECRET"].includes(name)
+      ? TOKEN
+      : undefined
+  )), null);
+  assert.equal(grokQaConnectorConfig((name) => (
+    ["GROK_QA_CONNECTOR_TOKEN", "GROK_QA_DISPATCH_TOKEN"].includes(name)
       ? TOKEN
       : undefined
   )), null);
@@ -274,4 +284,67 @@ test("MCP advertises protected-resource discovery only with a complete OAuth con
       'Bearer realm="coineasy-grok-qa", resource_metadata="https://coineasy-newscard.netlify.app/.well-known/oauth-protected-resource/api/grok-qa/mcp"',
     );
   });
+});
+
+test("MCP submit rejects a missing banner before claiming a durable receipt", async () => {
+  const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  let receiptCalls = 0;
+  const item = detail();
+  const raw = {
+    content_item_id: ITEM_ID,
+    content_version_id: VERSION_ID,
+    client_id: item.client_id,
+    content_kind: item.content_kind,
+    title: "mutable item title",
+    status: item.status,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+    current_version: item.current_version,
+    assets: [],
+    figma_links: [],
+  };
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/rest/v1/rpc/get_content_library_item")) {
+        return Response.json(raw);
+      }
+      if (url.endsWith("/rest/v1/rpc/claim_grok_qa_verdict")) {
+        receiptCalls += 1;
+        return Response.json({ claimed: true });
+      }
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  try {
+    await withNetlifyEnvironment({
+      GROK_QA_CONNECTOR_TOKEN: TOKEN,
+      GROK_QA_RELAY_TOKEN: "dedicated-relay-token-that-is-long-enough",
+      RAILWAY_API_URL: "https://content-engine.example",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key-for-private-tests",
+      CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+    }, async () => {
+      const response = await grokQaHandler(mcpRequest({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "coineasy_submit_qa_verdict",
+          arguments: {
+            content_item_id: ITEM_ID,
+            content_version_id: VERSION_ID,
+            verdict,
+          },
+        },
+      }), {} as never);
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /qa_banner_unavailable/);
+    });
+  } finally {
+    if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
+    else Reflect.deleteProperty(globalThis, "fetch");
+  }
+  assert.equal(receiptCalls, 0);
 });

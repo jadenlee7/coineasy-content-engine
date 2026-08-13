@@ -8,6 +8,7 @@ Authentication: X-API-Key header
 Deployment: Railway
 """
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -67,17 +68,159 @@ from api.output_retention import (
     clear_run_active,
     mark_run_active,
 )
+from api.grok_qa_security import has_grok_qa_relay_access
 
 
 # ────────────────────────────────────────────────────
 # App setup
 # ────────────────────────────────────────────────────
 
+GROK_QA_VERDICT_MAX_BODY_BYTES = 4_200_000
+_GROK_QA_VERDICT_PATHS = frozenset({
+    "/internal/grok-qa-verdict",
+    "/api/internal/grok-qa-verdict",
+})
+
+
+class _GrokQaVerdictRequestGate:
+    """Authenticate and bound the private QA relay before body parsing.
+
+    FastAPI validates body models before entering a path operation, so checking
+    the relay credential inside ``notify_grok_qa_verdict`` is too late to stop
+    an unauthenticated base64/Pydantic decode. This raw ASGI gate runs before
+    routing and buffers only an authenticated, fixed-length, bounded body.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    async def _reject(send, status_code: int, detail: str) -> None:
+        body = json.dumps(
+            {"detail": detail},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": status_code,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope.get("type") != "http"
+            or scope.get("path") not in _GROK_QA_VERDICT_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        raw_headers = scope.get("headers", ())
+        token_values = [
+            value
+            for name, value in raw_headers
+            if name.lower() == b"x-grok-qa-relay-token"
+        ]
+        submitted_token = ""
+        if len(token_values) == 1 and len(token_values[0]) <= 512:
+            try:
+                submitted_token = token_values[0].decode("ascii")
+            except UnicodeDecodeError:
+                submitted_token = ""
+        if not has_grok_qa_relay_access(submitted_token):
+            await self._reject(
+                send,
+                403,
+                "grok_qa_verdict_requires_relay_token",
+            )
+            return
+
+        # The internal producer sends one known JSON buffer. Reject transfer
+        # coding and missing/ambiguous lengths instead of accepting an
+        # unbounded stream at this privileged endpoint.
+        if any(
+            name.lower() == b"transfer-encoding"
+            for name, _value in raw_headers
+        ):
+            await self._reject(
+                send,
+                400,
+                "grok_qa_verdict_chunked_body_not_allowed",
+            )
+            return
+        length_values = [
+            value
+            for name, value in raw_headers
+            if name.lower() == b"content-length"
+        ]
+        if len(length_values) != 1:
+            await self._reject(send, 411, "grok_qa_verdict_length_required")
+            return
+        try:
+            declared_length_text = length_values[0].decode("ascii")
+            if not re.fullmatch(r"(?:0|[1-9][0-9]{0,7})", declared_length_text):
+                raise ValueError
+            declared_length = int(declared_length_text)
+        except (UnicodeDecodeError, ValueError):
+            await self._reject(send, 400, "grok_qa_verdict_length_invalid")
+            return
+        if declared_length > GROK_QA_VERDICT_MAX_BODY_BYTES:
+            await self._reject(send, 413, "grok_qa_verdict_body_too_large")
+            return
+
+        chunks: list[bytes] = []
+        received_length = 0
+        while True:
+            message = await receive()
+            if message.get("type") == "http.disconnect":
+                return
+            if message.get("type") != "http.request":
+                await self._reject(send, 400, "grok_qa_verdict_body_invalid")
+                return
+            chunk = message.get("body", b"")
+            if not isinstance(chunk, bytes):
+                await self._reject(send, 400, "grok_qa_verdict_body_invalid")
+                return
+            received_length += len(chunk)
+            if (
+                received_length > declared_length
+                or received_length > GROK_QA_VERDICT_MAX_BODY_BYTES
+            ):
+                await self._reject(send, 413, "grok_qa_verdict_body_too_large")
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        if received_length != declared_length:
+            await self._reject(send, 400, "grok_qa_verdict_length_mismatch")
+            return
+
+        body = b"".join(chunks)
+        body_available = True
+
+        async def replay_receive():
+            nonlocal body_available
+            if body_available:
+                body_available = False
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": False,
+                }
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
 app = FastAPI(
     title="CoinEasy Content Engine",
     description="Multi-tenant Korean content generation for Web3 clients",
     version="1.0.0",
 )
+app.add_middleware(_GrokQaVerdictRequestGate)
 
 API_SECRET = os.environ.get("API_SECRET", "")
 OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/tmp/content_engine_output")).resolve()
@@ -558,6 +701,7 @@ class GrokQaVerdictRequest(BaseModel):
         "revise_banner",
     ]
     review_url: str = Field(min_length=20, max_length=500)
+    image_data_url: str = Field(min_length=30, max_length=4_100_000)
 
     @field_validator("title", "summary")
     @classmethod
@@ -607,6 +751,9 @@ class GrokQaVerdictRequest(BaseModel):
             for issue in self.issues
         ):
             raise ValueError("grok_qa_issue_source_mismatch")
+        decoded_image = decode_review_image_data_url(self.image_data_url)
+        if decoded_image is None or decoded_image[0] != "image/png":
+            raise ValueError("grok_qa_image_data_invalid")
         return self
 
 
@@ -703,10 +850,13 @@ async def notify_telegram_review(
 @app.post("/internal/grok-qa-verdict")
 async def notify_grok_qa_verdict(
     req: GrokQaVerdictRequest,
-    x_api_key: str = Header(default=""),
+    x_grok_qa_relay_token: str = Header(
+        default="",
+        alias="X-Grok-QA-Relay-Token",
+    ),
 ):
-    if _check_auth(x_api_key) != "admin":
-        raise HTTPException(403, "grok_qa_verdict_requires_admin_key")
+    if not has_grok_qa_relay_access(x_grok_qa_relay_token):
+        raise HTTPException(403, "grok_qa_verdict_requires_relay_token")
     config = telegram_content_ops_relay_config(telegram_review_config())
     if config is None:
         raise HTTPException(503, "telegram_content_ops_relay_not_configured")
@@ -726,12 +876,15 @@ async def notify_grok_qa_verdict(
         issues=[issue.model_dump(exclude_none=True) for issue in req.issues],
         next_action=req.next_action,
     )
-    sent = await send_telegram_grok_qa_verdict(
+    outcome = await send_telegram_grok_qa_verdict(
         config=config,
         message_html=message,
         review_url=req.review_url,
+        image_data_url=req.image_data_url,
     )
-    if not sent:
+    if outcome == "delivery_unknown":
+        raise HTTPException(504, "grok_qa_private_relay_delivery_unknown")
+    if outcome != "sent":
         raise HTTPException(502, "grok_qa_private_relay_failed")
     return {
         "sent": True,

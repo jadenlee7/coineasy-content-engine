@@ -25,6 +25,9 @@ const RESERVED_SECRETS = [
   "PUBLICATION_WORKER_TOKEN",
   "SUPABASE_SERVICE_ROLE_KEY",
   "GROK_QA_CONNECTOR_TOKEN",
+  "GROK_QA_RELAY_TOKEN",
+  "GROK_QA_DISPATCH_TOKEN",
+  "XAI_API_KEY",
 ] as const;
 
 export type GrokQaOauthConfig = {
@@ -129,6 +132,11 @@ export function grokQaOauthConfig(
     authorizationKey,
   ];
   const distinct = new Set(values).size === values.length;
+  const connectorConflict = RESERVED_SECRETS.some((name) => {
+    if (name === "GROK_QA_CONNECTOR_TOKEN") return false;
+    const reserved = (getEnv(name) || "").trim();
+    return Boolean(reserved) && reserved === connectorToken;
+  });
   const conflicts = [operatorSecret, signingSecret, authorizationKey].some((value) => (
     RESERVED_SECRETS.some((name) => {
       const reserved = (getEnv(name) || "").trim();
@@ -158,6 +166,7 @@ export function grokQaOauthConfig(
     || !secret(authorizationKey)
     || projectApiKey === authorizationKey
     || !distinct
+    || connectorConflict
     || conflicts
     || !validSupabase
     || !allowedRedirectOrigins

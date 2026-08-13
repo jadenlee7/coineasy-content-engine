@@ -1,4 +1,4 @@
-# ADR-016: Grok QA MCP OAuth adapter
+# ADR-017: Grok QA MCP OAuth adapter
 
 - Status: Proposed; code and deploy-preview only
 - Date: 2026-08-13

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 from typing import Any
@@ -29,6 +30,7 @@ IMAGE_DATA_URL = (
 )
 ADMIN_KEY = "telegram-review-admin-key"
 CLIENT_KEY = "telegram-review-squid-key"
+GROK_QA_RELAY_TOKEN = "grok-qa-relay-dedicated-token-20260813"
 
 
 class _FakeResponse:
@@ -110,6 +112,7 @@ def grok_qa_payload(**overrides):
             "https://coineasy-newscard.netlify.app/"
             f"?view=library&content={ITEM_ID}"
         ),
+        "image_data_url": IMAGE_DATA_URL,
     }
     payload.update(overrides)
     return payload
@@ -357,6 +360,7 @@ def test_grok_qa_message_is_bounded_escaped_and_explicitly_advisory():
 @pytest.mark.asyncio
 async def test_grok_qa_sender_uses_only_the_content_ops_room(monkeypatch):
     fake = _FakeAsyncClient([
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 8}}),
         _FakeResponse(200, {"ok": True, "result": {"message_id": 9}}),
     ])
     monkeypatch.setattr(
@@ -369,22 +373,49 @@ async def test_grok_qa_sender_uses_only_the_content_ops_room(monkeypatch):
         ),
         message_html="🤖 <b>CoinEasy Grok QA</b>",
         review_url=grok_qa_payload()["review_url"],
+        image_data_url=IMAGE_DATA_URL,
     )
-    assert sent is True
-    assert len(fake.calls) == 1
-    assert f"/bot{RELAY_BOT_TOKEN}/sendMessage" in fake.calls[0]["url"]
-    assert fake.calls[0]["json"]["chat_id"] == COLLABORATION_CHAT_ID
+    assert sent == "sent"
+    assert len(fake.calls) == 2
+    assert f"/bot{RELAY_BOT_TOKEN}/sendPhoto" in fake.calls[0]["url"]
+    assert fake.calls[0]["data"]["chat_id"] == COLLABORATION_CHAT_ID
+    assert fake.calls[0]["files"]["photo"][1] == PNG_BYTES
+    assert "자동 승인/발행 아님" in fake.calls[0]["data"]["caption"]
+    assert f"/bot{RELAY_BOT_TOKEN}/sendMessage" in fake.calls[1]["url"]
+    assert fake.calls[1]["json"]["chat_id"] == COLLABORATION_CHAT_ID
     assert BOT_TOKEN not in fake.calls[0]["url"]
 
 
-def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
-    from api import security, server
-
+@pytest.mark.asyncio
+async def test_grok_qa_sender_never_retries_after_partial_packet(monkeypatch):
+    fake = _FakeAsyncClient([
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 8}}),
+        _FakeResponse(400, {"ok": False, "description": "message rejected"}),
+    ])
     monkeypatch.setattr(
-        security,
-        "API_KEYS",
-        {"admin": ADMIN_KEY, "squid": CLIENT_KEY},
+        "core.publishers.telegram_review.httpx.AsyncClient",
+        lambda *args, **kwargs: fake,
     )
+    outcome = await send_telegram_grok_qa_verdict(
+        config=TelegramContentOpsRelayConfig(
+            RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
+        ),
+        message_html="🤖 <b>CoinEasy Grok QA</b>",
+        review_url=grok_qa_payload()["review_url"],
+        image_data_url=IMAGE_DATA_URL,
+    )
+    assert outcome == "delivery_unknown"
+    assert [call["url"].rsplit("/", 1)[-1] for call in fake.calls] == [
+        "sendPhoto",
+        "sendMessage",
+    ]
+
+
+def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
+    from api import server
+
+    monkeypatch.setenv("GROK_QA_RELAY_TOKEN", GROK_QA_RELAY_TOKEN)
+    monkeypatch.setenv("API_SECRET", ADMIN_KEY)
     monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", RELAY_BOT_TOKEN)
     monkeypatch.setenv(
         "TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", COLLABORATION_CHAT_ID
@@ -393,7 +424,7 @@ def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
 
     async def fake_send(**kwargs):
         calls.append(kwargs)
-        return True
+        return "sent"
 
     monkeypatch.setattr(server, "send_telegram_grok_qa_verdict", fake_send)
     client = TestClient(server.app)
@@ -403,11 +434,11 @@ def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
         json=grok_qa_payload(),
     )
     assert forbidden.status_code == 403
-    assert forbidden.json()["detail"] == "grok_qa_verdict_requires_admin_key"
+    assert forbidden.json()["detail"] == "grok_qa_verdict_requires_relay_token"
 
     response = client.post(
         "/internal/grok-qa-verdict",
-        headers={"x-api-key": ADMIN_KEY},
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
         json=grok_qa_payload(),
     )
     assert response.status_code == 200
@@ -420,18 +451,183 @@ def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
     assert calls[0]["config"] == TelegramContentOpsRelayConfig(
         RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
     )
+    assert calls[0]["image_data_url"] == IMAGE_DATA_URL
     assert "publish" not in calls[0]
     assert "typefully" not in calls[0]
 
 
-def test_grok_qa_rejects_inconsistent_pass_and_external_review_target(monkeypatch):
-    from api import security, server
+def test_grok_qa_relay_auth_precedes_body_validation_and_image_decode(monkeypatch):
+    from api import server
 
-    monkeypatch.setattr(security, "API_KEYS", {"admin": ADMIN_KEY})
+    monkeypatch.setenv("GROK_QA_RELAY_TOKEN", GROK_QA_RELAY_TOKEN)
+    decode_calls = []
+
+    def decode_spy(value):
+        decode_calls.append(value)
+        raise AssertionError("unauthenticated body reached image decode")
+
+    monkeypatch.setattr(server, "decode_review_image_data_url", decode_spy)
+    client = TestClient(server.app)
+    invalid_body = json.dumps(grok_qa_payload(
+        image_data_url="data:image/png;base64," + ("A" * 32),
+    )).encode("utf-8")
+
+    missing = client.post(
+        "/api/internal/grok-qa-verdict",
+        content=invalid_body,
+        headers={"content-type": "application/json"},
+    )
+    wrong = client.post(
+        "/internal/grok-qa-verdict",
+        content=invalid_body,
+        headers={
+            "content-type": "application/json",
+            "x-grok-qa-relay-token": "x" * len(GROK_QA_RELAY_TOKEN),
+        },
+    )
+    unauthenticated_oversize = client.post(
+        "/internal/grok-qa-verdict",
+        content=b"x" * (server.GROK_QA_VERDICT_MAX_BODY_BYTES + 1),
+    )
+
+    statuses = [
+        missing.status_code,
+        wrong.status_code,
+        unauthenticated_oversize.status_code,
+    ]
+    assert statuses == [
+        403,
+        403,
+        403,
+    ]
+    assert decode_calls == []
+
+    # With the exact credential, FastAPI/Pydantic owns schema validation. The
+    # same invalid body therefore reaches validation and returns 422.
+    monkeypatch.setattr(
+        server,
+        "decode_review_image_data_url",
+        lambda value: decode_calls.append(value) or None,
+    )
+    authenticated = client.post(
+        "/internal/grok-qa-verdict",
+        content=invalid_body,
+        headers={
+            "content-type": "application/json",
+            "x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN,
+        },
+    )
+    assert authenticated.status_code == 422
+    assert len(decode_calls) == 1
+
+    monkeypatch.setattr(server, "GROK_QA_VERDICT_MAX_BODY_BYTES", 64)
+    authenticated_oversize = client.post(
+        "/internal/grok-qa-verdict",
+        content=b"x" * (server.GROK_QA_VERDICT_MAX_BODY_BYTES + 1),
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
+    )
+    assert authenticated_oversize.status_code == 413
+    assert authenticated_oversize.json()["detail"] == (
+        "grok_qa_verdict_body_too_large"
+    )
+    assert len(decode_calls) == 1
+
+
+def test_grok_qa_relay_rejects_oversize_and_chunked_before_validation(monkeypatch):
+    from api import server
+
+    monkeypatch.setenv("GROK_QA_RELAY_TOKEN", GROK_QA_RELAY_TOKEN)
+    decode_calls = []
+    monkeypatch.setattr(
+        server,
+        "decode_review_image_data_url",
+        lambda value: decode_calls.append(value) or None,
+    )
+    monkeypatch.setattr(server, "GROK_QA_VERDICT_MAX_BODY_BYTES", 64)
+
+    class GateProbe:
+        called = False
+
+        async def __call__(self, scope, receive, send):
+            self.called = True
+            raise AssertionError("rejected body reached FastAPI")
+
+    async def request_gate(headers, messages):
+        downstream = GateProbe()
+        gate = server._GrokQaVerdictRequestGate(downstream)
+        sent = []
+        remaining = list(messages)
+
+        async def receive():
+            return remaining.pop(0)
+
+        async def send(message):
+            sent.append(message)
+
+        await gate(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/internal/grok-qa-verdict",
+                "headers": headers,
+            },
+            receive,
+            send,
+        )
+        return downstream.called, sent
+
+    auth_header = (b"x-grok-qa-relay-token", GROK_QA_RELAY_TOKEN.encode())
+    oversize_called, oversize_sent = asyncio.run(request_gate(
+        [
+            auth_header,
+            (
+                b"content-length",
+                str(server.GROK_QA_VERDICT_MAX_BODY_BYTES + 1).encode(),
+            ),
+        ],
+        [],
+    ))
+    streamed_oversize_called, streamed_oversize_sent = asyncio.run(
+        request_gate(
+            [auth_header, (b"content-length", b"64")],
+            [{
+                "type": "http.request",
+                "body": b"x" * 65,
+                "more_body": False,
+            }],
+        )
+    )
+    chunked_called, chunked_sent = asyncio.run(request_gate(
+        [
+            auth_header,
+            (b"transfer-encoding", b"chunked"),
+        ],
+        [{"type": "http.request", "body": b"{}", "more_body": False}],
+    ))
+    missing_length_called, missing_length_sent = asyncio.run(request_gate(
+        [auth_header],
+        [{"type": "http.request", "body": b"{}", "more_body": False}],
+    ))
+
+    assert oversize_called is False
+    assert oversize_sent[0]["status"] == 413
+    assert streamed_oversize_called is False
+    assert streamed_oversize_sent[0]["status"] == 413
+    assert chunked_called is False
+    assert chunked_sent[0]["status"] == 400
+    assert missing_length_called is False
+    assert missing_length_sent[0]["status"] == 411
+    assert decode_calls == []
+
+
+def test_grok_qa_rejects_inconsistent_pass_and_external_review_target(monkeypatch):
+    from api import server
+
+    monkeypatch.setenv("GROK_QA_RELAY_TOKEN", GROK_QA_RELAY_TOKEN)
     client = TestClient(server.app)
     inconsistent = client.post(
         "/internal/grok-qa-verdict",
-        headers={"x-api-key": ADMIN_KEY},
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
         json=grok_qa_payload(issues=[{
             "severity": "WARN",
             "code": "source_gap",
@@ -442,9 +638,25 @@ def test_grok_qa_rejects_inconsistent_pass_and_external_review_target(monkeypatc
 
     external = client.post(
         "/internal/grok-qa-verdict",
-        headers={"x-api-key": ADMIN_KEY},
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
         json=grok_qa_payload(
             review_url=f"https://attacker.example/?view=library&content={ITEM_ID}"
         ),
     )
     assert external.status_code == 422
+
+    missing_banner = grok_qa_payload()
+    missing_banner.pop("image_data_url")
+    missing = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
+        json=missing_banner,
+    )
+    assert missing.status_code == 422
+
+    invalid = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-grok-qa-relay-token": GROK_QA_RELAY_TOKEN},
+        json=grok_qa_payload(image_data_url="data:image/png;base64,bm90LXBuZw=="),
+    )
+    assert invalid.status_code == 422
