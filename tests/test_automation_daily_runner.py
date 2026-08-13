@@ -11,6 +11,7 @@ import pytest
 
 from core.automation.daily_runner import (
     OfficialXDailyRunner,
+    _YELLOW_SOURCE_VISUAL_POLICY_VERSION,
     choose_automation_template_style,
 )
 from core.automation.content_signals import (
@@ -92,7 +93,7 @@ def pending(
     )
 
 
-def test_squid_photo_news_uses_original_visual_localization_only():
+def test_approved_client_photo_news_keeps_the_official_visual_dominant():
     assert choose_automation_template_style(
         client_id="squid",
         content_kind="daily_news",
@@ -110,6 +111,11 @@ def test_squid_photo_news_uses_original_visual_localization_only():
     ) == "classic"
     assert choose_automation_template_style(
         client_id="yellow",
+        content_kind="daily_news",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+    ) == "remix"
+    assert choose_automation_template_style(
+        client_id="origintrail",
         content_kind="daily_news",
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
@@ -584,7 +590,8 @@ def test_request_uuid_is_stable_and_bound_to_mode():
     ))
     assert first == str(uuid.uuid5(
         uuid.UUID(WORKSPACE_ID),
-        "official-x-review:v2:double-fact-check@1:yellow:"
+        "official-x-review:v3:double-fact-check@1:"
+        f"{_YELLOW_SOURCE_VISUAL_POLICY_VERSION}:yellow:"
         "22222222-2222-4222-8222-222222222222:daily_news",
     ))
 
@@ -702,6 +709,35 @@ async def test_every_squid_photo_daily_news_family_reaches_generation_as_remix(
     assert generation.calls[0]["client_id"] == "squid"
     assert generation.calls[0]["template_style"] == "remix"
     assert generation.calls[0]["source_image_url"].endswith("/official.jpg")
+
+
+@pytest.mark.asyncio
+async def test_yellow_photo_daily_news_reaches_generation_as_source_dominant_remix():
+    states = {
+        client_id: AutomationState(None, client_id != "yellow", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["yellow"] = AutomationState(
+        "2087177332670750833",
+        False,
+        (pending(
+            "yellow",
+            text=(
+                "Partnering with Deep3Labs to connect behavior to intelligence. "
+                "Yellow clearing removes a source-supported constraint."
+            ),
+            source_image_url="https://pbs.twimg.com/media/official-yellow.jpg",
+        ),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert generation.calls[0]["client_id"] == "yellow"
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["source_image_url"].endswith("/official-yellow.jpg")
 
 
 @pytest.mark.asyncio

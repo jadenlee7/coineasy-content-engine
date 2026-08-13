@@ -52,8 +52,13 @@ review that source and explicitly start every carousel generation.
 
 Daily News automation uses a client-specific visual policy:
 
-- Yellow, OriginTrail, and Babylon use the deterministic `classic` card. Their
-  source image remains preserved in the source record until each client has an
+- A Yellow Daily News source with verified official X media uses the framed
+  `remix` automatically. The full official composition, co-brand lockup, type
+  hierarchy, and Yellow-highlighted message remain dominant; compact Korean
+  context is confined to the brand-native lower panel. A text-only Yellow
+  source continues to use the approved `yellow-news-classic@2` card.
+- OriginTrail and Babylon use the deterministic `classic` card. Their source
+  image remains preserved in the source record until each client has an
   approved canonical remix treatment.
 - A Squid Daily News source with an official X photo or canonical video poster
   uses `remix` automatically. The complete official crop remains authoritative
@@ -257,10 +262,11 @@ membership. The scheduled X worker has no Figma write path or plugin secret.
 At `needs_review`, a reviewer can request a local, non-persistent
 Figma-editable SVG using the fields shown in the current Daily News detail.
 This does not create a durable asset or Figma link and does not change workflow
-status. Scheduled Squid drafts with pinned official media use `remix`; other
-scheduled drafts use `classic`. A historical `remix` whose external source
-image or Railway-cleaned Squid visual cannot be loaded fails closed instead of
-returning an image-less SVG.
+status. Scheduled Squid and Yellow drafts with pinned official media use
+`remix`; text-only Yellow and all OriginTrail/Babylon scheduled drafts use
+`classic`. A historical `remix` whose external source image or Railway-cleaned
+Squid visual cannot be loaded fails closed instead of returning an image-less
+SVG.
 
 Article jobs also store a source-locked visual story: one `1200x630` hero and
 two `1200x675` inline editorial visuals. The Studio library regenerates them

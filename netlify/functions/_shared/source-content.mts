@@ -37,6 +37,17 @@ type DirectXMediaResult =
 
 const OFFICIAL_SQUID_X_HANDLE = "squidrouter";
 const OFFICIAL_SQUID_X_USER_ID = "1547672532660105216";
+const OFFICIAL_X_ACCOUNTS = {
+  squid: {
+    handle: OFFICIAL_SQUID_X_HANDLE,
+    userId: OFFICIAL_SQUID_X_USER_ID,
+  },
+  yellow: {
+    handle: "yellow",
+    userId: "2651",
+  },
+} as const;
+export type OfficialSourceClient = keyof typeof OFFICIAL_X_ACCOUNTS;
 
 export class SourceInputError extends Error {
   code: string;
@@ -234,9 +245,17 @@ export function extractXMediaUrls(payload: SyndicationTweet): string[] {
   return media.state === "valid" ? [...media.urls] : [];
 }
 
-export function hasVerifiedOfficialSquidXProvenance(source: ResolvedSource): boolean {
+export function hasVerifiedOfficialClientXProvenance(
+  source: ResolvedSource,
+  clientId: OfficialSourceClient,
+): boolean {
+  const account = OFFICIAL_X_ACCOUNTS[clientId];
   const canonical = canonicalXStatusUrl(source.url);
-  if (!canonical || !/^\/squidrouter\/status\/\d+$/i.test(new URL(canonical).pathname)) {
+  if (
+    !canonical
+    || new URL(canonical).pathname.toLowerCase()
+      !== `/${account.handle}/status/${xStatusId(canonical)}`
+  ) {
     return false;
   }
   const expectedStatusId = xStatusId(canonical);
@@ -246,9 +265,13 @@ export function hasVerifiedOfficialSquidXProvenance(source: ResolvedSource): boo
     && provenance
     && provenance.requestedStatusId === expectedStatusId
     && provenance.payloadStatusId === expectedStatusId
-    && provenance.authorHandle === OFFICIAL_SQUID_X_HANDLE
-    && provenance.authorUserId === OFFICIAL_SQUID_X_USER_ID,
+    && provenance.authorHandle === account.handle
+    && provenance.authorUserId === account.userId,
   );
+}
+
+export function hasVerifiedOfficialSquidXProvenance(source: ResolvedSource): boolean {
+  return hasVerifiedOfficialClientXProvenance(source, "squid");
 }
 
 function decodeHtmlEntities(value: string): string {

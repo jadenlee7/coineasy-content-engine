@@ -21,6 +21,7 @@ _X_STATUS_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$")
 _ALLOWED_PRODUCTION_HOST = "coineasy-newscard.netlify.app"
 _GENERATION_CONTRACT = "double-fact-check@1"
 _TUTORIAL_CLAIMS_CONTRACT = "lessons@1"
+_PINNED_SOURCE_PROOF_CLIENTS = frozenset({"squid", "yellow"})
 
 
 def _has_valid_fact_check(value: object, content_kind: str) -> bool:
@@ -309,7 +310,7 @@ class StudioGenerationClient:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         if (
             content_kind == "daily_news"
-            and client_id == "squid"
+            and client_id in _PINNED_SOURCE_PROOF_CLIENTS
             and template_style == "remix"
             and (
                 not source_image_url

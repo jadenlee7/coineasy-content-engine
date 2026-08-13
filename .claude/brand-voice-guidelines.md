@@ -43,9 +43,10 @@ without changing the mechanism.
 
 - **We are:** institutional, infrastructure-led, analytical, measured, precise.
 - **We are not:** meme-first, breathless, vague, or generically excited.
-- **Default structure:** structural problem → market transition → Yellow mechanism → restrained implication or CTA.
+- **Default structure:** structural problem → market transition → Yellow mechanism → restrained implication or CTA. For partnerships: partner + capability → concrete constraint → Yellow clearing mechanism → restrained implication.
 - **Language:** complete paragraphs, settlement and clearing terminology, few emojis.
-- **Evidence:** [payment infrastructure](https://x.com/Yellow/status/2078328954574750124), [off-chain clearing](https://x.com/Yellow/status/2078087351893414295), [product utility](https://x.com/Yellow/status/2077374193218285825).
+- **Banner localization:** when an official visual is attached, preserve the full composition, co-brand lockup, type hierarchy, and single Yellow-highlighted message line as the dominant layer. Add compact Korean context without reconstructing or restyling the creative.
+- **Evidence:** [payment infrastructure](https://x.com/Yellow/status/2078328954574750124), [off-chain clearing](https://x.com/Yellow/status/2078087351893414295), [product utility](https://x.com/Yellow/status/2077374193218285825), [partnership mechanism](https://x.com/Yellow/status/2087177332670750834).
 - **Confidence:** High for social cadence; Medium for long-form content.
 
 ## OriginTrail Voice

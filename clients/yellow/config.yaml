@@ -30,6 +30,7 @@ brand_voice:
     - "Connect the problem to infrastructure, clearing, or settlement"
     - "Use complete, measured paragraphs with precise terminology"
     - "Close with a factual implication or a restrained read-more CTA"
+    - "For partnerships, name the partner and capability first, then explain the exact constraint Yellow removes"
   source_fidelity:
     default: 90
     x: 95
@@ -38,9 +39,9 @@ brand_voice:
     education: 80
     article: 92
   channel_guidance:
-    x: "Preserve the original thesis, paragraph flow, certainty, and restrained energy; add no generic Korean marketing hook."
+    x: "Preserve the original thesis, paragraph count, causal order, certainty, and restrained energy; add no generic Korean marketing hook."
     telegram: "Add one short Korean relevance sentence, then facts, CTA, original link, and focused hashtags."
-    banner: "Use one infrastructure-led headline and only source-supported details; keep the original visual dominant."
+    banner: "When official media is attached, preserve its full composition, co-brand logos, headline hierarchy, and highlighted Yellow line as the dominant visual; add only compact source-supported Korean localization and never reconstruct or restyle the creative. Without official media, use the approved Yellow classic profile."
     education: "Explain the original mechanism accessibly while preserving technical causality and terminology."
     article: >-
       Build a measured infrastructure thesis: open with the source-supported market
@@ -66,6 +67,14 @@ brand_voice:
       text: >-
         Splitting expenses with crypto friends is a mess. SplitChain, built on
         Yellow SDK, fixes it.
+    - type: "partnership mechanism"
+      url: "https://x.com/Yellow/status/2087177332670750834"
+      text: >-
+        Partnering with @Deep3Labs to connect behavior to intelligence.
+        Deep3's AI models learn from on-chain transaction data to predict trade
+        signals. Yellow's clearing layer removes the cost and latency constraints
+        that limit that behavior. When users and agents can act more freely,
+        https://t.co/xYosfkJxwg
 
 content_sources:
   twitter:

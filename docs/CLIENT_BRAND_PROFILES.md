@@ -8,6 +8,7 @@ visual profile.
 | Client | Visual profile | Brand tokens | Official asset pack | Voice anchor |
 | --- | --- | --- | --- | --- |
 | Yellow | `yellow/institutional-market-infrastructure@2` | `yellow-brand-tokens@1` | `yellow-official-brand-assets@1` | Institutional, analytical clearing and settlement infrastructure |
+| Yellow source remix | `yellow/institutional-market-infrastructure@2` | `yellow-brand-tokens@1` | `yellow-official-brand-assets@1` | Preserve the full verified official creative with a compact Yellow/black Korean context panel |
 | OriginTrail | `origintrail/verifiable-knowledge@1` | `origintrail-brand-tokens@1` | `origintrail-official-brand-assets@1` | Trust, provenance, connected context, and verifiable proof |
 | Babylon | `babylon/bitcoin-native-infrastructure@1` | `babylon-brand-tokens@1` | `babylon-official-brand-assets@1` | Bitcoin-native, technically precise product status and mechanics |
 | Squid generated | `squid/full-bleed-character-type@2` | `squid-brand-tokens@1` | `squid-local-approved@1` | Official SQUIB/form-language world with sparse, direct Korean copy |
@@ -43,7 +44,8 @@ and the unapproved OriginTrail/Babylon classic layouts remain at version `1`.
 Do not copy Squid's lavender/SQUIB visual language into another client. “Same
 branding rigor” means that every client stays inside its own system:
 
-- Yellow: yellow/black, restrained institutional structure, no crypto hype.
+- Yellow: yellow/black, restrained institutional structure, no crypto hype;
+  verified official media stays compositionally dominant and is never rebuilt.
 - OriginTrail: purple/navy, traceable problem-to-proof logic, no abstract AI
   spectacle without source evidence.
 - Babylon: orange/dark blue, exact Bitcoin custody/collateral/staking language,

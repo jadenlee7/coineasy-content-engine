@@ -6,6 +6,7 @@ import {
   extractXMediaUrls,
   extractXMediaUrl,
   extractXPostText,
+  hasVerifiedOfficialClientXProvenance,
   hasVerifiedOfficialSquidXProvenance,
   normalizeXImageUrl,
   normalizeSourceUrl,
@@ -387,6 +388,26 @@ test("binds official Squid provenance to the resolved tweet id and immutable acc
   assert.equal(mismatchedTweet.imageUrl, "");
   assert.equal(mismatchedTweet.mediaStatus, "unavailable");
   assert.deepEqual(mismatchedTweet.xProvenance?.mediaUrls, []);
+});
+
+test("binds official Yellow provenance to the verified account behind the reference post", async () => {
+  const sourceUrl = "https://x.com/Yellow/status/2087177332670750834";
+  const mediaUrl = "https://pbs.twimg.com/media/HPckuPQXAAAj0cx.jpg";
+  const source = await resolveSourceInput(
+    "Use this manually provided Yellow source context.",
+    sourceUrl,
+    (async () => Response.json({
+      id_str: "2087177332670750834",
+      text: "Official Yellow partnership source post with verified media.",
+      user: { id_str: "2651", screen_name: "Yellow" },
+      photos: [{ url: mediaUrl }],
+    })) as typeof fetch,
+    true,
+  );
+
+  assert.equal(hasVerifiedOfficialClientXProvenance(source, "yellow"), true);
+  assert.equal(hasVerifiedOfficialClientXProvenance(source, "squid"), false);
+  assert.deepEqual(source.xProvenance?.mediaUrls, [`${mediaUrl}?name=orig`]);
 });
 
 test("withholds syndicated media unless tweet and author identities are valid", async () => {
