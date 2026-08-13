@@ -46,7 +46,9 @@ from core.generators.daily_news import DailyNewsGenerator
 from core.publishers.base import Publisher
 from core.publishers.telegram import TelegramPublisher
 from core.publishers.telegram_review import (
+    build_telegram_grok_qa_message,
     decode_review_image_data_url,
+    send_telegram_grok_qa_verdict,
     send_telegram_review,
     telegram_content_ops_relay_config,
     telegram_review_config,
@@ -462,6 +464,152 @@ class TelegramReviewNotificationRequest(BaseModel):
         return self
 
 
+class GrokQaCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["PASS", "WARN", "BLOCK"]
+    checks: list[str] = Field(min_length=1, max_length=6)
+
+    @field_validator("checks")
+    @classmethod
+    def validate_checks(cls, values: list[str]) -> list[str]:
+        if any(not 3 <= len(value.strip()) <= 300 for value in values):
+            raise ValueError("grok_qa_check_invalid")
+        return [value.strip() for value in values]
+
+
+class GrokQaFactCheck(GrokQaCheck):
+    source_urls: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("source_urls")
+    @classmethod
+    def validate_source_urls(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("grok_qa_source_duplicate")
+        for value in values:
+            parsed = urlparse(value)
+            if (
+                len(value) > 2_048
+                or parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.fragment
+            ):
+                raise ValueError("grok_qa_source_url_invalid")
+        return values
+
+
+class GrokQaIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["WARN", "BLOCK"]
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{2,47}$")
+    message: str = Field(min_length=3, max_length=500)
+    evidence_url: str | None = Field(default=None, max_length=2_048)
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 3:
+            raise ValueError("grok_qa_issue_message_invalid")
+        return normalized
+
+    @field_validator("evidence_url")
+    @classmethod
+    def validate_evidence_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlparse(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("grok_qa_evidence_url_invalid")
+        return value
+
+
+class GrokQaVerdictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_item_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    content_version_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    )
+    client_id: Literal["yellow", "origintrail", "squid", "babylon"]
+    content_kind: Literal["daily_news", "article", "tutorial"]
+    title: str = Field(min_length=1, max_length=200)
+    decision: Literal["PASS", "WARN", "BLOCK"]
+    summary: str = Field(min_length=10, max_length=800)
+    fact_check: GrokQaFactCheck
+    brand_check: GrokQaCheck
+    issues: list[GrokQaIssue] = Field(default_factory=list, max_length=3)
+    next_action: Literal[
+        "ready_for_human_approval",
+        "human_review",
+        "verify_source",
+        "revise_copy",
+        "revise_banner",
+    ]
+    review_url: str = Field(min_length=20, max_length=500)
+
+    @field_validator("title", "summary")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_verdict(self):
+        review_url = urlparse(self.review_url)
+        review_query = parse_qs(review_url.query, keep_blank_values=True)
+        if (
+            review_url.scheme != "https"
+            or review_url.hostname != "coineasy-newscard.netlify.app"
+            or review_url.port is not None
+            or review_url.username is not None
+            or review_url.password is not None
+            or review_url.path != "/"
+            or review_url.fragment
+            or set(review_query) != {"view", "content"}
+            or review_query.get("view") != ["library"]
+            or review_query.get("content") != [self.content_item_id.lower()]
+        ):
+            raise ValueError("grok_qa_review_url_not_allowed")
+        if self.decision == "PASS" and (
+            self.fact_check.status != "PASS"
+            or self.brand_check.status != "PASS"
+            or self.issues
+            or not self.fact_check.source_urls
+            or self.next_action != "ready_for_human_approval"
+        ):
+            raise ValueError("grok_qa_pass_evidence_incomplete")
+        if (
+            self.decision != "PASS"
+            and self.next_action == "ready_for_human_approval"
+        ):
+            raise ValueError("grok_qa_next_action_invalid")
+        if self.decision == "BLOCK" and (
+            self.fact_check.status != "BLOCK"
+            and self.brand_check.status != "BLOCK"
+            and not any(issue.severity == "BLOCK" for issue in self.issues)
+        ):
+            raise ValueError("grok_qa_block_evidence_incomplete")
+        source_urls = set(self.fact_check.source_urls)
+        if any(
+            issue.evidence_url is not None
+            and issue.evidence_url not in source_urls
+            for issue in self.issues
+        ):
+            raise ValueError("grok_qa_issue_source_mismatch")
+        return self
+
+
 CHANNEL_NAMES = ("typefully", "telegram")
 
 
@@ -550,6 +698,46 @@ async def notify_telegram_review(
     if not result["text_sent"]:
         raise HTTPException(502, "telegram_review_send_failed")
     return result
+
+
+@app.post("/internal/grok-qa-verdict")
+async def notify_grok_qa_verdict(
+    req: GrokQaVerdictRequest,
+    x_api_key: str = Header(default=""),
+):
+    if _check_auth(x_api_key) != "admin":
+        raise HTTPException(403, "grok_qa_verdict_requires_admin_key")
+    config = telegram_content_ops_relay_config(telegram_review_config())
+    if config is None:
+        raise HTTPException(503, "telegram_content_ops_relay_not_configured")
+    message = build_telegram_grok_qa_message(
+        client_id=req.client_id,
+        content_kind=req.content_kind,
+        title=req.title,
+        content_item_id=req.content_item_id.lower(),
+        content_version_id=req.content_version_id.lower(),
+        decision=req.decision,
+        summary=req.summary,
+        fact_status=req.fact_check.status,
+        fact_checks=req.fact_check.checks,
+        source_urls=req.fact_check.source_urls,
+        brand_status=req.brand_check.status,
+        brand_checks=req.brand_check.checks,
+        issues=[issue.model_dump(exclude_none=True) for issue in req.issues],
+        next_action=req.next_action,
+    )
+    sent = await send_telegram_grok_qa_verdict(
+        config=config,
+        message_html=message,
+        review_url=req.review_url,
+    )
+    if not sent:
+        raise HTTPException(502, "grok_qa_private_relay_failed")
+    return {
+        "sent": True,
+        "advisory_only": True,
+        "public_publish": False,
+    }
 
 
 @app.post("/internal/publications/telegram/run-once")
