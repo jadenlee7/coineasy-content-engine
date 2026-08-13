@@ -26,11 +26,9 @@ def main() -> int:
             force_dry_run=args.dry_run,
             require_openai_api_key=False,
         )
-        summary = asyncio.run(
-            build_daily_runner(
-                settings,
-                batch_settings=batch_settings,
-            ).run(dry_run=args.dry_run)
+        runner = build_daily_runner(
+            settings,
+            batch_settings=batch_settings,
         )
     except (RuntimeError, ValueError):
         print(json.dumps({
@@ -38,6 +36,15 @@ def main() -> int:
             "error": "automation_configuration_invalid",
         }, separators=(",", ":")))
         return 2
+
+    try:
+        summary = asyncio.run(runner.run(dry_run=args.dry_run))
+    except (RuntimeError, ValueError):
+        print(json.dumps({
+            "ok": False,
+            "error": "automation_runtime_failed",
+        }, separators=(",", ":")))
+        return 1
 
     print(json.dumps(summary.as_dict(), ensure_ascii=False, separators=(",", ":")))
     return 0 if summary.errors == 0 else 1
