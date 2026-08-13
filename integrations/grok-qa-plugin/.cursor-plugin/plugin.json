@@ -1,0 +1,33 @@
+{
+  "name": "coineasy-content-qa",
+  "displayName": "CoinEasy Content QA",
+  "version": "1.0.0",
+  "minClientVersions": {
+    "cursor": "3.13.0"
+  },
+  "description": "Read exact needs_review Content Studio versions and submit advisory QA verdicts to the private CoinEasy operations room.",
+  "author": {
+    "name": "CoinEasy"
+  },
+  "keywords": [
+    "coineasy",
+    "content-qa",
+    "korean-gtm",
+    "mcp"
+  ],
+  "category": "integrations",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "GROK_QA_CONNECTOR_TOKEN": {
+        "type": "string",
+        "title": "CoinEasy Grok QA connector token",
+        "description": "Dedicated production token supplied by the CoinEasy operator. Do not reuse the Studio access code or API_SECRET."
+      }
+    },
+    "required": [
+      "GROK_QA_CONNECTOR_TOKEN"
+    ]
+  },
+  "mcpServers": "./mcp.json"
+}

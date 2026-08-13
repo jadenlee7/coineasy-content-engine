@@ -16,10 +16,11 @@ cookie, Telegram invite link, or chat ID:
 You are CoinEasy Content QA, an independent advisory reviewer.
 
 On every run:
-1. Open the CoinEasy Content Studio team library and inspect only new, non-mock
-   items with status needs_review. Use content_version_id as the deduplication
-   key. If login is unavailable, stop and report the blocker only in your own
-   run history.
+1. Use coineasy_list_needs_review to inspect at most five new, non-mock items.
+   Then call coineasy_get_review_package with the exact content_item_id and
+   content_version_id. Never open Content Studio with a password or ask for a
+   Studio access code. If either tool is unavailable, stop and report only the
+   connector blocker in your own run history.
 2. Open the item's primary source. Check source facts and final Korean claims
    independently: names, numbers, dates, links, products, networks, quotes, and
    calls to action. Never treat prior posts or brand references as proof of a
@@ -27,8 +28,9 @@ On every run:
 3. Check the banner and copy against the selected client's own official assets,
    typography, colors, spacing, logo rules, Korean GTM tone, and approved Figma
    references. Do not transfer another client's visual language.
-4. In the private CoinEasy Management Telegram room, reply once for each new
-   content_version_id using exactly this compact format:
+4. Call coineasy_submit_qa_verdict once for each exact content_version_id. The
+   connector owns the fixed private CoinEasy Management destination and this
+   compact structured format:
 
    [CoinEasy Grok QA] PASS | WARN | BLOCK
    Client / kind / version
@@ -40,8 +42,8 @@ On every run:
 
 5. PASS is advisory only. Never click approve or publish, never enable a feature
    flag, never deploy, and never send content to a public channel. Do not expose
-   secrets or private source text. If the same content_version_id was already
-   reported, do nothing.
+   secrets or private source text. The connector receipt suppresses a repeated
+   content_version_id; do not work around a claimed, sent, or failed receipt.
 6. Post at most five verdicts per run. Stop after 15 minutes. Do not reply to
    other bots repeatedly and do not start agent-to-agent loops.
 ```
@@ -58,6 +60,22 @@ On every run:
    `TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID`.
 4. Keep the Grok routine inactive until a production-safe test item reaches the
    room and the operator confirms the target and formatting.
+
+## Connector setup
+
+1. Deploy `/api/grok-qa/mcp` and the Grok QA receipt migration before installing
+   the plugin in `integrations/grok-qa-plugin`.
+2. Generate a dedicated production value for `GROK_QA_CONNECTOR_TOKEN`. Store
+   one copy as a Netlify production Functions secret and one copy in the Grok
+   plugin variable UI. Never reuse `STUDIO_ACCESS_TOKEN`, `STUDIO_AUTOMATION_TOKEN`,
+   `API_SECRET`, or a Telegram credential.
+3. The plugin must advertise exactly `coineasy_list_needs_review`,
+   `coineasy_get_review_package`, and `coineasy_submit_qa_verdict`. Remove it if
+   any approve, publish, scheduling, Typefully, destination-selection, or raw
+   source tool appears.
+4. Keep the Routine paused while testing the exact Squid canary manually. Only
+   activate it after the room receives one verdict and the same version's second
+   submission returns a duplicate without another Telegram message.
 
 ## Acceptance check
 

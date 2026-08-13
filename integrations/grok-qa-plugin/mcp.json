@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "coineasy-content-qa": {
+      "type": "http",
+      "url": "https://coineasy-newscard.netlify.app/api/grok-qa/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GROK_QA_CONNECTOR_TOKEN}"
+      }
+    }
+  }
+}

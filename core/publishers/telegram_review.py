@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import html
 import os
 import re
 from dataclasses import dataclass
@@ -221,3 +222,112 @@ async def send_telegram_review(
         "collaboration_sent": collaboration_text_sent,
         "collaboration_photo_sent": collaboration_photo_sent,
     }
+
+
+def build_telegram_grok_qa_message(
+    *,
+    client_id: str,
+    content_kind: str,
+    title: str,
+    content_item_id: str,
+    content_version_id: str,
+    decision: str,
+    summary: str,
+    fact_status: str,
+    fact_checks: list[str],
+    source_urls: list[str],
+    brand_status: str,
+    brand_checks: list[str],
+    issues: list[dict[str, str]],
+    next_action: str,
+) -> str:
+    """Build a bounded private-room verdict from validated structured fields."""
+
+    client_names = {
+        "yellow": "Yellow",
+        "origintrail": "OriginTrail",
+        "squid": "Squid",
+        "babylon": "Babylon",
+    }
+    kind_names = {
+        "daily_news": "데일리 뉴스",
+        "article": "아티클",
+        "tutorial": "튜토리얼",
+    }
+
+    def escaped(value: str, maximum: int) -> str:
+        return html.escape(value.strip()[:maximum], quote=False)
+
+    fact_lines = "\n".join(
+        f"• {escaped(check, 180)}" for check in fact_checks[:3]
+    )
+    source_lines = "\n".join(
+        f"• {escaped(source_url, 500)}"
+        if len(source_url) <= 500
+        else "• 긴 근거 URL — Content Studio에서 확인"
+        for source_url in source_urls[:2]
+    ) or "• 확인 가능한 URL 없음"
+    brand_lines = "\n".join(
+        f"• {escaped(check, 180)}" for check in brand_checks[:3]
+    )
+    issue_lines = "\n".join(
+        f"• [{escaped(issue['severity'], 8)}] "
+        f"{escaped(issue['code'], 48)} — {escaped(issue['message'], 240)}"
+        for issue in issues[:3]
+    ) or "• 없음"
+    message = "\n".join([
+        "🤖 <b>CoinEasy Grok QA · 자문 판정</b>",
+        "⚠️ <b>비공개 검수용 · 자동 승인/발행 아님</b>",
+        "",
+        f"<b>{escaped(client_names[client_id], 40)} · "
+        f"{escaped(kind_names[content_kind], 40)}</b>",
+        f"<b>{escaped(title, 200)}</b>",
+        f"결과: <b>{escaped(decision, 8)}</b>",
+        escaped(summary, 500),
+        "",
+        f"<b>사실 점검 · {escaped(fact_status, 8)}</b>",
+        fact_lines,
+        "<b>확인한 공식 근거</b>",
+        source_lines,
+        "",
+        f"<b>브랜드 점검 · {escaped(brand_status, 8)}</b>",
+        brand_lines,
+        "",
+        "<b>핵심 이슈</b>",
+        issue_lines,
+        "",
+        f"다음 조치: <b>{escaped(next_action, 40)}</b>",
+        f"Item {escaped(content_item_id, 36)}",
+        f"Version {escaped(content_version_id, 36)}",
+        "",
+        "<i>최종 승인과 공개 발행은 사람이 Content Studio에서 별도로 수행합니다.</i>",
+    ])
+    if len(message) > 4_096:
+        raise ValueError("grok_qa_message_too_large")
+    return message
+
+
+async def send_telegram_grok_qa_verdict(
+    *,
+    config: TelegramContentOpsRelayConfig,
+    message_html: str,
+    review_url: str,
+) -> bool:
+    """Send only to the dedicated private Content Ops relay destination."""
+
+    return await _telegram_post(
+        config,
+        "sendMessage",
+        json_body={
+            "chat_id": config.chat_id,
+            "text": message_html,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+            "reply_markup": {
+                "inline_keyboard": [[{
+                    "text": "콘텐츠 스튜디오 열기",
+                    "url": review_url,
+                }]],
+            },
+        },
+    )

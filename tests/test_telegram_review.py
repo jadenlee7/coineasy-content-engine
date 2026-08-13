@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 from core.publishers.telegram_review import (
     TelegramContentOpsRelayConfig,
     TelegramReviewConfig,
+    build_telegram_grok_qa_message,
     decode_review_image_data_url,
+    send_telegram_grok_qa_verdict,
     send_telegram_review,
     telegram_content_ops_relay_config,
     telegram_review_config,
@@ -77,6 +79,37 @@ def notification_payload(**overrides):
         ),
         "image_url": "",
         "image_data_url": IMAGE_DATA_URL,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def grok_qa_payload(**overrides):
+    payload = {
+        "content_item_id": ITEM_ID,
+        "content_version_id": VERSION_ID,
+        "client_id": "squid",
+        "content_kind": "daily_news",
+        "title": "Squid가 Telegram에서 열렸어요",
+        "decision": "PASS",
+        "summary": "공식 원문과 한국어 문구, Squid 브랜드 표현이 모두 일치합니다.",
+        "fact_check": {
+            "status": "PASS",
+            "checks": ["공식 X 원문의 Telegram 공개 사실을 확인했습니다."],
+            "source_urls": [
+                "https://x.com/squidrouter/status/2083266484789514640"
+            ],
+        },
+        "brand_check": {
+            "status": "PASS",
+            "checks": ["Squid 공식 명칭과 절제된 문장 구조를 확인했습니다."],
+        },
+        "issues": [],
+        "next_action": "ready_for_human_approval",
+        "review_url": (
+            "https://coineasy-newscard.netlify.app/"
+            f"?view=library&content={ITEM_ID}"
+        ),
     }
     payload.update(overrides)
     return payload
@@ -288,3 +321,130 @@ def test_review_relay_is_admin_only_and_validates_targets(api_client, monkeypatc
     assert calls[0]["config"] == TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
     assert calls[0]["collaboration_config"] is None
     assert calls[0]["image_data_url"] == IMAGE_DATA_URL
+
+
+def test_grok_qa_message_is_bounded_escaped_and_explicitly_advisory():
+    message = build_telegram_grok_qa_message(
+        client_id="squid",
+        content_kind="daily_news",
+        title="<script>Squid</script>",
+        content_item_id=ITEM_ID,
+        content_version_id=VERSION_ID,
+        decision="WARN",
+        summary="표현 한 곳을 사람이 다시 확인해야 합니다.",
+        fact_status="PASS",
+        fact_checks=["공식 X 원문과 핵심 사실이 일치합니다."],
+        source_urls=[
+            "https://x.com/squidrouter/status/2083266484789514640"
+        ],
+        brand_status="WARN",
+        brand_checks=["한국어 간격을 한 번 더 확인해야 합니다."],
+        issues=[{
+            "severity": "WARN",
+            "code": "brand_spacing",
+            "message": "헤드라인 여백을 확인하세요.",
+        }],
+        next_action="revise_banner",
+    )
+    assert "CoinEasy Grok QA · 자문 판정" in message
+    assert "자동 승인/발행 아님" in message
+    assert "&lt;script&gt;Squid&lt;/script&gt;" in message
+    assert "최종 승인과 공개 발행은 사람이" in message
+    assert "<script>" not in message
+    assert len(message) <= 4_096
+
+
+@pytest.mark.asyncio
+async def test_grok_qa_sender_uses_only_the_content_ops_room(monkeypatch):
+    fake = _FakeAsyncClient([
+        _FakeResponse(200, {"ok": True, "result": {"message_id": 9}}),
+    ])
+    monkeypatch.setattr(
+        "core.publishers.telegram_review.httpx.AsyncClient",
+        lambda *args, **kwargs: fake,
+    )
+    sent = await send_telegram_grok_qa_verdict(
+        config=TelegramContentOpsRelayConfig(
+            RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
+        ),
+        message_html="🤖 <b>CoinEasy Grok QA</b>",
+        review_url=grok_qa_payload()["review_url"],
+    )
+    assert sent is True
+    assert len(fake.calls) == 1
+    assert f"/bot{RELAY_BOT_TOKEN}/sendMessage" in fake.calls[0]["url"]
+    assert fake.calls[0]["json"]["chat_id"] == COLLABORATION_CHAT_ID
+    assert BOT_TOKEN not in fake.calls[0]["url"]
+
+
+def test_grok_qa_relay_is_admin_only_private_and_never_publishes(monkeypatch):
+    from api import security, server
+
+    monkeypatch.setattr(
+        security,
+        "API_KEYS",
+        {"admin": ADMIN_KEY, "squid": CLIENT_KEY},
+    )
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", RELAY_BOT_TOKEN)
+    monkeypatch.setenv(
+        "TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", COLLABORATION_CHAT_ID
+    )
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(server, "send_telegram_grok_qa_verdict", fake_send)
+    client = TestClient(server.app)
+    forbidden = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-api-key": CLIENT_KEY},
+        json=grok_qa_payload(),
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["detail"] == "grok_qa_verdict_requires_admin_key"
+
+    response = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-api-key": ADMIN_KEY},
+        json=grok_qa_payload(),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "sent": True,
+        "advisory_only": True,
+        "public_publish": False,
+    }
+    assert len(calls) == 1
+    assert calls[0]["config"] == TelegramContentOpsRelayConfig(
+        RELAY_BOT_TOKEN, COLLABORATION_CHAT_ID
+    )
+    assert "publish" not in calls[0]
+    assert "typefully" not in calls[0]
+
+
+def test_grok_qa_rejects_inconsistent_pass_and_external_review_target(monkeypatch):
+    from api import security, server
+
+    monkeypatch.setattr(security, "API_KEYS", {"admin": ADMIN_KEY})
+    client = TestClient(server.app)
+    inconsistent = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-api-key": ADMIN_KEY},
+        json=grok_qa_payload(issues=[{
+            "severity": "WARN",
+            "code": "source_gap",
+            "message": "확인이 필요합니다.",
+        }]),
+    )
+    assert inconsistent.status_code == 422
+
+    external = client.post(
+        "/internal/grok-qa-verdict",
+        headers={"x-api-key": ADMIN_KEY},
+        json=grok_qa_payload(
+            review_url=f"https://attacker.example/?view=library&content={ITEM_ID}"
+        ),
+    )
+    assert external.status_code == 422
