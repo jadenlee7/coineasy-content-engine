@@ -11,6 +11,7 @@ import pytest
 
 from core.automation.daily_runner import (
     OfficialXDailyRunner,
+    _STANDARD_SOURCE_VISUAL_POLICY_VERSION,
     _YELLOW_SOURCE_VISUAL_POLICY_VERSION,
     choose_automation_template_style,
 )
@@ -94,11 +95,12 @@ def pending(
 
 
 def test_approved_client_photo_news_keeps_the_official_visual_dominant():
-    assert choose_automation_template_style(
-        client_id="squid",
-        content_kind="daily_news",
-        source_image_url="https://pbs.twimg.com/media/official.jpg",
-    ) == "remix"
+    for client_id in AUTOMATION_CLIENTS:
+        assert choose_automation_template_style(
+            client_id=client_id,
+            content_kind="daily_news",
+            source_image_url="https://pbs.twimg.com/media/official.jpg",
+        ) == "remix"
     assert choose_automation_template_style(
         client_id="squid",
         content_kind="daily_news",
@@ -110,13 +112,8 @@ def test_approved_client_photo_news_keeps_the_official_visual_dominant():
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
     assert choose_automation_template_style(
-        client_id="yellow",
-        content_kind="daily_news",
-        source_image_url="https://pbs.twimg.com/media/official.jpg",
-    ) == "remix"
-    assert choose_automation_template_style(
         client_id="origintrail",
-        content_kind="daily_news",
+        content_kind="article",
         source_image_url="https://pbs.twimg.com/media/official.jpg",
     ) == "classic"
 
@@ -568,6 +565,16 @@ def test_request_uuid_is_stable_and_bound_to_mode():
         source_item_id="22222222-2222-4222-8222-222222222222",
         content_kind="article",
     )
+    origintrail = daily_runner._request_id(
+        client_id="origintrail",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="daily_news",
+    )
+    babylon = daily_runner._request_id(
+        client_id="babylon",
+        source_item_id="22222222-2222-4222-8222-222222222222",
+        content_kind="daily_news",
+    )
 
     assert first == second
     assert first != article
@@ -594,6 +601,16 @@ def test_request_uuid_is_stable_and_bound_to_mode():
         f"{_YELLOW_SOURCE_VISUAL_POLICY_VERSION}:yellow:"
         "22222222-2222-4222-8222-222222222222:daily_news",
     ))
+    for client_id, request_id in (
+        ("origintrail", origintrail),
+        ("babylon", babylon),
+    ):
+        assert request_id == str(uuid.uuid5(
+            uuid.UUID(WORKSPACE_ID),
+            "official-x-review:v3:double-fact-check@1:"
+            f"{_STANDARD_SOURCE_VISUAL_POLICY_VERSION}:{client_id}:"
+            "22222222-2222-4222-8222-222222222222:daily_news",
+        ))
 
 
 def test_scheduled_runner_rejects_tutorial_auto_generation():
@@ -712,21 +729,24 @@ async def test_every_squid_photo_daily_news_family_reaches_generation_as_remix(
 
 
 @pytest.mark.asyncio
-async def test_yellow_photo_daily_news_reaches_generation_as_source_dominant_remix():
+@pytest.mark.parametrize("client_id", ["yellow", "origintrail", "babylon"])
+async def test_standard_client_photo_daily_news_reaches_generation_as_source_dominant_remix(
+    client_id,
+):
     states = {
-        client_id: AutomationState(None, client_id != "yellow", ())
-        for client_id in AUTOMATION_CLIENTS
+        active_client_id: AutomationState(None, active_client_id != client_id, ())
+        for active_client_id in AUTOMATION_CLIENTS
     }
-    states["yellow"] = AutomationState(
+    states[client_id] = AutomationState(
         "2087177332670750833",
         False,
         (pending(
-            "yellow",
+            client_id,
             text=(
-                "Partnering with Deep3Labs to connect behavior to intelligence. "
-                "Yellow clearing removes a source-supported constraint."
+                "This official update includes a source-supported product proof "
+                "and an attached first-party creative."
             ),
-            source_image_url="https://pbs.twimg.com/media/official-yellow.jpg",
+            source_image_url=f"https://pbs.twimg.com/media/official-{client_id}.jpg",
         ),),
     )
     repo = FakeRepository(states)
@@ -735,9 +755,11 @@ async def test_yellow_photo_daily_news_reaches_generation_as_source_dominant_rem
     summary = await runner(repo, FakeXClient(), generation).run()
 
     assert summary.generated == 1
-    assert generation.calls[0]["client_id"] == "yellow"
+    assert generation.calls[0]["client_id"] == client_id
     assert generation.calls[0]["template_style"] == "remix"
-    assert generation.calls[0]["source_image_url"].endswith("/official-yellow.jpg")
+    assert generation.calls[0]["source_image_url"].endswith(
+        f"/official-{client_id}.jpg"
+    )
 
 
 @pytest.mark.asyncio

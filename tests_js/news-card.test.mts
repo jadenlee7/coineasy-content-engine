@@ -324,19 +324,21 @@ test("accepts only the selected client's server-owned news brand profile", () =>
     }
   }
 
-  const yellow = NEWS_BRAND_PROFILES.yellow;
-  const remix = {
-    brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
-    render_strategy: "source_remix",
-    channel_profile: "x_square",
-    brand_tokens_version: yellow.brandTokensVersion,
-    template_version: "yellow-news-remix@1",
-    asset_pack_version: yellow.assetPackVersion,
-    visual_design_profile_id: yellow.designProfileId,
-    visual_design_profile_version: yellow.designProfileVersion,
-  };
-  assert.equal(validStandardNewsBrandMetadata(remix, "yellow", "remix"), true);
-  assert.equal(validStandardNewsBrandMetadata(remix, "yellow", "classic"), false);
+  for (const clientId of ["yellow", "origintrail", "babylon"] as const) {
+    const profile = NEWS_BRAND_PROFILES[clientId];
+    const remix = {
+      brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+      render_strategy: "source_remix",
+      channel_profile: "x_square",
+      brand_tokens_version: profile.brandTokensVersion,
+      template_version: `${clientId}-news-remix@1`,
+      asset_pack_version: profile.assetPackVersion,
+      visual_design_profile_id: profile.designProfileId,
+      visual_design_profile_version: profile.designProfileVersion,
+    };
+    assert.equal(validStandardNewsBrandMetadata(remix, clientId, "remix"), true);
+    assert.equal(validStandardNewsBrandMetadata(remix, clientId, "classic"), false);
+  }
 });
 
 test("recognizes only canonical official Squid X status URLs", () => {
@@ -365,6 +367,37 @@ test("recognizes the exact official Yellow account for source-dominant remix", (
     isOfficialClientXStatusUrl(
       "https://x.com/Yellow/status/2087177332670750834",
       "squid",
+    ),
+    false,
+  );
+});
+
+test("recognizes only the exact OriginTrail and Babylon official status accounts", () => {
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/origin_trail/status/2078063452996661578?s=20",
+      "origintrail",
+    ),
+    true,
+  );
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/babylonlabs_io/status/2061801513488429361",
+      "babylon",
+    ),
+    true,
+  );
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/babylonlabs_io/status/2061801513488429361",
+      "origintrail",
+    ),
+    false,
+  );
+  assert.equal(
+    isOfficialClientXStatusUrl(
+      "https://x.com/OriginTrail/status/2078063452996661578",
+      "origintrail",
     ),
     false,
   );

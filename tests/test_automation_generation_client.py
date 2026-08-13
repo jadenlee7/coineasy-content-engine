@@ -114,6 +114,8 @@ async def test_daily_news_uses_review_generation_route_and_classic_by_default():
     [
         ("squid", "https://x.com/SquidRouter/status/123"),
         ("yellow", "https://x.com/Yellow/status/2087177332670750834"),
+        ("origintrail", "https://x.com/origin_trail/status/2078063452996661578"),
+        ("babylon", "https://x.com/babylonlabs_io/status/2061801513488429361"),
     ],
 )
 async def test_source_dominant_remix_forwards_only_the_official_x_image(
@@ -164,6 +166,8 @@ async def test_source_dominant_remix_forwards_only_the_official_x_image(
     [
         ("squid", "https://x.com/SquidRouter/status/123"),
         ("yellow", "https://x.com/Yellow/status/2087177332670750834"),
+        ("origintrail", "https://x.com/origin_trail/status/2078063452996661578"),
+        ("babylon", "https://x.com/babylonlabs_io/status/2061801513488429361"),
     ],
 )
 async def test_source_dominant_remix_rejects_a_result_without_pinned_source_proof(

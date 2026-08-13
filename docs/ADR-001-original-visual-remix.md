@@ -23,7 +23,7 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 7. If the official logo is visible in the source image, the renderer preserves it and omits an extra logo. Otherwise it places the official logo once in the localization panel's safe area.
 8. If no valid image is available, a generic manual remix automatically renders
    with the `classic` template and reports the actual style in the response.
-   Scheduled Squid and Yellow source-remix requests prove the official account,
+   Scheduled source-remix requests for all four active clients prove the official account,
    status ID, and attached media together and fail closed once `remix` is
    selected. Replacing a verified official campaign creative with a generic
    card would violate the approved brand-localization contract.
@@ -70,9 +70,9 @@ Add `remix` as a fourth news-card style and make it the recommended console defa
 - Original artwork remains visually authoritative while a clearly separated Korean editorial layer provides the localization treatment without an agency mark.
 - Official-logo presence is checked on every vision-backed remix to prevent redundant logo placement.
 - X syndication metadata is an external dependency that may change. Scheduled
-  Squid and Yellow photo-backed remixes surface a retry/review failure rather
-  than silently changing the verified composition. OriginTrail and Babylon
-  retain `classic` until their own source-remix policy is approved.
+  photo- or video-poster-backed remixes for every active client surface a
+  retry/review failure rather than silently changing the verified composition.
+  Text-only sources retain the relevant client `classic` treatment.
 - Only the first public photo is used in v1. Multi-image selection, video posters, manual uploads, and in-place translation can be added later.
 - Article and blog URLs still require pasted text and an approved image ingestion path.
 

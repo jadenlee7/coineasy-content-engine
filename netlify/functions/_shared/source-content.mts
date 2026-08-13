@@ -46,6 +46,14 @@ const OFFICIAL_X_ACCOUNTS = {
     handle: "yellow",
     userId: "2651",
   },
+  origintrail: {
+    handle: "origin_trail",
+    userId: "2501522515",
+  },
+  babylon: {
+    handle: "babylonlabs_io",
+    userId: "1558731723243810816",
+  },
 } as const;
 export type OfficialSourceClient = keyof typeof OFFICIAL_X_ACCOUNTS;
 

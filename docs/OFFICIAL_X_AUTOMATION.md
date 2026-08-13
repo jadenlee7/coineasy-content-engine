@@ -57,9 +57,12 @@ Daily News automation uses a client-specific visual policy:
   hierarchy, and Yellow-highlighted message remain dominant; compact Korean
   context is confined to the brand-native lower panel. A text-only Yellow
   source continues to use the approved `yellow-news-classic@2` card.
-- OriginTrail and Babylon use the deterministic `classic` card. Their source
-  image remains preserved in the source record until each client has an
-  approved canonical remix treatment.
+- OriginTrail and Babylon Daily News sources with verified official X media use
+  a source-heavy framed `remix`. The first-party square poster receives 780px
+  of the 1080px canvas; its marks, contrast, typography, Bitcoin/provenance
+  motif, and proof hierarchy stay intact while Korean context remains in a
+  compact lower panel. Text-only sources continue to use each deterministic
+  `classic` card.
 - A Squid Daily News source with an official X photo or canonical video poster
   uses `remix` automatically. The complete official crop remains authoritative
   and its native aspect ratio becomes the primary X deliverable; only audited
@@ -262,11 +265,10 @@ membership. The scheduled X worker has no Figma write path or plugin secret.
 At `needs_review`, a reviewer can request a local, non-persistent
 Figma-editable SVG using the fields shown in the current Daily News detail.
 This does not create a durable asset or Figma link and does not change workflow
-status. Scheduled Squid and Yellow drafts with pinned official media use
-`remix`; text-only Yellow and all OriginTrail/Babylon scheduled drafts use
-`classic`. A historical `remix` whose external source image or Railway-cleaned
-Squid visual cannot be loaded fails closed instead of returning an image-less
-SVG.
+status. Every scheduled client draft with pinned official media uses `remix`;
+text-only drafts use that client's `classic` treatment. A historical `remix`
+whose external source image or Railway-cleaned Squid visual cannot be loaded
+fails closed instead of returning an image-less SVG.
 
 Article jobs also store a source-locked visual story: one `1200x630` hero and
 two `1200x675` inline editorial visuals. The Studio library regenerates them

@@ -42,7 +42,7 @@ brand_voice:
   channel_guidance:
     x: "Keep the source's problem-to-proof logic and terminology; avoid adding a broader AI thesis unless it is explicit."
     telegram: "Lead with the trust problem, explain the verified mechanism, then include CTA, original link, and focused hashtags."
-    banner: "Use a concise problem-versus-verifiable-context headline with no unsupported benefits."
+    banner: "When official media is attached, preserve its full composition, official marks, contrast, and proof hierarchy as the dominant visual; add only compact source-supported Korean context and never reconstruct the creative. Without official media, use the OriginTrail classic profile."
     education: "Teach provenance as a causal chain using one source-grounded real-world example."
     article: >-
       Build a problem-to-proof narrative around trust, provenance, or connected
