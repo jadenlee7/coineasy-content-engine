@@ -117,6 +117,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
       sent: true,
       photo_sent: result.photoSent,
       text_sent: result.textSent,
+      collaboration_configured: result.collaborationConfigured,
+      collaboration_sent: result.collaborationSent,
+      collaboration_photo_sent: result.collaborationPhotoSent,
     }, 200);
   } catch (error) {
     const code = error instanceof ContentCatalogError

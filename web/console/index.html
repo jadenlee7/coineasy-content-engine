@@ -3156,20 +3156,27 @@
             || !generationContextIsCurrent(requestContext)
           ) return;
           if (!response.ok || result.sent !== true) {
-            const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+            const original = formStatus.textContent.replace(/\s*텔레그램 (?:DM|팀 검수방).*$/, "");
             setStatus(`${original} 텔레그램 DM은 보내지 못했습니다. 보관함 검토는 정상적으로 사용할 수 있습니다.`, "review");
             return;
           }
           reviewNotificationVersions.add(versionId);
-          const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+          const original = formStatus.textContent.replace(/\s*텔레그램 (?:DM|팀 검수방).*$/, "");
           const photoNote = result.photo_sent === true ? "배너와 내용을" : "내용을";
-          setStatus(`${original} 텔레그램 DM으로 ${photoNote} 보냈습니다.`, formStatus.classList.contains("review") ? "review" : "success");
+          if (result.collaboration_configured === true && result.collaboration_sent !== true) {
+            setStatus(`${original} 텔레그램 DM으로 ${photoNote} 보냈지만 팀 검수방 전송은 실패했습니다.`, "review");
+          } else {
+            const destination = result.collaboration_sent === true
+              ? "텔레그램 DM과 팀 검수방에"
+              : "텔레그램 DM으로";
+            setStatus(`${original} ${destination} ${photoNote} 보냈습니다.`, formStatus.classList.contains("review") ? "review" : "success");
+          }
         } catch {
           if (
             requestSessionEpoch !== state.sessionEpoch
             || !generationContextIsCurrent(requestContext)
           ) return;
-          const original = formStatus.textContent.replace(/\s*텔레그램 DM.*$/, "");
+          const original = formStatus.textContent.replace(/\s*텔레그램 (?:DM|팀 검수방).*$/, "");
           setStatus(`${original} 텔레그램 DM은 보내지 못했습니다. 보관함 검토는 정상적으로 사용할 수 있습니다.`, "review");
         }
       }

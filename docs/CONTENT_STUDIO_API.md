@@ -159,6 +159,10 @@ Current incremental Netlify bridge:
   banner. Daily News and Tutorial use the first private stored PNG through a
   short-lived signed URL. The DM contains a review-only deep link; it cannot
   approve or publish without the signed Studio session.
+  When Railway has the optional `TELEGRAM_COLLAB_REVIEW_CHAT_ID`, the exact same
+  bounded package is also copied to one private team review room. Its delivery
+  state is reported separately; a room delivery failure never turns a stored
+  generation into a failure or grants an agent approval/publication authority.
 
 All three generation calls require a UUID `Idempotency-Key`. The UUID is bound to a
 SHA-256 digest of the normalized submitted request, not mutable content later
@@ -242,9 +246,10 @@ The server ignores browser-supplied title, body, client, and channel copy. It
 reloads the immutable current version from the catalog, refuses mock or
 non-`needs_review` items, and relays a bounded review package through the
 admin-authenticated Railway API. Railway alone receives
-`TELEGRAM_REVIEW_BOT_TOKEN` and numeric `TELEGRAM_REVIEW_CHAT_ID`; Netlify never
-stores either Telegram secret. Telegram delivery failure never rolls back or
-publishes the stored content.
+`TELEGRAM_REVIEW_BOT_TOKEN`, numeric `TELEGRAM_REVIEW_CHAT_ID`, and the optional
+numeric `TELEGRAM_COLLAB_REVIEW_CHAT_ID`; Netlify never stores any Telegram
+secret. Telegram delivery failure never rolls back or publishes the stored
+content.
 
 ### Exact Squid Telegram publication
 

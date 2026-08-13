@@ -17,6 +17,9 @@ export type TelegramReviewResult = {
   sent: boolean;
   photoSent: boolean;
   textSent: boolean;
+  collaborationConfigured: boolean;
+  collaborationSent: boolean;
+  collaborationPhotoSent: boolean;
 };
 
 const CLIENT_NAMES: Record<ContentLibraryDetail["client_id"], string> = {
@@ -125,7 +128,11 @@ export function buildTelegramReviewMessage(detail: ContentLibraryDetail): string
   const reviewBody = normalizedText(channelCopy.telegram, 3_400)
     || fallbackReviewBody(detail);
   const prefix = "⚠️ <b>미승인 검토용 · 전달/게시 금지</b>\n<b>검토용 Telegram 문구</b>\n\n";
-  const suffix = "\n\n<i>개인 검토 알림입니다. 이 문구와 배너는 이중 사실 확인 승인 전에는 전달하거나 게시하지 마세요.</i>";
+  const reviewIdentity = [
+    `Item ${detail.content_item_id}`,
+    `Version ${detail.current_version_id}`,
+  ].join("\n");
+  const suffix = `\n\n${reviewIdentity}\n\n<i>팀 검토 알림입니다. 이 문구와 배너는 이중 사실 확인 승인 전에는 외부에 전달하거나 게시하지 마세요.</i>`;
   const available = Math.max(
     0,
     TELEGRAM_TEXT_LIMIT - prefix.length - suffix.length - 32,
@@ -201,8 +208,18 @@ export async function sendTelegramReviewNotification(
       sent: result.sent === true,
       photoSent: result.photo_sent === true,
       textSent: result.text_sent === true,
+      collaborationConfigured: result.collaboration_configured === true,
+      collaborationSent: result.collaboration_sent === true,
+      collaborationPhotoSent: result.collaboration_photo_sent === true,
     };
   } catch {
-    return { sent: false, photoSent: false, textSent: false };
+    return {
+      sent: false,
+      photoSent: false,
+      textSent: false,
+      collaborationConfigured: false,
+      collaborationSent: false,
+      collaborationPhotoSent: false,
+    };
   }
 }

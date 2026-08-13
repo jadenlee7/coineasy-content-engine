@@ -110,7 +110,9 @@ test("Telegram review copy is concise, branded, and excludes raw source text", (
   assert.match(message, /검토용 Telegram 문구/);
   assert.match(message, /미승인 검토용 · 전달\/게시 금지/);
   assert.match(message, /한국 사용자가 확인할 핵심 내용/);
-  assert.match(message, /이중 사실 확인 승인 전에는 전달하거나 게시하지 마세요/);
+  assert.match(message, new RegExp(`Item ${ITEM_ID}`));
+  assert.match(message, new RegExp(`Version ${VERSION_ID}`));
+  assert.match(message, /이중 사실 확인 승인 전에는 외부에 전달하거나 게시하지 마세요/);
   assert.doesNotMatch(message, /DM에 노출하면 안 되는 긴 원문/);
   assert.equal(
     telegramReviewUrl("https://console.example/ignored", ITEM_ID),
@@ -142,10 +144,24 @@ test("Telegram relay sends the banner and authenticated review link without bot 
     async (input, init) => {
       const request = new Request(input, init);
       calls.push(request);
-      return Response.json({ sent: true, photo_sent: true, text_sent: true });
+      return Response.json({
+        sent: true,
+        photo_sent: true,
+        text_sent: true,
+        collaboration_configured: true,
+        collaboration_sent: true,
+        collaboration_photo_sent: true,
+      });
     },
   );
-  assert.deepEqual(result, { sent: true, photoSent: true, textSent: true });
+  assert.deepEqual(result, {
+    sent: true,
+    photoSent: true,
+    textSent: true,
+    collaborationConfigured: true,
+    collaborationSent: true,
+    collaborationPhotoSent: true,
+  });
   assert.equal(calls.length, 1);
   assert.match(calls[0].url, /\/review-notifications\/telegram$/);
   assert.equal(calls[0].headers.get("x-api-key"), API_SECRET);
@@ -212,6 +228,9 @@ test("review notification route requires Studio auth and uses the stored current
         sent: true,
         photo_sent: true,
         text_sent: true,
+        collaboration_configured: false,
+        collaboration_sent: false,
+        collaboration_photo_sent: false,
       });
       assert.equal(relayCalls.length, 1);
       assert.equal(relayCalls[0].headers.get("x-api-key"), API_SECRET);
