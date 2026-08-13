@@ -148,6 +148,11 @@ test("Grok connector requires its own bounded constant-time bearer", () => {
       ? TOKEN
       : undefined
   )), null);
+  assert.equal(grokQaConnectorConfig((name) => (
+    ["GROK_QA_CONNECTOR_TOKEN", "GROK_QA_OAUTH_SIGNING_SECRET"].includes(name)
+      ? TOKEN
+      : undefined
+  )), null);
   assert.equal(hasGrokQaConnectorAccess(new Request("https://example.com", {
     headers: { Authorization: `Bearer ${TOKEN}` },
   }), TOKEN), true);
@@ -222,6 +227,10 @@ test("MCP advertises exactly the bounded review tools and rejects a wrong bearer
       {} as never,
     );
     assert.equal(unauthorized.status, 401);
+    assert.equal(
+      unauthorized.headers.get("www-authenticate"),
+      'Bearer realm="coineasy-grok-qa"',
+    );
 
     const response = await grokQaHandler(
       mcpRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
@@ -239,5 +248,30 @@ test("MCP advertises exactly the bounded review tools and rejects a wrong bearer
     assert.doesNotMatch(names.join(" "), /approve|publish|typefully/);
     assert.equal(payload.result.tools[0].annotations.readOnlyHint, true);
     assert.equal(payload.result.tools[2].annotations.idempotentHint, true);
+  });
+});
+
+test("MCP advertises protected-resource discovery only with a complete OAuth config", async () => {
+  const values = {
+    GROK_QA_CONNECTOR_TOKEN: TOKEN,
+    GROK_QA_OAUTH_ENABLED: "true",
+    GROK_QA_OAUTH_ISSUER: "https://coineasy-newscard.netlify.app",
+    GROK_QA_OAUTH_ALLOWED_REDIRECT_ORIGINS: "https://grok.com",
+    GROK_QA_OAUTH_OPERATOR_SECRET: "operator-" + "o".repeat(40),
+    GROK_QA_OAUTH_SIGNING_SECRET: "signing-" + "s".repeat(40),
+    SUPABASE_URL: "https://project.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "project-" + "p".repeat(40),
+    SUPABASE_GROK_QA_OAUTH_KEY: "scoped-" + "q".repeat(40),
+  };
+  await withNetlifyEnvironment(values, async () => {
+    const unauthorized = await grokQaHandler(
+      mcpRequest({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }, `${TOKEN}-wrong`),
+      {} as never,
+    );
+    assert.equal(unauthorized.status, 401);
+    assert.equal(
+      unauthorized.headers.get("www-authenticate"),
+      'Bearer realm="coineasy-grok-qa", resource_metadata="https://coineasy-newscard.netlify.app/.well-known/oauth-protected-resource/api/grok-qa/mcp"',
+    );
   });
 });

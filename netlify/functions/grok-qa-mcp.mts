@@ -22,6 +22,7 @@ import {
   sendGrokQaVerdict,
   type GrokQaVerdict,
 } from "./_shared/grok-qa.mts";
+import { grokQaOauthConfig } from "./_shared/grok-qa-oauth.mts";
 
 const PRODUCTION_HOST = "coineasy-newscard.netlify.app";
 const MAX_MCP_REQUEST_BYTES = 128 * 1024;
@@ -351,15 +352,20 @@ function jsonResponse(body: Record<string, unknown>, status: number, headers = {
 }
 
 export default async (req: Request, _context: Context): Promise<Response> => {
-  const host = new URL(req.url).hostname.toLowerCase();
+  const requestUrl = new URL(req.url);
+  const host = requestUrl.hostname.toLowerCase();
   if (host !== PRODUCTION_HOST && host !== "localhost" && host !== "127.0.0.1") {
     return jsonResponse({ error: "invalid_connector_host" }, 421);
   }
   const config = grokQaConnectorConfig((name) => Netlify.env.get(name));
   if (!config) return jsonResponse({ error: "grok_qa_connector_not_configured" }, 503);
   if (!hasGrokQaConnectorAccess(req, config.token)) {
+    const oauth = grokQaOauthConfig((name) => Netlify.env.get(name), requestUrl.origin);
+    const metadata = oauth
+      ? `, resource_metadata="${oauth.issuer}/.well-known/oauth-protected-resource/api/grok-qa/mcp"`
+      : "";
     return jsonResponse({ error: "invalid_token" }, 401, {
-      "WWW-Authenticate": 'Bearer realm="coineasy-grok-qa"',
+      "WWW-Authenticate": `Bearer realm="coineasy-grok-qa"${metadata}`,
     });
   }
   const declared = Number(req.headers.get("content-length") || 0);

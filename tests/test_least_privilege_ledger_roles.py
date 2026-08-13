@@ -152,7 +152,11 @@ def test_migration_applies_after_every_routine_it_grants():
     assert review_role[0] < final_role[0]
     assert final_role[0] < evidence_role[0]
     assert evidence_role[0] < acknowledgement_role[0]
-    assert migrations[-1] == acknowledgement_role[0], (
-        "the newest least-privilege grant migration must sort last so its "
-        f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
-    )
+    # Later migrations may add unrelated, separately scoped roles.  The Buzz
+    # guard only needs to follow every Buzz routine signature it grants.
+    acknowledgement_routines = [
+        n for n in migrations
+        if "origintrail_buzz_review_ack_outbox" in n
+    ]
+    assert acknowledgement_routines
+    assert max(acknowledgement_routines) < acknowledgement_role[0]

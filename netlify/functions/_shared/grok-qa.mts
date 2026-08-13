@@ -271,6 +271,10 @@ export function grokQaConnectorConfig(
     "STUDIO_AUTOMATION_TOKEN",
     "API_SECRET",
     "PUBLICATION_WORKER_TOKEN",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_GROK_QA_OAUTH_KEY",
+    "GROK_QA_OAUTH_OPERATOR_SECRET",
+    "GROK_QA_OAUTH_SIGNING_SECRET",
   ].some((name) => {
     const existing = (getEnv(name) || "").trim();
     return Boolean(existing) && existing === token;
