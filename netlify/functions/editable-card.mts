@@ -91,6 +91,9 @@ export function requiredOfficialLogoVariant(
     }
     return "light";
   }
+  // Yellow classic v2 is always rendered on the approved cream canvas with
+  // the black official wordmark, independent of the legacy theme input.
+  if (clientId === "yellow" && templateStyle === "classic") return "light";
   if (templateStyle === "signal") return "dark";
   return spec.theme === "yellow" ? "light" : "dark";
 }

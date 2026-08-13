@@ -289,7 +289,7 @@ test("news card request hash binds every submitted generation input", () => {
     style_reference_pack_hash: "",
     brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
     brand_tokens_version: yellowProfile.brandTokensVersion,
-    template_version: "yellow-news-classic@1",
+    template_version: "yellow-news-classic@2",
     asset_pack_version: yellowProfile.assetPackVersion,
     visual_design_profile_id: yellowProfile.designProfileId,
     visual_design_profile_version: yellowProfile.designProfileVersion,
@@ -305,7 +305,7 @@ test("accepts only the selected client's server-owned news brand profile", () =>
       render_strategy: "brand_native",
       channel_profile: "x_square",
       brand_tokens_version: profile.brandTokensVersion,
-      template_version: `${clientId}-news-classic@1`,
+      template_version: `${clientId}-news-classic@${profile.classicTemplateVersion}`,
       asset_pack_version: profile.assetPackVersion,
       visual_design_profile_id: profile.designProfileId,
       visual_design_profile_version: profile.designProfileVersion,
@@ -451,6 +451,24 @@ test("accepts only the explicitly approved Figma template for the rendered clien
     normalizedFigmaTemplate(
       { ...approved, node_id: "1835:1877" },
       "squid",
+      "classic",
+    ),
+    null,
+  );
+  const approvedYellow = {
+    ...approved,
+    node_id: "1966:2389",
+    frame_name: "[KEEP] Banner_Yellow_Sample",
+    version: "2026-08-13.1",
+  };
+  assert.deepEqual(
+    normalizedFigmaTemplate(approvedYellow, "yellow", "classic"),
+    approvedYellow,
+  );
+  assert.equal(
+    normalizedFigmaTemplate(
+      { ...approvedYellow, version: "2026-08-13.2" },
+      "yellow",
       "classic",
     ),
     null,

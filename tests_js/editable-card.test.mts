@@ -45,6 +45,17 @@ test("does not fetch a publisher logo for generated Squid v5", () => {
   assert.equal(requiredOfficialLogoVariant("squid", "classic", {}), "light");
 });
 
+test("uses the black official Yellow wordmark for the approved cream classic", () => {
+  assert.equal(
+    requiredOfficialLogoVariant("yellow", "classic", { theme: "dark" }),
+    "light",
+  );
+  assert.equal(
+    requiredOfficialLogoVariant("yellow", "classic", { theme: "yellow" }),
+    "light",
+  );
+});
+
 type GeneratedImageResponse = () => Response;
 
 async function requestEditableCard(generatedImageResponse: GeneratedImageResponse): Promise<Response> {

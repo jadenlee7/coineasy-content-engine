@@ -93,17 +93,38 @@ test("requires the cleaned source only for a translated Squid remix", () => {
   assert.equal(needsCleanedSquidVisual("squid", "remix", { source_text_visible: false }), false);
 });
 
-test("creates a native-layer classic SVG for Figma without foreignObject", () => {
+test("creates the approved Yellow classic SVG as native Figma layers", () => {
   const svg = buildEditableSvg("yellow", "classic", SPEC, {
-    logoDark: "data:image/svg+xml;base64,PHN2Zy8+",
+    logoLight: "data:image/svg+xml;base64,PHN2Zy8+",
   });
   assert.match(svg, /<svg[^>]+width="1080"[^>]+height="1080"/);
+  assert.match(svg, /id="Canvas-Background"[^>]+fill="#F7F0E2"/);
+  assert.match(svg, /id="Official-Logo-Tile"/);
+  assert.match(svg, /id="Logo-Tile-Background"[^>]+fill="#FDDA16"/);
   assert.match(svg, /id="Brand-Logo"/);
   assert.match(svg, /id="Headline-Line-1"/);
-  assert.match(svg, /id="Body-Item-1-Background"/);
+  assert.match(svg, /id="Body-Line-1"/);
+  assert.match(svg, /id="Accent-Line"/);
   assert.match(svg, /id="Source-URL"/);
   assert.match(svg, /x=1&amp;y=2/);
+  assert.doesNotMatch(svg, /Main-Card-Background|Body-Item-1-Background|Bullet/);
   assert.doesNotMatch(svg, /foreignObject|<style/);
+});
+
+test("keeps the approved Yellow headline hierarchy in editable SVG", () => {
+  const headline = "가".repeat(24);
+  const svg = buildEditableSvg("yellow", "classic", {
+    ...SPEC,
+    headline,
+  }, {
+    logoLight: "data:image/svg+xml;base64,PHN2Zy8+",
+  });
+  const rendered = [...svg.matchAll(/id="Headline-Line-[0-9]+"[^>]*>([^<]*)<\/text>/g)]
+    .map(match => match[1])
+    .join("");
+  assert.equal(rendered, headline);
+  assert.match(svg, /id="Headline-Line-1"[^>]+font-size="100"/);
+  assert.doesNotMatch(rendered, /…/);
 });
 
 test("creates the Figma-aligned Squid classic with official layered assets", () => {

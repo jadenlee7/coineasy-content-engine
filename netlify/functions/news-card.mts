@@ -105,27 +105,41 @@ type StandardNewsBrandProfile = {
   designProfileVersion: number;
   brandTokensVersion: string;
   assetPackVersion: string;
+  classicTemplateVersion: number;
 };
 export const NEWS_BRAND_PROFILES: Record<StandardNewsBrandClient, StandardNewsBrandProfile> = {
   yellow: {
     designProfileId: "yellow/institutional-market-infrastructure",
-    designProfileVersion: 1,
+    designProfileVersion: 2,
     brandTokensVersion: "yellow-brand-tokens@1",
     assetPackVersion: "yellow-official-brand-assets@1",
+    classicTemplateVersion: 2,
   },
   origintrail: {
     designProfileId: "origintrail/verifiable-knowledge",
     designProfileVersion: 1,
     brandTokensVersion: "origintrail-brand-tokens@1",
     assetPackVersion: "origintrail-official-brand-assets@1",
+    classicTemplateVersion: 1,
   },
   babylon: {
     designProfileId: "babylon/bitcoin-native-infrastructure",
     designProfileVersion: 1,
     brandTokensVersion: "babylon-brand-tokens@1",
     assetPackVersion: "babylon-official-brand-assets@1",
+    classicTemplateVersion: 1,
   },
 };
+
+function standardNewsTemplateVersion(
+  clientId: StandardNewsBrandClient,
+  templateStyle: string,
+): string {
+  const version = templateStyle === "classic"
+    ? NEWS_BRAND_PROFILES[clientId].classicTemplateVersion
+    : 1;
+  return `${clientId}-news-${templateStyle}@${version}`;
+}
 const SQUID_VISUAL_REFERENCE_PACKS = {
   editorial_big_type: {
     id: "squid/editorial-big-type",
@@ -163,14 +177,17 @@ const NEWS_CARD_PERSISTENCE_RESERVE_MS = 18_000;
 const FIGMA_TEMPLATE_NODES: Partial<Record<ContentCatalogClient, {
   nodeId: string;
   frameName: string;
+  version: string;
 }>> = {
   squid: {
     nodeId: "1479:1954",
     frameName: "[KEEP] Banner_Squid_Sample",
+    version: "2026-07-30.1",
   },
   yellow: {
-    nodeId: "1507:12",
+    nodeId: "1966:2389",
     frameName: "[KEEP] Banner_Yellow_Sample",
+    version: "2026-08-13.1",
   },
 };
 
@@ -238,8 +255,7 @@ export function normalizedFigmaTemplate(
     || reference.node_id !== expected.nodeId
     || reference.frame_name !== expected.frameName
     || reference.status !== "approved"
-    || typeof reference.version !== "string"
-    || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}\.[1-9][0-9]*$/.test(reference.version)
+    || reference.version !== expected.version
   ) return null;
   return reference as FigmaTemplateReference;
 }
@@ -288,7 +304,7 @@ function buildNewsCardRequestHash(
     const profile = NEWS_BRAND_PROFILES[clientId];
     payload.brand_profile_policy_version = NEWS_BRAND_PROFILE_POLICY_VERSION;
     payload.brand_tokens_version = profile.brandTokensVersion;
-    payload.template_version = `${clientId}-news-${input.templateStyle}@1`;
+    payload.template_version = standardNewsTemplateVersion(clientId, input.templateStyle);
     payload.asset_pack_version = profile.assetPackVersion;
     payload.visual_design_profile_id = profile.designProfileId;
     payload.visual_design_profile_version = profile.designProfileVersion;
@@ -445,7 +461,7 @@ export function validStandardNewsBrandMetadata(
     && spec.render_strategy === (templateStyle === "remix" ? "source_remix" : "brand_native")
     && spec.channel_profile === "x_square"
     && spec.brand_tokens_version === profile.brandTokensVersion
-    && spec.template_version === `${standardClientId}-news-${templateStyle}@1`
+    && spec.template_version === standardNewsTemplateVersion(standardClientId, templateStyle)
     && spec.asset_pack_version === profile.assetPackVersion
     && spec.visual_design_profile_id === profile.designProfileId
     && spec.visual_design_profile_version === profile.designProfileVersion;
