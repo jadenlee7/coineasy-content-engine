@@ -34,6 +34,12 @@ BUZZ_REVIEW_ACK_ROLE_MIGRATION = (
     / "migrations"
     / "20260811161000_buzz_review_ack_role.sql"
 ).read_text()
+AUTONOMOUS_OPS_ROLE_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260813131000_autonomous_ops_role.sql"
+).read_text()
 REVIEW_PACK_ROLE_MIGRATION = (
     ROOT
     / "supabase"
@@ -46,6 +52,9 @@ BUZZ_DELIVERY_ADAPTER = (
 ).read_text()
 BUZZ_REVIEW_ADAPTER = (
     ROOT / "netlify" / "functions" / "_shared" / "buzz-review.mts"
+).read_text()
+AUTONOMOUS_OPS_ADAPTER = (
+    ROOT / "netlify" / "functions" / "_shared" / "autonomous-ops.mts"
 ).read_text()
 
 # `queue_agent_batch_job` lives in the same repository class but is reached only
@@ -135,6 +144,21 @@ def test_buzz_review_grant_matches_the_netlify_adapter_exactly():
     )
 
 
+def test_autonomous_ops_grant_matches_the_adapter_exactly():
+    called = frozenset(re.findall(
+        r'name: "([a-z_]+autonomous_ops[a-z_]*)"',
+        AUTONOMOUS_OPS_ADAPTER,
+    ))
+    granted = frozenset(re.findall(
+        r"grant execute on function public[.]([a-z_]+autonomous_ops[a-z_]*)[(]",
+        AUTONOMOUS_OPS_ROLE_MIGRATION,
+    ))
+    assert called == granted == frozenset({
+        "observe_origintrail_autonomous_ops",
+        "record_origintrail_autonomous_ops_plan",
+    })
+
+
 def test_migration_applies_after_every_routine_it_grants():
     """The guard in the migration only has teeth if the routines already exist."""
     migrations = sorted(p.name for p in (ROOT / "supabase" / "migrations").glob("*.sql"))
@@ -144,18 +168,21 @@ def test_migration_applies_after_every_routine_it_grants():
     evidence_role = [n for n in migrations if "origintrail_review_evidence_roles" in n]
     acknowledgement_role = [n for n in migrations if "buzz_review_ack_role" in n]
     operations_role = [n for n in migrations if "buzz_operations_role" in n]
+    autonomous_role = [n for n in migrations if "autonomous_ops_role" in n]
     assert len(least_privilege) == 1, least_privilege
     assert len(review_role) == 1, review_role
     assert len(final_role) == 1, final_role
     assert len(evidence_role) == 1, evidence_role
     assert len(acknowledgement_role) == 1, acknowledgement_role
     assert len(operations_role) == 1, operations_role
+    assert len(autonomous_role) == 1, autonomous_role
     assert least_privilege[0] < review_role[0]
     assert review_role[0] < final_role[0]
     assert final_role[0] < evidence_role[0]
     assert evidence_role[0] < acknowledgement_role[0]
     assert acknowledgement_role[0] < operations_role[0]
-    assert migrations[-1] == operations_role[0], (
+    assert operations_role[0] < autonomous_role[0]
+    assert migrations[-1] == autonomous_role[0], (
         "the newest least-privilege grant migration must sort last so its "
         f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
     )

@@ -245,6 +245,39 @@ jobs:
             python -m scripts.run_origintrail_buzz_operations --validate-only \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "response_enabled": False, "client_id": "origintrail", "environment": "staging", "channel_id": "33333333-3333-4333-8333-333333333333", "reviewer_count": 1, "release_sha": "dddddddddddddddddddddddddddddddddddddddd", "database_calls": False, "relay_calls": False, "openai_calls": False, "batch_calls": False, "publication_calls": False}'
 
+  autonomous-ops-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the propose-only autonomous operations image
+        run: >-
+          docker build
+          --file Dockerfile.autonomous-ops
+          --tag coineasy-autonomous-ops-ci
+          .
+      - name: Prove disabled cron holds with zero I/O
+        run: |
+          docker run --rm --network none \
+            --env AUTONOMOUS_OPS_ENABLED=false \
+            coineasy-autonomous-ops-ci \
+            python -m scripts.run_origintrail_autonomous_ops --run-once \
+          | python -c 'import json, sys; result=json.load(sys.stdin); assert result["ok"] is True; assert result["mode"] == "hold"; assert result["reason"] == "autonomous_ops_disabled"; assert all(result[key] is False for key in ("database_calls", "relay_calls", "openai_calls", "batch_calls", "publication_calls", "deployment_calls"))'
+      - name: Validate staging and release fences without I/O
+        run: |
+          docker run --rm --network none \
+            --env AUTONOMOUS_OPS_ENABLED=false \
+            --env AUTONOMOUS_OPS_RECORD_ENABLED=false \
+            --env AUTONOMOUS_OPS_ALLOWED_CLIENTS=origintrail \
+            --env AUTONOMOUS_OPS_URL=https://preview.example/api/autonomous-ops/origintrail \
+            --env AUTONOMOUS_OPS_WORKER_TOKEN=autonomous-ops-token-that-is-dedicated \
+            --env AUTONOMOUS_OPS_EXPECTED_ENVIRONMENT=staging \
+            --env AUTONOMOUS_OPS_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env RAILWAY_ENVIRONMENT_NAME=staging \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            coineasy-autonomous-ops-ci \
+            python -m scripts.run_origintrail_autonomous_ops --validate-only \
+          | python -c 'import json, sys; result=json.load(sys.stdin); assert result["ok"] is True; assert result["enabled"] is False; assert result["environment"] == "staging"; assert result["execution_mode"] == "propose_only"; assert all(result[key] is False for key in ("database_calls", "relay_calls", "openai_calls", "batch_calls", "publication_calls", "deployment_calls"))'
+
   publication-image:
     runs-on: ubuntu-latest
     steps:

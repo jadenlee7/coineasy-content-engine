@@ -186,6 +186,29 @@ def test_ci_builds_and_holds_operations_image_without_network():
     assert "BUZZ_OPERATIONS_ENABLED=false" in workflow
     assert "buzz_operations_disabled" in workflow
     assert "scripts.run_origintrail_buzz_operations --validate-only" in workflow
+
+
+def test_autonomous_ops_is_propose_only_disabled_by_default_cron():
+    config = json.loads((ROOT / "railway.autonomous-ops.json").read_text())
+    assert config["build"]["dockerfilePath"] == "Dockerfile.autonomous-ops"
+    assert config["deploy"]["cronSchedule"] == "*/15 * * * *"
+    assert config["deploy"]["restartPolicyType"] == "NEVER"
+    assert "--validate-only" in config["deploy"]["preDeployCommand"]
+    assert "--run-once" in config["deploy"]["startCommand"]
+    dockerfile = (ROOT / "Dockerfile.autonomous-ops").read_text().lower()
+    assert "autonomous_ops_enabled=false" in dockerfile
+    assert "autonomous_ops_record_enabled=false" in dockerfile
+    assert "openai_api_key" not in dockerfile
+    assert "buzz_private_key" not in dockerfile
+    assert "publication_worker_token" not in dockerfile
+
+
+def test_ci_builds_and_holds_autonomous_ops_without_network():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "autonomous-ops-image:" in workflow
+    assert "--file Dockerfile.autonomous-ops" in workflow
+    assert "scripts.run_origintrail_autonomous_ops --run-once" in workflow
+    assert "scripts.run_origintrail_autonomous_ops --validate-only" in workflow
     for fence in (
         "BUZZ_SERVICE_PUBKEY",
         "RAILWAY_ENVIRONMENT_NAME",

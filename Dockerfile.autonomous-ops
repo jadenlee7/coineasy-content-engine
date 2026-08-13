@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements-automation.txt .
+RUN pip install --no-cache-dir -r requirements-automation.txt \
+    && useradd --create-home --uid 10001 coineasy
+
+COPY core/__init__.py ./core/__init__.py
+COPY core/autonomous_ops.py ./core/autonomous_ops.py
+COPY core/autonomous_ops_settings.py ./core/autonomous_ops_settings.py
+COPY core/autonomous_ops_worker.py ./core/autonomous_ops_worker.py
+COPY scripts/run_origintrail_autonomous_ops.py ./scripts/run_origintrail_autonomous_ops.py
+
+RUN chown -R coineasy:coineasy /app
+
+ENV AUTONOMOUS_OPS_ENABLED=false \
+    AUTONOMOUS_OPS_RECORD_ENABLED=false \
+    AUTONOMOUS_OPS_ALLOWED_CLIENTS=origintrail \
+    PYTHONUNBUFFERED=1
+
+# This image intentionally has no Buzz private key, OpenAI key, Batch token,
+# Supabase key, publisher, git, GitHub, Railway, or Netlify credential.
+
+USER 10001:10001
+
+CMD ["python", "-m", "scripts.run_origintrail_autonomous_ops"]
