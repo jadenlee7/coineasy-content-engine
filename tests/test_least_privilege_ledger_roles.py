@@ -152,7 +152,29 @@ def test_migration_applies_after_every_routine_it_grants():
     assert review_role[0] < final_role[0]
     assert final_role[0] < evidence_role[0]
     assert evidence_role[0] < acknowledgement_role[0]
-    assert migrations[-1] == acknowledgement_role[0], (
-        "the newest least-privilege grant migration must sort last so its "
-        f"to_regprocedure guard sees final signatures; last is {migrations[-1]}"
+    # Unrelated migrations may follow this final Buzz-role grant. None may
+    # redefine a routine whose exact signature the guard already checked;
+    # doing so would make the earlier to_regprocedure assertion stale.
+    guarded_routines = _granted_routines(
+        "review_routines", BUZZ_REVIEW_ACK_ROLE_MIGRATION
     )
+    later_migrations = migrations[
+        migrations.index(acknowledgement_role[0]) + 1:
+    ]
+    for migration_name in later_migrations:
+        body = (
+            ROOT / "supabase" / "migrations" / migration_name
+        ).read_text().lower()
+        changed = sorted(
+            routine
+            for routine in guarded_routines
+            if re.search(
+                rf"(?:create\s+or\s+replace|drop)\s+function\s+"
+                rf"public[.]{re.escape(routine)}\s*[(]",
+                body,
+            )
+        )
+        assert not changed, (
+            f"{migration_name} redefines routines after their final scoped "
+            f"role grant: {changed}"
+        )

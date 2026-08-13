@@ -7,7 +7,7 @@ import html
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 
@@ -17,6 +17,7 @@ TELEGRAM_TIMEOUT_SECONDS = 15.0
 MAX_IMAGE_BYTES = 3_000_000
 _BOT_TOKEN_PATTERN = re.compile(r"^[0-9]{6,14}:[A-Za-z0-9_-]{30,100}$")
 _CHAT_ID_PATTERN = re.compile(r"^-?[1-9][0-9]{5,19}$")
+_PRIVATE_SUPERGROUP_ID_PATTERN = re.compile(r"^-100[1-9][0-9]{6,16}$")
 _DATA_URL_PATTERN = re.compile(
     r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$"
 )
@@ -60,7 +61,7 @@ def telegram_content_ops_relay_config(
     chat_id = os.environ.get("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", "").strip()
     if not _BOT_TOKEN_PATTERN.fullmatch(bot_token):
         return None
-    if not _CHAT_ID_PATTERN.fullmatch(chat_id):
+    if not _PRIVATE_SUPERGROUP_ID_PATTERN.fullmatch(chat_id):
         return None
     if primary is not None and (
         bot_token == primary.bot_token or chat_id == primary.chat_id
@@ -107,6 +108,23 @@ async def _telegram_post(
     data: dict[str, str] | None = None,
     files: dict[str, tuple[str, bytes, str]] | None = None,
 ) -> bool:
+    return await _telegram_post_outcome(
+        config,
+        method,
+        json_body=json_body,
+        data=data,
+        files=files,
+    ) == "sent"
+
+
+async def _telegram_post_outcome(
+    config: TelegramReviewConfig | TelegramContentOpsRelayConfig,
+    method: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    data: dict[str, str] | None = None,
+    files: dict[str, tuple[str, bytes, str]] | None = None,
+) -> Literal["sent", "rejected", "delivery_unknown"]:
     try:
         async with httpx.AsyncClient(timeout=TELEGRAM_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -116,16 +134,22 @@ async def _telegram_post(
                 files=files,
             )
     except (httpx.TimeoutException, httpx.TransportError):
-        return False
+        return "delivery_unknown"
     except Exception:
-        return False
+        return "delivery_unknown"
+    if response.status_code >= 500:
+        return "delivery_unknown"
     if not 200 <= response.status_code < 300:
-        return False
+        return "rejected"
     try:
         result = response.json()
     except Exception:
-        return False
-    return isinstance(result, dict) and result.get("ok") is True
+        return "delivery_unknown"
+    return (
+        "sent"
+        if isinstance(result, dict) and result.get("ok") is True
+        else "rejected"
+    )
 
 
 async def send_telegram_review(
@@ -312,10 +336,42 @@ async def send_telegram_grok_qa_verdict(
     config: TelegramContentOpsRelayConfig,
     message_html: str,
     review_url: str,
-) -> bool:
-    """Send only to the dedicated private Content Ops relay destination."""
+    image_data_url: str,
+) -> Literal["sent", "rejected", "delivery_unknown"]:
+    """Send the verified banner and full verdict only to the private relay."""
 
-    return await _telegram_post(
+    decoded = decode_review_image_data_url(image_data_url)
+    if decoded is None:
+        return "rejected"
+    mime_type, image_bytes = decoded
+    extension = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+    }[mime_type]
+    photo_outcome = await _telegram_post_outcome(
+        config,
+        "sendPhoto",
+        data={
+            "chat_id": config.chat_id,
+            "caption": (
+                "🤖 <b>CoinEasy Grok QA · 검수 배너</b>\n"
+                "<i>자문 전용 · 자동 승인/발행 아님</i>"
+            ),
+            "parse_mode": "HTML",
+        },
+        files={
+            "photo": (
+                f"grok-qa-banner.{extension}",
+                image_bytes,
+                mime_type,
+            ),
+        },
+    )
+    if photo_outcome != "sent":
+        return photo_outcome
+
+    text_outcome = await _telegram_post_outcome(
         config,
         "sendMessage",
         json_body={
@@ -331,3 +387,8 @@ async def send_telegram_grok_qa_verdict(
             },
         },
     )
+    if text_outcome == "sent":
+        return "sent"
+    # The banner is already visible. Treat every later failure as ambiguous so
+    # an automated retry cannot duplicate the private-room review packet.
+    return "delivery_unknown"

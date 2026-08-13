@@ -35,6 +35,43 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
 
+  grok-qa-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the isolated advisory Grok QA image
+        run: >-
+          docker build
+          --file Dockerfile.grok-qa
+          --tag coineasy-grok-qa-ci
+          .
+      - name: Prove the scheduled worker holds without network or credentials
+        run: |
+          docker run --rm --network none \
+            --env GROK_QA_DISPATCH_ENABLED=false \
+            coineasy-grok-qa-ci \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "hold", "reason": "grok_qa_dispatch_disabled", "provider_calls": False, "database_calls": False, "relay_calls": False, "publication_calls": False}'
+      - name: Validate exact provider, client, environment, and release fences without I/O
+        run: |
+          docker run --rm --network none \
+            --env GROK_QA_DISPATCH_ENABLED=false \
+            --env GROK_QA_DISPATCH_URL=https://coineasy-newscard.netlify.app/api/grok-qa/dispatch \
+            --env GROK_QA_DISPATCH_TOKEN=dispatch-token-that-is-dedicated-and-long-enough \
+            --env XAI_API_KEY=xai-ci-key-that-is-dedicated-and-long-enough \
+            --env GROK_QA_MODEL=grok-4.5 \
+            --env GROK_QA_ALLOWED_CLIENTS=squid \
+            --env RAILWAY_ENVIRONMENT_NAME=production \
+            --env GROK_QA_EXPECTED_ENVIRONMENT=production \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env GROK_QA_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            coineasy-grok-qa-ci \
+            python -m scripts.run_grok_qa_dispatch --validate-only \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "validate_only", "model": "grok-4.5", "allowed_clients": ["squid"], "canary_mode": False, "canary_target_configured": False, "runtime_environment_verified": True, "runtime_release_verified": True, "provider_calls": False, "database_calls": False, "relay_calls": False, "publication_calls": False}'
+      - name: Prove the image has no publication or source-monitor modules
+        run: |
+          docker run --rm --network none coineasy-grok-qa-ci \
+            python -c 'import importlib.util; assert importlib.util.find_spec("core.publishers") is None; assert importlib.util.find_spec("core.sources") is None; assert importlib.util.find_spec("core.automation") is None'
+
   batch-image:
     runs-on: ubuntu-latest
     steps:
