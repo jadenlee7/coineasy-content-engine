@@ -175,6 +175,7 @@ async def test_provider_failure_after_fence_is_terminal_provider_unknown():
         worker_id="grok-qa:test-worker",
     ).run_once()
     assert run.status == "failed"
+    assert run.error == "xai_qa_unavailable"
     assert broker.fail_args["error_code"] == "grok_qa_provider_unknown"
     assert broker.fail_args["retryable"] is False
 
