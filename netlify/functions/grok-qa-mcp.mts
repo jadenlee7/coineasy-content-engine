@@ -1,5 +1,10 @@
 import type { Config, Context } from "@netlify/functions";
-import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import {
+  createMcpHandler,
+  isLegacyRequest,
+  McpServer,
+  WebStandardStreamableHTTPServerTransport,
+} from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import {
@@ -365,7 +370,31 @@ function mcpServer(): McpServer {
   return server;
 }
 
-const handler = createMcpHandler(() => mcpServer());
+const handler = createMcpHandler(() => mcpServer(), {
+  legacy: "reject",
+});
+
+async function legacyJsonResponse(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return Response.json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    }, { status: 405 });
+  }
+  const server = mcpServer();
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+  try {
+    return await transport.handleRequest(req);
+  } finally {
+    await transport.close().catch(() => {});
+    await server.close().catch(() => {});
+  }
+}
 
 function jsonResponse(body: Record<string, unknown>, status: number, headers = {}): Response {
   return Response.json(body, {
@@ -403,7 +432,9 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       return jsonResponse({ error: "mcp_request_too_large" }, 413);
     }
   }
-  const response = await handler.fetch(req);
+  const response = await isLegacyRequest(req)
+    ? await legacyJsonResponse(req)
+    : await handler.fetch(req);
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   headers.set("X-Content-Type-Options", "nosniff");

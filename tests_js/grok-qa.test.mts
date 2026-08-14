@@ -133,11 +133,9 @@ function mcpRequestAt(url: string, body: Record<string, unknown>, token = TOKEN)
   });
 }
 
-async function sseJson(response: Response): Promise<Record<string, any>> {
-  const text = await response.text();
-  const data = text.split("\n").find((line) => line.startsWith("data: "));
-  assert.ok(data);
-  return JSON.parse(data.slice(6));
+async function mcpJson(response: Response): Promise<Record<string, any>> {
+  assert.match(response.headers.get("content-type") || "", /^application\/json\b/i);
+  return await response.json();
 }
 
 test("Grok review package exposes generated QA evidence but never raw source or signed URLs", () => {
@@ -261,7 +259,7 @@ test("MCP advertises exactly the bounded review tools and rejects a wrong bearer
     );
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
-    const payload = await sseJson(response);
+    const payload = await mcpJson(response);
     const names = payload.result.tools.map((tool: Record<string, unknown>) => tool.name);
     assert.deepEqual(names, [
       "coineasy_list_needs_review",
@@ -387,6 +385,7 @@ test("MCP submit rejects a missing banner before claiming a durable receipt", as
         },
       }), {} as never);
       assert.equal(response.status, 200);
+      assert.match(response.headers.get("content-type") || "", /^application\/json\b/i);
       assert.match(await response.text(), /qa_banner_unavailable/);
     });
   } finally {
