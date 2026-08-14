@@ -151,8 +151,14 @@ class GrokQaWorker:
         *,
         code: str,
         retryable: bool,
+        result_error: Optional[str] = None,
     ) -> GrokQaRunResult:
         safe_code = code if _SAFE_ERROR_RE.fullmatch(code) else "grok_qa_failed"
+        safe_result_error = (
+            result_error
+            if result_error is not None and _SAFE_ERROR_RE.fullmatch(result_error)
+            else safe_code
+        )
         try:
             await self.broker.fail(
                 claim=claim,
@@ -173,7 +179,7 @@ class GrokQaWorker:
             claimed=True,
             status="retrying" if retryable else "failed",
             content_version_id=claim.content_version_id,
-            error=safe_code,
+            error=safe_result_error,
         )
 
     async def run_once(self) -> GrokQaRunResult:
@@ -242,11 +248,12 @@ class GrokQaWorker:
 
         try:
             result = await self.provider.review(claim)
-        except XaiQaError:
+        except XaiQaError as exc:
             return await self._fail(
                 claim,
                 code="grok_qa_provider_unknown",
                 retryable=False,
+                result_error=exc.code,
             )
         except (ValidationError, ValueError):
             return await self._fail(

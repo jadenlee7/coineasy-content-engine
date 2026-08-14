@@ -24,6 +24,12 @@ PROMPT_VERSION = "official-x-grok-qa@1"
 _MAX_PROVIDER_RESPONSE_BYTES = 512 * 1024
 _PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,199}$")
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+_X_SEARCH_TOOL_NAMES = frozenset({
+    "x_user_search",
+    "x_keyword_search",
+    "x_semantic_search",
+    "x_thread_fetch",
+})
 
 
 class XaiQaError(RuntimeError):
@@ -136,6 +142,20 @@ def _x_search_call_count(body: Mapping[str, object]) -> int:
     elif isinstance(named_usage, list):
         named_proof = any("x_search" in str(value).lower() for value in named_usage)
     return output_calls if output_has_call and (numeric_proof or named_proof) else 0
+
+
+def _failed_x_search_call_count(body: Mapping[str, object]) -> int:
+    output = body.get("output")
+    if not isinstance(output, list):
+        return 0
+    return sum(
+        1
+        for item in output
+        if isinstance(item, Mapping)
+        and item.get("type") == "custom_tool_call"
+        and item.get("name") in _X_SEARCH_TOOL_NAMES
+        and item.get("status") == "failed"
+    )
 
 
 class XaiQaClient:
@@ -272,6 +292,8 @@ class XaiQaClient:
             raise XaiQaError("xai_qa_response_id_invalid", retryable=False)
         x_search_calls = _x_search_call_count(body)
         if x_search_calls < 1:
+            if _failed_x_search_call_count(body) > 0:
+                raise XaiQaError("xai_qa_x_search_failed", retryable=False)
             raise XaiQaError("xai_qa_x_search_missing", retryable=False)
         if x_search_calls > self.max_turns:
             raise XaiQaError("xai_qa_x_search_limit_exceeded", retryable=False)

@@ -137,6 +137,28 @@ async def test_request_is_fixed_private_bounded_structured_x_search_with_png():
         "xai_qa_x_search_missing",
     ),
     (
+        response_body(
+            citations=[],
+            output=[
+                {"type": "reasoning"},
+                {
+                    "type": "custom_tool_call",
+                    "name": "x_thread_fetch",
+                    "status": "failed",
+                },
+                {"type": "message", "content": [{
+                    "type": "output_text",
+                    "text": json.dumps(verdict()),
+                }]},
+            ],
+            usage={
+                "cost_in_usd_ticks": 100_000_000,
+                "num_server_side_tools_used": 0,
+            },
+        ),
+        "xai_qa_x_search_failed",
+    ),
+    (
         response_body(citations=[
             "https://x.com/i/status/2083266484789514641"
         ], output=[

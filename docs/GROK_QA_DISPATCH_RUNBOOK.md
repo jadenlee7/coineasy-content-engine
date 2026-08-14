@@ -145,6 +145,26 @@ after this first run; expansion requires a separate decision.
 - Once private Telegram delivery may have occurred, the job becomes
   `delivery_unknown` and is not retried automatically.
 
+### X Search diagnostics
+
+The worker may report `xai_qa_x_search_failed` while the durable outbox keeps
+the terminal `grok_qa_provider_unknown` fence. This safe diagnostic means xAI
+returned one or more failed internal X tool attempts, but no successful
+server-side X Search usage or exact-post citation. It is not a parser success
+and must never be converted to PASS or retried for the same content version.
+
+Keep dispatch disabled and reproduce with public synthetic content only. Check
+the ZDR response header, dedicated-key status, remaining API credits, and a
+plain Web Search control request. If Web Search succeeds but filtered and
+unfiltered X Search both produce failed `x_keyword_search` or
+`x_thread_fetch` attempts, treat it as an xAI X Search service or entitlement
+issue and escalate to xAI support. Include only the public-probe timestamp,
+safe error code, and public-only response ID if the probe captured one. Do not
+send private Studio copy, banners, keys, or Telegram data in that report. Do
+not substitute Web Search as factual proof for this workflow. A new immutable
+canary version may be selected only after the public X Search probe returns a
+successful tool-use count and exact X citation.
+
 ## Rollback and expansion
 
 Set `GROK_QA_DISPATCH_ENABLED=false` first. Leave the outbox and evidence rows
