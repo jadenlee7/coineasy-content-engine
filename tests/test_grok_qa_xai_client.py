@@ -115,6 +115,26 @@ async def test_request_is_fixed_private_bounded_structured_x_search_with_png():
     }]
     assert body["text"]["format"]["type"] == "json_schema"
     assert body["text"]["format"]["strict"] is True
+    source_urls_schema = body["text"]["format"]["schema"]["properties"][
+        "fact_check"
+    ]["properties"]["source_urls"]
+    assert source_urls_schema == {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": {"type": "string", "const": SOURCE},
+    }
+    evidence_url_schema = body["text"]["format"]["schema"]["properties"][
+        "issues"
+    ]["items"]["properties"]["evidence_url"]
+    assert evidence_url_schema == {
+        "type": "string",
+        "const": SOURCE,
+    }
+    prompt = body["input"][0]["content"][0]["text"]
+    assert prompt.startswith(f"Use X Search now to retrieve and cite exactly {SOURCE}")
+    assert '"content_item_id"' not in prompt
+    assert '"content_version_id"' not in prompt
     assert body["input"][0]["content"][1]["image_url"].startswith(
         "data:image/png;base64,"
     )
@@ -125,6 +145,42 @@ async def test_request_is_fixed_private_bounded_structured_x_search_with_png():
         SOURCE,
     ]
     assert result.x_search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_provider_x_tool_call_is_accepted_with_usage_and_exact_citation():
+    body = response_body(output=[
+        {
+            "type": "custom_tool_call",
+            "name": "x_thread_fetch",
+            "status": "completed",
+        },
+        {
+            "type": "message",
+            "content": [{
+                "type": "output_text",
+                "text": json.dumps(verdict()),
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://x.com/i/status/2083266484789514640",
+                }],
+            }],
+        },
+    ])
+    client = XaiQaClient(
+        api_key=KEY,
+        max_cost_in_usd_ticks=200_000_000,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=body)
+        ),
+    )
+
+    result = await client.review(claim())
+
+    assert result.x_search_calls == 1
+    assert result.x_search_citations == [
+        "https://x.com/i/status/2083266484789514640",
+    ]
 
 
 @pytest.mark.asyncio
@@ -157,6 +213,40 @@ async def test_request_is_fixed_private_bounded_structured_x_search_with_png():
             },
         ),
         "xai_qa_x_search_failed",
+    ),
+    (
+        response_body(
+            output=[
+                {
+                    "type": "custom_tool_call",
+                    "name": "x_thread_fetch",
+                    "status": "completed",
+                },
+                {"type": "message", "content": [{
+                    "type": "output_text",
+                    "text": json.dumps(verdict()),
+                }]},
+            ],
+            usage={
+                "cost_in_usd_ticks": 100_000_000,
+                "num_server_side_tools_used": 0,
+            },
+        ),
+        "xai_qa_x_search_missing",
+    ),
+    (
+        response_body(output=[
+            {
+                "type": "custom_tool_call",
+                "name": "untrusted_tool_name",
+                "status": "completed",
+            },
+            {"type": "message", "content": [{
+                "type": "output_text",
+                "text": json.dumps(verdict()),
+            }]},
+        ]),
+        "xai_qa_x_search_missing",
     ),
     (
         response_body(citations=[

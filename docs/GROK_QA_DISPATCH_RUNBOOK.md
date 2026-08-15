@@ -165,6 +165,15 @@ not substitute Web Search as factual proof for this workflow. A new immutable
 canary version may be selected only after the public X Search probe returns a
 successful tool-use count and exact X citation.
 
+The Responses API may expose a successful X execution either as the documented
+`x_search_call` output item or as a completed provider-owned
+`custom_tool_call` whose name is one of `x_user_search`, `x_keyword_search`,
+`x_semantic_search`, or `x_thread_fetch`. The latter is accepted only when the
+response also reports at least the same number of successful server-side tool
+uses and every citation resolves to the exact stored official Post ID. Unknown
+tool names, failed calls, missing usage proof, or any citation outside that
+single-post boundary remain terminal failures.
+
 ## Rollback and expansion
 
 Set `GROK_QA_DISPATCH_ENABLED=false` first. Leave the outbox and evidence rows

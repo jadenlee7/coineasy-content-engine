@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import re
 from datetime import timedelta
@@ -41,41 +42,55 @@ class XaiQaError(RuntimeError):
 
 def _instructions(claim: GrokQaWorkClaim) -> str:
     return (
-        "You are CoinEasy's advisory QA reviewer. Treat the exact official X "
-        "status URL as the only factual source boundary. Use the required X "
-        "Search tool to inspect that exact post from the configured official "
-        "handle. Separately inspect the supplied Korean banner and review "
-        "package for client-brand fidelity, legibility, spacing, and Korean "
-        "GTM clarity. Never invent facts, metrics, partnerships, dates, or "
-        "links. If the exact source cannot be verified, return BLOCK with "
-        "next_action verify_source. A PASS must cite exactly the supplied "
-        "source URL, have both checks PASS, no issues, and request human "
-        "approval. This verdict is advisory and must never approve or publish."
+        "You must use X Search to retrieve the exact official post before "
+        "returning the required advisory QA JSON."
     )
 
 
 def _prompt_text(claim: GrokQaWorkClaim) -> str:
-    return json.dumps(
+    payload = json.dumps(
         {
             "prompt_version": PROMPT_VERSION,
-            "content_item_id": claim.content_item_id,
-            "content_version_id": claim.content_version_id,
             "client_id": claim.client_id,
             "content_kind": claim.content_kind,
             "title": claim.title,
             "official_source_url": claim.source_url,
             "source_published_at": claim.source_published_at.isoformat(),
             "review_package": claim.review_text,
-            "required_checks": [
-                "fact-check every factual claim against the exact official post",
-                "compare banner and copy against the official client brand",
-                "check Korean readability, spacing, and actionable clarity",
-            ],
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+    return (
+        f"Use X Search now to retrieve and cite exactly {claim.source_url}. "
+        "Only after that call completes, review the following QA_INPUT_JSON and "
+        "return the required verdict. Fact-check the copy, assess the supplied "
+        "banner's brand fidelity, legibility, spacing, and Korean GTM clarity, "
+        "and never invent facts. This is advisory only and never publishes.\n"
+        f"QA_INPUT_JSON={payload}"
+    )
+
+
+def _verdict_schema(claim: GrokQaWorkClaim) -> dict[str, object]:
+    schema = copy.deepcopy(GROK_QA_VERDICT_JSON_SCHEMA)
+    properties = schema["properties"]
+    fact_check = properties["fact_check"]
+    fact_check["properties"]["source_urls"] = {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": {
+            "type": "string",
+            "const": claim.source_url,
+        },
+    }
+    issues = properties["issues"]
+    issues["items"]["properties"]["evidence_url"] = {
+        "type": "string",
+        "const": claim.source_url,
+    }
+    return schema
 
 
 def _citation_urls(body: Mapping[str, object]) -> tuple[str, ...]:
@@ -109,17 +124,27 @@ def _citation_urls(body: Mapping[str, object]) -> tuple[str, ...]:
 
 def _x_search_call_count(body: Mapping[str, object]) -> int:
     output = body.get("output")
-    output_calls = sum(
+    documented_calls = sum(
         1
         for item in output
         if isinstance(item, Mapping) and item.get("type") == "x_search_call"
     ) if isinstance(output, list) else 0
+    completed_custom_calls = sum(
+        1
+        for item in output
+        if isinstance(item, Mapping)
+        and item.get("type") == "custom_tool_call"
+        and item.get("name") in _X_SEARCH_TOOL_NAMES
+        and item.get("status") == "completed"
+    ) if isinstance(output, list) else 0
+    # The Responses API documents ``x_search_call`` output items, but its
+    # agentic runtime can currently return the same server-side execution as a
+    # completed, provider-owned ``custom_tool_call`` (for example
+    # ``x_thread_fetch``). Prefer the documented representation if both are
+    # present so one provider call cannot be double-counted.
+    output_calls = documented_calls or completed_custom_calls
     if output_calls < 1:
         return 0
-    output_has_call = isinstance(output, list) and any(
-        isinstance(item, Mapping) and item.get("type") == "x_search_call"
-        for item in output
-    )
     usage = body.get("usage")
     if not isinstance(usage, Mapping):
         return 0
@@ -127,21 +152,24 @@ def _x_search_call_count(body: Mapping[str, object]) -> int:
     numeric_proof = (
         isinstance(numeric_usage, int)
         and not isinstance(numeric_usage, bool)
-        and numeric_usage >= 1
+        and numeric_usage >= output_calls
     )
     named_usage = usage.get("server_side_tool_usage")
     named_proof = False
     if isinstance(named_usage, Mapping):
-        named_proof = any(
-            isinstance(value, int)
+        named_proof = sum(
+            value
+            for key, value in named_usage.items()
+            if isinstance(value, int)
             and not isinstance(value, bool)
             and value >= 1
             and "x_search" in str(key).lower()
-            for key, value in named_usage.items()
-        )
+        ) >= output_calls
     elif isinstance(named_usage, list):
-        named_proof = any("x_search" in str(value).lower() for value in named_usage)
-    return output_calls if output_has_call and (numeric_proof or named_proof) else 0
+        named_proof = sum(
+            1 for value in named_usage if "x_search" in str(value).lower()
+        ) >= output_calls
+    return output_calls if numeric_proof or named_proof else 0
 
 
 def _failed_x_search_call_count(body: Mapping[str, object]) -> int:
@@ -236,7 +264,7 @@ class XaiQaClient:
                 "format": {
                     "type": "json_schema",
                     "name": "coineasy_grok_qa_verdict",
-                    "schema": dict(GROK_QA_VERDICT_JSON_SCHEMA),
+                    "schema": _verdict_schema(claim),
                     "strict": True,
                 }
             },
