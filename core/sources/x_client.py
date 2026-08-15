@@ -660,8 +660,8 @@ class XClient:
             raise XTransientError("X API URL evidence exceeds the source limit")
         return enriched
 
-    @staticmethod
-    def _resolved_entity_url(item: dict) -> str | None:
+    @classmethod
+    def _resolved_entity_url(cls, item: dict) -> str | None:
         for name in ("unwound_url", "expanded_url"):
             value = item.get(name)
             if value is None:
@@ -677,9 +677,33 @@ class XClient:
                 raise XTransientError(
                     "X API timeline contains invalid URL evidence"
                 ) from exc
+            if parsed.scheme != "https":
+                if (
+                    name == "expanded_url"
+                    and parsed.scheme == "http"
+                    and parsed.hostname not in {
+                        "x.com",
+                        "www.x.com",
+                        "twitter.com",
+                        "www.twitter.com",
+                    }
+                    and item.get("unwound_url") is None
+                    and item.get("title") in (None, "")
+                    and item.get("description") in (None, "")
+                    and cls._is_https_tco_url(item.get("url"))
+                ):
+                    # Note Tweet entities can repeat a provider-resolved link
+                    # as HTTP even when the primary Tweet entity carries the
+                    # authoritative HTTPS unwound URL and card metadata. The
+                    # duplicate is not safe evidence, so discard it instead of
+                    # accepting or upgrading it. All other insecure URLs still
+                    # fail the complete timeline closed.
+                    return None
+                raise XTransientError(
+                    "X API timeline contains invalid URL evidence"
+                )
             if (
-                parsed.scheme != "https"
-                or not parsed.hostname
+                not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
                 or port not in {None, 443}
@@ -689,6 +713,26 @@ class XClient:
                 )
             return value
         return None
+
+    @staticmethod
+    def _is_https_tco_url(value: object) -> bool:
+        if not isinstance(value, str) or len(value) > 2_048:
+            return False
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "t.co"
+            and parsed.username is None
+            and parsed.password is None
+            and port in {None, 443}
+            and bool(parsed.path.strip("/"))
+            and not parsed.query
+            and not parsed.fragment
+        )
 
     @classmethod
     def _x_article_identity(

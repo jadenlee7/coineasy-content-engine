@@ -163,6 +163,61 @@ async def test_recent_tweets_enrich_url_only_source_from_x_entities(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_recent_tweets_discards_insecure_note_duplicate_when_primary_has_https(
+    monkeypatch,
+):
+    short_url = "https://t.co/SquidStake"
+    secure_url = "https://stake.squidrouter.com/"
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, *, headers, params=None):
+            assert headers == {"Authorization": "Bearer x-token"}
+            if "/users/by/username/" in url:
+                return _Response({"data": {"id": "42"}})
+            return _Response({
+                "data": [{
+                    "id": "2087225996449595606",
+                    "text": f"Stake with Squid {short_url}",
+                    "created_at": "2026-08-12T08:00:00Z",
+                    "referenced_tweets": [],
+                    "entities": {"urls": [{
+                        "url": short_url,
+                        "expanded_url": "http://stake.squidrouter.com",
+                        "unwound_url": secure_url,
+                        "title": "Stake SQUID",
+                        "description": "Official Squid staking portal.",
+                    }]},
+                    "note_tweet": {
+                        "text": f"Stake with Squid through the official portal {short_url}",
+                        "entities": {"urls": [{
+                            "url": short_url,
+                            "expanded_url": "http://stake.squidrouter.com",
+                        }]},
+                    },
+                }],
+                "meta": {},
+            })
+
+    monkeypatch.setattr("core.sources.x_client.httpx.AsyncClient", _Client)
+
+    tweets = await XClient("x-token").get_recent_tweets("SquidRouter")
+
+    assert tweets[0]["is_note_tweet"] is True
+    assert secure_url in tweets[0]["text"]
+    assert "http://" not in tweets[0]["text"]
+    assert tweets[0]["text"].count("[X-provided link metadata]") == 1
+
+
+@pytest.mark.asyncio
 async def test_recent_tweets_enrich_x_article_source(monkeypatch):
     class _Client:
         def __init__(self, **_kwargs):
@@ -347,6 +402,11 @@ async def test_recent_tweets_fail_closed_when_x_article_lookup_is_incomplete(
         [],
         {"urls": ["not-an-object"]},
         {"urls": [{"expanded_url": "http://origintrail.io/news"}]},
+        {"urls": [{
+            "url": "https://t.co/unsafe",
+            "expanded_url": "http://origintrail.io/news",
+            "title": "Do not discard insecure card evidence",
+        }]},
         {"urls": [{"expanded_url": "https://user@origintrail.io/news"}]},
         {"urls": [{"expanded_url": "https://origintrail.io:444/news"}]},
         {"urls": [{"expanded_url": "x" * 2_049}]},
@@ -359,6 +419,7 @@ async def test_recent_tweets_fail_closed_when_x_article_lookup_is_incomplete(
         "entities-not-object",
         "url-not-object",
         "non-https",
+        "non-https-with-card-metadata",
         "userinfo",
         "custom-port",
         "oversized-url",
