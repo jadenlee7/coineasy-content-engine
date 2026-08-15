@@ -454,7 +454,11 @@ export async function resolveSourceInput(
   }
 
   const contentXUrl = canonicalXStatusUrl(content);
-  const contentUrl = normalizeSourceUrl(content);
+  // URL parsers may percent-encode whitespace inside an otherwise URL-shaped
+  // string. Official X Article evidence can start with a t.co link followed by
+  // multiple lines of provider-owned article text, so only classify a source
+  // as URL-only when the entire trimmed value is one whitespace-free token.
+  const contentUrl = /\s/.test(content) ? null : normalizeSourceUrl(content);
   const fieldXUrl = canonicalXStatusUrl(normalizedUrl || "");
   const xStatusUrl = fieldXUrl || contentXUrl;
   const resolvedUrl = xStatusUrl || normalizedUrl || "";

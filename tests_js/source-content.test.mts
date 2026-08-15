@@ -242,6 +242,31 @@ test("uses provided content without fetching the linked source", async () => {
   assert.equal(result.mediaStatus, "not_requested");
 });
 
+test("accepts provider-owned X Article text that starts with a link", async () => {
+  const fetchImpl = async () => {
+    throw new Error("fetch should not run");
+  };
+  const content = [
+    "https://t.co/article",
+    "",
+    "[X Article]",
+    "Title: Squid routes across chains",
+    "Plain text: Provider-owned article evidence with enough source context.",
+  ].join("\n");
+  const result = await resolveSourceInput(
+    content,
+    "https://x.com/squidrouter/status/2084642674443763798",
+    fetchImpl as typeof fetch,
+  );
+  assert.equal(result.mode, "provided");
+  assert.equal(result.content, content);
+  assert.equal(
+    result.url,
+    "https://x.com/squidrouter/status/2084642674443763798",
+  );
+  assert.equal(result.mediaStatus, "not_requested");
+});
+
 test("fetches a public X post when only its link is provided", async () => {
   const fetchImpl = async (input: string | URL | Request) => {
     assert.match(String(input), /^https:\/\/cdn\.syndication\.twimg\.com\/tweet-result\?/);
