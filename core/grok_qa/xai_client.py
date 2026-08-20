@@ -67,7 +67,14 @@ def _prompt_text(claim: GrokQaWorkClaim) -> str:
         "Only after that call completes, review the following QA_INPUT_JSON and "
         "return the required verdict. Fact-check the copy, assess the supplied "
         "banner's brand fidelity, legibility, spacing, and Korean GTM clarity, "
-        "and never invent facts. This is advisory only and never publishes.\n"
+        "and never invent facts. If generated_content.banner_provenance.mode is "
+        "verified_official_source_remix, treat the banner's existing typography, "
+        "abbreviations, blur, and graphic effects as preserved official source "
+        "creative, not generated claims or defects; review generated channel copy "
+        "and localized overlays only. Review rendered/public fields only, and do "
+        "not treat omitted non-rendered metadata as a public claim. For every other "
+        "provenance mode, review the full generated banner normally. This is "
+        "advisory only and never publishes.\n"
         f"QA_INPUT_JSON={payload}"
     )
 

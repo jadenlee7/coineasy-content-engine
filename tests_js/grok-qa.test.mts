@@ -143,6 +143,55 @@ test("Grok review package exposes generated QA evidence but never raw source or 
   assert.doesNotMatch(serialized, /request_hash/);
 });
 
+test("Grok review package scopes an exact Squid source-native banner without hiding generated cards", () => {
+  const item = detail();
+  item.current_version.content.spec = {
+    headline: "$QUID가 공식 출시됐어요",
+    body_lines: ["Squid에서 확인해 보세요"],
+    date: "2026.08.18",
+    output_policy: "official_source_native_v1",
+    output_width: 1080,
+    output_height: 1080,
+    render_strategy: "source_remix",
+    channel_profile: "source_native",
+    template_version: "squid-source-remix@1",
+    asset_pack_version: "official-source-media@1",
+    source_text_visible: false,
+    translation_regions: [],
+    visual_localization_status: "no_text",
+  };
+  item.current_version.content.render = {
+    requested_template_style: "remix",
+    template_style: "remix",
+    source_image_used: true,
+    render_strategy: "source_remix",
+    channel_profile: "source_native",
+    template_version: "squid-source-remix@1",
+    asset_pack_version: "official-source-media@1",
+  };
+  item.current_version.content.source = {
+    ...item.current_version.content.source,
+    media_status: "present",
+    prepared_sha256: "a".repeat(64),
+  };
+
+  const exact = buildGrokQaReviewPackage(item);
+  assert.equal(exact.generated_content.banner_provenance.mode, "verified_official_source_remix");
+  assert.equal(exact.generated_content.banner_provenance.localized_overlay_applied, false);
+  assert.equal(Object.hasOwn(exact.generated_content.spec, "date"), false);
+  assert.match(exact.review_rules.join("\n"), /영문·약어·블러·그래픽/);
+  assert.match(exact.review_rules.join("\n"), /비렌더링 메타데이터/);
+
+  item.current_version.content.spec = {
+    ...item.current_version.content.spec,
+    source_text_visible: true,
+  };
+  const inconsistent = buildGrokQaReviewPackage(item);
+  assert.equal(inconsistent.generated_content.banner_provenance.mode, "generated_or_localized");
+  assert.equal(inconsistent.generated_content.spec.date, "2026.08.18");
+  assert.doesNotMatch(inconsistent.review_rules.join("\n"), /영문·약어·블러·그래픽/);
+});
+
 test("Grok connector requires its own bounded constant-time bearer", () => {
   assert.deepEqual(grokQaConnectorConfig((name) => (
     name === "GROK_QA_CONNECTOR_TOKEN" ? TOKEN : undefined

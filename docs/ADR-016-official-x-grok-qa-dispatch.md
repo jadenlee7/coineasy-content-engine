@@ -56,6 +56,13 @@ Use an event-triggered, durable QA outbox plus a separate Railway cron worker.
    status URL in provider citations, and the provider-reported
    `usage.cost_in_usd_ticks` before accepting a result. Source and banner
    evidence are treated as untrusted input, never as instructions.
+   For the exact server-bound Squid `source_remix` path with verified official
+   media and no localized overlay, the review package labels the banner as
+   preserved official creative and omits non-rendered metadata such as the
+   generation date. Grok then reviews generated channel copy and added
+   overlays, not source-native typography, abbreviations, blur, or graphic
+   effects. Any inconsistent or legacy render tuple receives no exemption and
+   is reviewed as a fully generated banner.
 5. Delivery reuses the existing exact-version Grok verdict receipt and the
    fixed private Telegram relay. Before claiming that receipt, the broker
    refetches the current PNG, requires the fenced banner SHA-256, and then

@@ -83,6 +83,38 @@ test("fact-check flags mechanical output anchor gaps and reserves blocked for mi
   assert.equal(factCheckPublicText({ z: "last", a: ["first", "second"] }), "first\nsecond\nlast");
 });
 
+test("fact-check excludes URL identifiers while retaining visible numeric claims", () => {
+  const urlOnly = evaluateFactCheck({
+    contentKind: "daily_news",
+    source: {
+      content: "Squid is live across supported apps.",
+      url: "https://x.com/squidrouter/status/2084625410998866030",
+      mode: "provided",
+    },
+    publicText: { headline: "Squid가 출시됐어요" },
+    channelCopy: {
+      telegram: "원문: https://x.com/squidrouter/status/2084625410998866030",
+    },
+  });
+  assert.equal(urlOnly.checks[1].metrics.output_number_count, 0);
+  assert.equal(urlOnly.checks[1].metrics.unmatched_output_number_count, 0);
+
+  const visibleClaim = evaluateFactCheck({
+    contentKind: "daily_news",
+    source: {
+      content: "Squid is live across supported apps.",
+      url: "https://x.com/squidrouter/status/2084625410998866030",
+      mode: "provided",
+    },
+    publicText: { headline: "8개 앱에서 Squid를 만나보세요" },
+    channelCopy: {
+      telegram: "원문: https://x.com/squidrouter/status/2084625410998866030",
+    },
+  });
+  assert.equal(visibleClaim.checks[1].metrics.output_number_count, 1);
+  assert.equal(visibleClaim.checks[1].metrics.unmatched_output_numbers, "8");
+});
+
 test("fact-check output fingerprint binds immutable public artifacts", () => {
   const base = {
     contentKind: "daily_news" as const,

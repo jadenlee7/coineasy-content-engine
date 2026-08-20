@@ -15,6 +15,7 @@ import newsCardHandler, {
   SQUID_VISUAL_REFERENCE_PACK_VERSION,
   isOfficialClientXStatusUrl,
   isOfficialSquidXStatusUrl,
+  newsCardFactCheckPublicText,
   newsCardRequestHash,
   normalizedFigmaTemplate,
   storedNewsTemplatePair,
@@ -95,6 +96,53 @@ function squidCreativeMetadata(
     } : {}),
   };
 }
+
+test("Squid source-native fact-check omits non-rendered date only for the exact no-overlay path", () => {
+  const sourceNative = {
+    ...squidCreativeMetadata("remix"),
+    label: "출시",
+    headline: "$QUID가 공식 출시됐어요",
+    body_lines: ["Squid에서 확인해 보세요"],
+    date: "2026.08.18",
+    output_policy: "official_source_native_v1",
+    source_text_visible: false,
+    translation_regions: [],
+    visual_localization_status: "no_text",
+  };
+  const exact = newsCardFactCheckPublicText(
+    "squid",
+    "remix",
+    SOURCE_URL,
+    "present",
+    SOURCE_IMAGE_SHA256,
+    true,
+    sourceNative,
+  );
+  assert.equal(Object.hasOwn(exact, "date"), false);
+  assert.equal(Object.hasOwn(exact, "source_url"), false);
+
+  const inconsistent = newsCardFactCheckPublicText(
+    "squid",
+    "remix",
+    SOURCE_URL,
+    "present",
+    SOURCE_IMAGE_SHA256,
+    true,
+    { ...sourceNative, source_text_visible: true },
+  );
+  assert.equal(inconsistent.date, "2026.08.18");
+
+  const generated = newsCardFactCheckPublicText(
+    "squid",
+    "classic",
+    SOURCE_URL,
+    "not_requested",
+    undefined,
+    false,
+    { ...squidCreativeMetadata("classic"), date: "2026.08.18" },
+  );
+  assert.equal(generated.date, "2026.08.18");
+});
 
 function officialSquidSyndicationPayload(
   mediaUrl?: string,
@@ -715,10 +763,11 @@ test("automation pins the exact official Squid X image through generation and st
           ...squidCreativeMetadata("remix"),
           headline: "Squid 공식 비주얼",
           body_lines: ["원문 배너를 그대로 반영해요"],
+          date: "2026.08.18",
           source_url: SOURCE_URL,
           source_text_visible: false,
           translation_regions: [],
-          visual_localization_status: "no_source_text",
+          visual_localization_status: "no_text",
           output_policy: "official_source_native_v1",
           source_image_width: 1600,
           source_image_height: 900,
@@ -788,6 +837,14 @@ test("automation pins the exact official Squid X image through generation and st
     });
     assert.equal(recordBody.target_content.request_hash, expectedHash);
     assert.equal(recordBody.target_generation_meta.request_hash, expectedHash);
+    assert.equal(
+      recordBody.target_generation_meta.fact_check.checks[1].metrics.unmatched_output_number_count,
+      0,
+    );
+    assert.equal(
+      recordBody.target_generation_meta.fact_check.checks[1].metrics.output_number_count,
+      0,
+    );
   });
 });
 
