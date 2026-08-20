@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from core.automation.mode_router import (
     _normalize_demand_term,
     choose_content_mode,
@@ -141,3 +143,156 @@ def test_equal_scores_use_numeric_post_id_not_lexicographic_order():
     )
 
     assert select_official_candidate([older_digits, newer_digits])["id"] == "10"
+
+
+def test_squid_fresh_post_beats_four_day_old_high_scoring_backlog():
+    latest = post(
+        "100",
+        "Squid has moved $800m in and out of Celo since launch.",
+        created_at="2026-08-20T15:51:32Z",
+    )
+    old_high_score = post(
+        "99",
+        "Our major mainnet integration launch is live with a release update. "
+        "[X-provided link metadata]\n\n"
+        + "A detailed partner announcement with support now available. " * 4,
+        created_at="2026-08-16T16:00:00Z",
+        metrics={"like_count": 500},
+    )
+
+    selected = select_official_candidate(
+        [old_high_score, latest],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is latest
+
+
+def test_squid_freshness_bucket_still_uses_relevance_signals():
+    newest = post(
+        "110",
+        "A short ecosystem update is available.",
+        created_at="2026-08-20T15:55:00Z",
+    )
+    relevant = post(
+        "109",
+        "Our major mainnet integration launch is live with a developer update.",
+        created_at="2026-08-19T21:00:00Z",
+    )
+
+    selected = select_official_candidate(
+        [newest, relevant],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is relevant
+
+
+def test_squid_freshness_bucket_includes_exact_24_hour_boundary():
+    at_cutoff = post(
+        "115",
+        "Our routing update is available.",
+        created_at="2026-08-19T16:00:00Z",
+    )
+    just_outside = post(
+        "114",
+        "Our major mainnet integration launch is live with a release update.",
+        created_at="2026-08-19T15:59:59Z",
+        metrics={"like_count": 500},
+    )
+
+    selected = select_official_candidate(
+        [just_outside, at_cutoff],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is at_cutoff
+
+
+def test_squid_stale_backlog_is_not_reused_as_new_content():
+    newest = post(
+        "120",
+        "A short ecosystem update is available.",
+        created_at="2026-08-18T12:00:00Z",
+    )
+    older_high_score = post(
+        "119",
+        "Our major mainnet integration launch is live with a release update.",
+        created_at="2026-08-17T12:00:00Z",
+        metrics={"like_count": 500},
+    )
+
+    selected = select_official_candidate(
+        [older_high_score, newest],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is None
+
+
+def test_non_squid_selection_keeps_existing_relevance_first_behavior():
+    newest = post(
+        "130",
+        "A short ecosystem update is available.",
+        created_at="2026-08-20T15:55:00Z",
+    )
+    older_high_score = post(
+        "129",
+        "Our major mainnet integration launch is live with a release update.",
+        created_at="2026-08-16T12:00:00Z",
+        metrics={"like_count": 500},
+    )
+
+    selected = select_official_candidate(
+        [older_high_score, newest],
+        client_id="yellow",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is older_high_score
+
+
+def test_squid_ranking_ignores_provider_link_metadata_copy():
+    provider_enriched = post(
+        "139",
+        "Happy Sunday.\n\n"
+        "[X-provided link metadata]\n\n"
+        "Major mainnet integration launch release update now live.",
+        created_at="2026-08-20T15:00:00Z",
+    )
+    official_announcement = post(
+        "140",
+        "Our routing update is live today.",
+        created_at="2026-08-20T15:30:00Z",
+    )
+
+    selected = select_official_candidate(
+        [provider_enriched, official_announcement],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert selected is official_announcement
+
+
+def test_squid_skip_patterns_ignore_provider_link_metadata_copy():
+    source = post(
+        "150",
+        "Our routing update is live today.\n\n"
+        "[X-provided link metadata]\n\n"
+        "Join the partner AMA in 15 minutes.",
+        created_at="2026-08-20T15:30:00Z",
+    )
+
+    selected = select_official_candidate(
+        [source],
+        client_id="squid",
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+        skip_patterns=["AMA", "15 minutes"],
+    )
+
+    assert selected is source

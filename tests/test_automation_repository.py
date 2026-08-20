@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import json
 
@@ -196,6 +197,24 @@ async def test_database_error_body_is_not_exposed():
 
 
 @pytest.mark.asyncio
+async def test_source_intake_rejects_more_than_the_database_limit():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("oversized source intake reached the database")
+
+    with pytest.raises(ValueError, match="bounded poll size"):
+        await _repo(handler).record_sources(
+            workspace_id=WORKSPACE_ID,
+            client_id="squid",
+            handle="@SquidRouter",
+            poll_request_id=REQUEST_ID,
+            expected_cursor=None,
+            next_cursor=None,
+            source_items=[{} for _ in range(101)],
+            polled_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.asyncio
 async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
     captured = {}
 
@@ -236,6 +255,66 @@ async def test_ranking_evidence_rpc_receipt_matches_immutable_snapshot_hash():
         "weight": 0.9,
         "sources": ["community", "telegram_content"],
     }]
+
+
+@pytest.mark.asyncio
+async def test_ranking_evidence_v2_accepts_schema_12_snapshot_and_keeps_wire_schema():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": captured["target_snapshot_hash"],
+            "reused": False,
+        })
+
+    snapshot_hash = await _repo(handler).record_ranking_evidence(
+        workspace_id=WORKSPACE_ID,
+        snapshot=_signals_snapshot(),
+        ranking_version="official-x-demand-v2",
+    )
+
+    assert snapshot_hash == captured["target_snapshot_hash"]
+    assert captured["target_schema_version"] == "1.1"
+    assert captured["target_ranking_version"] == "official-x-demand-v2"
+
+
+@pytest.mark.asyncio
+async def test_ranking_evidence_v2_rejects_a_non_schema_12_snapshot():
+    snapshot = replace(_signals_snapshot(), schema_version="1.1")
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported content signal ranking version",
+    ):
+        await _repo(lambda _request: httpx.Response(500)).record_ranking_evidence(
+            workspace_id=WORKSPACE_ID,
+            snapshot=snapshot,
+            ranking_version="official-x-demand-v2",
+        )
+
+
+@pytest.mark.asyncio
+async def test_ranking_evidence_v1_keeps_legacy_snapshot_compatibility():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "recorded": True,
+            "snapshot_hash": captured["target_snapshot_hash"],
+            "reused": False,
+        })
+
+    await _repo(handler).record_ranking_evidence(
+        workspace_id=WORKSPACE_ID,
+        snapshot=replace(_signals_snapshot(), schema_version="1.1"),
+        ranking_version="official-x-demand-v1",
+    )
+
+    assert captured["target_schema_version"] == "1.1"
+    assert captured["target_ranking_version"] == "official-x-demand-v1"
 
 
 @pytest.mark.asyncio

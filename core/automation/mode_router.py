@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
 
 
@@ -41,6 +41,8 @@ _LOW_SIGNAL_PATTERN = re.compile(
 )
 _DEMAND_SIGNAL_BONUS_CAP = 3.0
 _TUTORIAL_LEARNING_BONUS_CAP = 2.0
+_SQUID_FRESHNESS_WINDOW = timedelta(hours=24)
+_X_LINK_METADATA_MARKER = "[X-provided link metadata]"
 _ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
 _TEMPORAL_DEMAND_PATTERN = re.compile(
     r"^(?:20\d{2}|\d{1,2}월|(?:첫째|둘째|셋째|넷째|다섯째)주|"
@@ -93,6 +95,17 @@ def _engagement_score(post: Mapping[str, object]) -> float:
         if isinstance(value, int) and value > 0:
             total += value
     return math.log1p(total)
+
+
+def _without_x_link_metadata(post: Mapping[str, object]) -> Mapping[str, object]:
+    """Return a ranking-only view without provider-enriched link copy."""
+    text = str(post.get("text") or "")
+    marker_index = text.casefold().find(_X_LINK_METADATA_MARKER.casefold())
+    if marker_index < 0:
+        return post
+    ranking_post = dict(post)
+    ranking_post["text"] = text[:marker_index].strip()
+    return ranking_post
 
 
 def announcement_score(post: Mapping[str, object]) -> float:
@@ -182,10 +195,13 @@ def _tutorial_learning_score(
 def select_official_candidate(
     posts: Iterable[Mapping[str, object]],
     *,
+    client_id: str | None = None,
+    now: datetime | None = None,
     skip_patterns: Iterable[str] = (),
     demand_terms: Iterable[tuple[str, float]] = (),
     tutorial_priority: float = 0.0,
 ) -> Mapping[str, object] | None:
+    """Select one eligible official post using client-specific routing policy."""
     normalized_skips = tuple(
         pattern.strip().lower()
         for pattern in skip_patterns
@@ -200,31 +216,63 @@ def select_official_candidate(
         and 0 <= float(tutorial_priority) <= 1
         else 0.0
     )
-    candidates = [
-        post
-        for post in posts
-        if post.get("is_retweet") is not True
-        and post.get("is_reply") is not True
-        and isinstance(post.get("id"), str)
-        and str(post.get("id")).isdigit()
-        and not any(
-            pattern in str(post.get("text") or "").lower()
-            for pattern in normalized_skips
+    squid_routing = client_id == "squid"
+    candidates: list[
+        tuple[Mapping[str, object], Mapping[str, object]]
+    ] = []
+    for post in posts:
+        if (
+            post.get("is_retweet") is True
+            or post.get("is_reply") is True
+            or not isinstance(post.get("id"), str)
+            or not str(post.get("id")).isdigit()
+        ):
+            continue
+        ranking_post = (
+            _without_x_link_metadata(post) if squid_routing else post
         )
-        and announcement_score(post) > 0.25
-    ]
+        ranking_text = str(ranking_post.get("text") or "").lower()
+        if (
+            any(pattern in ranking_text for pattern in normalized_skips)
+            or announcement_score(ranking_post) <= 0.25
+        ):
+            continue
+        candidates.append((post, ranking_post))
     if not candidates:
         return None
-    return max(
-        candidates,
-        key=lambda post: (
-            announcement_score(post)
-            + _demand_signal_score(post, normalized_demand_terms)
-            + _tutorial_learning_score(post, normalized_tutorial_priority),
+
+    def relevance_key(
+        candidate: tuple[Mapping[str, object], Mapping[str, object]],
+    ) -> tuple[float, float, int]:
+        post, ranking_post = candidate
+        return (
+            announcement_score(ranking_post)
+            + _demand_signal_score(ranking_post, normalized_demand_terms)
+            + _tutorial_learning_score(
+                ranking_post,
+                normalized_tutorial_priority,
+            ),
             _published_timestamp(post),
             int(str(post["id"])),
-        ),
-    )
+        )
+
+    if not squid_routing:
+        return max(candidates, key=relevance_key)[0]
+
+    reference_now = now or datetime.now(timezone.utc)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=timezone.utc)
+    freshness_cutoff = (
+        reference_now.astimezone(timezone.utc) - _SQUID_FRESHNESS_WINDOW
+    ).timestamp()
+    fresh_candidates = [
+        candidate
+        for candidate in candidates
+        if _published_timestamp(candidate[0]) >= freshness_cutoff
+    ]
+    if fresh_candidates:
+        return max(fresh_candidates, key=relevance_key)[0]
+    return None
 
 
 def choose_content_mode(
