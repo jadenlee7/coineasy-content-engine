@@ -41,7 +41,7 @@ from core.batch.canary import (
 from core.batch.policy import BatchPolicy
 from core.batch.repository import BatchRepositoryError
 from core.batch.settings import BatchSettings
-from core.sources.x_client import XTransientError
+from core.sources.x_client import XRequestError, XTransientError
 from core.squid_visual_style import SQUID_VISUAL_POLICY_VERSION
 
 
@@ -691,6 +691,75 @@ async def test_pending_source_recovers_when_fresh_x_poll_is_unavailable():
 
 
 @pytest.mark.asyncio
+async def test_invalid_since_id_fallback_drops_overlapping_immutable_sources():
+    cursor = "2082883998829752783"
+    newer_id = "2082883998829752784"
+
+    class CursorFallbackXClient:
+        def __init__(self):
+            self.calls = []
+
+        async def get_recent_tweets(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if kwargs["since_id"] is not None:
+                raise XRequestError(400)
+            return [
+                {
+                    "id": cursor,
+                    "metrics": {"like_count": 999},
+                },
+                {
+                    "id": str(int(cursor) - 1),
+                    "metrics": {"like_count": 500},
+                },
+                {
+                    "id": newer_id,
+                    "metrics": {"like_count": 1},
+                },
+            ]
+
+    x_client = CursorFallbackXClient()
+    daily_runner = runner(
+        FakeRepository({}),
+        x_client,
+        FakeGenerationClient(),
+    )
+
+    posts = await daily_runner._fetch_posts("SquidRouter", cursor)
+
+    assert [post["id"] for post in posts] == [newer_id]
+    assert [call[1]["since_id"] for call in x_client.calls] == [cursor, None]
+    assert all(call[1]["max_results"] == 100 for call in x_client.calls)
+    assert all(call[1]["require_complete"] is True for call in x_client.calls)
+
+
+@pytest.mark.asyncio
+async def test_cursor_fallback_never_advances_without_covering_stored_boundary():
+    cursor = "2082883998829752783"
+
+    class TruncatedCursorFallbackXClient:
+        async def get_recent_tweets(self, *args, **kwargs):
+            if kwargs["since_id"] is not None:
+                raise XRequestError(400)
+            return [
+                {"id": str(int(cursor) + 2), "metrics": {}},
+                {"id": str(int(cursor) + 1), "metrics": {}},
+            ]
+
+    daily_runner = runner(
+        FakeRepository({}),
+        TruncatedCursorFallbackXClient(),
+        FakeGenerationClient(),
+    )
+
+    with pytest.raises(
+        XTransientError,
+        match="did not prove the stored cursor boundary",
+    ):
+        await daily_runner._fetch_posts("SquidRouter", cursor)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source_text",
     [
@@ -787,6 +856,105 @@ async def test_text_only_squid_worldbuilding_stops_for_manual_visual_review():
         "status": "manual_visual_review_required",
         "detail": "worldbuilding",
     } in summary.outcomes
+
+
+@pytest.mark.asyncio
+async def test_manual_squid_candidate_does_not_starve_next_fresh_candidate():
+    manual = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text=(
+                    "Bouncing through the weekend with the official SQUIB mascot. "
+                    * 8
+                ),
+            ).__dict__,
+            "source_item_id": "66666666-6666-4666-8666-666666666666",
+            "post_id": "802",
+            "source_url": "https://x.com/SquidRouter/status/802",
+            "published_at": "2026-07-22T00:05:00Z",
+        }
+    )
+    eligible = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text="A new era for Squid starts today.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "801",
+            "source_url": "https://x.com/SquidRouter/status/801",
+            "published_at": "2026-07-22T00:04:00Z",
+        }
+    )
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState("802", False, (manual, eligible))
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_item_ids"] == [eligible.source_item_id]
+    assert generation.calls[0]["source_content"] == eligible.source_content
+    assert {
+        "client_id": "squid",
+        "status": "manual_visual_review_required",
+        "detail": "worldbuilding",
+    } in summary.outcomes
+
+
+@pytest.mark.asyncio
+async def test_manual_fresh_squid_candidate_never_falls_through_to_stale_backlog():
+    manual = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text=(
+                    "Bouncing through the weekend with the official SQUIB mascot. "
+                    * 8
+                ),
+            ).__dict__,
+            "source_item_id": "66666666-6666-4666-8666-666666666666",
+            "post_id": "802",
+            "source_url": "https://x.com/SquidRouter/status/802",
+            "published_at": "2026-07-22T00:05:00Z",
+        }
+    )
+    stale = PendingSource(
+        **{
+            **pending(
+                "squid",
+                text="A new era for Squid starts today.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "801",
+            "source_url": "https://x.com/SquidRouter/status/801",
+            "published_at": "2026-07-20T00:04:00Z",
+        }
+    )
+    states = {
+        client_id: AutomationState(None, client_id != "squid", ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["squid"] = AutomationState("802", False, (manual, stale))
+    repo = FakeRepository(states)
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        FakeGenerationClient(),
+    ).run()
+
+    assert summary.generated == 0
+    assert repo.queues == []
+    assert not any(
+        item["status"] == "no_candidate"
+        for item in summary.outcomes
+    )
 
 
 @pytest.mark.asyncio
@@ -2281,7 +2449,7 @@ async def test_reserved_clients_still_poll_and_record_without_queueing():
     summary = await runner(repo, x_client, generation).run()
 
     assert len(x_client.calls) == 4
-    assert all(call[1]["max_results"] == 200 for call in x_client.calls)
+    assert all(call[1]["max_results"] == 100 for call in x_client.calls)
     assert all(call[1]["require_complete"] is True for call in x_client.calls)
     assert len(repo.records) == 4
     assert all(record["source_items"] for record in repo.records)
@@ -2291,6 +2459,59 @@ async def test_reserved_clients_still_poll_and_record_without_queueing():
         item["status"] == "already_reserved"
         for item in summary.outcomes
     ) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("clock_values", "expected_style_pack_count"),
+    [
+        (
+            (
+                datetime(2026, 7, 22, 14, 59, 59, tzinfo=timezone.utc),
+                datetime(2026, 7, 22, 15, 0, tzinfo=timezone.utc),
+            ),
+            0,
+        ),
+        (
+            (
+                datetime(2026, 7, 22, 14, 59, 59, tzinfo=timezone.utc),
+                datetime(2026, 7, 22, 14, 59, 59, tzinfo=timezone.utc),
+                datetime(2026, 7, 22, 15, 0, tzinfo=timezone.utc),
+            ),
+            1,
+        ),
+    ],
+)
+async def test_kst_midnight_rollover_never_queues_a_stale_day(
+    clock_values,
+    expected_style_pack_count,
+):
+    repo = FakeRepository({
+        "squid": AutomationState(
+            "702",
+            False,
+            (pending("squid", text="A new era for Squid starts today."),),
+        ),
+    })
+    moments = iter(clock_values)
+    daily_runner = OfficialXDailyRunner(
+        settings=settings(allowed_clients=("squid",)),
+        repository=repo,
+        x_client=FakeXClient(),
+        generation_client=FakeGenerationClient(),
+        clients_dir=ROOT / "clients",
+        now_factory=lambda: next(moments),
+    )
+
+    summary = await daily_runner.run()
+
+    assert repo.queues == []
+    assert len(repo.style_packs) == expected_style_pack_count
+    assert {
+        "client_id": "squid",
+        "status": "kst_day_rolled_over",
+        "detail": "2026-07-22->2026-07-23",
+    } in summary.outcomes
 
 
 @pytest.mark.asyncio

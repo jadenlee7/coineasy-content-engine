@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
@@ -396,51 +396,72 @@ class OfficialXDailyRunner:
                 item.routing_post()
                 for item in state.pending_sources
             )
-        selected = select_official_candidate(
-            candidate_posts,
-            skip_patterns=config.routing.skip_patterns,
-            demand_terms=demand_terms,
-            tutorial_priority=tutorial_priority,
-        )
+        remaining_candidates = tuple(candidate_posts)
+        skipped_manual_candidate = False
+        while True:
+            selected = select_official_candidate(
+                remaining_candidates,
+                client_id=client_id,
+                now=now,
+                skip_patterns=config.routing.skip_patterns,
+                demand_terms=demand_terms,
+                tutorial_priority=tutorial_priority,
+            )
 
-        if selected is None:
-            summary.skipped += 1
-            summary.add(client_id, "no_candidate")
-            return
+            if selected is None:
+                if not skipped_manual_candidate:
+                    summary.skipped += 1
+                    summary.add(client_id, "no_candidate")
+                return
 
-        decision = choose_content_mode(
-            client_id,
-            selected,
-            enable_tutorials=self.settings.enable_tutorials,
-        )
-        source_item_id = selected.get("source_item_id")
-        source_content = selected.get("text")
-        source_url = selected.get("url")
-        source_image_url = (
-            _pinned_source_image_url(selected)
-            if client_id in {"origintrail", "squid"}
-            else selected.get("source_image_url", "")
-        )
-        if (
-            not isinstance(source_content, str)
-            or not isinstance(source_url, str)
-            or not isinstance(source_image_url, str)
-        ):
-            raise ValueError("recorded source is incomplete")
-        if client_id == "squid" and decision.content_kind == "daily_news":
+            decision = choose_content_mode(
+                client_id,
+                selected,
+                enable_tutorials=self.settings.enable_tutorials,
+            )
+            source_item_id = selected.get("source_item_id")
+            source_content = selected.get("text")
+            source_url = selected.get("url")
+            source_image_url = (
+                _pinned_source_image_url(selected)
+                if client_id in {"origintrail", "squid"}
+                else selected.get("source_image_url", "")
+            )
+            if (
+                not isinstance(source_content, str)
+                or not isinstance(source_url, str)
+                or not isinstance(source_image_url, str)
+            ):
+                raise ValueError("recorded source is incomplete")
+            if not (
+                client_id == "squid"
+                and decision.content_kind == "daily_news"
+            ):
+                break
             visual_decision = classify_squid_visual_style(
                 source_content,
                 source_url=source_url,
                 has_official_media=bool(source_image_url),
             )
-            if visual_decision.manual_review_required:
-                summary.skipped += 1
-                summary.add(
-                    client_id,
-                    "manual_visual_review_required",
-                    visual_decision.family,
-                )
-                return
+            if not visual_decision.manual_review_required:
+                break
+
+            skipped_manual_candidate = True
+            summary.skipped += 1
+            summary.add(
+                client_id,
+                "manual_visual_review_required",
+                visual_decision.family,
+            )
+            selected_post_id = selected.get("id")
+            next_candidates = tuple(
+                post
+                for post in remaining_candidates
+                if post.get("id") != selected_post_id
+            )
+            if len(next_candidates) >= len(remaining_candidates):
+                raise ValueError("selected source cannot be removed")
+            remaining_candidates = next_candidates
         if dry_run:
             summary.add(client_id, "planned", decision.content_kind)
             return
@@ -448,6 +469,12 @@ class OfficialXDailyRunner:
         if not isinstance(source_item_id, str):
             raise ValueError("recorded source is incomplete")
 
+        if self._skip_for_kst_rollover(
+            client_id=client_id,
+            expected_kst_date=kst_date,
+            summary=summary,
+        ):
+            return
         request_id = self._request_id(
             client_id=client_id,
             source_item_id=source_item_id,
@@ -459,6 +486,12 @@ class OfficialXDailyRunner:
             request_id=request_id,
             primary_source_item_id=source_item_id,
         )
+        if self._skip_for_kst_rollover(
+            client_id=client_id,
+            expected_kst_date=kst_date,
+            summary=summary,
+        ):
+            return
         queued = await self.repository.queue_job(
             workspace_id=self.settings.workspace_id,
             client_id=client_id,
@@ -575,20 +608,40 @@ class OfficialXDailyRunner:
             return await self.x_client.get_recent_tweets(
                 handle,
                 hours=self.settings.lookback_hours,
-                max_results=200,
+                max_results=100,
                 since_id=last_cursor,
                 require_complete=True,
             )
         except XRequestError as exc:
             if exc.status_code != 400 or last_cursor is None:
                 raise
-            return await self.x_client.get_recent_tweets(
+            overlapping_posts = await self.x_client.get_recent_tweets(
                 handle,
                 hours=self.settings.lookback_hours,
-                max_results=200,
+                max_results=100,
                 since_id=None,
                 require_complete=True,
             )
+            # A cursor-less lookback can return immutable sources already in
+            # Supabase with newer engagement metrics. Re-sending those rows
+            # would make the all-or-nothing intake RPC reject the new posts too.
+            new_posts: list[Mapping[str, object]] = []
+            cursor_boundary_proven = False
+            for post in overlapping_posts:
+                if self._post_is_after_cursor(post, last_cursor):
+                    new_posts.append(post)
+                else:
+                    cursor_boundary_proven = True
+            if not cursor_boundary_proven:
+                # require_complete proves only the cursor-less start_time
+                # window. Without an item at or below the stored cursor, that
+                # window may omit older unseen posts; advancing would lose
+                # them permanently. Keep the cursor unchanged for a bounded
+                # operator backfill instead.
+                raise XTransientError(
+                    "X API fallback did not prove the stored cursor boundary"
+                )
+            return tuple(new_posts)
 
     async def _drain_jobs(self, worker_id: str, summary: DailyRunSummary) -> None:
         for _ in range(_MAX_CLAIMS_PER_RUN):
@@ -1035,6 +1088,29 @@ class OfficialXDailyRunner:
             raise ValueError("automation clock must return a timezone-aware datetime")
         return value
 
+    def _skip_for_kst_rollover(
+        self,
+        *,
+        client_id: str,
+        expected_kst_date: date,
+        summary: DailyRunSummary,
+    ) -> bool:
+        current_kst_date = self._now().astimezone(_KST).date()
+        if current_kst_date == expected_kst_date:
+            return False
+        # The database fences one exact KST-day reservation. Keep the durable
+        # source for the next run instead of attempting a stale-day queue.
+        summary.skipped += 1
+        summary.add(
+            client_id,
+            "kst_day_rolled_over",
+            (
+                f"{expected_kst_date.isoformat()}->"
+                f"{current_kst_date.isoformat()}"
+            ),
+        )
+        return True
+
     @staticmethod
     def _newest_cursor(
         posts: Sequence[Mapping[str, object]],
@@ -1048,6 +1124,22 @@ class OfficialXDailyRunner:
         if previous:
             ids.append(previous)
         return max(ids, key=int) if ids else None
+
+    @staticmethod
+    def _post_is_after_cursor(
+        post: Mapping[str, object],
+        cursor: str,
+    ) -> bool:
+        post_id = post.get("id")
+        if (
+            not isinstance(post_id, str)
+            or not post_id.isdigit()
+            or len(post_id) > 19
+            or not cursor.isdigit()
+            or len(cursor) > 19
+        ):
+            raise XTransientError("X API fallback returned an invalid post id")
+        return int(post_id) > int(cursor)
 
     @staticmethod
     def _source_payload(

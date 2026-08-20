@@ -130,6 +130,9 @@ Content Engine's `official-x-demand-v2` scorer also removes numeric years,
 month/week cadence labels, generic announcement words, and mixed-language
 particle residue before matching. The immutable EasyFarm envelope remains
 unchanged for audit, while only useful topic terms can affect ordering.
+The schema `1.2` source snapshot is committed through the narrower ranking
+evidence schema `1.1`; that ledger records both `official-x-demand-v1` and
+`official-x-demand-v2` explicitly so the algorithm version is never inferred.
 
 Sentiment and attention remain separate:
 

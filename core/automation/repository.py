@@ -19,6 +19,7 @@ from core.automation.models import (
 )
 from core.automation.content_signals import (
     CONTENT_RANKING_EVIDENCE_SCHEMA_VERSION,
+    CONTENT_SIGNALS_SCHEMA_VERSION,
     ContentSignalsSnapshot,
 )
 from core.automation.settings import AUTOMATION_CLIENTS, _supabase_url
@@ -30,6 +31,10 @@ _X_STATUS_RE = re.compile(
 )
 _SAFE_ERROR_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+_CONTENT_SIGNAL_RANKING_VERSIONS = frozenset({
+    "official-x-demand-v1",
+    "official-x-demand-v2",
+})
 _JOB_STATUSES = frozenset({
     "queued",
     "running",
@@ -290,7 +295,13 @@ class SupabaseAutomationRepository:
         snapshot: ContentSignalsSnapshot,
         ranking_version: str,
     ) -> str:
-        if ranking_version != "official-x-demand-v1":
+        if (
+            ranking_version not in _CONTENT_SIGNAL_RANKING_VERSIONS
+            or (
+                ranking_version == "official-x-demand-v2"
+                and snapshot.schema_version != CONTENT_SIGNALS_SCHEMA_VERSION
+            )
+        ):
             raise ValueError("unsupported content signal ranking version")
         demand_terms = [
             {
@@ -481,7 +492,7 @@ class SupabaseAutomationRepository:
         source_items: Sequence[Mapping[str, object]],
         polled_at: datetime,
     ) -> AutomationState:
-        if len(source_items) > 200:
+        if len(source_items) > 100:
             raise ValueError("source_items exceeds the bounded poll size")
         normalized_client = self._client(client_id)
         rpc_name = (

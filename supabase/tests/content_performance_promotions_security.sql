@@ -560,6 +560,98 @@ select public.record_content_signal_ranking_evidence(
     '[]'::jsonb
 );
 
+select public.record_content_signal_ranking_evidence(
+    'c0000000-0000-4000-8000-000000000001',
+    'squid',
+    repeat('e', 64),
+    '1.1',
+    statement_timestamp(),
+    statement_timestamp() - interval '7 days',
+    statement_timestamp(),
+    'official-x-demand-v2',
+    jsonb_build_array(jsonb_build_object(
+        'term', 'bridge',
+        'weight', 0.9,
+        'sources', jsonb_build_array('community', 'telegram_content')
+    ))
+);
+
+do $test$
+declare
+    generated_at timestamptz;
+    window_start timestamptz;
+    window_end timestamptz;
+    result jsonb;
+    replay jsonb;
+begin
+    select
+        ranking.generated_at,
+        ranking.window_start,
+        ranking.window_end
+    into generated_at, window_start, window_end
+    from private.content_signal_ranking_evidence as ranking
+    where ranking.workspace_id = 'c0000000-0000-4000-8000-000000000001'
+      and ranking.client_id = 'squid'
+      and ranking.snapshot_hash = repeat('e', 64)
+      and ranking.schema_version = '1.1'
+      and ranking.ranking_version = 'official-x-demand-v2'
+      and ranking.sanitized_signal_envelope ->> 'ranking_version'
+            = 'official-x-demand-v2';
+    if not found then
+        raise exception 'v2 ranking evidence was not committed exactly';
+    end if;
+
+    result := public.record_content_promotion_candidates(
+        'c0000000-0000-4000-8000-000000000001',
+        'squid',
+        repeat('e', 64),
+        '1.1',
+        generated_at,
+        window_start,
+        window_end,
+        'content-performance-v1',
+        '[]'::jsonb
+    );
+    if result ->> 'recorded' <> 'true'
+       or result ->> 'candidate_count' <> '0'
+       or result ->> 'reused' <> 'false' then
+        raise exception 'v2 promotion linkage failed: %', result;
+    end if;
+
+    replay := public.record_content_promotion_candidates(
+        'c0000000-0000-4000-8000-000000000001',
+        'squid',
+        repeat('e', 64),
+        '1.1',
+        generated_at,
+        window_start,
+        window_end,
+        'content-performance-v1',
+        '[]'::jsonb
+    );
+    if replay ->> 'reused' <> 'true' then
+        raise exception 'v2 promotion linkage replay was not idempotent: %', replay;
+    end if;
+
+    begin
+        perform public.record_content_signal_ranking_evidence(
+            'c0000000-0000-4000-8000-000000000001',
+            'squid',
+            repeat('f', 64),
+            '1.0',
+            statement_timestamp(),
+            statement_timestamp() - interval '7 days',
+            statement_timestamp(),
+            'official-x-demand-v2',
+            '[]'::jsonb
+        );
+        raise exception 'v2 accepted the legacy ranking evidence schema';
+    exception when invalid_parameter_value then
+        null;
+    end;
+end
+$test$;
+
 do $test$
 declare
     generated_at timestamptz;

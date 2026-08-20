@@ -32,6 +32,22 @@ contract.
 | Tutorial signal for Yellow or Squid | Article or Daily News draft; no Tutorial is generated automatically |
 | Low-signal social post, reply, retweet, or configured skip phrase | No draft |
 
+Squid has an additional freshness fence. Only eligible official root posts from
+the preceding 24 hours may become an automatic draft; when that set is empty,
+the worker creates no Squid draft instead of recycling an older pending post.
+Within the fresh set, the existing announcement, aggregate demand, and tutorial
+signals may rank candidates. Provider-added `[X-provided link metadata]` is
+excluded from that routing score and from skip-pattern matching, so it cannot
+make an old or low-signal post appear more important than the official post
+text. A text-only Squid visual that requires manual review is reported and
+removed from the current run's candidate set, allowing the next fresh eligible
+post to proceed without weakening the manual-review boundary.
+
+A Squid Quiz bot notification is an operations wake-up hint, not factual source
+evidence. The scheduled worker always re-fetches the canonical root post from
+the official Squid X account before storing or generating anything; replies and
+retweets remain ineligible.
+
 When the optional EasyFarm bridge is configured, bounded aggregate Korean
 audience demand terms may reorder otherwise eligible official posts. Schema
 `1.2` also adds a thresholded quiz-learning priority: after immutable evidence
@@ -124,10 +140,17 @@ privacy, and failure contract.
   been reached. A temporary X failure can still recover a previously committed
   pending source.
 - The cursor-advancing worker explicitly requires a complete poll of at most
-  200 unseen posts. If X still advertises another page, it fails before cursor
+  100 unseen posts, matching the database intake RPC bound. If X still
+  advertises another page, it fails before cursor
   advancement; it never silently skips the truncated source range. Manual
   generation endpoints remain bounded newest-first samples and do not advance
   this cursor.
+- If X rejects a stored cursor and the worker performs its bounded lookback,
+  it advances only when the returned page includes a post at or below that
+  cursor, proving the lookback covered the stored boundary. Posts at or below
+  the cursor are then removed before immutable intake, so changed engagement
+  counters cannot reject a newer post. If the boundary is absent, the worker
+  fails closed without advancing and requires a bounded operator backfill.
 - Sanitized source items are deduplicated by official feed and X post ID.
 - A source committed just before a worker crash remains in the pending-source
   ledger and is recovered on the next run.
