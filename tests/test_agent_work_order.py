@@ -17,6 +17,11 @@ WORK_ORDER_ID = "11111111-1111-4111-8111-111111111111"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def fake_secret(*prefix_parts: str) -> str:
+    suffix = "".join(("abcdefghijklmnop", "qrstuvwxyz", "1234567890"))
+    return "".join(prefix_parts) + suffix
+
+
 def work_order(**overrides: object) -> AgentWorkOrder:
     values: dict[str, object] = {
         "work_order_id": WORK_ORDER_ID,
@@ -117,10 +122,10 @@ def test_model_rejects_role_scope_or_phase_zero_policy_drift():
 
 
 @pytest.mark.parametrize("secret", [
-    "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
-    "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
-    "sb_secret_abcdefghijklmnopqrstuvwxyz1234567890",
-    "NetlifyLikeTokenABCdef1234567890_ABCD1234",
+    fake_secret("github", "_pat_"),
+    fake_secret("gh", "p_"),
+    fake_secret("sb", "_secret_"),
+    fake_secret("NetlifyLikeToken", "ABCdef_"),
 ])
 def test_model_rejects_secret_shaped_text(secret: str):
     with pytest.raises(ValidationError, match="agent_work_order_title_invalid"):
@@ -128,7 +133,7 @@ def test_model_rejects_secret_shaped_text(secret: str):
 
 
 def test_model_rejects_secrets_in_metadata_or_free_text():
-    token = "github_pat_abcdefghijklmnopqrstuvwxyz1234567890"
+    token = fake_secret("github", "_pat_")
     with pytest.raises(ValidationError, match="agent_work_order_branch_invalid"):
         work_order(branch_name=f"devin/{token}")
     with pytest.raises(
@@ -209,7 +214,7 @@ def test_devin_renderer_is_explicitly_non_actionable():
     assert "Automatic publication is OFF" in packet
     assert "Do not edit files" in packet
     assert "Draft PR" not in packet
-    assert "github_pat_" not in packet
+    assert "".join(("github", "_pat_")) not in packet
 
 
 def test_devin_renderer_quotes_multiline_objective_as_untrusted_data():
