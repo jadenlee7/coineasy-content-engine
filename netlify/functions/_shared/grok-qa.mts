@@ -5,6 +5,7 @@ import type {
   ContentLibraryDetail,
   ContentLibraryListItem,
 } from "./content-catalog.mts";
+import { isVerifiedSquidSourceNativeNoOverlay } from "./squid-source-native.mts";
 
 const CONNECTOR_TOKEN_MIN_BYTES = 32;
 const CONNECTOR_TOKEN_MAX_BYTES = 512;
@@ -222,9 +223,49 @@ function safeGeneratedJson(value: unknown, depth = 0): unknown {
 function selectedGeneratedContent(detail: ContentLibraryDetail): Record<string, unknown> {
   const content = detail.current_version.content;
   if (detail.content_kind === "daily_news") {
+    const spec = isRecord(content.spec) ? content.spec : {};
+    const render = isRecord(content.render) ? content.render : {};
+    const source = isRecord(content.source) ? content.source : {};
+    const sourceUrl = safeUrl(source.url) || "";
+    const sourceNativeNoOverlay = isVerifiedSquidSourceNativeNoOverlay({
+      clientId: detail.client_id,
+      contentKind: detail.content_kind,
+      sourceUrl,
+      sourceMediaStatus: source.media_status,
+      sourceImageSha256: source.prepared_sha256,
+      templateStyle: render.template_style,
+      sourceImageUsed: render.source_image_used,
+      spec,
+      render,
+    }) && detail.assets.some((asset) => (
+      asset.asset_kind === "png"
+      && asset.mime_type === "image/png"
+      && asset.width === spec.output_width
+      && asset.height === spec.output_height
+      && typeof asset.sha256 === "string"
+      && /^[a-f0-9]{64}$/.test(asset.sha256)
+    ));
+    const reviewSpec = sourceNativeNoOverlay
+      ? Object.fromEntries(Object.entries(spec).filter(([key]) => key !== "date"))
+      : spec;
     return {
-      spec: safeGeneratedJson(content.spec),
-      render: safeGeneratedJson(content.render),
+      spec: safeGeneratedJson(reviewSpec),
+      render: safeGeneratedJson(render),
+      banner_provenance: sourceNativeNoOverlay
+        ? {
+          mode: "verified_official_source_remix",
+          official_source_creative_preserved: true,
+          localized_overlay_applied: false,
+          review_scope: "generated_channel_copy_and_localized_overlays_only",
+          non_rendered_spec_fields_omitted: ["date"],
+        }
+        : {
+          mode: "generated_or_localized",
+          official_source_creative_preserved: false,
+          localized_overlay_applied: null,
+          review_scope: "all_generated_banner_and_channel_copy",
+          non_rendered_spec_fields_omitted: [],
+        },
     };
   }
   if (detail.content_kind === "article") {
@@ -282,6 +323,21 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
     && asset.mime_type === "image/png"
     && safeUrl(asset.url) !== null
   ));
+  const generatedContent = selectedGeneratedContent(detail);
+  const provenance = isRecord(generatedContent.banner_provenance)
+    ? generatedContent.banner_provenance
+    : {};
+  const reviewRules = [
+    "공식 source URL을 직접 확인하고 사실과 추론을 분리한다.",
+    "한국 GTM 문구의 이해도와 해당 client의 공식 브랜드 톤을 별도로 확인한다.",
+    "판정은 자문용이며 Studio 승인 또는 외부 발행을 수행하지 않는다.",
+  ];
+  if (provenance.mode === "verified_official_source_remix") {
+    reviewRules.push(
+      "서버가 검증한 공식 source-native 무자막 리믹스다. 원본 크리에이티브의 영문·약어·블러·그래픽은 생성된 주장이나 결함으로 보지 않고, 생성 채널 문구와 추가된 번역 오버레이만 검수한다.",
+      "generated_content.spec에서 생략된 비렌더링 메타데이터는 공개 주장으로 취급하지 않는다.",
+    );
+  }
   return {
     content_item_id: detail.content_item_id,
     content_version_id: detail.current_version_id,
@@ -291,7 +347,7 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
     status: "needs_review",
     version_number: detail.current_version.version_number,
     locale: safeText(detail.current_version.locale, 32),
-    generated_content: selectedGeneratedContent(detail),
+    generated_content: generatedContent,
     channel_copy: selectedChannelCopy(detail),
     automated_qa: {
       content_qa: safeJson(detail.current_version.qa) as Record<string, unknown>,
@@ -307,11 +363,7 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
       height: banner?.height || null,
       sha256: banner?.sha256 || null,
     },
-    review_rules: [
-      "공식 source URL을 직접 확인하고 사실과 추론을 분리한다.",
-      "한국 GTM 문구의 이해도와 해당 client의 공식 브랜드 톤을 별도로 확인한다.",
-      "판정은 자문용이며 Studio 승인 또는 외부 발행을 수행하지 않는다.",
-    ],
+    review_rules: reviewRules,
   };
 }
 

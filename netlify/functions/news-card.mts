@@ -46,6 +46,7 @@ import {
   verifyContentStorageScope,
   verifyPrivateContentBucket,
 } from "./_shared/content-catalog.mts";
+import { isVerifiedSquidSourceNativeNoOverlay } from "./_shared/squid-source-native.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -401,6 +402,41 @@ export function validSquidNativeOutputSpec(
     && outputH === Math.max(1, Math.round(sourceH * scale))
     && dimensions.width === outputW
     && dimensions.height === outputH;
+}
+
+export function newsCardFactCheckPublicText(
+  clientId: string,
+  templateStyle: string,
+  sourceUrl: string,
+  sourceMediaStatus: unknown,
+  sourceImageSha256: unknown,
+  sourceImageUsed: boolean,
+  spec: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceNativeNoOverlay = isVerifiedSquidSourceNativeNoOverlay({
+    clientId,
+    sourceUrl,
+    sourceMediaStatus,
+    sourceImageSha256,
+    templateStyle,
+    sourceImageUsed,
+    spec,
+  });
+  return {
+    label: spec.label,
+    headline: spec.headline,
+    body_lines: spec.body_lines,
+    visual_metric: spec.visual_metric,
+    // A source-native no-overlay PNG does not render this generated metadata.
+    // Classic/generated cards still retain it as a reviewable public field.
+    ...(sourceNativeNoOverlay ? {} : { date: spec.date }),
+    translation_regions: Array.isArray(spec.translation_regions)
+      ? spec.translation_regions.map((region) => {
+        const value = objectValue(region);
+        return { source_text: value.source_text, text: value.text };
+      })
+      : [],
+  };
 }
 
 export function validSquidCreativeMetadata(
@@ -1203,20 +1239,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
     const factCheck = evaluateFactCheck({
       contentKind: "daily_news",
       source: resolvedSource,
-      publicText: {
-        label: resultSpec.label,
-        headline: resultSpec.headline,
-        body_lines: resultSpec.body_lines,
-        visual_metric: resultSpec.visual_metric,
-        date: resultSpec.date,
-        source_url: resultSpec.source_url,
-        translation_regions: Array.isArray(resultSpec.translation_regions)
-          ? resultSpec.translation_regions.map((region) => {
-            const value = objectValue(region);
-            return { source_text: value.source_text, text: value.text };
-          })
-          : [],
-      },
+      publicText: newsCardFactCheckPublicText(
+        clientId,
+        actualTemplateStyle,
+        resolvedSource.url,
+        resolvedSource.mediaStatus,
+        preparedSourceImageSha256,
+        result.source_image_used === true,
+        resultSpec,
+      ),
       channelCopy,
       artifactSha256: [
         createHash("sha256").update(Buffer.from(imageBytes)).digest("hex"),

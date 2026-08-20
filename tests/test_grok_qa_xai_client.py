@@ -133,6 +133,11 @@ async def test_request_is_fixed_private_bounded_structured_x_search_with_png():
     }
     prompt = body["input"][0]["content"][0]["text"]
     assert prompt.startswith(f"Use X Search now to retrieve and cite exactly {SOURCE}")
+    assert "generated_content.banner_provenance.mode" in prompt
+    assert "verified_official_source_remix" in prompt
+    assert "existing typography, abbreviations, blur, and graphic effects" in prompt
+    assert "omitted non-rendered metadata" in prompt
+    assert "review the full generated banner normally" in prompt
     assert '"content_item_id"' not in prompt
     assert '"content_version_id"' not in prompt
     assert body["input"][0]["content"][1]["image_url"].startswith(

@@ -118,12 +118,20 @@ export function factCheckPublicText(value: unknown): string {
     .join("\n");
 }
 
+function claimText(value: string): string {
+  // URL path/query identifiers are evidence locators, not numeric claims.
+  // Keeping them in the mechanical baseline produced false gaps for every X
+  // status URL embedded in Telegram copy.
+  return value.replace(/https?:\/\/[^\s<>()]+/gi, " ");
+}
+
 function numbers(value: string): string[] {
-  return value.match(/\d+(?:[,.]\d+)?/g)?.map((item) => item.replace(/,/g, "")) || [];
+  return claimText(value).match(/\d+(?:[,.]\d+)?/g)
+    ?.map((item) => item.replace(/,/g, "")) || [];
 }
 
 function terms(value: string): Set<string> {
-  return new Set((value.toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) || []));
+  return new Set((claimText(value).toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) || []));
 }
 
 function maxStatus(...statuses: FactCheckStatus[]): FactCheckStatus {

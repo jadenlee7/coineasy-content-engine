@@ -129,6 +129,13 @@ are verified. Require:
 - zero approvals, public sends, Typefully drafts, Figma mutations, or status
   changes.
 
+For a Squid source-native/no-overlay canary, confirm the private verdict does
+not classify typography, abbreviations, blur, or graphics already present in
+the official X creative as generated claims or defects. The review must still
+fact-check the generated Korean channel copy. If the render tuple is not the
+exact verified official-source path, the banner must receive the normal full
+review instead.
+
 Re-running the same version must not create another provider call or Telegram
 message. A revised immutable version may create one new job only after the
 canary target is deliberately changed. Disable the dispatcher immediately
