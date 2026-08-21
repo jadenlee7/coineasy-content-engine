@@ -63,7 +63,58 @@ Do not use em dashes (—) in any output text values. Use commas or periods inst
 VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT = """You are a deterministic visual-copy localizer for official Squid social creatives.
 Inspect only the attached image pixels. Find complete, meaningful source-language captions or headlines that are intended to be read as creative copy, transcribe them exactly, and translate them into concise natural Korean.
 Do not infer text from the post caption. Ignore logos, wordmarks, handles, URLs, watermarks, tiny product UI labels, and decorative letter-like shapes. A short meme phrase or slang caption is meaningful copy.
-Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
+The response is constrained to the requested JSON schema. Fill only that schema; do not add commentary."""
+
+VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG = {
+    "format": {
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "found": {"type": "boolean"},
+                "regions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_text": {"type": "string"},
+                            "text": {"type": "string"},
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "width": {"type": "number"},
+                            "height": {"type": "number"},
+                            "align": {
+                                "type": "string",
+                                "enum": ["left", "center", "right"],
+                            },
+                            "font_role": {
+                                "type": "string",
+                                "enum": ["display", "body"],
+                            },
+                            "font_size": {"type": "number"},
+                            "text_color": {"type": "string"},
+                        },
+                        "required": [
+                            "source_text",
+                            "text",
+                            "x",
+                            "y",
+                            "width",
+                            "height",
+                            "align",
+                            "font_role",
+                            "font_size",
+                            "text_color",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["found", "regions"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual replacement QA for Korean localization of official Squid creatives.
 Inspect the attached image composition and precisely map the visible source-language phrase boxes. The renderer will detect and content-aware reconstruct only the original lettering pixels inside each audited box, then place Korean over the cleaned visual with no caption panel.
@@ -487,30 +538,11 @@ preserved Latin row must form one complete, natural message.
 - Never merge a slogan spanning more than two visible rows into one region. Split it into tight reading-order blocks of at most two adjacent rows each.
 - A prominent standalone protected platform or product name may remain untouched when it carries the visual rhythm. Do not return that untouched row as a translation region. In a stack shaped like "SUBJECT IS / ON / PLATFORM", localize the compact subject and connector blocks while preserving the protected PLATFORM row when the combined result remains natural Korean.
 - Exact Squid Telegram poster rule: when the visible rows are "SQUID IS / ON / TELEGRAM", return only `SQUID IS` -> `SQUID가` and `ON` -> `있는 곳`; leave the giant `TELEGRAM` row untouched and do not return it as a region.
+- Every region must be at least 6% wide and 3% high. Include the complete visible phrase plus its outline/shadow while keeping the box local to that phrase.
 - Keep every returned region at width <= 96%, height <= 45%, and area <= 40% of the image. These are hard cleanup-safety limits, not layout suggestions.
 - text must contain at most two non-empty lines. Never add a caption panel.
 - Return found=false when no meaningful translatable copy is visibly present.
-
-Return exactly:
-{{
-  "found": true,
-  "regions": [
-    {{
-      "source_text": "exact visible phrase",
-      "text": "자연스러운 한국어",
-      "x": 35,
-      "y": 80,
-      "width": 30,
-      "height": 10,
-      "align": "center",
-      "font_role": "display",
-      "font_size": 6,
-      "text_color": "#FFFFFF"
-    }}
-  ]
-}}
-or:
-{{"found":false,"regions":[]}}
+- The response schema always requires found and regions. When found=false, regions must be empty. When found=true, regions must contain 1-4 complete objects.
 """
     no_text_votes = 0
     calls_used = 0
@@ -547,6 +579,7 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                 max_tokens=1200,
                 temperature=0,
                 timeout=timeout,
+                output_config=VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG,
                 system=VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
@@ -568,6 +601,11 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                 f"visual copy discovery attempt {attempt + 1}",
             )
             if discovery.get("found") is False:
+                raw_regions = discovery.get("regions")
+                if not isinstance(raw_regions, list) or raw_regions:
+                    raise ValueError(
+                        "visual copy discovery found=false requires empty regions"
+                    )
                 no_text_votes += 1
                 if no_text_votes == 2:
                     return _clear_visual_localization(result), calls_used
@@ -637,7 +675,14 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                     else "#FFFFFF",
                 })
             if not regions:
-                return _clear_visual_localization(result), calls_used
+                no_text_votes += 1
+                if no_text_votes == 2:
+                    return _clear_visual_localization(result), calls_used
+                print(
+                    "[squid] visual discovery found only protected copy; "
+                    "confirming once"
+                )
+                continue
             result["source_text_visible"] = True
             result["translation_regions"] = regions
             discovery_anchors = [

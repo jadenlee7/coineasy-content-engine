@@ -127,6 +127,30 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "Do not move the Korean translation" in content[1]["text"]
     assert "Use one tight region around the actual glyphs" not in content[1]["text"]
     assert calls[1]["system"].startswith("You are a deterministic visual-copy localizer")
+    discovery_format = calls[1]["output_config"]["format"]
+    assert discovery_format["type"] == "json_schema"
+    assert discovery_format["schema"]["required"] == ["found", "regions"]
+    assert discovery_format["schema"]["additionalProperties"] is False
+    region_schema = discovery_format["schema"]["properties"]["regions"]
+    assert set(region_schema) == {"type", "items"}
+    numeric_fields = ("x", "y", "width", "height", "font_size")
+    region_properties = region_schema["items"]["properties"]
+    assert all(region_properties[field] == {"type": "number"} for field in numeric_fields)
+    raw_schema = json.dumps(discovery_format["schema"], sort_keys=True)
+    for unsupported_keyword in (
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+    ):
+        assert f'"{unsupported_keyword}"' not in raw_schema
+    discovery_prompt = calls[1]["messages"][0]["content"][1]["text"]
+    assert "Every region must be at least 6% wide and 3% high" in discovery_prompt
+    assert "When found=false, regions must be empty" in discovery_prompt
+    assert "output_config" not in calls[0]
+    assert "output_config" not in calls[2]
     assert 0 < calls[0]["timeout"] <= 22.0
     assert 0 < calls[1]["timeout"] <= 8.0
     audit_content = calls[2]["messages"][0]["content"]
@@ -1514,6 +1538,128 @@ def test_squid_stable_discovery_accepts_an_explicit_textless_visual(monkeypatch)
         client_id="squid",
         source_content="Sundays are for resting",
         source_image=image,
+    )
+
+    assert len(calls) == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "no_text"
+
+
+def test_squid_textless_vote_rejects_nonempty_regions_and_fails_closed(monkeypatch):
+    calls = []
+    payloads = [
+        {
+            "label": "커뮤니티",
+            "date": "2026.08.21",
+            "headline": "Squid 공식 비주얼을 전합니다",
+            "body_lines": ["원본 배너를 검수합니다"],
+            "source_url": "ignored",
+            "theme": "dark",
+            "source_logo_visible": True,
+            "source_text_visible": False,
+            "translation_regions": [],
+        },
+        {
+            "found": False,
+            "regions": [{
+                "source_text": "unexpected",
+                "text": "예상 밖 문구",
+                "x": 30,
+                "y": 70,
+                "width": 20,
+                "height": 8,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 6,
+                "text_color": "#FFFFFF",
+            }],
+        },
+        {"found": False, "regions": []},
+    ]
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payloads[len(calls) - 1], ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("inconsistent no-text must not reach placement probing"),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Official Squid visual",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    assert len(calls) == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+
+
+def test_squid_protected_only_discovery_requires_two_no_text_votes(monkeypatch):
+    calls = []
+    main_payload = {
+        "label": "커뮤니티",
+        "date": "2026.08.21",
+        "headline": "Squid 공식 비주얼을 전합니다",
+        "body_lines": ["브랜드 워드마크를 그대로 유지합니다"],
+        "source_url": "ignored",
+        "theme": "dark",
+        "source_logo_visible": True,
+        "source_text_visible": False,
+        "translation_regions": [],
+    }
+    protected_only = {
+        "found": True,
+        "regions": [{
+            "source_text": "Squid",
+            "text": "Squid",
+            "x": 40,
+            "y": 70,
+            "width": 20,
+            "height": 8,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 6,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        payload = main_payload if len(calls) == 1 else protected_only
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("protected-only visual must not reach placement probing"),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Official Squid visual",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
     )
 
     assert len(calls) == 3
