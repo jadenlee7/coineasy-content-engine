@@ -10,6 +10,7 @@ import {
   finalizeGrokQaVerdict,
   grokQaBannerImage,
   grokQaConnectorConfig,
+  grokQaPassConflictsWithStoredBrandQa,
   hasGrokQaConnectorAccess,
   type GrokQaVerdict,
 } from "../netlify/functions/_shared/grok-qa.mts";
@@ -18,6 +19,7 @@ const TOKEN = "grok-qa-test-token-that-is-long-enough";
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const ITEM_ID = "22222222-2222-4222-8222-222222222222";
 const VERSION_ID = "33333333-3333-4333-8333-333333333333";
+const ASSET_ID = "44444444-4444-4444-8444-444444444444";
 const SOURCE_URL = "https://x.com/squidrouter/status/2083266484789514640";
 const CREATED_AT = "2026-08-13T08:00:00.000Z";
 
@@ -143,6 +145,25 @@ test("Grok review package exposes generated QA evidence but never raw source or 
   assert.doesNotMatch(serialized, /request_hash/);
 });
 
+test("stored critical brand QA blocks only a provider PASS downgrade", () => {
+  const item = detail();
+  item.current_version.generation_meta.brand_qa = {
+    schema_version: "1.0",
+    policy_version: "brand-qa@1",
+    status: "review",
+    score: 50,
+    checks: [{
+      id: "visual_integrity",
+      status: "review",
+      severity: "critical",
+      detail: "원문 자막 픽셀을 깔끔하게 제거하지 못했습니다.",
+    }],
+  };
+  assert.equal(grokQaPassConflictsWithStoredBrandQa(item, { decision: "PASS" }), true);
+  assert.equal(grokQaPassConflictsWithStoredBrandQa(item, { decision: "WARN" }), false);
+  assert.equal(grokQaPassConflictsWithStoredBrandQa(item, { decision: "BLOCK" }), false);
+});
+
 test("Grok review package scopes an exact Squid source-native banner without hiding generated cards", () => {
   const item = detail();
   item.current_version.content.spec = {
@@ -179,7 +200,10 @@ test("Grok review package scopes an exact Squid source-native banner without hid
   assert.equal(exact.generated_content.banner_provenance.mode, "verified_official_source_remix");
   assert.equal(exact.generated_content.banner_provenance.localized_overlay_applied, false);
   assert.equal(Object.hasOwn(exact.generated_content.spec, "date"), false);
-  assert.match(exact.review_rules.join("\n"), /영문·약어·블러·그래픽/);
+  assert.match(exact.review_rules.join("\n"), /no_text.*증거가 아니다/);
+  assert.match(exact.review_rules.join("\n"), /의미 있는 영문 headline·caption·metric label/);
+  assert.match(exact.review_rules.join("\n"), /brand_check\.status=BLOCK/);
+  assert.match(exact.review_rules.join("\n"), /next_action=revise_banner/);
   assert.match(exact.review_rules.join("\n"), /비렌더링 메타데이터/);
 
   item.current_version.content.spec = {
@@ -189,7 +213,26 @@ test("Grok review package scopes an exact Squid source-native banner without hid
   const inconsistent = buildGrokQaReviewPackage(item);
   assert.equal(inconsistent.generated_content.banner_provenance.mode, "generated_or_localized");
   assert.equal(inconsistent.generated_content.spec.date, "2026.08.18");
-  assert.doesNotMatch(inconsistent.review_rules.join("\n"), /영문·약어·블러·그래픽/);
+  assert.doesNotMatch(inconsistent.review_rules.join("\n"), /배너 픽셀을 독립 검수/);
+
+  for (const status of ["cleanup_failed", "unsafe_placement"]) {
+    item.current_version.content.spec = {
+      ...item.current_version.content.spec,
+      source_text_visible: false,
+      translation_regions: [],
+      visual_localization_status: status,
+    };
+    const failedLocalization = buildGrokQaReviewPackage(item);
+    assert.equal(
+      failedLocalization.generated_content.banner_provenance.mode,
+      "generated_or_localized",
+    );
+    assert.equal(failedLocalization.generated_content.spec.date, "2026.08.18");
+    assert.doesNotMatch(
+      failedLocalization.review_rules.join("\n"),
+      /배너 픽셀을 독립 검수/,
+    );
+  }
 });
 
 test("Grok connector requires its own bounded constant-time bearer", () => {
@@ -357,4 +400,105 @@ test("MCP submit rejects a missing banner before claiming a durable receipt", as
     else Reflect.deleteProperty(globalThis, "fetch");
   }
   assert.equal(receiptCalls, 0);
+});
+
+test("MCP PASS cannot downgrade critical brand QA or reach banner receipt and relay", async () => {
+  const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  let bannerFetches = 0;
+  let receiptCalls = 0;
+  let relayCalls = 0;
+  const item = detail();
+  item.current_version.generation_meta.brand_qa = {
+    status: "review",
+    score: 50,
+    checks: [{
+      id: "visual_integrity",
+      status: "review",
+      severity: "critical",
+      detail: "원문 자막 픽셀을 깔끔하게 제거하지 못했습니다.",
+    }],
+  };
+  const raw = {
+    content_item_id: ITEM_ID,
+    content_version_id: VERSION_ID,
+    client_id: item.client_id,
+    content_kind: item.content_kind,
+    title: "mutable item title",
+    status: item.status,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+    current_version: item.current_version,
+    assets: [{
+      asset_id: ASSET_ID,
+      asset_kind: "png",
+      storage_bucket: "content-studio",
+      storage_path: `${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png`,
+      filename: "news-card.png",
+      mime_type: "image/png",
+      byte_size: 1024,
+      sha256: "b".repeat(64),
+      width: 1080,
+      height: 1080,
+    }],
+    figma_links: [],
+  };
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/rest/v1/rpc/get_content_library_item")) {
+        return Response.json(raw);
+      }
+      if (url.includes("/storage/v1/object/sign/content-studio/") && !url.includes("token=")) {
+        return Response.json({
+          signedURL: `/object/sign/content-studio/${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png?token=short-lived`,
+        });
+      }
+      if (url.includes("/storage/v1/object/sign/content-studio/") && url.includes("token=")) {
+        bannerFetches += 1;
+        return new Response("unexpected", { status: 500 });
+      }
+      if (url.endsWith("/rest/v1/rpc/claim_grok_qa_verdict")) {
+        receiptCalls += 1;
+        return Response.json({ claimed: true });
+      }
+      if (url === "https://content-engine.example/internal/grok-qa-verdict") {
+        relayCalls += 1;
+        return Response.json({ sent: true });
+      }
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  try {
+    await withNetlifyEnvironment({
+      GROK_QA_CONNECTOR_TOKEN: TOKEN,
+      GROK_QA_RELAY_TOKEN: "dedicated-relay-token-that-is-long-enough",
+      RAILWAY_API_URL: "https://content-engine.example",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key-for-private-tests",
+      CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,
+    }, async () => {
+      const response = await grokQaHandler(mcpRequest({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "coineasy_submit_qa_verdict",
+          arguments: {
+            content_item_id: ITEM_ID,
+            content_version_id: VERSION_ID,
+            verdict,
+          },
+        },
+      }), {} as never);
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /qa_brand_qa_conflict/);
+    });
+  } finally {
+    if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
+    else Reflect.deleteProperty(globalThis, "fetch");
+  }
+  assert.equal(bannerFetches, 0);
+  assert.equal(receiptCalls, 0);
+  assert.equal(relayCalls, 0);
 });

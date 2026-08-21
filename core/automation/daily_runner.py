@@ -748,11 +748,19 @@ class OfficialXDailyRunner:
                 style_reference_pack_hash=reference_pack.reference_pack_hash,
             )
         except AutomationRepositoryError as exc:
-            retry_at = self._retry_at(job.attempts) if exc.retryable else None
+            retry_at = (
+                self._retry_at(job.attempts)
+                if exc.retryable and job.attempts < job.max_attempts
+                else None
+            )
             await self._mark_failed(job, worker_id, exc.code, retry_at, summary)
             return
         except GenerationRequestError as exc:
-            retry_at = self._retry_at(job.attempts) if exc.retryable else None
+            retry_at = (
+                self._retry_at(job.attempts)
+                if exc.retryable and job.attempts < job.max_attempts
+                else None
+            )
             await self._mark_failed(job, worker_id, exc.code, retry_at, summary)
             return
         except ValueError:
@@ -769,7 +777,11 @@ class OfficialXDailyRunner:
                 job,
                 worker_id,
                 "studio_generation_unavailable",
-                self._retry_at(job.attempts),
+                (
+                    self._retry_at(job.attempts)
+                    if job.attempts < job.max_attempts
+                    else None
+                ),
                 summary,
             )
             return

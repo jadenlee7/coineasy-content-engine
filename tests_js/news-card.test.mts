@@ -18,6 +18,7 @@ import newsCardHandler, {
   newsCardFactCheckPublicText,
   newsCardRequestHash,
   normalizedFigmaTemplate,
+  squidRemixLocalizationError,
   storedNewsTemplatePair,
   validNewsTemplatePair,
   validStandardNewsBrandMetadata,
@@ -144,6 +145,101 @@ test("Squid source-native fact-check omits non-rendered date only for the exact 
   assert.equal(generated.date, "2026.08.18");
 });
 
+test("automatic Squid remix localization accepts only consistent no-text and translated contracts", () => {
+  assert.equal(squidRemixLocalizationError({
+    visual_localization_status: "no_text",
+    source_text_visible: false,
+    translation_regions: [],
+  }, null), null);
+
+  const translatedSpec = {
+    visual_localization_status: "translated",
+    source_text_visible: true,
+    translation_regions: [{
+      source_text: "Did you know?",
+      text: "알고 계셨나요?",
+      x: 8,
+      y: 12,
+      width: 54,
+      height: 18,
+      source_x: 8,
+      source_y: 12,
+      source_width: 54,
+      source_height: 18,
+    }],
+  };
+  assert.equal(
+    squidRemixLocalizationError(
+      translatedSpec,
+      "/app/output/squid/news_456/source_visual_cleaned.jpg",
+    ),
+    null,
+  );
+
+  for (const status of ["cleanup_failed", "unsafe_placement"]) {
+    assert.equal(squidRemixLocalizationError({
+      visual_localization_status: status,
+      source_text_visible: false,
+      translation_regions: [],
+    }, null), "squid_visual_localization_incomplete");
+  }
+  assert.equal(squidRemixLocalizationError({
+    visual_localization_status: "no_text",
+    source_text_visible: true,
+    translation_regions: [],
+  }, null), "invalid_generation_response");
+  assert.equal(
+    squidRemixLocalizationError(translatedSpec, null),
+    "invalid_generation_response",
+  );
+  assert.equal(squidRemixLocalizationError({
+    ...translatedSpec,
+    translation_regions: [{
+      ...translatedSpec.translation_regions[0],
+      text: "English only",
+    }],
+  }, "/app/output/squid/news_456/source_visual_cleaned.jpg"), "invalid_generation_response");
+
+  const validRegion = translatedSpec.translation_regions[0];
+  const malformedRegions: Array<[string, Array<Record<string, unknown>>]> = [
+    ["missing coordinates", [{
+      ...validRegion,
+      source_y: undefined,
+    }]],
+    ["out-of-bounds coordinates", [{
+      ...validRegion,
+      x: 95,
+      width: 10,
+      source_x: 95,
+      source_width: 10,
+    }]],
+    ["source-target mismatch", [{
+      ...validRegion,
+      source_y: 13,
+    }]],
+    ["overlapping regions", [
+      validRegion,
+      {
+        ...validRegion,
+        source_text: "More text",
+        text: "추가 문구",
+        x: 30,
+        source_x: 30,
+      },
+    ]],
+    ["three-line translation", [{
+      ...validRegion,
+      text: "첫째 줄\n둘째 줄\n셋째 줄",
+    }]],
+  ];
+  for (const [label, translationRegions] of malformedRegions) {
+    assert.equal(squidRemixLocalizationError({
+      ...translatedSpec,
+      translation_regions: translationRegions,
+    }, "/app/output/squid/news_456/source_visual_cleaned.jpg"), "invalid_generation_response", label);
+  }
+});
+
 function officialSquidSyndicationPayload(
   mediaUrl?: string,
   tweetId = SOURCE_TWEET_ID,
@@ -183,6 +279,9 @@ function storedSquidRemixLookup(
           headline: "Squid 공식 비주얼",
           body_lines: ["원문 기반"],
           output_policy: "official_source_native_v1",
+          source_text_visible: false,
+          translation_regions: [],
+          visual_localization_status: "no_text",
           source_image_width: 1080,
           source_image_height: 1080,
           output_width: 1080,
@@ -193,6 +292,7 @@ function storedSquidRemixLookup(
         template_style: "remix",
         requested_template_style: "remix",
         source_image_used: true,
+        source_visual_file: null,
       },
     },
     channel_copy: { telegram: "텔레그램", x: "X" },
@@ -848,6 +948,163 @@ test("automation pins the exact official Squid X image through generation and st
   });
 });
 
+test("automatic Squid remix rejects exhausted localization before PNG fetch or catalog persistence", async () => {
+  const submittedImage = "https://pbs.twimg.com/media/official-source.jpg?format=jpg&name=small";
+  const pinnedImage = "https://pbs.twimg.com/media/official-source.jpg?format=jpg&name=orig";
+
+  for (const status of ["cleanup_failed", "unsafe_placement"]) {
+    let generatedPngFetches = 0;
+    let storageUploads = 0;
+    let catalogWrites = 0;
+    await withEnvironment(async (input, init) => {
+      const url = String(input);
+      if (url.includes("cdn.syndication.twimg.com")) {
+        return Response.json(officialSquidSyndicationPayload(submittedImage));
+      }
+      if (url.endsWith("/storage/v1/bucket/content-studio")) {
+        return Response.json({ id: "content-studio", public: false });
+      }
+      if (url.includes("/rest/v1/workspace_clients")) {
+        return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+      }
+      if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+      if (url.endsWith("/clients/squid/generate/news-card")) {
+        return Response.json({
+          client_id: "squid",
+          content_type: "news_card",
+          spec: {
+            ...squidCreativeMetadata("remix"),
+            headline: "Celo와 Squid",
+            body_lines: ["공식 배너 문구를 한국어로 현지화합니다"],
+            source_url: SOURCE_URL,
+            source_text_visible: false,
+            translation_regions: [],
+            visual_localization_status: status,
+            output_policy: "official_source_native_v1",
+            source_image_width: 1800,
+            source_image_height: 693,
+            output_width: 1200,
+            output_height: 462,
+          },
+          png_path: "/app/output/squid/news_458/news_card_remix.png",
+          template_style: "remix",
+          requested_template_style: "remix",
+          source_image_used: true,
+          source_image_url: pinnedImage,
+          source_image_sha256: SOURCE_IMAGE_SHA256,
+          source_visual_path: null,
+          figma_template: null,
+          manifest_path: "/app/output/squid/news_458/manifest.json",
+          duration_ms: 987,
+        });
+      }
+      if (url.endsWith("/files/squid/news_458/news_card_remix.png")) {
+        generatedPngFetches += 1;
+        return new Response(minimalPng(1200, 462), {
+          headers: { "content-type": "image/png" },
+        });
+      }
+      if (url.includes("/storage/v1/object/content-studio/") && init?.method === "POST") {
+        storageUploads += 1;
+        return Response.json({ Key: "unexpected" });
+      }
+      if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+        catalogWrites += 1;
+        return Response.json({});
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      const response = await newsCardHandler(studioRequest({
+        ...requestBody(),
+        template_style: "remix",
+        source_image_url: submittedImage,
+      }, true, true), { params: { clientId: "squid" } } as never);
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), {
+        error: "squid_visual_localization_incomplete",
+      });
+      assert.equal(generatedPngFetches, 0);
+      assert.equal(storageUploads, 0);
+      assert.equal(catalogWrites, 0);
+    });
+  }
+});
+
+test("manual unpinned Squid remix rejects failed localization before PNG fetch or persistence", async () => {
+  const sourceImage = "https://pbs.twimg.com/media/manual-source.jpg?format=jpg&name=small";
+  const resolvedImage = "https://pbs.twimg.com/media/manual-source.jpg?format=jpg&name=orig";
+  let generatedPngFetches = 0;
+  let storageUploads = 0;
+  let catalogWrites = 0;
+  await withEnvironment(async (input, init) => {
+    const url = String(input);
+    if (url.includes("cdn.syndication.twimg.com")) {
+      return Response.json(officialSquidSyndicationPayload(sourceImage));
+    }
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+    if (url.endsWith("/clients/squid/generate/news-card")) {
+      return Response.json({
+        client_id: "squid",
+        content_type: "news_card",
+        spec: {
+          ...squidCreativeMetadata("remix"),
+          headline: "Squid 공식 비주얼",
+          body_lines: ["공식 원문을 한국어로 현지화합니다"],
+          source_text_visible: false,
+          translation_regions: [],
+          visual_localization_status: "cleanup_failed",
+          output_policy: "official_source_native_v1",
+          source_image_width: 1600,
+          source_image_height: 900,
+          output_width: 1200,
+          output_height: 675,
+        },
+        png_path: "/app/output/squid/news_459/news_card_remix.png",
+        template_style: "remix",
+        requested_template_style: "remix",
+        source_image_used: true,
+        source_image_url: resolvedImage,
+        source_image_sha256: SOURCE_IMAGE_SHA256,
+        source_visual_path: null,
+        figma_template: null,
+        manifest_path: "/app/output/squid/news_459/manifest.json",
+        duration_ms: 987,
+      });
+    }
+    if (url.endsWith("/files/squid/news_459/news_card_remix.png")) {
+      generatedPngFetches += 1;
+      return new Response(minimalPng(1200, 675));
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && init?.method === "POST") {
+      storageUploads += 1;
+      return Response.json({ Key: "unexpected" });
+    }
+    if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+      catalogWrites += 1;
+      return Response.json({});
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest({
+      ...requestBody(),
+      template_style: "remix",
+    }), { params: { clientId: "squid" } } as never);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      error: "squid_visual_localization_incomplete",
+    });
+    assert.equal(generatedPngFetches, 0);
+    assert.equal(storageUploads, 0);
+    assert.equal(catalogWrites, 0);
+  });
+});
+
 test("automation pins an official Yellow creative and keeps it in the source-dominant remix", async () => {
   const yellowSourceUrl = "https://x.com/Yellow/status/2087177332670750834";
   const submittedImage = "https://pbs.twimg.com/media/HPckuPQXAAAj0cx.jpg";
@@ -1354,6 +1611,68 @@ test("an unpinned Squid remix replay binds stored proof to the currently resolve
   });
 });
 
+test("an exact stored Squid localization failure is never replayed", async () => {
+  const png = minimalPng();
+  const pinnedImage = "https://pbs.twimg.com/media/failed-source.jpg?name=orig";
+  const requestHash = newsCardRequestHash({
+    clientId: "squid",
+    sourceContent: SOURCE,
+    sourceType: "tweet",
+    sourceUrl: SOURCE_URL,
+    mockMode: false,
+    templateStyle: "remix",
+    sourceImageUrl: pinnedImage,
+  });
+  for (const status of ["cleanup_failed", "unsafe_placement"]) {
+    const stored = storedSquidRemixLookup(requestHash, {
+      mode: "provided",
+      image_url: pinnedImage,
+      media_status: "present",
+      prepared_sha256: SOURCE_IMAGE_SHA256,
+    }, png) as Record<string, any>;
+    stored.content.spec.visual_localization_status = status;
+    let assetObjectCalls = 0;
+    let railwayCalls = 0;
+    let syndicationCalls = 0;
+
+    await withEnvironment(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/storage/v1/bucket/content-studio")) {
+        return Response.json({ id: "content-studio", public: false });
+      }
+      if (url.includes("/rest/v1/workspace_clients")) {
+        return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+      }
+      if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+        return Response.json(stored);
+      }
+      if (url.includes("/storage/v1/object/content-studio/")) {
+        assetObjectCalls += 1;
+        return new Response(png);
+      }
+      if (url.includes("cdn.syndication.twimg.com")) {
+        syndicationCalls += 1;
+        return Response.json(officialSquidSyndicationPayload(pinnedImage));
+      }
+      if (url.includes("railway.example")) railwayCalls += 1;
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      const response = await newsCardHandler(studioRequest({
+        ...requestBody(),
+        template_style: "remix",
+        source_image_url: pinnedImage,
+      }, true, true), { params: { clientId: "squid" } } as never);
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error: "squid_visual_localization_regeneration_required",
+      });
+      assert.equal(assetObjectCalls, 0);
+      assert.equal(railwayCalls, 0);
+      assert.equal(syndicationCalls, 0);
+    });
+  }
+});
+
 test("an unpinned legacy Squid square replay remains available after live source verification", async () => {
   const png = minimalPng();
   const resolvedImage = "https://pbs.twimg.com/media/legacy-source.jpg?name=orig";
@@ -1574,7 +1893,7 @@ test("an unpinned concurrent Squid replay rejects source proof that differs from
           body_lines: ["원문 기반"],
           source_text_visible: false,
           translation_regions: [],
-          visual_localization_status: "no_source_text",
+          visual_localization_status: "no_text",
           output_policy: "official_source_native_v1",
           source_image_width: 1080,
           source_image_height: 1080,

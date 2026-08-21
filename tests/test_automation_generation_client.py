@@ -161,6 +161,64 @@ async def test_source_dominant_remix_forwards_only_the_official_x_image(
 
 
 @pytest.mark.asyncio
+async def test_squid_localization_incomplete_is_a_retryable_502():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/news-card/squid"
+        return httpx.Response(502, json={
+            "error": "squid_visual_localization_incomplete",
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="squid_visual_localization_incomplete",
+    ) as error:
+        await client.generate(
+            client_id="squid",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="Squid official product update",
+            source_url="https://x.com/SquidRouter/status/123",
+            source_image_url=SOURCE_IMAGE_URL,
+            template_style="remix",
+        )
+    assert error.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_stored_squid_localization_failure_requires_a_new_nonretryable_request():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/news-card/squid"
+        return httpx.Response(409, json={
+            "error": "squid_visual_localization_regeneration_required",
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="squid_visual_localization_regeneration_required",
+    ) as error:
+        await client.generate(
+            client_id="squid",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="Squid official product update",
+            source_url="https://x.com/SquidRouter/status/123",
+            source_image_url=SOURCE_IMAGE_URL,
+            template_style="remix",
+        )
+    assert error.value.retryable is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("client_id", "source_url"),
     [

@@ -50,6 +50,9 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.equal((consoleHtml.match(/"Idempotency-Key": generationRequestId/g) || []).length, 3);
   assert.match(consoleHtml, /state\.generationRequest = null/);
   assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
+  assert.match(consoleHtml, /squid_visual_localization_incomplete/);
+  assert.match(consoleHtml, /영어 원본 저장을 차단했습니다/);
+  assert.match(consoleHtml, /payload\?\.error === "squid_visual_localization_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
 });
 

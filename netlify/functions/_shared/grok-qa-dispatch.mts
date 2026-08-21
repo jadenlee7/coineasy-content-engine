@@ -13,6 +13,7 @@ import {
   GROK_QA_DECISIONS,
   GROK_QA_NEXT_ACTIONS,
   grokQaBannerImage,
+  grokQaPassConflictsWithStoredBrandQa,
   grokQaRelayConfig,
   grokQaSourceUrls,
   sendGrokQaVerdictOutcome,
@@ -690,6 +691,9 @@ async function stageVerdict(
     action.content_version_id,
     fetcher,
   );
+  if (grokQaPassConflictsWithStoredBrandQa(detail, action.verdict)) {
+    throw new GrokQaDispatchError("grok_qa_dispatch_brand_qa_conflict");
+  }
   validateVerdictSources(detail, action.verdict);
   const expectedSource = grokQaSourceUrls(detail)[0] || "";
   if (

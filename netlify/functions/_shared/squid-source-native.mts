@@ -1,11 +1,6 @@
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
 const SQUID_SOURCE_TEMPLATE_VERSION = "squid-source-remix@1";
 const SQUID_SOURCE_ASSET_PACK_VERSION = "official-source-media@1";
-const NON_OVERLAY_STATUSES = new Set([
-  "no_text",
-  "cleanup_failed",
-  "unsafe_placement",
-]);
 
 type SquidSourceNativeInput = {
   clientId: string;
@@ -61,8 +56,7 @@ export function isVerifiedSquidSourceNativeNoOverlay(
     || spec.source_text_visible !== false
     || !Array.isArray(regions)
     || regions.length !== 0
-    || typeof spec.visual_localization_status !== "string"
-    || !NON_OVERLAY_STATUSES.has(spec.visual_localization_status)
+    || spec.visual_localization_status !== "no_text"
   ) return false;
 
   if (!render) return true;
