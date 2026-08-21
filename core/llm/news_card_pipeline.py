@@ -445,6 +445,22 @@ def _parse_json_response(response: object, purpose: str) -> dict:
     return parsed
 
 
+def _visual_copy_discovery_failure_reason(exc: Exception) -> str:
+    """Reduce provider/parser failures to stable, non-sensitive log categories."""
+    name = type(exc).__name__
+    if name == "APITimeoutError":
+        return "provider_timeout"
+    if isinstance(exc, TimeoutError):
+        return "deadline_exhausted"
+    if isinstance(exc, ValueError):
+        return "invalid_response"
+    if name in {"APIConnectionError", "InternalServerError", "ServiceUnavailableError"}:
+        return "provider_unavailable"
+    if name == "RateLimitError":
+        return "provider_throttled"
+    return "unexpected"
+
+
 def _discover_visual_copy(
     api_client: object,
     model: str,
@@ -640,7 +656,7 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
         except Exception as exc:
             print(
                 f"[squid] visual copy discovery attempt {attempt + 1} failed safely: "
-                f"{type(exc).__name__}"
+                f"reason={_visual_copy_discovery_failure_reason(exc)}"
             )
     return (
         _clear_visual_localization(result, failure_status="cleanup_failed"),

@@ -16,6 +16,7 @@ import {
   grokQaBannerImage,
   grokQaConnectorConfig,
   grokQaListItem,
+  grokQaPassConflictsWithStoredBrandQa,
   grokQaRelayConfig,
   grokQaSourceUrls,
   hasGrokQaConnectorAccess,
@@ -264,6 +265,9 @@ function mcpServer(): McpServer {
         if (detail.status !== "needs_review") return toolError("qa_status_conflict");
         if (detail.current_version.generation_meta.mock_mode === true) {
           return toolError("qa_mock_content_disabled");
+        }
+        if (grokQaPassConflictsWithStoredBrandQa(detail, verdict)) {
+          return toolError("qa_brand_qa_conflict");
         }
         const storedSources = grokQaSourceUrls(detail);
         if (!isStoredSourceSubset(verdict.fact_check.source_urls, storedSources)) {

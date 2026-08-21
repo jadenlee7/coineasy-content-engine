@@ -3800,6 +3800,62 @@ def test_squid_malformed_visual_copy_fails_closed_after_bounded_discovery(monkey
     assert result["visual_localization_status"] == "cleanup_failed"
 
 
+def test_squid_visual_discovery_timeout_then_invalid_response_is_categorized_and_fails_closed(
+    monkeypatch,
+    capsys,
+):
+    calls = 0
+
+    class APITimeoutError(RuntimeError):
+        pass
+
+    def fake_create_message(client, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.21",
+                "headline": "Celo와 Squid의 연결을 전합니다",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))],
+            )
+        if calls == 2:
+            raise APITimeoutError("sensitive provider detail must not be logged")
+        raise ValueError("sensitive parser detail must not be logged")
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid has moved $800m in and out of Celo since launch.",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    logs = capsys.readouterr().out
+    assert calls == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+    assert "attempt 1 failed safely: reason=provider_timeout" in logs
+    assert "attempt 2 failed safely: reason=invalid_response" in logs
+    assert "sensitive provider detail" not in logs
+    assert "sensitive parser detail" not in logs
+
+
 def test_source_logo_is_never_reported_without_an_attached_image(monkeypatch):
     captured = {}
 

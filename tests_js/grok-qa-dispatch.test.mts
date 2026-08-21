@@ -603,6 +603,69 @@ test("stage accepts only verdict source URLs from the stored review package", as
   assert.equal(stageCalls, 1);
 });
 
+test("provider PASS cannot downgrade a stored critical brand review or reach stage and relay", async () => {
+  const criticalDetail = rawDetail();
+  const criticalBrandQa = {
+    schema_version: "1.0",
+    policy_version: "brand-qa@1",
+    client_id: "squid",
+    content_kind: "daily_news",
+    status: "review",
+    score: 50,
+    human_review_required: true,
+    checks: [{
+      id: "visual_integrity",
+      status: "review",
+      severity: "critical",
+      label: "Squid 원본 구도·자막",
+      detail: "원문 자막 픽셀을 깔끔하게 제거하지 못했습니다.",
+    }],
+  };
+  criticalDetail.generation_meta.brand_qa = criticalBrandQa;
+  criticalDetail.current_version.generation_meta.brand_qa = criticalBrandQa;
+  let stageCalls = 0;
+  let receiptCalls = 0;
+  let relayCalls = 0;
+
+  await assert.rejects(
+    () => executeGrokQaDispatchAction(
+      catalogConfig,
+      stageAction("deliver"),
+      environment(),
+      async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/rest/v1/rpc/get_content_library_item")) {
+          return Response.json(criticalDetail);
+        }
+        if (
+          request.method === "POST"
+          && request.url.includes("/storage/v1/object/sign/content-studio/")
+        ) {
+          return Response.json({ signedURL: signedPath() });
+        }
+        if (request.url.endsWith("/rpc/stage_grok_qa_dispatch_verdict")) {
+          stageCalls += 1;
+          return Response.json({});
+        }
+        if (request.url.endsWith("/rpc/claim_grok_qa_verdict")) {
+          receiptCalls += 1;
+          return Response.json({});
+        }
+        if (request.url === "https://content-engine.example/internal/grok-qa-verdict") {
+          relayCalls += 1;
+          return Response.json({ sent: true });
+        }
+        throw new Error(`unexpected request ${request.url}`);
+      },
+    ),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "grok_qa_dispatch_brand_qa_conflict",
+  );
+  assert.equal(stageCalls, 0);
+  assert.equal(receiptCalls, 0);
+  assert.equal(relayCalls, 0);
+});
+
 test("provider attempt fence is a one-shot RPC authorization bound to the exact input hash", async () => {
   let calls = 0;
   const action = parseGrokQaDispatchAction({
