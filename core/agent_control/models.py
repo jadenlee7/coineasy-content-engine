@@ -168,7 +168,10 @@ def _safe_reference_uri(value: str) -> str:
 def _utc_seconds(value: datetime, code: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None or value.microsecond != 0:
         raise ValueError(code)
-    return value.astimezone(timezone.utc)
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(code) from exc
 
 
 def _utc_z(value: datetime) -> str:

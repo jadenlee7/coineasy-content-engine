@@ -120,6 +120,42 @@ reviewer will submit a verification receipt, and only the human operator will
 approve. The control plane—not a reviewer—will close work after all receipts
 match. Terminal work will not restart; a revision will create a new work order.
 
+## Phase 1A local control-room projection
+
+Before adding the durable ledger, Phase 1A connects the existing roles through
+one **local dry-run projection**. Given one to 32 locally verified
+`agent-work-order@1` proposals and an explicit observation time, it produces:
+
+- one proposed owner packet for Devin, Claude Code, Codex, or Grok Build;
+- one independent read-only reviewer packet;
+- the five-section Korean Grok operator dashboard;
+- one Buzz receipt preview whose delivery status is always `not_sent`.
+
+The projection blocks expired and not-yet-active proposals, duplicate
+idempotency keys, case-insensitive repository/branch collisions, and
+case-insensitive overlapping paths. It keeps the Phase-zero work-order schema
+and scope digest unchanged.
+
+Phase 1A lives only in `core/agent_control/` and the stdout-only
+`scripts/run_agent_control_room.py` CLI. It has no runtime import, scheduler,
+network adapter, environment setting, database write, provider call, Buzz
+delivery, or publication path. It does not observe or claim the current state
+of Production. The existing independent Grok QA MCP remains unchanged.
+
+```text
+PYTHONPATH=. python -m scripts.run_agent_control_room \
+  --input examples/agent-work-order-devin-preview.json \
+  --input examples/agent-work-order-claude-preview.json \
+  --input examples/agent-work-order-grok-build-preview.json \
+  --repo-root . \
+  --observed-at 2026-08-21T12:00:00Z \
+  --dashboard
+```
+
+This proves that the participants can read one contract and that the operator
+can understand the combined state. It is not the durable Phase 1 ledger and
+does not satisfy the gate for unattended execution.
+
 ## Future durable model
 
 After the local contract passes three manual tasks, add separate FORCE-RLS
@@ -190,8 +226,9 @@ after the work or authorization expiry.
 ## Rollout
 
 1. Land the planning-only work-order model, renderer, validation CLI, and tests.
-2. Review three proposed packets for ambiguity, path collision, secret leakage,
-   and test feasibility. Do not execute them.
+2. Render three proposed packets through the local Phase 1A control room and
+   review ambiguity, path collision, secret leakage, and test feasibility. Do
+   not execute them.
 3. Add the durable ledger, authorization/result/verification/completion
    receipts, events, leases, and read-only operations dashboard.
 4. Add the separate Ops MCP and Grok operator inbox.

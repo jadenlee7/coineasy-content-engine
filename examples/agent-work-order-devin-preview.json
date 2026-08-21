@@ -17,7 +17,7 @@
   "objective": "Plan a deterministic preview that summarizes sanitized review counts, blockers, and the single recommended next action without creating or executing work.",
   "client_id": "origintrail",
   "repository": "jadenlee7/coineasy-content-engine",
-  "base_sha": "c2419f75f3d0fc03ea1fbfeeb2acc13e65fea523",
+  "base_sha": "cfdfae528e1139b9e9e3819f319a72ea2be38a78",
   "branch_name": "devin/grok-daily-summary-preview",
   "allowed_paths": [
     "core/agent_control/summary.py",
@@ -27,7 +27,7 @@
   "evidence": [
     {
       "uri": "docs/ADR-018-ai-company-control-plane.md",
-      "sha256": "4f7798a61b8187006461cc7c49d3ae9517d2b9cce5351cd2cd9d3986d7a55b80"
+      "sha256": "c680e274894bd0b6b57e817ba34df3e511e871714e35fae6d75b404a24ab7c2b"
     },
     {
       "uri": "docs/GROK_AGENT_REVIEW_RUNBOOK.md",
