@@ -52,6 +52,9 @@ from core.squid_visual_style import (
     SQUID_VISUAL_POLICY_VERSION,
     classify_squid_visual_style,
 )
+from core.squid_localization_diagnostics import (
+    SQUID_LOCALIZATION_REASON_CODES,
+)
 
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -761,7 +764,13 @@ class OfficialXDailyRunner:
                 if exc.retryable and job.attempts < job.max_attempts
                 else None
             )
-            await self._mark_failed(job, worker_id, exc.code, retry_at, summary)
+            await self._mark_failed(
+                job,
+                worker_id,
+                exc.reason_code or exc.code,
+                retry_at,
+                summary,
+            )
             return
         except ValueError:
             await self._mark_failed(
@@ -1058,7 +1067,13 @@ class OfficialXDailyRunner:
         self._error(
             summary,
             job.client_id,
-            "generation_retry_scheduled" if retry_at else "generation_failed",
+            code
+            if code in SQUID_LOCALIZATION_REASON_CODES
+            else (
+                "generation_retry_scheduled"
+                if retry_at
+                else "generation_failed"
+            ),
         )
 
     def _request_id(

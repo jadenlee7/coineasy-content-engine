@@ -12,6 +12,8 @@ import newsCardHandler, {
   SQUID_GENERATED_DESIGN_PROFILE_ID,
   SQUID_GENERATED_DESIGN_PROFILE_VERSION,
   SQUID_GENERATED_TEMPLATE_VERSION,
+  SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+  SQUID_LOCALIZATION_FAILURE_POLICY,
   SQUID_VISUAL_REFERENCE_PACK_VERSION,
   isOfficialClientXStatusUrl,
   isOfficialSquidXStatusUrl,
@@ -19,6 +21,7 @@ import newsCardHandler, {
   newsCardRequestHash,
   normalizedFigmaTemplate,
   squidRemixLocalizationError,
+  squidRemixLocalizationFailure,
   storedNewsTemplatePair,
   validNewsTemplatePair,
   validStandardNewsBrandMetadata,
@@ -40,6 +43,13 @@ const SOURCE_IMAGE_SHA256 = "a".repeat(64);
 const SOURCE = "Squid shipped a safer cross-chain routing update for integrators.";
 const SOURCE_TWEET_ID = "1234567890";
 const SOURCE_URL = `https://x.com/squidrouter/status/${SOURCE_TWEET_ID}`;
+const SQUID_LOCALIZATION_CONTRACT = JSON.parse(readFileSync(
+  new URL(
+    "../tests/fixtures/squid_localization_failure_contract.json",
+    import.meta.url,
+  ),
+  "utf8",
+));
 
 function validFactCheck(contentKind = "daily_news"): Record<string, unknown> {
   return {
@@ -183,6 +193,46 @@ test("automatic Squid remix localization accepts only consistent no-text and tra
       translation_regions: [],
     }, null), "squid_visual_localization_incomplete");
   }
+  assert.deepEqual(squidRemixLocalizationFailure({
+    visual_localization_status: "unsafe_placement",
+    visual_localization_reason_code: "squid_placement_audit_unsafe",
+    source_text_visible: false,
+    translation_regions: [],
+  }, null), {
+    error: "squid_visual_localization_incomplete",
+    diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+    reason_code: "squid_placement_audit_unsafe",
+    action_code: "prepare_approved_clean_plate",
+    retryable: false,
+  });
+  assert.deepEqual(squidRemixLocalizationFailure({
+    visual_localization_status: "cleanup_failed",
+    visual_localization_reason_code: "squid_translation_layout_rejected",
+    source_text_visible: false,
+    translation_regions: [],
+  }, null), {
+    error: "squid_visual_localization_incomplete",
+    diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+    reason_code: "squid_localization_failure_unspecified",
+    action_code: "inspect_localization_contract",
+    retryable: true,
+  });
+  assert.deepEqual(squidRemixLocalizationFailure({
+    visual_localization_status: "unsafe_placement",
+    visual_localization_reason_code: "provider-secret-free-text",
+    source_text_visible: false,
+    translation_regions: [],
+  }, null), {
+    error: "squid_visual_localization_incomplete",
+    diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+    reason_code: "squid_localization_failure_unspecified",
+    action_code: "inspect_localization_contract",
+    retryable: true,
+  });
+  assert.equal(squidRemixLocalizationError({
+    ...translatedSpec,
+    visual_localization_reason_code: "squid_placement_audit_unsafe",
+  }, "/app/output/squid/news_456/source_visual_cleaned.jpg"), "invalid_generation_response");
   assert.equal(squidRemixLocalizationError({
     visual_localization_status: "no_text",
     source_text_visible: true,
@@ -238,6 +288,23 @@ test("automatic Squid remix localization accepts only consistent no-text and tra
       translation_regions: translationRegions,
     }, "/app/output/squid/news_456/source_visual_cleaned.jpg"), "invalid_generation_response", label);
   }
+});
+
+test("Squid localization failure fixture matches the Netlify policy", () => {
+  assert.equal(
+    SQUID_LOCALIZATION_CONTRACT.diagnostic_version,
+    SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+  );
+  const policy = Object.fromEntries(
+    Object.entries(SQUID_LOCALIZATION_FAILURE_POLICY).map(
+      ([reasonCode, value]) => [reasonCode, {
+        action_code: value.actionCode,
+        retryable: value.retryable,
+        allowed_statuses: [...value.allowedStatuses],
+      }],
+    ),
+  );
+  assert.deepEqual(policy, SQUID_LOCALIZATION_CONTRACT.reasons);
 });
 
 function officialSquidSyndicationPayload(
@@ -952,7 +1019,10 @@ test("automatic Squid remix rejects exhausted localization before PNG fetch or c
   const submittedImage = "https://pbs.twimg.com/media/official-source.jpg?format=jpg&name=small";
   const pinnedImage = "https://pbs.twimg.com/media/official-source.jpg?format=jpg&name=orig";
 
-  for (const status of ["cleanup_failed", "unsafe_placement"]) {
+  for (const [status, reasonCode, actionCode, retryable] of [
+    ["cleanup_failed", "squid_source_cleanup_rejected", "prepare_approved_clean_plate", false],
+    ["unsafe_placement", "squid_placement_audit_unsafe", "prepare_approved_clean_plate", false],
+  ] as const) {
     let generatedPngFetches = 0;
     let storageUploads = 0;
     let catalogWrites = 0;
@@ -980,6 +1050,7 @@ test("automatic Squid remix rejects exhausted localization before PNG fetch or c
             source_text_visible: false,
             translation_regions: [],
             visual_localization_status: status,
+            visual_localization_reason_code: reasonCode,
             output_policy: "official_source_native_v1",
             source_image_width: 1800,
             source_image_height: 693,
@@ -1022,6 +1093,10 @@ test("automatic Squid remix rejects exhausted localization before PNG fetch or c
       assert.equal(response.status, 502);
       assert.deepEqual(await response.json(), {
         error: "squid_visual_localization_incomplete",
+        diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+        reason_code: reasonCode,
+        action_code: actionCode,
+        retryable,
       });
       assert.equal(generatedPngFetches, 0);
       assert.equal(storageUploads, 0);
@@ -1059,6 +1134,7 @@ test("manual unpinned Squid remix rejects failed localization before PNG fetch o
           source_text_visible: false,
           translation_regions: [],
           visual_localization_status: "cleanup_failed",
+          visual_localization_reason_code: "provider-secret-free-text",
           output_policy: "official_source_native_v1",
           source_image_width: 1600,
           source_image_height: 900,
@@ -1098,6 +1174,10 @@ test("manual unpinned Squid remix rejects failed localization before PNG fetch o
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), {
       error: "squid_visual_localization_incomplete",
+      diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+      reason_code: "squid_localization_failure_unspecified",
+      action_code: "inspect_localization_contract",
+      retryable: true,
     });
     assert.equal(generatedPngFetches, 0);
     assert.equal(storageUploads, 0);

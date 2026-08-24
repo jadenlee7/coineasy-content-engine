@@ -923,6 +923,9 @@ async def test_remix_rejects_dimension_changing_cleanup_and_preserves_original(
     assert captured["slots"]["source_text_visible"] is False
     assert captured["slots"]["translation_regions"] == []
     assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_source_cleanup_rejected"
+    )
     assert result.source_visual_path is None
     assert not (tmp_path / "source_visual_cleaned.jpg").exists()
 
@@ -1027,6 +1030,9 @@ async def test_remix_browser_layout_rejection_rerenders_untouched_original(
     assert cached and cached[0][0] == "cache-key"
     assert discarded == ["cache-key"]
     assert result.spec["visual_localization_status"] == "unsafe_placement"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_translation_layout_rejected"
+    )
     assert result.spec["source_text_visible"] is False
     assert result.spec["translation_regions"] == []
     assert result.source_visual_path is None
@@ -1035,6 +1041,9 @@ async def test_remix_browser_layout_rejection_rerenders_untouched_original(
     manifest = json.loads(Path(result.manifest_path).read_text())
     assert manifest["source_visual_path"] is None
     assert manifest["spec"]["visual_localization_status"] == "unsafe_placement"
+    assert manifest["spec"]["visual_localization_reason_code"] == (
+        "squid_translation_layout_rejected"
+    )
     assert manifest["spec"]["source_text_visible"] is False
     assert manifest["spec"]["translation_regions"] == []
 
@@ -1118,6 +1127,9 @@ async def test_remix_cleanup_failure_atomically_preserves_the_original(monkeypat
     assert captured["slots"]["source_text_visible"] is False
     assert captured["slots"]["translation_regions"] == []
     assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_source_cleanup_rejected"
+    )
     assert result.source_visual_path is None
     assert not (tmp_path / "source_visual_cleaned.jpg").exists()
     assert discarded == ["cache-key"]
@@ -1192,6 +1204,9 @@ async def test_remix_preserves_the_full_source_when_inpainting_is_unsafe(
     assert captured["slots"]["source_text_visible"] is False
     assert captured["slots"]["translation_regions"] == []
     assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_source_cleanup_rejected"
+    )
     assert result.source_visual_path is None
     assert not (tmp_path / "source_visual_cleaned.jpg").exists()
     assert result.spec["source_image_width"] == 480
@@ -1293,6 +1308,9 @@ async def test_remix_cleaned_file_publish_failure_falls_back_atomically(monkeypa
     assert captured["slots"]["source_text_visible"] is False
     assert captured["slots"]["translation_regions"] == []
     assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_source_cleanup_unavailable"
+    )
     assert result.source_visual_path is None
     assert not (tmp_path / "source_visual_cleaned.jpg").exists()
     assert list(tmp_path.glob(".source_visual_cleaned.*.tmp")) == []

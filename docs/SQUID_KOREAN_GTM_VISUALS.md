@@ -40,9 +40,22 @@ only launch or campaign posters. Once verified official media exists, neither
 its visual family nor its subject matter may route the post to generated GTM
 artwork: the output keeps the official composition and changes only audited
 in-image copy to Korean. If copy discovery, placement, cleanup, or browser fit
-is unsafe, the renderer keeps the untouched original, records the failure for
-critical brand review, and the durable item remains `needs_review`; it never
-silently redesigns or publishes the post.
+is unsafe, the renderer keeps the untouched original and Studio rejects the
+result before PNG storage or content-catalog persistence. Scheduled automation
+records only an allowlisted `visual_localization_reason_code` in its private
+job ledger; it never stores the English source image as a successful
+`needs_review` content item, silently redesigns it, or publishes it.
+
+The `squid-localization-failure@1` diagnostic contract separates bounded
+transient retries from human work. Provider or exception text is never exposed.
+An explicit placement `safe=false`, rejected source cleanup, broken approved
+clean plate, or browser layout rejection stops automatic retry and requires a
+designer-reviewed, exact-source-bound clean plate before a later generation
+attempt. That durable designer handoff and resume flow is not implemented by
+this diagnostic contract.
+Discovery/audit availability and other allowlisted transient failures may use
+only the existing bounded job retry count. Missing or unknown diagnostics keep
+the legacy bounded retry behavior during staggered deployments.
 
 The Studio defaults Squid news creation to `원문 우선`. Scheduled automation
 pins the already-selected official X media URL through the automation-only

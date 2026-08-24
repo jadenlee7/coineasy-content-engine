@@ -1,0 +1,65 @@
+{
+  "diagnostic_version": "squid-localization-failure@1",
+  "reasons": {
+    "squid_copy_discovery_unavailable": {
+      "action_code": "retry_generation",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_copy_discovery_invalid": {
+      "action_code": "inspect_localization_contract",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_placement_audit_unavailable": {
+      "action_code": "retry_generation",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed", "unsafe_placement"]
+    },
+    "squid_placement_audit_unsafe": {
+      "action_code": "prepare_approved_clean_plate",
+      "retryable": false,
+      "allowed_statuses": ["cleanup_failed", "unsafe_placement"]
+    },
+    "squid_placement_validation_rejected": {
+      "action_code": "inspect_localization_contract",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed", "unsafe_placement"]
+    },
+    "squid_source_text_probe_failed": {
+      "action_code": "inspect_localization_contract",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_localization_spec_invalid": {
+      "action_code": "inspect_localization_contract",
+      "retryable": true,
+      "allowed_statuses": ["unsafe_placement"]
+    },
+    "squid_approved_clean_plate_unavailable": {
+      "action_code": "repair_approved_clean_plate",
+      "retryable": false,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_source_cleanup_rejected": {
+      "action_code": "prepare_approved_clean_plate",
+      "retryable": false,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_source_cleanup_unavailable": {
+      "action_code": "retry_generation",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed"]
+    },
+    "squid_translation_layout_rejected": {
+      "action_code": "review_translation_layout",
+      "retryable": false,
+      "allowed_statuses": ["unsafe_placement"]
+    },
+    "squid_localization_failure_unspecified": {
+      "action_code": "inspect_localization_contract",
+      "retryable": true,
+      "allowed_statuses": ["cleanup_failed", "unsafe_placement"]
+    }
+  }
+}

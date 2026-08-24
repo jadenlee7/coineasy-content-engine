@@ -62,6 +62,9 @@ from core.sources.source_text_cleanup import (
     clean_source_text,
 )
 from core.squid_visual_style import classify_squid_visual_style
+from core.squid_localization_diagnostics import (
+    mark_squid_visual_localization_failure,
+)
 from core.sources.visual_localization_cache import (
     discard_visual_localization,
     get_visual_localization,
@@ -741,9 +744,11 @@ async def generate_news_card(
                 ),
             })
         elif approved_clean_plate_failed:
-            spec["source_text_visible"] = False
-            spec["translation_regions"] = []
-            spec["visual_localization_status"] = "cleanup_failed"
+            mark_squid_visual_localization_failure(
+                spec,
+                status="cleanup_failed",
+                reason_code="squid_approved_clean_plate_unavailable",
+            )
     else:
         # Copy generation is model-owned; branding is not. Bind every other
         # client to its reviewed token, asset, and visual profile after the
@@ -812,9 +817,11 @@ async def generate_news_card(
                 f"[{client_id}] ⚠ Approved clean-plate publish failed safely: "
                 f"{type(exc).__name__}"
             )
-            spec["source_text_visible"] = False
-            spec["translation_regions"] = []
-            spec["visual_localization_status"] = "cleanup_failed"
+            mark_squid_visual_localization_failure(
+                spec,
+                status="cleanup_failed",
+                reason_code="squid_source_cleanup_unavailable",
+            )
         else:
             render_source_image = approved_clean_plate.image
             source_visual_path = candidate_path
@@ -869,9 +876,11 @@ async def generate_news_card(
             if visual_cache_hit and visual_cache_key is not None:
                 discard_visual_localization(visual_cache_key)
             print(f"[{client_id}] ⚠ Source lettering cleanup failed safely: {exc}")
-            spec["source_text_visible"] = False
-            spec["translation_regions"] = []
-            spec["visual_localization_status"] = "cleanup_failed"
+            mark_squid_visual_localization_failure(
+                spec,
+                status="cleanup_failed",
+                reason_code="squid_source_cleanup_rejected",
+            )
         except Exception as exc:
             # Executor/runtime failures are not evidence that a validated cache
             # entry is bad. Preserve it for the next request and fail this card
@@ -881,9 +890,11 @@ async def generate_news_card(
                 f"[{client_id}] ⚠ Source lettering cleanup failed safely: "
                 f"{type(exc).__name__}"
             )
-            spec["source_text_visible"] = False
-            spec["translation_regions"] = []
-            spec["visual_localization_status"] = "cleanup_failed"
+            mark_squid_visual_localization_failure(
+                spec,
+                status="cleanup_failed",
+                reason_code="squid_source_cleanup_unavailable",
+            )
         else:
             try:
                 assert cleanup is not None
@@ -905,9 +916,11 @@ async def generate_news_card(
                     f"[{client_id}] ⚠ Source lettering asset publish failed safely: "
                     f"{type(exc).__name__}"
                 )
-                spec["source_text_visible"] = False
-                spec["translation_regions"] = []
-                spec["visual_localization_status"] = "cleanup_failed"
+                mark_squid_visual_localization_failure(
+                    spec,
+                    status="cleanup_failed",
+                    reason_code="squid_source_cleanup_unavailable",
+                )
             else:
                 # Commit renderer/result state only after the cleaned asset exists.
                 render_source_image = cleanup.image
@@ -970,9 +983,11 @@ async def generate_news_card(
         await _unlink_best_effort(source_visual_path)
         source_visual_path = None
         render_source_image = source_image
-        spec["source_text_visible"] = False
-        spec["translation_regions"] = []
-        spec["visual_localization_status"] = "unsafe_placement"
+        mark_squid_visual_localization_failure(
+            spec,
+            status="unsafe_placement",
+            reason_code="squid_translation_layout_rejected",
+        )
         spec["source_image_width"] = source_image.width
         spec["source_image_height"] = source_image.height
         if visual_cache_key is not None:

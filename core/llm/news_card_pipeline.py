@@ -35,6 +35,11 @@ from core.brand_voice import build_brand_voice_prompt
 from core.client_naming import enforce_client_display_name
 from core.client_config import ClientConfig, get_client_config
 from core.llm.anthropic_compat import create_message, first_text
+from core.squid_localization_diagnostics import (
+    SQUID_LOCALIZATION_FAILURE_UNSPECIFIED,
+    normalize_squid_localization_reason,
+    normalize_squid_localization_reason_for_status,
+)
 from core.sources.source_image import PreparedSourceImage
 from core.sources.source_text_cleanup import (
     SourceTextCleanupError,
@@ -677,6 +682,7 @@ preserved Latin row must form one complete, natural message.
     no_text_observation: Optional[tuple[tuple[str, str], ...]] = None
     calls_used = 0
     retry_stacked_layout = False
+    last_failure_reason: Optional[str] = None
     protected_identities = {
         _normalized_source_identity(term)
         for term in preserve_terms
@@ -856,12 +862,31 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
             )
             return result, calls_used
         except Exception as exc:
+            failure_category = _visual_copy_discovery_failure_reason(exc)
+            last_failure_reason = (
+                "squid_copy_discovery_unavailable"
+                if failure_category in {
+                    "provider_timeout",
+                    "deadline_exhausted",
+                    "provider_unavailable",
+                    "provider_throttled",
+                    "unexpected",
+                }
+                else "squid_copy_discovery_invalid"
+            )
             print(
                 f"[squid] visual copy discovery attempt {attempt + 1} failed safely: "
-                f"reason={_visual_copy_discovery_failure_reason(exc)}"
+                f"reason={failure_category}"
             )
     return (
-        _clear_visual_localization(result, failure_status="cleanup_failed"),
+        _clear_visual_localization(
+            result,
+            failure_status="cleanup_failed",
+            failure_reason=(
+                last_failure_reason
+                or SQUID_LOCALIZATION_FAILURE_UNSPECIFIED
+            ),
+        ),
         calls_used,
     )
 
@@ -883,6 +908,12 @@ _SOURCE_TEXT_CLEANUP_SUBSTRATE_KINDS = {"character", "limb", "product"}
 _SOURCE_TEXT_CLEANUP_SUBSTRATE_MIN_RATIO = 0.50
 _MAX_VISUAL_PLACEMENT_AUDIT_CALLS = 2
 _VISUAL_LOCALIZATION_FAILURE_KEY = "_visual_localization_failure"
+_VISUAL_LOCALIZATION_FAILURE_REASON_KEY = (
+    "_visual_localization_failure_reason"
+)
+_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY = (
+    "visual_localization_reason_code"
+)
 _VISUAL_AUDIT_PRIVATE_KEYS = (
     "_source_index",
     "_source_line_count",
@@ -904,6 +935,7 @@ def _clear_visual_localization(
     result: dict,
     *,
     failure_status: Optional[str] = None,
+    failure_reason: Optional[str] = None,
 ) -> dict:
     """Fail safe: preserve the official creative without any Korean overlay."""
     result["source_text_visible"] = False
@@ -912,6 +944,12 @@ def _clear_visual_localization(
         result[_VISUAL_LOCALIZATION_FAILURE_KEY] = failure_status
     else:
         result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+    if failure_reason is not None:
+        result[_VISUAL_LOCALIZATION_FAILURE_REASON_KEY] = (
+            normalize_squid_localization_reason(failure_reason)
+        )
+    else:
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_REASON_KEY, None)
     return result
 
 
@@ -2174,6 +2212,7 @@ or:
     retry_context = ""
     retained_retry_protections: Optional[list[dict]] = None
     terminal_failure_status: Optional[str] = None
+    terminal_failure_reason: Optional[str] = None
     effective_max_calls = max(
         1,
         min(_MAX_VISUAL_PLACEMENT_AUDIT_CALLS, int(max_calls)),
@@ -2239,6 +2278,7 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 f"visual subtitle placement audit attempt {attempt_number}",
             )
         except Exception as exc:
+            terminal_failure_reason = "squid_placement_audit_unavailable"
             print(
                 f"[squid] placement audit attempt {attempt_number} failed safely: "
                 f"{type(exc).__name__}"
@@ -2252,9 +2292,11 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
             return _clear_visual_localization(
                 result,
                 failure_status=terminal_failure_status,
+                failure_reason=terminal_failure_reason,
             )
 
         if audit.get("safe") is False:
+            terminal_failure_reason = "squid_placement_audit_unsafe"
             print(
                 f"[squid] placement audit attempt {attempt_number} "
                 "returned explicit safe=false; stopping"
@@ -2415,6 +2457,9 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 # anchor is never accepted on model metadata alone.
                 pass
             else:
+                terminal_failure_reason = (
+                    "squid_placement_validation_rejected"
+                )
                 retry_context = (
                     "the independent inspection returned safe=false"
                     if rejection == "unsafe"
@@ -2450,6 +2495,7 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 )
             except SourceTextCleanupError as exc:
                 terminal_failure_status = "cleanup_failed"
+                terminal_failure_reason = "squid_source_text_probe_failed"
                 retry_context = (
                     "deterministic raster probing could not isolate the complete "
                     "source lettering inside the proposed boxes"
@@ -2473,9 +2519,11 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
                 return _clear_visual_localization(
                     result,
                     failure_status="cleanup_failed",
+                    failure_reason="squid_source_text_probe_failed",
                 )
 
         result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_REASON_KEY, None)
         result["translation_regions"] = audited_regions
         result["source_text_visible"] = True
         return result
@@ -2483,6 +2531,10 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
     return _clear_visual_localization(
         result,
         failure_status=terminal_failure_status,
+        failure_reason=(
+            terminal_failure_reason
+            or SQUID_LOCALIZATION_FAILURE_UNSPECIFIED
+        ),
     )
 
 
@@ -2783,6 +2835,10 @@ def _normalize_visual_localization(
 
     if invalid_regions:
         normalized_regions = []
+        result.setdefault(
+            _VISUAL_LOCALIZATION_FAILURE_REASON_KEY,
+            "squid_localization_spec_invalid",
+        )
 
     result["translation_regions"] = normalized_regions
     result["source_text_visible"] = bool(normalized_regions)
@@ -2798,13 +2854,32 @@ def _stamp_visual_localization_status(
 ) -> dict:
     """Tell the console whether copy was absent or rejected by placement QA."""
     failure_status = result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+    failure_reason = result.pop(
+        _VISUAL_LOCALIZATION_FAILURE_REASON_KEY,
+        None,
+    )
+    # This field is server-owned. Never preserve a value sampled by either
+    # creative-writing or mock input.
+    result.pop(_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY, None)
     if client_id == "squid" and has_source_image:
         if result.get("source_text_visible") is True:
             result["visual_localization_status"] = "translated"
         elif failure_status == "cleanup_failed":
             result["visual_localization_status"] = "cleanup_failed"
+            result[_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY] = (
+                normalize_squid_localization_reason_for_status(
+                    failure_reason,
+                    "cleanup_failed",
+                )
+            )
         elif had_detected_copy:
             result["visual_localization_status"] = "unsafe_placement"
+            result[_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY] = (
+                normalize_squid_localization_reason_for_status(
+                    failure_reason,
+                    "unsafe_placement",
+                )
+            )
         else:
             result["visual_localization_status"] = "no_text"
     return result
@@ -2848,6 +2923,8 @@ def generate_news_card_spec(
     if mock_mode:
         result = dict(mock_response or _get_default_mock(client_id))
         result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+        result.pop(_VISUAL_LOCALIZATION_FAILURE_REASON_KEY, None)
+        result.pop(_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY, None)
         if approved_visual_localization is not None:
             result["source_text_visible"] = True
             result["translation_regions"] = copy.deepcopy(
@@ -2944,6 +3021,8 @@ def generate_news_card_spec(
 
     result = _parse_json_response(response, "news card generation")
     result.pop(_VISUAL_LOCALIZATION_FAILURE_KEY, None)
+    result.pop(_VISUAL_LOCALIZATION_FAILURE_REASON_KEY, None)
+    result.pop(_VISUAL_LOCALIZATION_PUBLIC_REASON_KEY, None)
     if approved_visual_localization is not None:
         # The orchestrator can supply this only after the source digest,
         # dimensions, clean-plate digest, and reviewed regions have all been

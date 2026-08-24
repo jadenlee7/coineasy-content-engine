@@ -465,5 +465,8 @@ async def test_registered_identity_digest_mismatch_preserves_original_without_cl
     assert rendered["slots"]["source_text_visible"] is False
     assert rendered["slots"]["translation_regions"] == []
     assert result.spec["visual_localization_status"] == "cleanup_failed"
+    assert result.spec["visual_localization_reason_code"] == (
+        "squid_approved_clean_plate_unavailable"
+    )
     assert result.source_visual_path is None
     assert not (tmp_path / "source_visual_cleaned.jpg").exists()

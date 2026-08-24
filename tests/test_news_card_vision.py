@@ -10,6 +10,7 @@ from core.llm.news_card_pipeline import (
     _carve_aggregate_bottom_visual_band,
     _discover_visual_copy,
     _normalize_visual_localization,
+    _stamp_visual_localization_status,
     _strict_discovery_percent_box,
     generate_news_card_spec,
 )
@@ -437,11 +438,21 @@ def test_squid_expired_audit_budget_never_calls_provider_or_probe(monkeypatch):
         raster_probe=True,
         deadline=107.5,
     )
+    result = _stamp_visual_localization_status(
+        result,
+        "squid",
+        True,
+        True,
+    )
 
     assert provider_calls == []
     assert probe_calls == []
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "unsafe_placement"
+    assert result["visual_localization_reason_code"] == (
+        "squid_placement_audit_unavailable"
+    )
     assert not any(key.startswith("_") for key in result)
 
 
@@ -1338,6 +1349,9 @@ def test_squid_live_flow_reports_unsafe_status_after_malformed_audit(monkeypatch
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "unsafe_placement"
+    assert result["visual_localization_reason_code"] == (
+        "squid_placement_validation_rejected"
+    )
 
 
 def test_squid_live_flow_reports_translated_status_after_source_geometry_audit(monkeypatch):
@@ -3876,10 +3890,14 @@ def test_squid_audit_rejects_edge_subset_of_discovery_anchor(monkeypatch):
     assert result["translation_regions"] == []
 
 
-def test_squid_explicit_unsafe_audit_is_terminal(monkeypatch):
+def test_squid_explicit_unsafe_audit_is_terminal(monkeypatch, capsys):
     calls = []
     audits = [
-        {"safe": False, "protected_regions": []},
+        {
+            "safe": False,
+            "protected_regions": [],
+            "reason_code": "provider-secret-free-text",
+        },
         {
             "safe": True,
             "verified_source_texts": [{"source_index": 0, "text": "chillin'"}],
@@ -3927,11 +3945,23 @@ def test_squid_explicit_unsafe_audit_is_terminal(monkeypatch):
         image,
         raster_probe=True,
     )
+    result = _stamp_visual_localization_status(
+        result,
+        "squid",
+        True,
+        True,
+    )
 
     assert len(calls) == 1
     assert probe_calls == []
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "unsafe_placement"
+    assert result["visual_localization_reason_code"] == (
+        "squid_placement_audit_unsafe"
+    )
+    assert "provider-secret-free-text" not in capsys.readouterr().out
+    assert "provider-secret-free-text" not in json.dumps(result)
 
 
 def test_squid_transient_audit_error_uses_the_final_bounded_attempt(monkeypatch):
@@ -4212,6 +4242,9 @@ def test_squid_raster_probe_failures_are_cleanup_failed_and_private_state_is_rem
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "cleanup_failed"
+    assert result["visual_localization_reason_code"] == (
+        "squid_source_text_probe_failed"
+    )
     assert "_visual_localization_failure" not in result
 
 
@@ -4817,6 +4850,9 @@ def test_squid_visual_discovery_timeout_then_invalid_response_is_categorized_and
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "cleanup_failed"
+    assert result["visual_localization_reason_code"] == (
+        "squid_copy_discovery_invalid"
+    )
     assert "attempt 1 failed safely: reason=provider_timeout" in logs
     assert "attempt 2 failed safely: reason=invalid_response" in logs
     assert "sensitive provider detail" not in logs
@@ -4884,6 +4920,7 @@ def test_squid_textless_visual_keeps_translation_layer_empty():
     assert result["translation_regions"] == []
     assert result["source_crop_bottom"] == 100.0
     assert result["visual_localization_status"] == "no_text"
+    assert "visual_localization_reason_code" not in result
 
 
 def test_squid_rejected_localization_reports_unsafe_placement():
@@ -4921,3 +4958,6 @@ def test_squid_rejected_localization_reports_unsafe_placement():
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "unsafe_placement"
+    assert result["visual_localization_reason_code"] == (
+        "squid_localization_spec_invalid"
+    )
