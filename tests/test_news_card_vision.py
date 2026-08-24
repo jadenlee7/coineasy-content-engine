@@ -165,8 +165,8 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "When found=false, regions must be empty" in discovery_prompt
     assert "output_config" not in calls[0]
     assert "output_config" not in calls[2]
-    assert 0 < calls[0]["timeout"] <= 22.0
-    assert 0 < calls[1]["timeout"] <= 8.0
+    assert 0 < calls[0]["timeout"] <= 12.0
+    assert 0 < calls[1]["timeout"] <= 4.0
     audit_content = calls[2]["messages"][0]["content"]
     assert calls[2]["system"].startswith("You are the final visual replacement QA")
     assert calls[2]["model"] == "claude-sonnet-4-5-20250929"
@@ -220,6 +220,161 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
         ],
     }]
     assert result["source_crop_bottom"] == 100.0
+
+
+def test_squid_cold_path_reserves_full_audit_after_discovery_retry(
+    monkeypatch,
+    capsys,
+):
+    clock = [0.0]
+    calls = []
+    client_options = []
+
+    class FakeAnthropic:
+        def with_options(self, **kwargs):
+            client_options.append(kwargs)
+            return self
+
+    class APITimeoutError(RuntimeError):
+        pass
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        call_index = len(calls)
+        if call_index == 1:
+            clock[0] += kwargs["timeout"]
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.24",
+                "headline": "Celo를 오간 Squid 거래 규모",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+            return SimpleNamespace(content=[SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+            )])
+        if call_index == 2:
+            clock[0] += kwargs["timeout"]
+            raise APITimeoutError("sensitive discovery timeout detail")
+        if call_index == 3:
+            clock[0] += kwargs["timeout"] + 1.5
+            payload = {
+                "found": True,
+                "regions": [{
+                    "source_text": "Moved in/out of CELO",
+                    "text": "CELO로 오간 규모",
+                    "coordinate_space": "percent_0_100",
+                    "x": 3,
+                    "y": 85,
+                    "width": 28,
+                    "height": 8,
+                    "align": "left",
+                    "font_role": "display",
+                    "font_size": 5,
+                    "text_color": "#FFFFFF",
+                }],
+            }
+            return SimpleNamespace(content=[SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+            )])
+
+        payload = {
+            "safe": True,
+            "verified_source_texts": [{
+                "source_index": 0,
+                "text": "Moved in/out of CELO",
+            }],
+            "protected_regions": [
+                {
+                    "kind": "source_text",
+                    "source_index": 0,
+                    "x": 3,
+                    "y": 85,
+                    "width": 28,
+                    "height": 8,
+                },
+                {"kind": "logo", "x": 88, "y": 4, "width": 9, "height": 12},
+            ],
+        }
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeAnthropic)
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, _regions: SimpleNamespace(masked_pixels=48),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid has moved $800m in and out of Celo since launch.",
+        source_url="https://x.com/squidrouter/status/2090466774080745873",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    assert client_options == [{"max_retries": 0}]
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 4.0, 4.0, 8.0])
+    assert calls[-1]["system"].startswith("You are the final visual replacement QA")
+    assert result["visual_localization_status"] == "translated"
+    assert result["translation_regions"][0]["text"] == "CELO로 오간 규모"
+    assert "sensitive discovery timeout detail" not in capsys.readouterr().out
+
+
+def test_squid_expired_audit_budget_never_calls_provider_or_probe(monkeypatch):
+    provider_calls = []
+    probe_calls = []
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda *args, **kwargs: provider_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *args, **kwargs: probe_calls.append(kwargs),
+    )
+    raw = {
+        "source_text_visible": True,
+        "translation_regions": [{
+            "source_text": "Moved in/out of CELO",
+            "text": "CELO로 오간 규모",
+            "x": 3,
+            "y": 85,
+            "width": 28,
+            "height": 8,
+        }],
+    }
+
+    result = _audit_visual_subtitle_placement(
+        object(),
+        "test-model",
+        raw,
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        raster_probe=True,
+        deadline=107.5,
+    )
+
+    assert provider_calls == []
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert not any(key.startswith("_") for key in result)
 
 
 def test_squid_sampled_untranslated_visual_copy_is_replaced_by_stable_discovery(monkeypatch):

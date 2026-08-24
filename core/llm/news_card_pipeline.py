@@ -136,13 +136,41 @@ VISUAL_PLACEMENT_AUDIT_MODEL = os.environ.get(
     "claude-sonnet-4-5-20250929",
 )
 # Railway may spend up to 12s fetching the source image before this function,
-# then still needs deterministic cleanup and a ~5s Playwright render. Keep the
-# LLM stage at 30s so Netlify's 55s Railway timeout retains a real margin.
+# then still needs deterministic cleanup and a bounded Playwright render. Keep
+# the LLM stage at 30s and reserve its cold-path stages explicitly: the final
+# placement audit must never inherit only the scraps left by copy generation or
+# discovery. The two-second margin covers local parsing and scheduler overhead.
 _SQUID_VISUAL_LLM_BUDGET_SECONDS = 30.0
-_SQUID_MAIN_LLM_MAX_SECONDS = 22.0
-_SQUID_VISUAL_CALL_MAX_SECONDS = 8.0
-_SQUID_VISUAL_CALL_RESERVE_SECONDS = 6.0
+_SQUID_MAIN_LLM_MAX_SECONDS = 12.0
+_SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS = 4.0
+_SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS = 8.0
+_SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS = 2.0
+_MAX_SQUID_VISUAL_DISCOVERY_CALLS = 2
 _MAX_SQUID_STABLE_VISUAL_CALLS = 3
+
+
+def _squid_discovery_reserve_seconds(attempt_index: int) -> float:
+    """Protect later discovery attempts plus one full placement-audit slot."""
+    remaining_discovery_calls = max(
+        0,
+        _MAX_SQUID_VISUAL_DISCOVERY_CALLS - attempt_index - 1,
+    )
+    return (
+        remaining_discovery_calls * _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS
+        + _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
+        + _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS
+    )
+
+
+def _full_squid_visual_audit_timeout(deadline: Optional[float]) -> Optional[float]:
+    """Start placement QA only when its complete provider slot is available."""
+    timeout = _remaining_llm_timeout(
+        deadline,
+        _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS,
+    )
+    if timeout is not None and timeout < _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS:
+        raise TimeoutError("Full Squid placement-audit time slot is unavailable")
+    return timeout
 
 
 def _minimum_squid_font_percent(
@@ -644,12 +672,12 @@ preserved Latin row must form one complete, natural message.
         for term in preserve_terms
         if _normalized_source_identity(term)
     }
-    for attempt in range(2):
+    for attempt in range(_MAX_SQUID_VISUAL_DISCOVERY_CALLS):
         try:
             timeout = _remaining_llm_timeout(
                 deadline,
-                _SQUID_VISUAL_CALL_MAX_SECONDS,
-                reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS,
+                _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS,
+                reserve=_squid_discovery_reserve_seconds(attempt),
             )
             calls_used += 1
             attempt_prompt = prompt
@@ -2168,10 +2196,7 @@ Return a complete fresh audit. Do not copy the previous coordinates and do not a
             f"{attempt_number}/{effective_max_calls} model={model}"
         )
         try:
-            timeout = _remaining_llm_timeout(
-                deadline,
-                _SQUID_VISUAL_CALL_MAX_SECONDS,
-            )
+            timeout = _full_squid_visual_audit_timeout(deadline)
             audit_response = create_message(
                 api_client,
                 model=model,
@@ -2892,7 +2917,12 @@ def generate_news_card_spec(
         timeout=_remaining_llm_timeout(
             visual_deadline,
             _SQUID_MAIN_LLM_MAX_SECONDS,
-            reserve=_SQUID_VISUAL_CALL_RESERVE_SECONDS * 2,
+            reserve=(
+                _MAX_SQUID_VISUAL_DISCOVERY_CALLS
+                * _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS
+                + _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
+                + _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS
+            ),
         ),
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": message_content}],
