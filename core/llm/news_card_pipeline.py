@@ -83,6 +83,10 @@ VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG = {
                             "y": {"type": "number"},
                             "width": {"type": "number"},
                             "height": {"type": "number"},
+                            "coordinate_space": {
+                                "type": "string",
+                                "enum": ["percent_0_100", "normalized_0_1"],
+                            },
                             "align": {
                                 "type": "string",
                                 "enum": ["left", "center", "right"],
@@ -101,6 +105,7 @@ VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG = {
                             "y",
                             "width",
                             "height",
+                            "coordinate_space",
                             "align",
                             "font_role",
                             "font_size",
@@ -616,7 +621,9 @@ preserved Latin row must form one complete, natural message.
 - Ignore logos, wordmarks, handles, URLs, watermarks, decorative shapes, and tiny product/UI labels.
 - Transcribe source_text exactly and translate its meaning into concise natural Korean containing Hangul.
 - Preserve numeric-only metrics bearing an explicit currency symbol or percent, per-mille, or per-ten-thousand marker exactly as visible and omit them from translation regions. Bare counts and numbers are not exempt. Return only nearby natural-language copy that needs Korean localization; a number embedded in natural-language copy remains part of that copy.
-- Use image-relative percentage coordinates around the complete phrase, including every visible row and outline/shadow.
+- Use image-relative coordinates around the complete phrase, including every visible row and outline/shadow. x and y are the box's top-left corner, never its center. width and height extend right and down from that corner.
+- Set coordinate_space to percent_0_100 when x/y/width/height use 0-100 percentages, or normalized_0_1 when they use 0-1 fractions. Never mix coordinate spaces within one region. coordinate_space applies only to x/y/width/height; font_size remains a percentage of image width.
+- For percent_0_100, require x >= 0, y >= 0, x + width <= 100, and y + height <= 100. For normalized_0_1, require x >= 0, y >= 0, x + width <= 1, and y + height <= 1. Never return pixel coordinates or a box extending beyond the image.
 - Never merge a slogan spanning more than two visible rows into one region. Split it into tight reading-order blocks of at most two adjacent rows each.
 - A prominent standalone protected platform or product name may remain untouched when it carries the visual rhythm. Do not return that untouched row as a translation region. In a stack shaped like "SUBJECT IS / ON / PLATFORM", localize the compact subject and connector blocks while preserving the protected PLATFORM row when the combined result remains natural Korean.
 - Exact Squid Telegram poster rule: when the visible rows are "SQUID IS / ON / TELEGRAM", return only `SQUID IS` -> `SQUID가` and `ON` -> `있는 곳`; leave the giant `TELEGRAM` row untouched and do not return it as a region.
@@ -738,7 +745,7 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                         _normalized_source_identity(source_text),
                     ))
                     continue
-                box = _strict_percent_box(
+                box = _strict_discovery_percent_box(
                     raw_region,
                     minimum_width=6.0,
                     minimum_height=3.0,
@@ -893,6 +900,54 @@ def _strict_percent_box(
     ):
         return None
     return numbers
+
+
+def _strict_discovery_percent_box(
+    value: object,
+    *,
+    minimum_width: float,
+    minimum_height: float,
+) -> Optional[dict[str, float]]:
+    """Parse discovery geometry only when its coordinate intent is explicit.
+
+    Legacy discovery responses without a coordinate-space marker remain valid
+    only when they already satisfy the strict 0-100 percentage contract. New
+    structured responses may explicitly declare 0-1 fractions, which are then
+    scaled deterministically. Pixel-like, mixed-unit, mislabeled, and otherwise
+    ambiguous geometry remains rejected by the same fail-closed path.
+    """
+    if not isinstance(value, dict):
+        return None
+    coordinate_space = value.get("coordinate_space")
+    if coordinate_space in (None, "percent_0_100"):
+        return _strict_percent_box(
+            value,
+            minimum_width=minimum_width,
+            minimum_height=minimum_height,
+        )
+    if coordinate_space != "normalized_0_1":
+        return None
+
+    normalized: dict[str, float] = {}
+    for key in ("x", "y", "width", "height"):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        parsed = float(raw)
+        if not math.isfinite(parsed) or parsed < 0 or parsed > 1:
+            return None
+        normalized[key] = parsed
+    if (
+        normalized["x"] + normalized["width"] > 1
+        or normalized["y"] + normalized["height"] > 1
+    ):
+        return None
+
+    return _strict_percent_box(
+        {key: number * 100 for key, number in normalized.items()},
+        minimum_width=minimum_width,
+        minimum_height=minimum_height,
+    )
 
 
 def _audit_log_payload(audit: dict) -> dict:
