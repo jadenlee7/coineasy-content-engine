@@ -142,23 +142,33 @@ VISUAL_PLACEMENT_AUDIT_MODEL = os.environ.get(
 # discovery. The two-second margin covers local parsing and scheduler overhead.
 _SQUID_VISUAL_LLM_BUDGET_SECONDS = 30.0
 _SQUID_MAIN_LLM_MAX_SECONDS = 12.0
-_SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS = 4.0
+_SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS = 8.0
 _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS = 8.0
 _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS = 2.0
 _MAX_SQUID_VISUAL_DISCOVERY_CALLS = 2
 _MAX_SQUID_STABLE_VISUAL_CALLS = 3
 
 
-def _squid_discovery_reserve_seconds(attempt_index: int) -> float:
-    """Protect later discovery attempts plus one full placement-audit slot."""
-    remaining_discovery_calls = max(
-        0,
-        _MAX_SQUID_VISUAL_DISCOVERY_CALLS - attempt_index - 1,
+def _squid_discovery_timeout(
+    deadline: Optional[float],
+    discovery_deadline: float,
+) -> float:
+    """Spend one shared phase budget while preserving the full audit slot."""
+    phase_timeout = _remaining_llm_timeout(
+        discovery_deadline,
+        _SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS,
     )
-    return (
-        remaining_discovery_calls * _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS
-        + _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
-        + _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS
+    overall_timeout = _remaining_llm_timeout(
+        deadline,
+        _SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS,
+        reserve=(
+            _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
+            + _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS
+        ),
+    )
+    return min(
+        phase_timeout,
+        overall_timeout if overall_timeout is not None else phase_timeout,
     )
 
 
@@ -672,12 +682,17 @@ preserved Latin row must form one complete, natural message.
         for term in preserve_terms
         if _normalized_source_identity(term)
     }
+    # The first provider call receives the whole viable discovery window. A
+    # second call is opportunistic only when the first one failed early; it can
+    # never multiply the phase beyond eight seconds or borrow from placement QA.
+    discovery_deadline = (
+        time.monotonic() + _SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS
+    )
     for attempt in range(_MAX_SQUID_VISUAL_DISCOVERY_CALLS):
         try:
-            timeout = _remaining_llm_timeout(
+            timeout = _squid_discovery_timeout(
                 deadline,
-                _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS,
-                reserve=_squid_discovery_reserve_seconds(attempt),
+                discovery_deadline,
             )
             calls_used += 1
             attempt_prompt = prompt
@@ -2918,8 +2933,7 @@ def generate_news_card_spec(
             visual_deadline,
             _SQUID_MAIN_LLM_MAX_SECONDS,
             reserve=(
-                _MAX_SQUID_VISUAL_DISCOVERY_CALLS
-                * _SQUID_VISUAL_DISCOVERY_CALL_MAX_SECONDS
+                _SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS
                 + _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
                 + _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS
             ),

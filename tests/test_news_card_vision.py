@@ -166,7 +166,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "output_config" not in calls[0]
     assert "output_config" not in calls[2]
     assert 0 < calls[0]["timeout"] <= 12.0
-    assert 0 < calls[1]["timeout"] <= 4.0
+    assert 0 < calls[1]["timeout"] <= 8.0
     audit_content = calls[2]["messages"][0]["content"]
     assert calls[2]["system"].startswith("You are the final visual replacement QA")
     assert calls[2]["model"] == "claude-sonnet-4-5-20250929"
@@ -258,10 +258,12 @@ def test_squid_cold_path_reserves_full_audit_after_discovery_retry(
                 text=json.dumps(payload, ensure_ascii=False),
             )])
         if call_index == 2:
-            clock[0] += kwargs["timeout"]
+            # A fast provider-side timeout leaves the unused discovery phase
+            # budget available to the one bounded retry.
+            clock[0] += 2.0
             raise APITimeoutError("sensitive discovery timeout detail")
         if call_index == 3:
-            clock[0] += kwargs["timeout"] + 1.5
+            clock[0] += kwargs["timeout"]
             payload = {
                 "found": True,
                 "regions": [{
@@ -325,11 +327,77 @@ def test_squid_cold_path_reserves_full_audit_after_discovery_retry(
     )
 
     assert client_options == [{"max_retries": 0}]
-    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 4.0, 4.0, 8.0])
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 8.0, 6.0, 8.0])
     assert calls[-1]["system"].startswith("You are the final visual replacement QA")
     assert result["visual_localization_status"] == "translated"
     assert result["translation_regions"][0]["text"] == "CELO로 오간 규모"
     assert "sensitive discovery timeout detail" not in capsys.readouterr().out
+
+
+def test_squid_full_discovery_phase_timeout_never_retries_provider_or_audit(
+    monkeypatch,
+    capsys,
+):
+    clock = [0.0]
+    calls = []
+    probe_calls = []
+
+    class APITimeoutError(RuntimeError):
+        pass
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        clock[0] += kwargs["timeout"]
+        if len(calls) == 1:
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.24",
+                "headline": "Celo를 오간 Squid 거래 규모",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+            return SimpleNamespace(content=[SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+            )])
+        raise APITimeoutError("sensitive discovery timeout detail")
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *args, **kwargs: probe_calls.append((args, kwargs)),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid has moved $800m in and out of Celo since launch.",
+        source_url="https://x.com/squidrouter/status/2090466774080745873",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 8.0])
+    assert not any(
+        call["system"].startswith("You are the final visual replacement QA")
+        for call in calls
+    )
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+    logs = capsys.readouterr().out
+    assert "attempt 1 failed safely: reason=provider_timeout" in logs
+    assert "attempt 2 failed safely: reason=deadline_exhausted" in logs
+    assert "sensitive discovery timeout detail" not in logs
 
 
 def test_squid_expired_audit_budget_never_calls_provider_or_probe(monkeypatch):
