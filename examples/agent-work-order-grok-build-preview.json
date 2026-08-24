@@ -1,0 +1,62 @@
+{
+  "schema_version": "agent-work-order@1",
+  "work_order_id": "77777777-7777-4777-8777-777777777777",
+  "objective_id": "88888888-8888-4888-8888-888888888888",
+  "parent_work_order_id": null,
+  "causation_id": "99999999-9999-4999-8999-999999999999",
+  "idempotency_key": "agent-task:company:grok-build-dashboard:v1",
+  "created_at": "2026-08-20T12:00:00Z",
+  "expires_at": "2026-08-27T12:00:00Z",
+  "requested_by": "human_operator",
+  "owner": "grok_build",
+  "reviewer": "codex",
+  "work_type": "engineering",
+  "risk_tier": "R1",
+  "allowed_environment": "local",
+  "title": "Plan a Grok Build control-room preview",
+  "objective": "Plan a local UI preview for the five-section Korean operator dashboard without creating or deploying an artifact.",
+  "client_id": "origintrail",
+  "repository": "jadenlee7/coineasy-content-engine",
+  "base_sha": "cfdfae528e1139b9e9e3819f319a72ea2be38a78",
+  "branch_name": "grok-build/local-control-room-preview",
+  "allowed_paths": [
+    "web/control-room/index.html",
+    "tests_js/control-room.test.mts",
+    "docs/AI_COMPANY_CONTROL_ROOM_UI.md"
+  ],
+  "evidence": [
+    {
+      "uri": "tests/fixtures/agent-work-order-evidence.txt",
+      "sha256": "de5bbcf959f710829bd8242f750c2111869055d8e798268620b125cf5eb81761"
+    }
+  ],
+  "expected_artifacts": [
+    "Proposed UI hierarchy",
+    "Proposed Preview test plan"
+  ],
+  "acceptance_criteria": [
+    "The plan preserves the five Korean operator dashboard sections.",
+    "The plan does not build, deploy, message, or publish anything."
+  ],
+  "verification_commands": [
+    "node --test tests_js/control-room.test.mts",
+    "git diff --check"
+  ],
+  "forbidden_actions": [
+    "branch_push",
+    "draft_pr_create",
+    "merge",
+    "preview_deploy",
+    "production_deploy",
+    "production_database_write",
+    "credential_change",
+    "paid_provider_call",
+    "public_message",
+    "publication"
+  ],
+  "max_runtime_seconds": 1800,
+  "max_handoffs": 1,
+  "max_cost_microusd": 0,
+  "max_external_actions": 0,
+  "automatic_publication": false
+}

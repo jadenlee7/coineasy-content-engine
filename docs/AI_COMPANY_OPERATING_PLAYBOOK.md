@@ -136,6 +136,31 @@ PYTHONPATH=. .venv/bin/python -m scripts.run_agent_work_order \
   --validate-only
 ```
 
+### Phase 1A — 로컬 회사 운영실 Dry Run
+
+Phase 0 계약을 바꾸지 않고 세 개의 계획을 한 화면에 투영합니다.
+
+```text
+PYTHONPATH=. python -m scripts.run_agent_control_room \
+  --input examples/agent-work-order-devin-preview.json \
+  --input examples/agent-work-order-claude-preview.json \
+  --input examples/agent-work-order-grok-build-preview.json \
+  --repo-root . \
+  --observed-at 2026-08-21T12:00:00Z \
+  --dashboard
+```
+
+- Devin, Claude Code, Codex, Grok Build에는 같은 scope hash에 묶인 계획
+  패킷만 보여줍니다.
+- Grok Bot에는 위의 다섯 섹션으로 정리된 대표 화면을 보여줍니다.
+- Buzz에는 실제 전송하지 않은 `not_sent` 영수증 preview만 만듭니다.
+- 만료, 미래 시작, idempotency, branch, path 충돌은 실행 없이 막습니다.
+
+이 화면의 비용·호출 0은 **이 로컬 projection이 수행한 행동**만 뜻합니다.
+Production/runtime 상태를 관측하거나 증명하지 않습니다. Supabase,
+Netlify Functions, Railway cron, 환경변수, provider, Buzz 메시지, publication은
+연결하지 않으며 자동 발행은 계속 OFF입니다.
+
 ### Phase 1 — 회사 운영실
 
 - Supabase 업무 원장과 이벤트

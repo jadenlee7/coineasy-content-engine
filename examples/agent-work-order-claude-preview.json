@@ -1,0 +1,62 @@
+{
+  "schema_version": "agent-work-order@1",
+  "work_order_id": "44444444-4444-4444-8444-444444444444",
+  "objective_id": "55555555-5555-4555-8555-555555555555",
+  "parent_work_order_id": null,
+  "causation_id": "66666666-6666-4666-8666-666666666666",
+  "idempotency_key": "agent-task:company:claude-planning-summary:v1",
+  "created_at": "2026-08-20T12:00:00Z",
+  "expires_at": "2026-08-27T12:00:00Z",
+  "requested_by": "human_operator",
+  "owner": "claude_code",
+  "reviewer": "codex",
+  "work_type": "engineering",
+  "risk_tier": "R1",
+  "allowed_environment": "local",
+  "title": "Plan a Claude Code operations summary",
+  "objective": "Plan a local-only summary of bounded work-order status and ambiguity without editing or dispatching work.",
+  "client_id": "origintrail",
+  "repository": "jadenlee7/coineasy-content-engine",
+  "base_sha": "cfdfae528e1139b9e9e3819f319a72ea2be38a78",
+  "branch_name": "claude/local-operations-summary",
+  "allowed_paths": [
+    "core/agent_control/plan_view.py",
+    "tests/test_agent_room_plan.py",
+    "docs/AI_CONTROL_ROOM.md"
+  ],
+  "evidence": [
+    {
+      "uri": "tests/fixtures/agent-work-order-evidence.txt",
+      "sha256": "de5bbcf959f710829bd8242f750c2111869055d8e798268620b125cf5eb81761"
+    }
+  ],
+  "expected_artifacts": [
+    "Scope ambiguity report",
+    "Proposed local test plan"
+  ],
+  "acceptance_criteria": [
+    "The plan performs no network, database, provider, message, or publication call.",
+    "The plan identifies any missing evidence or path conflict."
+  ],
+  "verification_commands": [
+    "PYTHONPATH=. python -m pytest -q tests/test_agent_room_plan.py",
+    "git diff --check"
+  ],
+  "forbidden_actions": [
+    "branch_push",
+    "draft_pr_create",
+    "merge",
+    "preview_deploy",
+    "production_deploy",
+    "production_database_write",
+    "credential_change",
+    "paid_provider_call",
+    "public_message",
+    "publication"
+  ],
+  "max_runtime_seconds": 1800,
+  "max_handoffs": 1,
+  "max_cost_microusd": 0,
+  "max_external_actions": 0,
+  "automatic_publication": false
+}
