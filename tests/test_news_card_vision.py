@@ -10,6 +10,7 @@ from core.llm.news_card_pipeline import (
     _carve_aggregate_bottom_visual_band,
     _discover_visual_copy,
     _normalize_visual_localization,
+    _strict_discovery_percent_box,
     generate_news_card_spec,
 )
 from core.sources.source_image import PreparedSourceImage
@@ -138,6 +139,11 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     numeric_fields = ("x", "y", "width", "height", "font_size")
     region_properties = region_schema["items"]["properties"]
     assert all(region_properties[field] == {"type": "number"} for field in numeric_fields)
+    assert region_properties["coordinate_space"] == {
+        "type": "string",
+        "enum": ["percent_0_100", "normalized_0_1"],
+    }
+    assert "coordinate_space" in region_schema["items"]["required"]
     raw_schema = json.dumps(discovery_format["schema"], sort_keys=True)
     for unsupported_keyword in (
         "minimum",
@@ -150,6 +156,12 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
         assert f'"{unsupported_keyword}"' not in raw_schema
     discovery_prompt = calls[1]["messages"][0]["content"][1]["text"]
     assert "Every region must be at least 6% wide and 3% high" in discovery_prompt
+    assert "x and y are the box's top-left corner" in discovery_prompt
+    assert "coordinate_space to percent_0_100" in discovery_prompt
+    assert "Never mix coordinate spaces" in discovery_prompt
+    assert "x + width <= 100" in discovery_prompt
+    assert "y + height <= 1" in discovery_prompt
+    assert "Never return pixel coordinates" in discovery_prompt
     assert "When found=false, regions must be empty" in discovery_prompt
     assert "output_config" not in calls[0]
     assert "output_config" not in calls[2]
@@ -1549,6 +1561,16 @@ def test_squid_discovery_does_not_skip_non_metric_numeric_shapes(
     [
         ({"x": -1, "y": 82, "width": 40, "height": 8}, "box_bounds"),
         ({"x": 5, "y": 5, "width": 90, "height": 90}, "scene_wide"),
+        (
+            {
+                "x": 0.02,
+                "y": 0.2,
+                "width": 0.96,
+                "height": 0.45,
+                "coordinate_space": "normalized_0_1",
+            },
+            "scene_wide",
+        ),
     ],
 )
 def test_squid_discovery_logs_stable_geometry_reason_codes(
@@ -1595,6 +1617,201 @@ def test_squid_discovery_logs_stable_geometry_reason_codes(
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize(
+    ("box", "expected"),
+    [
+        pytest.param(
+            {"x": 30, "y": 70, "width": 40, "height": 12},
+            {"x": 30.0, "y": 70.0, "width": 40.0, "height": 12.0},
+            id="legacy-percent",
+        ),
+        pytest.param(
+            {
+                "x": 30,
+                "y": 70,
+                "width": 40,
+                "height": 12,
+                "coordinate_space": "percent_0_100",
+            },
+            {"x": 30.0, "y": 70.0, "width": 40.0, "height": 12.0},
+            id="explicit-percent",
+        ),
+        pytest.param(
+            {
+                "x": 0.3,
+                "y": 0.7,
+                "width": 0.4,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            {"x": 30.0, "y": 70.0, "width": 40.0, "height": 12.0},
+            id="explicit-normalized",
+        ),
+    ],
+)
+def test_squid_discovery_normalizes_only_declared_coordinate_spaces(box, expected):
+    assert _strict_discovery_percent_box(
+        box,
+        minimum_width=6.0,
+        minimum_height=3.0,
+    ) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        pytest.param(
+            {"x": 0.3, "y": 0.7, "width": 0.4, "height": 0.12},
+            id="unmarked-fractions",
+        ),
+        pytest.param(
+            {
+                "x": 0.3,
+                "y": 70,
+                "width": 0.4,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="mixed-units",
+        ),
+        pytest.param(
+            {
+                "x": 30,
+                "y": 70,
+                "width": 40,
+                "height": 12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="mislabeled-percent",
+        ),
+        pytest.param(
+            {
+                "x": 0.8,
+                "y": 0.7,
+                "width": 0.3,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="normalized-overflow",
+        ),
+        pytest.param(
+            {
+                "x": 0.3,
+                "y": 0.7,
+                "width": 0.05,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="normalized-below-minimum",
+        ),
+        pytest.param(
+            {
+                "x": 500,
+                "y": 200,
+                "width": 300,
+                "height": 100,
+                "coordinate_space": "pixels",
+            },
+            id="pixel-like-unknown-space",
+        ),
+        pytest.param(
+            {
+                "x": True,
+                "y": 0.7,
+                "width": 0.2,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="boolean-coordinate",
+        ),
+        pytest.param(
+            {
+                "x": float("nan"),
+                "y": 0.7,
+                "width": 0.2,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+            },
+            id="non-finite-coordinate",
+        ),
+    ],
+)
+def test_squid_discovery_rejects_ambiguous_or_unsafe_coordinate_spaces(box):
+    assert _strict_discovery_percent_box(
+        box,
+        minimum_width=6.0,
+        minimum_height=3.0,
+    ) is None
+
+
+def test_squid_discovery_accepts_explicit_normalized_geometry(monkeypatch):
+    payload = {
+        "found": True,
+        "regions": [
+            {
+                "source_text": "$800,000,000",
+                "text": "$800,000,000",
+                "x": 0.08,
+                "y": 0.08,
+                "width": 0.84,
+                "height": 0.34,
+                "coordinate_space": "normalized_0_1",
+                "align": "center",
+                "font_role": "display",
+                "font_size": 12,
+                "text_color": "#FFFFFF",
+            },
+            {
+                "source_text": "Moved in/out of CELO",
+                "text": "CELO를 오간 금액",
+                "x": 0.02,
+                "y": 0.81,
+                "width": 0.3,
+                "height": 0.12,
+                "coordinate_space": "normalized_0_1",
+                "align": "center",
+                "font_role": "body",
+                "font_size": 5,
+                "text_color": "#FFFFFF",
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda client, **kwargs: SimpleNamespace(
+            content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))],
+        ),
+    )
+
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": False, "translation_regions": []},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid", "CELO"],
+    )
+
+    assert calls_used == 1
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"] == [{
+        "source_text": "Moved in/out of CELO",
+        "text": "CELO를 오간 금액",
+        "x": pytest.approx(2.0),
+        "y": pytest.approx(81.0),
+        "width": pytest.approx(30.0),
+        "height": pytest.approx(12.0),
+        "align": "center",
+        "font_role": "body",
+        "font_size": 5.0,
+        "text_color": "#FFFFFF",
+    }]
 
 
 def test_squid_discovery_does_not_log_an_unknown_validation_code(
