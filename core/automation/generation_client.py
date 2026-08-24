@@ -8,6 +8,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from core.automation.models import StyleReference
+from core.squid_localization_diagnostics import (
+    SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+    SQUID_LOCALIZATION_REASON_CODES,
+    squid_localization_reason_action,
+    squid_localization_reason_retryable,
+)
 from core.sources.x_media_url import normalize_x_media_url
 
 
@@ -65,10 +71,26 @@ def _has_valid_fact_check(value: object, content_kind: str) -> bool:
 
 
 class GenerationRequestError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool):
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool,
+        reason_code: str = "",
+    ):
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.reason_code = (
+            reason_code
+            if reason_code in SQUID_LOCALIZATION_REASON_CODES
+            else ""
+        )
+        self.action_code = (
+            squid_localization_reason_action(self.reason_code)
+            if self.reason_code
+            else ""
+        )
 
 
 @dataclass(frozen=True)
@@ -288,10 +310,31 @@ class StudioGenerationClient:
             raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         if response.status_code < 200 or response.status_code >= 300:
             code = body.get("error")
+            safe_code = (
+                code
+                if isinstance(code, str) and _ERROR_CODE_PATTERN.fullmatch(code)
+                else "studio_generation_failed"
+            )
+            raw_reason = body.get("reason_code")
+            reason_code = (
+                raw_reason
+                if safe_code == "squid_visual_localization_incomplete"
+                and (
+                    body.get("diagnostic_version")
+                    == SQUID_LOCALIZATION_DIAGNOSTIC_VERSION
+                )
+                and isinstance(raw_reason, str)
+                and raw_reason in SQUID_LOCALIZATION_REASON_CODES
+                else ""
+            )
             raise GenerationRequestError(
-                code if isinstance(code, str) and _ERROR_CODE_PATTERN.fullmatch(code)
-                else "studio_generation_failed",
-                retryable=response.status_code in {429, 502, 503, 504},
+                safe_code,
+                retryable=(
+                    squid_localization_reason_retryable(reason_code)
+                    if reason_code
+                    else response.status_code in {429, 502, 503, 504}
+                ),
+                reason_code=reason_code,
             )
 
         content_item_id = body.get("content_item_id")

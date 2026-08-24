@@ -601,6 +601,59 @@ async def test_retryable_studio_failure_reports_terminal_max_attempt_exactly(
     )
 
 
+@pytest.mark.asyncio
+async def test_unsafe_squid_localization_stops_retry_and_records_actionable_reason():
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777778",
+        client_id="squid",
+        kst_date=date(2026, 8, 24),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666667",
+        primary_source_item_id="55555555-5555-4555-8555-555555555556",
+        source_content="Squid official localization requires design review.",
+        source_url="https://x.com/SquidRouter/status/789",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+
+    class UnsafeLocalizationClient:
+        calls = 0
+
+        async def generate(self, **_kwargs):
+            self.calls += 1
+            raise GenerationRequestError(
+                "squid_visual_localization_incomplete",
+                retryable=False,
+                reason_code="squid_placement_audit_unsafe",
+            )
+
+    generation = UnsafeLocalizationClient()
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert generation.calls == 1
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["error_code"] == "squid_placement_audit_unsafe"
+    assert repo.failed[0]["retryable"] is False
+    assert repo.failed[0]["retry_at"] is None
+    assert summary.errors == 1
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "error",
+            "detail": "squid_placement_audit_unsafe",
+        }
+        for item in summary.outcomes
+    )
+
+
 def test_request_uuid_is_stable_and_bound_to_mode():
     states = {client_id: AutomationState(None, True, ()) for client_id in AUTOMATION_CLIENTS}
     daily_runner = runner(FakeRepository(states), FakeXClient(), FakeGenerationClient())

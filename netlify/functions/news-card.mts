@@ -108,6 +108,72 @@ const OFFICIAL_SOURCE_X_HANDLES: Record<OfficialSourceClient, string> = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
+export const SQUID_LOCALIZATION_DIAGNOSTIC_VERSION = "squid-localization-failure@1";
+export const SQUID_LOCALIZATION_FAILURE_POLICY = {
+  squid_copy_discovery_unavailable: {
+    actionCode: "retry_generation",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_copy_discovery_invalid: {
+    actionCode: "inspect_localization_contract",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_placement_audit_unavailable: {
+    actionCode: "retry_generation",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed", "unsafe_placement"],
+  },
+  squid_placement_audit_unsafe: {
+    actionCode: "prepare_approved_clean_plate",
+    retryable: false,
+    allowedStatuses: ["cleanup_failed", "unsafe_placement"],
+  },
+  squid_placement_validation_rejected: {
+    actionCode: "inspect_localization_contract",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed", "unsafe_placement"],
+  },
+  squid_source_text_probe_failed: {
+    actionCode: "inspect_localization_contract",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_localization_spec_invalid: {
+    actionCode: "inspect_localization_contract",
+    retryable: true,
+    allowedStatuses: ["unsafe_placement"],
+  },
+  squid_approved_clean_plate_unavailable: {
+    actionCode: "repair_approved_clean_plate",
+    retryable: false,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_source_cleanup_rejected: {
+    actionCode: "prepare_approved_clean_plate",
+    retryable: false,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_source_cleanup_unavailable: {
+    actionCode: "retry_generation",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed"],
+  },
+  squid_translation_layout_rejected: {
+    actionCode: "review_translation_layout",
+    retryable: false,
+    allowedStatuses: ["unsafe_placement"],
+  },
+  squid_localization_failure_unspecified: {
+    actionCode: "inspect_localization_contract",
+    retryable: true,
+    allowedStatuses: ["cleanup_failed", "unsafe_placement"],
+  },
+} as const;
+type SquidLocalizationReasonCode = keyof typeof SQUID_LOCALIZATION_FAILURE_POLICY;
+const SQUID_LOCALIZATION_FAILURE_UNSPECIFIED: SquidLocalizationReasonCode =
+  "squid_localization_failure_unspecified";
 export const SQUID_CREATIVE_FAMILY_POLICY_VERSION = "squid-visual-routing@1";
 export const SQUID_GENERATED_TEMPLATE_VERSION = "squid-generated-gtm@5";
 export const SQUID_VISUAL_REFERENCE_PACK_VERSION = 2;
@@ -791,6 +857,10 @@ export function squidRemixLocalizationError(
   sourceVisualPath: unknown,
 ): "squid_visual_localization_incomplete" | "invalid_generation_response" | null {
   const status = spec.visual_localization_status;
+  const hasFailureReason = Object.hasOwn(
+    spec,
+    "visual_localization_reason_code",
+  );
   if (status === "cleanup_failed" || status === "unsafe_placement") {
     return "squid_visual_localization_incomplete";
   }
@@ -800,6 +870,7 @@ export function squidRemixLocalizationError(
     return spec.source_text_visible === false
       && Array.isArray(regions)
       && regions.length === 0
+      && !hasFailureReason
       && (sourceVisualPath === null || sourceVisualPath === undefined)
       ? null
       : "invalid_generation_response";
@@ -810,12 +881,48 @@ export function squidRemixLocalizationError(
     return spec.source_text_visible === true
       && validRegions !== null
       && validRegions.every((region) => /[\uAC00-\uD7A3]/.test(region.text))
+      && !hasFailureReason
       && normalizedSourceVisualFile(sourceVisualPath, "squid") !== null
       ? null
       : "invalid_generation_response";
   }
 
   return "invalid_generation_response";
+}
+
+export function squidRemixLocalizationFailure(
+  spec: Record<string, unknown>,
+  sourceVisualPath: unknown,
+): Record<string, unknown> | null {
+  const error = squidRemixLocalizationError(spec, sourceVisualPath);
+  if (!error) return null;
+  if (error !== "squid_visual_localization_incomplete") return { error };
+
+  const rawReason = spec.visual_localization_reason_code;
+  const candidatePolicy = (
+    typeof rawReason === "string"
+    && Object.hasOwn(SQUID_LOCALIZATION_FAILURE_POLICY, rawReason)
+  )
+    ? SQUID_LOCALIZATION_FAILURE_POLICY[
+      rawReason as SquidLocalizationReasonCode
+    ]
+    : null;
+  const reasonCode: SquidLocalizationReasonCode = (
+    candidatePolicy
+    && (candidatePolicy.allowedStatuses as readonly string[]).includes(
+      String(spec.visual_localization_status),
+    )
+  )
+    ? rawReason as SquidLocalizationReasonCode
+    : SQUID_LOCALIZATION_FAILURE_UNSPECIFIED;
+  const policy = SQUID_LOCALIZATION_FAILURE_POLICY[reasonCode];
+  return {
+    error,
+    diagnostic_version: SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+    reason_code: reasonCode,
+    action_code: policy.actionCode,
+    retryable: policy.retryable,
+  };
 }
 
 function needsCleanedSquidVisual(
@@ -1172,12 +1279,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
       clientId === "squid"
       && actualTemplateStyle === "remix"
     ) {
-      const localizationError = squidRemixLocalizationError(
+      const localizationFailure = squidRemixLocalizationFailure(
         result.spec,
         result.source_visual_path,
       );
-      if (localizationError) {
-        return json({ error: localizationError }, 502);
+      if (localizationFailure) {
+        return json(localizationFailure, 502);
       }
     }
     if (needsCleanedSquidVisual(clientId, actualTemplateStyle, result.spec) && !sourceVisualFile) {

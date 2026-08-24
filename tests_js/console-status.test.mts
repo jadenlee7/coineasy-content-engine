@@ -6,6 +6,13 @@ const consoleHtml = readFileSync(
   new URL("../web/console/index.html", import.meta.url),
   "utf8",
 );
+const squidLocalizationContract = JSON.parse(readFileSync(
+  new URL(
+    "../tests/fixtures/squid_localization_failure_contract.json",
+    import.meta.url,
+  ),
+  "utf8",
+));
 
 test("distinguishes missing copy from a rejected Squid subtitle placement", () => {
   assert.match(consoleHtml, /visual_localization_status === "unsafe_placement"/);
@@ -51,6 +58,17 @@ test("offers real news, article, and tutorial team modes", () => {
   assert.match(consoleHtml, /state\.generationRequest = null/);
   assert.match(consoleHtml, /payload\?\.error === "fact_check_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /squid_visual_localization_incomplete/);
+  assert.match(
+    consoleHtml,
+    new RegExp(`const SQUID_LOCALIZATION_DIAGNOSTIC_VERSION = "${squidLocalizationContract.diagnostic_version}"`),
+  );
+  assert.match(consoleHtml, /const SQUID_LOCALIZATION_FAILURE_MESSAGES = Object\.freeze/);
+  for (const reasonCode of Object.keys(squidLocalizationContract.reasons)) {
+    assert.match(consoleHtml, new RegExp(`${reasonCode}:`));
+  }
+  assert.match(consoleHtml, /Object\.hasOwn\(SQUID_LOCALIZATION_FAILURE_MESSAGES, payload\.reason_code\)/);
+  assert.match(consoleHtml, /squid_placement_audit_unsafe/);
+  assert.match(consoleHtml, /자동 재시도하지 않으며/);
   assert.match(consoleHtml, /영어 원본 저장을 차단했습니다/);
   assert.match(consoleHtml, /payload\?\.error === "squid_visual_localization_regeneration_required"[\s\S]*state\.generationRequest = null/);
   assert.match(consoleHtml, /아티클은 링크만으로 만들 수 없으며 원문 본문을 300자 이상/);
@@ -142,7 +160,9 @@ test("uses the same X-link priority as the server when identifying an official S
   const helperNames = ["normalizeUserUrl", "isXStatusUrl", "isOfficialSquidXStatusUrl", "hasOfficialSquidSource"];
   const helperSources = helperNames.map((name, index) => {
     const nextName = helperNames[index + 1];
-    const lookahead = nextName ? `(?=\\n\\n      function ${nextName})` : "(?=\\n\\n      function errorMessage)";
+    const lookahead = nextName
+      ? `(?=\\n\\n      function ${nextName})`
+      : "(?=\\n\\n      const SQUID_LOCALIZATION_DIAGNOSTIC_VERSION)";
     const source = consoleHtml.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n      \\}${lookahead}`))?.[0];
     assert.ok(source, `${name} must be present in the console`);
     return source;

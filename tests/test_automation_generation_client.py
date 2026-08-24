@@ -10,6 +10,9 @@ from core.automation.generation_client import (
     StudioGenerationClient,
 )
 from core.automation.models import StyleReference
+from core.squid_localization_diagnostics import (
+    SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+)
 
 
 REQUEST_ID = "11111111-1111-4111-8111-111111111111"
@@ -161,7 +164,7 @@ async def test_source_dominant_remix_forwards_only_the_official_x_image(
 
 
 @pytest.mark.asyncio
-async def test_squid_localization_incomplete_is_a_retryable_502():
+async def test_legacy_squid_localization_incomplete_keeps_bounded_502_retry():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/news-card/squid"
         return httpx.Response(502, json={
@@ -187,6 +190,68 @@ async def test_squid_localization_incomplete_is_a_retryable_502():
             template_style="remix",
         )
     assert error.value.retryable is True
+    assert error.value.reason_code == ""
+    assert error.value.action_code == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason_code", "retryable", "action_code"),
+    [
+        (
+            "squid_placement_audit_unsafe",
+            False,
+            "prepare_approved_clean_plate",
+        ),
+        (
+            "squid_placement_audit_unavailable",
+            True,
+            "retry_generation",
+        ),
+        (
+            "squid_approved_clean_plate_unavailable",
+            False,
+            "repair_approved_clean_plate",
+        ),
+    ],
+)
+async def test_squid_localization_diagnostic_controls_bounded_retry(
+    reason_code,
+    retryable,
+    action_code,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/news-card/squid"
+        return httpx.Response(502, json={
+            "error": "squid_visual_localization_incomplete",
+            "diagnostic_version": SQUID_LOCALIZATION_DIAGNOSTIC_VERSION,
+            "reason_code": reason_code,
+            # These remote hints are intentionally ignored. The client uses
+            # its own allowlist and policy for durable automation decisions.
+            "action_code": "publish_now",
+            "retryable": not retryable,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(GenerationRequestError) as error:
+        await client.generate(
+            client_id="squid",
+            content_kind="daily_news",
+            request_id=REQUEST_ID,
+            source_content="Squid official product update",
+            source_url="https://x.com/SquidRouter/status/123",
+            source_image_url=SOURCE_IMAGE_URL,
+            template_style="remix",
+        )
+
+    assert error.value.code == "squid_visual_localization_incomplete"
+    assert error.value.reason_code == reason_code
+    assert error.value.retryable is retryable
+    assert error.value.action_code == action_code
 
 
 @pytest.mark.asyncio
