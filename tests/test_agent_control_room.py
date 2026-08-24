@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from core.agent_control import (
+    AgentRouteProjection,
     AgentWorkOrder,
     ForbiddenAction,
     PlanningBlocker,
@@ -190,6 +192,40 @@ def test_duplicate_work_order_and_timestamp_overflow_fail_closed():
             [order],
             observed_at=datetime.fromisoformat("0001-01-01T00:00:00+14:00"),
         )
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    ["a" * 32, f"{'a' * 16}-{'b' * 16}", f"sk-{'a' * 20}"],
+)
+def test_secret_shaped_client_id_is_rejected_before_rendering(client_id: str):
+    order = work_order(client_id=client_id)
+    with pytest.raises(ValidationError):
+        build_control_room_snapshot([order], observed_at=OBSERVED_AT)
+
+    route = build_control_room_snapshot(
+        [work_order()],
+        observed_at=OBSERVED_AT,
+    ).routes[0]
+    payload = route.model_dump(mode="python")
+    payload["client_id"] = client_id
+    with pytest.raises(ValidationError):
+        AgentRouteProjection.model_validate(payload)
+
+
+def test_client_id_schemas_preserve_phase_zero_and_narrow_control_room():
+    expected = {
+        AgentWorkOrder: r"^[a-z][a-z0-9_-]{1,39}$",
+        AgentRouteProjection: r"^[a-z][a-z0-9_-]{1,30}$",
+    }
+    for model, pattern in expected.items():
+        schema = model.model_json_schema()["properties"]["client_id"]
+        patterns = [
+            variant["pattern"]
+            for variant in schema["anyOf"]
+            if "pattern" in variant
+        ]
+        assert patterns == [pattern]
 
 
 @pytest.mark.parametrize(
@@ -450,6 +486,56 @@ def test_cli_work_order_timestamp_overflow_returns_stable_fail_closed_json(
         "publication_calls": False,
         "provider_calls": False,
     }
+
+
+def test_clis_accept_valid_max_year_work_order_without_overflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    order = work_order(
+        created_at="9999-12-30T00:00:00Z",
+        expires_at="9999-12-31T00:00:00Z",
+    )
+    input_path = tmp_path / "max-year-work-order.json"
+    input_path.write_text(
+        json.dumps(order.model_dump(mode="json")),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_agent_control_room",
+            "--input",
+            str(input_path),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--observed-at",
+            "9999-12-30T12:00:00Z",
+            "--snapshot-json",
+        ],
+    )
+    assert main() == 0
+    control_room_payload = json.loads(capsys.readouterr().out)
+    assert control_room_payload["ok"] is True
+    assert control_room_payload["execution_authorized"] is False
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_agent_work_order",
+            "--input",
+            str(input_path),
+            "--repo-root",
+            str(REPO_ROOT),
+            "--validate-only",
+        ],
+    )
+    assert phase_zero_main() == 0
+    phase_zero_payload = json.loads(capsys.readouterr().out)
+    assert phase_zero_payload["ok"] is True
+    assert phase_zero_payload["external_calls"] is False
 
 
 def test_cli_rejects_more_than_32_inputs_before_loading_any_file(

@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import combinations
 from pathlib import PurePosixPath
 from typing import Callable, Iterable, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    UUID4,
+    field_validator,
+    model_validator,
+)
 
 from .models import (
     CODING_AGENTS,
     REVIEW_AGENTS,
     AgentIdentity,
     AgentWorkOrder,
+    _contains_secret,
 )
+
+
+_CONTROL_ROOM_CLIENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
 
 
 class PlanningBlocker(str, Enum):
@@ -36,7 +48,10 @@ class AgentRouteProjection(BaseModel):
     branch_scope_key: str = Field(pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str
     title: str
-    client_id: Optional[str] = None
+    client_id: Optional[str] = Field(
+        default=None,
+        pattern=_CONTROL_ROOM_CLIENT_ID_PATTERN,
+    )
     repository: str
     branch_name: str
     expires_at: datetime
@@ -56,6 +71,13 @@ class AgentRouteProjection(BaseModel):
     max_cost_microusd: Literal[0] = 0
     max_external_actions: Literal[0] = 0
     automatic_publication: Literal[False] = False
+
+    @field_validator("client_id")
+    @classmethod
+    def validate_client_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and _contains_secret(value):
+            raise ValueError("agent_control_room_client_id_invalid")
+        return value
 
     @model_validator(mode="after")
     def validate_projection(self) -> "AgentRouteProjection":

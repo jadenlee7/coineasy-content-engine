@@ -371,10 +371,8 @@ class AgentWorkOrder(BaseModel):
 
     @model_validator(mode="after")
     def validate_scope(self) -> "AgentWorkOrder":
-        if (
-            self.expires_at <= self.created_at
-            or self.expires_at > self.created_at + timedelta(days=14)
-        ):
+        window = self.expires_at - self.created_at
+        if window <= timedelta(0) or window > timedelta(days=14):
             raise ValueError("agent_work_order_window_invalid")
         if (
             self.owner not in CODING_AGENTS
