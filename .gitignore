@@ -46,6 +46,8 @@ Thumbs.db
 
 # Netlify local state
 .netlify/
+netlify/functions/_shared/studio-release.generated.mts
+netlify/functions/_shared/studio-release.generated.mts.*.tmp
 
 # Supabase CLI local state
 supabase/.temp/

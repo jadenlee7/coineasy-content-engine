@@ -73,6 +73,21 @@ class StyleReferencePack:
 
 
 @dataclass(frozen=True)
+class FailedDraftRecoveryInspection:
+    recovery_id: str
+    job_id: str
+    request_id: str
+    source_item_id: str
+    approval_subject: Mapping[str, object]
+    approval_subject_sha256: str
+    authorized: bool
+    claims_allowed: int
+    claims_consumed: int
+    expires_at: str
+    release_sha: str
+
+
+@dataclass(frozen=True)
 class ClaimedJob:
     job_id: str
     client_id: str
@@ -89,3 +104,4 @@ class ClaimedJob:
     locked_by: str
     origintrail_batch_eligible: bool = False
     batch_handoff_recovery_only: bool = False
+    failed_draft_recovery_only: bool = False
