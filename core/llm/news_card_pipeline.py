@@ -62,8 +62,59 @@ Do not use em dashes (—) in any output text values. Use commas or periods inst
 
 VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT = """You are a deterministic visual-copy localizer for official Squid social creatives.
 Inspect only the attached image pixels. Find complete, meaningful source-language captions or headlines that are intended to be read as creative copy, transcribe them exactly, and translate them into concise natural Korean.
-Do not infer text from the post caption. Ignore logos, wordmarks, handles, URLs, watermarks, tiny product UI labels, and decorative letter-like shapes. A short meme phrase or slang caption is meaningful copy.
-Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
+Do not infer text from the post caption. Ignore logos, wordmarks, handles, URLs, watermarks, tiny product UI labels, decorative letter-like shapes, and unchanged numeric-only metrics bearing an explicit currency symbol or percent, per-mille, or per-ten-thousand marker. A short meme phrase or slang caption is meaningful copy.
+The response is constrained to the requested JSON schema. Fill only that schema; do not add commentary."""
+
+VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG = {
+    "format": {
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "found": {"type": "boolean"},
+                "regions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_text": {"type": "string"},
+                            "text": {"type": "string"},
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "width": {"type": "number"},
+                            "height": {"type": "number"},
+                            "align": {
+                                "type": "string",
+                                "enum": ["left", "center", "right"],
+                            },
+                            "font_role": {
+                                "type": "string",
+                                "enum": ["display", "body"],
+                            },
+                            "font_size": {"type": "number"},
+                            "text_color": {"type": "string"},
+                        },
+                        "required": [
+                            "source_text",
+                            "text",
+                            "x",
+                            "y",
+                            "width",
+                            "height",
+                            "align",
+                            "font_role",
+                            "font_size",
+                            "text_color",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["found", "regions"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 VISUAL_PLACEMENT_AUDIT_SYSTEM_PROMPT = """You are the final visual replacement QA for Korean localization of official Squid creatives.
 Inspect the attached image composition and precisely map the visible source-language phrase boxes. The renderer will detect and content-aware reconstruct only the original lettering pixels inside each audited box, then place Korean over the cleaned visual with no caption panel.
@@ -445,6 +496,103 @@ def _parse_json_response(response: object, purpose: str) -> dict:
     return parsed
 
 
+_VISUAL_COPY_DISCOVERY_VALIDATION_CODES = frozenset({
+    "box_bounds",
+    "line_count",
+    "metric_changed",
+    "metric_only",
+    "missing_hangul",
+    "missing_regions",
+    "missing_text",
+    "scene_wide",
+})
+
+
+class _VisualCopyDiscoveryValidationError(ValueError):
+    """Carry only an allowlisted, non-sensitive discovery failure code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__("visual copy discovery validation failed")
+        self.code = (
+            code
+            if code in _VISUAL_COPY_DISCOVERY_VALIDATION_CODES
+            else "invalid_response"
+        )
+
+
+def _visual_copy_discovery_failure_reason(exc: Exception) -> str:
+    """Reduce provider/parser failures to stable, non-sensitive log categories."""
+    name = type(exc).__name__
+    if name == "APITimeoutError":
+        return "provider_timeout"
+    if isinstance(exc, TimeoutError):
+        return "deadline_exhausted"
+    if isinstance(exc, _VisualCopyDiscoveryValidationError):
+        return exc.code
+    if isinstance(exc, ValueError):
+        return "invalid_response"
+    if name in {"APIConnectionError", "InternalServerError", "ServiceUnavailableError"}:
+        return "provider_unavailable"
+    if name == "RateLimitError":
+        return "provider_throttled"
+    return "unexpected"
+
+
+def _language_neutral_metric_identity(value: object) -> str:
+    """Return an identity only for a strict language-neutral metric grammar.
+
+    Accepted forms have an explicit Unicode currency symbol or an explicit
+    percent/per-mille/per-ten-thousand marker. Dates, ratios, bare numbers and
+    versions, emoji digits, and every letter-bearing value stay in the normal
+    localization validator instead of being silently treated as metrics.
+    """
+    if not isinstance(value, str):
+        return ""
+    identity = " ".join(unicodedata.normalize("NFKC", value).split())
+    if (
+        not identity
+        or not any("0" <= character <= "9" for character in identity)
+        or any(character.isalpha() for character in identity)
+    ):
+        return ""
+
+    unsigned = identity
+    if unsigned[:1] in {"+", "-"}:
+        unsigned = unsigned[1:].lstrip()
+    number = (
+        r"(?:"
+        r"[0-9]+"
+        r"|[0-9]+[.,][0-9]+"
+        r"|[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?"
+        r"|[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]+)?"
+        r")"
+    )
+
+    if (
+        unsigned[-1:] in {"%", "‰", "‱"}
+        and re.fullmatch(number, unsigned[:-1].rstrip())
+    ):
+        return identity
+
+    currency_positions = [
+        index
+        for index, character in enumerate(unsigned)
+        if unicodedata.category(character) == "Sc"
+    ]
+    if len(currency_positions) == 1:
+        currency_index = currency_positions[0]
+        if currency_index == 0:
+            currency_number = unsigned[1:].lstrip()
+        elif currency_index == len(unsigned) - 1:
+            currency_number = unsigned[:-1].rstrip()
+        else:
+            currency_number = ""
+        if re.fullmatch(number, currency_number):
+            return identity
+
+    return ""
+
+
 def _discover_visual_copy(
     api_client: object,
     model: str,
@@ -467,36 +615,21 @@ preserved Latin row must form one complete, natural message.
 - Include short meme/slang captions such as "chillin'".
 - Ignore logos, wordmarks, handles, URLs, watermarks, decorative shapes, and tiny product/UI labels.
 - Transcribe source_text exactly and translate its meaning into concise natural Korean containing Hangul.
+- Preserve numeric-only metrics bearing an explicit currency symbol or percent, per-mille, or per-ten-thousand marker exactly as visible and omit them from translation regions. Bare counts and numbers are not exempt. Return only nearby natural-language copy that needs Korean localization; a number embedded in natural-language copy remains part of that copy.
 - Use image-relative percentage coordinates around the complete phrase, including every visible row and outline/shadow.
 - Never merge a slogan spanning more than two visible rows into one region. Split it into tight reading-order blocks of at most two adjacent rows each.
 - A prominent standalone protected platform or product name may remain untouched when it carries the visual rhythm. Do not return that untouched row as a translation region. In a stack shaped like "SUBJECT IS / ON / PLATFORM", localize the compact subject and connector blocks while preserving the protected PLATFORM row when the combined result remains natural Korean.
 - Exact Squid Telegram poster rule: when the visible rows are "SQUID IS / ON / TELEGRAM", return only `SQUID IS` -> `SQUID가` and `ON` -> `있는 곳`; leave the giant `TELEGRAM` row untouched and do not return it as a region.
+- Every region must be at least 6% wide and 3% high. Include the complete visible phrase plus its outline/shadow while keeping the box local to that phrase.
 - Keep every returned region at width <= 96%, height <= 45%, and area <= 40% of the image. These are hard cleanup-safety limits, not layout suggestions.
 - text must contain at most two non-empty lines. Never add a caption panel.
 - Return found=false when no meaningful translatable copy is visibly present.
-
-Return exactly:
-{{
-  "found": true,
-  "regions": [
-    {{
-      "source_text": "exact visible phrase",
-      "text": "자연스러운 한국어",
-      "x": 35,
-      "y": 80,
-      "width": 30,
-      "height": 10,
-      "align": "center",
-      "font_role": "display",
-      "font_size": 6,
-      "text_color": "#FFFFFF"
-    }}
-  ]
-}}
-or:
-{{"found":false,"regions":[]}}
+- The response schema always requires found and regions. When found=false, regions must be empty. When found=true, regions must contain 1-4 complete objects.
 """
-    no_text_votes = 0
+    # A no-copy outcome is safe only when both bounded observations agree on
+    # true textlessness or the same protected brand identity. Numeric-only
+    # observations never vote for no_text: they may have missed a nearby label.
+    no_text_observation: Optional[tuple[tuple[str, str], ...]] = None
     calls_used = 0
     retry_stacked_layout = False
     protected_identities = {
@@ -531,6 +664,7 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                 max_tokens=1200,
                 temperature=0,
                 timeout=timeout,
+                output_config=VISUAL_COPY_DISCOVERY_OUTPUT_CONFIG,
                 system=VISUAL_COPY_DISCOVERY_SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
@@ -552,9 +686,15 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                 f"visual copy discovery attempt {attempt + 1}",
             )
             if discovery.get("found") is False:
-                no_text_votes += 1
-                if no_text_votes == 2:
+                raw_regions = discovery.get("regions")
+                if not isinstance(raw_regions, list) or raw_regions:
+                    raise ValueError(
+                        "visual copy discovery found=false requires empty regions"
+                    )
+                observation = (("explicit_no_copy", ""),)
+                if no_text_observation == observation:
                     return _clear_visual_localization(result), calls_used
+                no_text_observation = observation
                 print("[squid] visual discovery found no copy; confirming once")
                 continue
             raw_regions = discovery.get("regions")
@@ -563,11 +703,22 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
             if not 1 <= len(raw_regions) <= 4:
                 raise ValueError("visual copy discovery returned an invalid region count")
             regions: list[dict] = []
+            skipped_protected: list[tuple[str, str]] = []
+            skipped_metrics = 0
             for raw_region in raw_regions:
                 if not isinstance(raw_region, dict):
                     raise ValueError("visual copy discovery region must be an object")
                 source_text = raw_region.get("source_text")
                 text = raw_region.get("text")
+                source_metric_identity = _language_neutral_metric_identity(source_text)
+                if source_metric_identity:
+                    # Classify the source before looking for Hangul. A model may
+                    # not translate, reformat, or alter a metric and then have
+                    # that changed value accepted as ordinary localized copy.
+                    if _language_neutral_metric_identity(text) != source_metric_identity:
+                        raise _VisualCopyDiscoveryValidationError("metric_changed")
+                    skipped_metrics += 1
+                    continue
                 # A protected Latin platform/product row is part of the source
                 # rhythm, not a destructive cleanup target. Some models still
                 # echo it as an unchanged region despite the prompt; omit that
@@ -582,6 +733,10 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                     and _normalized_source_identity(text)
                     == _normalized_source_identity(source_text)
                 ):
+                    skipped_protected.append((
+                        "protected_identity",
+                        _normalized_source_identity(source_text),
+                    ))
                     continue
                 box = _strict_percent_box(
                     raw_region,
@@ -593,16 +748,17 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                     or not source_text.strip()
                     or not isinstance(text, str)
                     or not text.strip()
-                    or not _HANGUL.search(text)
-                    or len([line for line in text.splitlines() if line.strip()]) > 2
-                    or box is None
                 ):
-                    raise ValueError("visual copy discovery region is invalid")
+                    raise _VisualCopyDiscoveryValidationError("missing_text")
+                if not _HANGUL.search(text):
+                    raise _VisualCopyDiscoveryValidationError("missing_hangul")
+                if len([line for line in text.splitlines() if line.strip()]) > 2:
+                    raise _VisualCopyDiscoveryValidationError("line_count")
+                if box is None:
+                    raise _VisualCopyDiscoveryValidationError("box_bounds")
                 if not _plausible_discovery_phrase_box(box):
                     retry_stacked_layout = True
-                    raise ValueError(
-                        "visual copy discovery merged a stacked phrase into an unsafe scene-wide box"
-                    )
+                    raise _VisualCopyDiscoveryValidationError("scene_wide")
                 font_size = max(2.8, min(12.0, _number(raw_region.get("font_size"), 5.2)))
                 text_color = raw_region.get("text_color")
                 regions.append({
@@ -621,7 +777,19 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
                     else "#FFFFFF",
                 })
             if not regions:
-                return _clear_visual_localization(result), calls_used
+                if skipped_metrics:
+                    raise _VisualCopyDiscoveryValidationError("metric_only")
+                observation = tuple(skipped_protected)
+                if not observation:
+                    raise _VisualCopyDiscoveryValidationError("missing_regions")
+                if no_text_observation == observation:
+                    return _clear_visual_localization(result), calls_used
+                no_text_observation = observation
+                print(
+                    "[squid] visual discovery found only unchanged non-copy; "
+                    "confirming once"
+                )
+                continue
             result["source_text_visible"] = True
             result["translation_regions"] = regions
             discovery_anchors = [
@@ -640,7 +808,7 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
         except Exception as exc:
             print(
                 f"[squid] visual copy discovery attempt {attempt + 1} failed safely: "
-                f"{type(exc).__name__}"
+                f"reason={_visual_copy_discovery_failure_reason(exc)}"
             )
     return (
         _clear_visual_localization(result, failure_status="cleanup_failed"),

@@ -159,6 +159,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+export function grokQaPassConflictsWithStoredBrandQa(
+  detail: ContentLibraryDetail,
+  verdict: Pick<GrokQaVerdict, "decision">,
+): boolean {
+  if (verdict.decision !== "PASS") return false;
+  const report = detail.current_version.generation_meta.brand_qa;
+  const checks = isRecord(report) ? report.checks : null;
+  return Array.isArray(checks) && checks.some((value) => (
+    isRecord(value)
+    && value.severity === "critical"
+    && value.status !== "pass"
+  ));
+}
+
 function safeText(value: unknown, maximum: number): string {
   if (typeof value !== "string") return "";
   const normalized = value.replace(/\r\n?/g, "\n").trim().slice(0, maximum);
@@ -334,7 +348,8 @@ export function buildGrokQaReviewPackage(detail: ContentLibraryDetail): GrokQaRe
   ];
   if (provenance.mode === "verified_official_source_remix") {
     reviewRules.push(
-      "서버가 검증한 공식 source-native 무자막 리믹스다. 원본 크리에이티브의 영문·약어·블러·그래픽은 생성된 주장이나 결함으로 보지 않고, 생성 채널 문구와 추가된 번역 오버레이만 검수한다.",
+      "서버 메타데이터의 no_text는 번역 오버레이를 만들지 않았다는 기록일 뿐, 배너 픽셀에 의미 있는 영문 문구가 없다는 증거가 아니다.",
+      "배너 픽셀을 독립 검수한다. 공식 로고·워드마크·핸들·URL과 보호된 제품명·플랫폼명은 허용하지만, 의미 있는 영문 headline·caption·metric label이 보이면 brand_check.status=BLOCK, decision=BLOCK, next_action=revise_banner로 판정한다.",
       "generated_content.spec에서 생략된 비렌더링 메타데이터는 공개 주장으로 취급하지 않는다.",
     );
   }

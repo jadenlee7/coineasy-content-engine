@@ -47,6 +47,7 @@ import {
   verifyPrivateContentBucket,
 } from "./_shared/content-catalog.mts";
 import { isVerifiedSquidSourceNativeNoOverlay } from "./_shared/squid-source-native.mts";
+import { validateSquidTranslationRegions } from "./_shared/squid-translation-regions.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -188,6 +189,12 @@ const RAILWAY_GENERATION_BUDGET_MS = 38_000;
 // binary ceiling comfortably below Netlify's 6 MB synchronous response limit.
 export const MAX_NEWS_CARD_BYTES = 3_000_000;
 const NEWS_CARD_PERSISTENCE_RESERVE_MS = 18_000;
+const NEWS_CARD_PROVIDER_RESULT_ERRORS = new Set([
+  "invalid_generated_png",
+  "generated_image_too_large",
+  "invalid_generation_response",
+  "squid_visual_localization_incomplete",
+]);
 const FIGMA_TEMPLATE_NODES: Partial<Record<ContentCatalogClient, {
   nodeId: string;
   frameName: string;
@@ -213,6 +220,15 @@ function json(body: unknown, status = 200): Response {
       "Content-Type": "application/json; charset=utf-8",
     },
   });
+}
+
+function catalogRetryErrorStatus(code: string, deadlineExceeded: boolean): number {
+  if (deadlineExceeded) return 504;
+  if (
+    code === "fact_check_regeneration_required"
+    || code === "squid_visual_localization_regeneration_required"
+  ) return 409;
+  return NEWS_CARD_PROVIDER_RESULT_ERRORS.has(code) ? 502 : 503;
 }
 
 function cleanBaseUrl(value: string): string {
@@ -666,6 +682,17 @@ async function catalogRetryResponse(
   ) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
+  if (isSquidRemix && !isLegacySquidSquare) {
+    const localizationError = squidRemixLocalizationError(
+      spec,
+      render.source_visual_file,
+    );
+    if (localizationError) {
+      throw new ContentCatalogError(
+        "squid_visual_localization_regeneration_required",
+      );
+    }
+  }
   const figmaTemplate = normalizedFigmaTemplate(
     render.figma_template,
     clientId,
@@ -757,6 +784,38 @@ export function normalizedSourceVisualFile(value: unknown, clientId: string): st
   ).test(candidate)
     ? candidate
     : null;
+}
+
+export function squidRemixLocalizationError(
+  spec: Record<string, unknown>,
+  sourceVisualPath: unknown,
+): "squid_visual_localization_incomplete" | "invalid_generation_response" | null {
+  const status = spec.visual_localization_status;
+  if (status === "cleanup_failed" || status === "unsafe_placement") {
+    return "squid_visual_localization_incomplete";
+  }
+
+  const regions = spec.translation_regions;
+  if (status === "no_text") {
+    return spec.source_text_visible === false
+      && Array.isArray(regions)
+      && regions.length === 0
+      && (sourceVisualPath === null || sourceVisualPath === undefined)
+      ? null
+      : "invalid_generation_response";
+  }
+
+  if (status === "translated") {
+    const validRegions = validateSquidTranslationRegions(regions);
+    return spec.source_text_visible === true
+      && validRegions !== null
+      && validRegions.every((region) => /[\uAC00-\uD7A3]/.test(region.text))
+      && normalizedSourceVisualFile(sourceVisualPath, "squid") !== null
+      ? null
+      : "invalid_generation_response";
+  }
+
+  return "invalid_generation_response";
 }
 
 function needsCleanedSquidVisual(
@@ -929,13 +988,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           : "durable_asset_unavailable";
         const deadlineExceeded = code === "news_card_deadline_exceeded"
           || Date.now() >= requestDeadline - 100;
-        const status = deadlineExceeded
-          ? 504
-          : code === "fact_check_regeneration_required"
-            ? 409
-          : code === "generated_image_too_large"
-            ? 502
-            : 503;
+        const status = catalogRetryErrorStatus(code, deadlineExceeded);
         return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
       }
     }
@@ -1020,13 +1073,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         : "durable_asset_unavailable";
       const deadlineExceeded = code === "news_card_deadline_exceeded"
         || Date.now() >= requestDeadline - 100;
-      const status = deadlineExceeded
-        ? 504
-        : code === "fact_check_regeneration_required"
-          ? 409
-        : code === "generated_image_too_large"
-          ? 502
-          : 503;
+      const status = catalogRetryErrorStatus(code, deadlineExceeded);
       return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
     }
   }
@@ -1121,6 +1168,18 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const sourceVisualFile = normalizedSourceVisualFile(result.source_visual_path, clientId);
+    if (
+      clientId === "squid"
+      && actualTemplateStyle === "remix"
+    ) {
+      const localizationError = squidRemixLocalizationError(
+        result.spec,
+        result.source_visual_path,
+      );
+      if (localizationError) {
+        return json({ error: localizationError }, 502);
+      }
+    }
     if (needsCleanedSquidVisual(clientId, actualTemplateStyle, result.spec) && !sourceVisualFile) {
       return json({ error: "cleaned_source_unavailable" }, 502);
     }
@@ -1407,20 +1466,11 @@ export default async (req: Request, context: Context): Promise<Response> => {
             : "durable_catalog_lookup_failed";
           const deadlineExceeded = code === "news_card_deadline_exceeded"
             || Date.now() >= requestDeadline - 100;
-          const status = deadlineExceeded
-            ? 504
-            : code === "fact_check_regeneration_required"
-              ? 409
-            : code === "generated_image_too_large"
-              ? 502
-              : 503;
+          const status = catalogRetryErrorStatus(code, deadlineExceeded);
           return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, status);
         }
       }
-      const providerResultError = new Set([
-        "invalid_generated_png",
-        "generated_image_too_large",
-      ]).has(error.code);
+      const providerResultError = NEWS_CARD_PROVIDER_RESULT_ERRORS.has(error.code);
       return json({ error: error.code }, providerResultError ? 502 : 503);
     }
     const message = error instanceof Error ? error.message : "unknown_error";

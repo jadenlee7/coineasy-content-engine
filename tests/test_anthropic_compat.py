@@ -42,7 +42,9 @@ def _call(model: str, *, timeout=None):
 
 def test_installed_anthropic_sdk_accepts_thinking_configuration():
     """Keep the runtime SDK aligned with the Opus 5 compatibility request."""
-    assert "thinking" in inspect.signature(Messages.create).parameters
+    parameters = inspect.signature(Messages.create).parameters
+    assert "thinking" in parameters
+    assert "output_config" in parameters
 
 
 def test_opus_4_8_omits_deprecated_temperature():
@@ -60,6 +62,32 @@ def test_per_request_timeout_is_forwarded_when_configured():
     kwargs = _call("claude-sonnet-4-5-20250929", timeout=8.0)
 
     assert kwargs["timeout"] == 8.0
+
+
+def test_structured_output_config_is_forwarded_only_when_configured():
+    client = _FakeClient()
+    output_config = {
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    create_message(
+        client,
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "hello"}],
+        output_config=output_config,
+    )
+
+    assert client.messages.kwargs["output_config"] == output_config
+    assert "output_config" not in _call("claude-sonnet-4-5-20250929")
 
 
 def test_opus_5_omits_deprecated_temperature():

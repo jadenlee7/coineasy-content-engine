@@ -1,3 +1,5 @@
+import { validateSquidTranslationRegions } from "./squid-translation-regions.mts";
+
 export type EditableClientId = "yellow" | "origintrail" | "squid" | "babylon";
 export type EditableTemplateStyle = "remix" | "classic" | "editorial" | "signal";
 export type SquidCreativeFamily =
@@ -194,27 +196,6 @@ function normalizedColor(value: unknown, fallback: string): string {
     : fallback;
 }
 
-type PercentBox = { x: number; y: number; width: number; height: number };
-
-function strictPercentBox(
-  value: Record<string, unknown>,
-  keys: [string, string, string, string],
-  minimumWidth = 6,
-  minimumHeight = 3,
-): PercentBox | null {
-  const parsed = keys.map((key) => {
-    if (typeof value[key] === "boolean") return Number.NaN;
-    return typeof value[key] === "number" ? value[key] : Number(value[key]);
-  });
-  if (parsed.some((number) => !Number.isFinite(number))) return null;
-  const [x, y, width, height] = parsed;
-  if (
-    x < 0 || y < 0 || width < minimumWidth || height < minimumHeight
-    || x + width > 100 || y + height > 100
-  ) return null;
-  return { x, y, width, height };
-}
-
 function normalizeSpec(spec: EditableSpec): NormalizedSpec {
   const bodyLines = Array.isArray(spec.body_lines)
     ? spec.body_lines
@@ -224,42 +205,23 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
     : [];
   const sourceTextVisible = spec.source_text_visible === true;
   const translationRegions: NormalizedTranslationRegion[] = [];
-  let invalidTranslationRegions = false;
-  if (sourceTextVisible && Array.isArray(spec.translation_regions)) {
-    if (spec.translation_regions.length > 4) invalidTranslationRegions = true;
-    for (const rawRegion of spec.translation_regions) {
-      if (invalidTranslationRegions) break;
-      if (!rawRegion || typeof rawRegion !== "object" || Array.isArray(rawRegion)) {
-        invalidTranslationRegions = true;
-        break;
-      }
-      const region = rawRegion as Record<string, unknown>;
-      const sourceText = cleanText(region.source_text, 240);
-      const text = cleanText(region.text, 240);
-      const target = strictPercentBox(region, ["x", "y", "width", "height"]);
-      const source = strictPercentBox(region, ["source_x", "source_y", "source_width", "source_height"]);
-      if (!target || !source) {
-        invalidTranslationRegions = true;
-        break;
-      }
-      const sameTarget = ["x", "y", "width", "height"].every((key) => (
-        Math.abs(target[key as keyof PercentBox] - source[key as keyof PercentBox]) <= 0.01
-      ));
-      if (!sameTarget) {
-        invalidTranslationRegions = true;
-        break;
-      }
+  const validatedTranslationRegions = sourceTextVisible
+    ? validateSquidTranslationRegions(spec.translation_regions)
+    : null;
+  if (validatedTranslationRegions) {
+    for (const validated of validatedTranslationRegions) {
+      const region = validated.input;
       const candidate: NormalizedTranslationRegion = {
-        sourceText,
-        text,
-        x: target.x,
-        y: target.y,
-        width: target.width,
-        height: target.height,
-        sourceX: source.x,
-        sourceY: source.y,
-        sourceWidth: source.width,
-        sourceHeight: source.height,
+        sourceText: validated.sourceText,
+        text: validated.text,
+        x: validated.x,
+        y: validated.y,
+        width: validated.width,
+        height: validated.height,
+        sourceX: validated.sourceX,
+        sourceY: validated.sourceY,
+        sourceWidth: validated.sourceWidth,
+        sourceHeight: validated.sourceHeight,
         align: region.align === "center" || region.align === "right" ? region.align : "left",
         fontRole: region.font_role === "body" ? "body" : "display",
         fontSize: boundedNumber(region.font_size, 5.2, 2, 12),
@@ -267,26 +229,14 @@ function normalizeSpec(spec: EditableSpec): NormalizedSpec {
         textColor: normalizedColor(region.text_color, "#FFFFFF"),
         sourceLineCount: Math.round(boundedNumber(
           region.source_line_count,
-          sourceText.split(/\n+/).filter(Boolean).length || 1,
+          validated.sourceText.split(/\n+/).filter(Boolean).length || 1,
           1,
           2,
         )),
       };
-      const explicitLines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-      const overlapsExisting = translationRegions.some((existing) => (
-        candidate.x < existing.x + existing.width
-        && candidate.x + candidate.width > existing.x
-        && candidate.y < existing.y + existing.height
-        && candidate.y + candidate.height > existing.y
-      ));
-      if (!sourceText || !text || explicitLines.length > 2 || overlapsExisting) {
-        invalidTranslationRegions = true;
-        break;
-      }
       translationRegions.push(candidate);
     }
   }
-  if (invalidTranslationRegions) translationRegions.length = 0;
   const sourceImageWidth = boundedNumber(spec.source_image_width, 1080, 1, 10_000);
   const sourceImageHeight = boundedNumber(spec.source_image_height, 1080, 1, 10_000);
   const submittedOutputWidth = Math.round(boundedNumber(spec.output_width, 1080, 1, 1_800));

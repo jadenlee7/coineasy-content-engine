@@ -5,8 +5,10 @@ import anthropic
 import pytest
 
 from core.llm.news_card_pipeline import (
+    _VisualCopyDiscoveryValidationError,
     _audit_visual_subtitle_placement,
     _carve_aggregate_bottom_visual_band,
+    _discover_visual_copy,
     _normalize_visual_localization,
     generate_news_card_spec,
 )
@@ -127,6 +129,30 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert "Do not move the Korean translation" in content[1]["text"]
     assert "Use one tight region around the actual glyphs" not in content[1]["text"]
     assert calls[1]["system"].startswith("You are a deterministic visual-copy localizer")
+    discovery_format = calls[1]["output_config"]["format"]
+    assert discovery_format["type"] == "json_schema"
+    assert discovery_format["schema"]["required"] == ["found", "regions"]
+    assert discovery_format["schema"]["additionalProperties"] is False
+    region_schema = discovery_format["schema"]["properties"]["regions"]
+    assert set(region_schema) == {"type", "items"}
+    numeric_fields = ("x", "y", "width", "height", "font_size")
+    region_properties = region_schema["items"]["properties"]
+    assert all(region_properties[field] == {"type": "number"} for field in numeric_fields)
+    raw_schema = json.dumps(discovery_format["schema"], sort_keys=True)
+    for unsupported_keyword in (
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+    ):
+        assert f'"{unsupported_keyword}"' not in raw_schema
+    discovery_prompt = calls[1]["messages"][0]["content"][1]["text"]
+    assert "Every region must be at least 6% wide and 3% high" in discovery_prompt
+    assert "When found=false, regions must be empty" in discovery_prompt
+    assert "output_config" not in calls[0]
+    assert "output_config" not in calls[2]
     assert 0 < calls[0]["timeout"] <= 22.0
     assert 0 < calls[1]["timeout"] <= 8.0
     audit_content = calls[2]["messages"][0]["content"]
@@ -1245,6 +1271,385 @@ def test_squid_stable_discovery_overrides_a_valid_but_wrong_main_candidate(monke
     assert result["translation_regions"][0]["text"] == "여유롭게"
 
 
+@pytest.mark.parametrize(
+    ("source_metric", "target_metric"),
+    [
+        ("$800,000,000", "$800,000,000"),
+        ("$1,234.56", "$1,234.56"),
+        ("€1.234,56", "€1.234,56"),
+        ("₩ 1,000", "₩ 1,000"),
+        ("99.9%", "99.9%"),
+        ("7‰", "7‰"),
+        ("12‱", "12‱"),
+        ("＄800", "$800"),
+        ("  ₩   1,000 ", "₩ 1,000"),
+    ],
+)
+def test_squid_discovery_skips_unchanged_numeric_metric_and_accepts_korean_label(
+    monkeypatch,
+    source_metric,
+    target_metric,
+):
+    calls = []
+    payload = {
+        "found": True,
+        "regions": [
+            {
+                "source_text": source_metric,
+                "text": target_metric,
+                "x": 8,
+                "y": 8,
+                "width": 84,
+                "height": 34,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 12,
+                "text_color": "#FFFFFF",
+            },
+            {
+                "source_text": "Moved in/out of CELO",
+                "text": "CELO를 오간 금액",
+                "x": 30,
+                "y": 82,
+                "width": 40,
+                "height": 8,
+                "align": "center",
+                "font_role": "body",
+                "font_size": 5,
+                "text_color": "#FFFFFF",
+            },
+        ],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": False, "translation_regions": []},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid", "CELO"],
+    )
+
+    assert calls_used == 1
+    assert len(calls) == 1
+    assert "explicit currency symbol or percent, per-mille, or per-ten-thousand marker" in (
+        calls[0]["messages"][0]["content"][1]["text"]
+    )
+    assert result["source_text_visible"] is True
+    assert [
+        (region["source_text"], region["text"])
+        for region in result["translation_regions"]
+    ] == [("Moved in/out of CELO", "CELO를 오간 금액")]
+
+
+@pytest.mark.parametrize(
+    ("source_text", "text", "reason"),
+    [
+        ("$800,000,000", "$800,000,001", "metric_changed"),
+        ("$800,000,000", "$800000000", "metric_changed"),
+        ("$ 800,000,000", "$800,000,000", "metric_changed"),
+        ("$800,000,000", "€800,000,000", "metric_changed"),
+        ("$800,000,000", "-$800,000,000", "metric_changed"),
+        ("€1.234,56", "€1,234.56", "metric_changed"),
+        ("99.9%", "99.8%", "metric_changed"),
+        ("$800,000,000", "8억 달러", "metric_changed"),
+        ("Moved in/out of CELO", "Moved in/out of CELO", "missing_hangul"),
+    ],
+)
+def test_squid_discovery_does_not_skip_changed_metrics_or_unchanged_english(
+    monkeypatch,
+    capsys,
+    source_text,
+    text,
+    reason,
+):
+    calls = 0
+    payload = {
+        "found": True,
+        "regions": [{
+            "source_text": source_text,
+            "text": text,
+            "x": 30,
+            "y": 82,
+            "width": 40,
+            "height": 8,
+            "align": "center",
+            "font_role": "body",
+            "font_size": 5,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    def fake_create_message(client, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": True, "translation_regions": [{}]},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid"],
+    )
+
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert calls == 2
+    assert logs.count(f"reason={reason}") == 2
+    assert source_text not in logs
+    assert text not in logs
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize("metric", ["$800,000,000", "99.9%"])
+def test_squid_numeric_only_discovery_fails_closed_after_two_observations(
+    monkeypatch,
+    capsys,
+    metric,
+):
+    calls = 0
+    payload = {
+        "found": True,
+        "regions": [{
+            "source_text": metric,
+            "text": metric,
+            "x": 8,
+            "y": 8,
+            "width": 84,
+            "height": 34,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 12,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    def fake_create_message(client, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": True, "translation_regions": [{}]},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid", "CELO"],
+    )
+
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert calls == 2
+    assert logs.count("reason=metric_only") == 2
+    assert metric not in logs
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize(
+    "non_metric",
+    [
+        "800,000,000",
+        "$800m",
+        "800m",
+        "100 USDC",
+        "CELO",
+        "Moved $800m",
+        "2026-08-21",
+        "2026/08/21",
+        "08:30",
+        "2.0",
+        "1.2.3",
+        "7/10",
+        "#148",
+        "8🔥",
+        "8️⃣",
+    ],
+)
+def test_squid_discovery_does_not_skip_non_metric_numeric_shapes(
+    monkeypatch,
+    capsys,
+    non_metric,
+):
+    calls = 0
+
+    def fake_create_message(client, **kwargs):
+        nonlocal calls
+        calls += 1
+        payload = {
+            "found": True,
+            "regions": [{
+                "source_text": non_metric,
+                "text": non_metric,
+                "x": 8,
+                "y": 8,
+                "width": 84,
+                "height": 34,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 12,
+                "text_color": "#FFFFFF",
+            }],
+        }
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": True, "translation_regions": [{}]},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid"],
+    )
+
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert calls == 2
+    assert logs.count("reason=missing_hangul") == 2
+    assert non_metric not in logs
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize(
+    ("box", "reason"),
+    [
+        ({"x": -1, "y": 82, "width": 40, "height": 8}, "box_bounds"),
+        ({"x": 5, "y": 5, "width": 90, "height": 90}, "scene_wide"),
+    ],
+)
+def test_squid_discovery_logs_stable_geometry_reason_codes(
+    monkeypatch,
+    capsys,
+    box,
+    reason,
+):
+    payload = {
+        "found": True,
+        "regions": [{
+            "source_text": "Moved in/out of CELO",
+            "text": "CELO를 오간 금액",
+            **box,
+            "align": "center",
+            "font_role": "body",
+            "font_size": 5,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda client, **kwargs: SimpleNamespace(
+            content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))],
+        ),
+    )
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": True, "translation_regions": [{}]},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid", "CELO"],
+    )
+
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert logs.count(f"reason={reason}") == 2
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
+def test_squid_discovery_does_not_log_an_unknown_validation_code(
+    monkeypatch,
+    capsys,
+):
+    private_sentinel = "private-provider-payload-should-never-appear"
+    payload = {
+        "found": True,
+        "regions": [{
+            "source_text": "$800,000,000",
+            "text": "$800,000,000",
+            "x": 8,
+            "y": 8,
+            "width": 84,
+            "height": 34,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 12,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.create_message",
+        lambda client, **kwargs: SimpleNamespace(
+            content=[SimpleNamespace(text=json.dumps(payload))],
+        ),
+    )
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline._language_neutral_metric_identity",
+        lambda _value: (_ for _ in ()).throw(
+            _VisualCopyDiscoveryValidationError(private_sentinel)
+        ),
+    )
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": True, "translation_regions": [{}]},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+        ["Squid", "CELO"],
+    )
+
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert logs.count("reason=invalid_response") == 2
+    assert private_sentinel not in logs
+    assert result["_visual_localization_failure"] == "cleanup_failed"
+
+
 def test_squid_stacked_discovery_still_fails_closed_when_raster_rejects(monkeypatch):
     calls = []
     payloads = [
@@ -1514,6 +1919,128 @@ def test_squid_stable_discovery_accepts_an_explicit_textless_visual(monkeypatch)
         client_id="squid",
         source_content="Sundays are for resting",
         source_image=image,
+    )
+
+    assert len(calls) == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "no_text"
+
+
+def test_squid_textless_vote_rejects_nonempty_regions_and_fails_closed(monkeypatch):
+    calls = []
+    payloads = [
+        {
+            "label": "커뮤니티",
+            "date": "2026.08.21",
+            "headline": "Squid 공식 비주얼을 전합니다",
+            "body_lines": ["원본 배너를 검수합니다"],
+            "source_url": "ignored",
+            "theme": "dark",
+            "source_logo_visible": True,
+            "source_text_visible": False,
+            "translation_regions": [],
+        },
+        {
+            "found": False,
+            "regions": [{
+                "source_text": "unexpected",
+                "text": "예상 밖 문구",
+                "x": 30,
+                "y": 70,
+                "width": 20,
+                "height": 8,
+                "align": "center",
+                "font_role": "display",
+                "font_size": 6,
+                "text_color": "#FFFFFF",
+            }],
+        },
+        {"found": False, "regions": []},
+    ]
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payloads[len(calls) - 1], ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("inconsistent no-text must not reach placement probing"),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Official Squid visual",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    assert len(calls) == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+
+
+def test_squid_protected_only_discovery_requires_two_no_text_votes(monkeypatch):
+    calls = []
+    main_payload = {
+        "label": "커뮤니티",
+        "date": "2026.08.21",
+        "headline": "Squid 공식 비주얼을 전합니다",
+        "body_lines": ["브랜드 워드마크를 그대로 유지합니다"],
+        "source_url": "ignored",
+        "theme": "dark",
+        "source_logo_visible": True,
+        "source_text_visible": False,
+        "translation_regions": [],
+    }
+    protected_only = {
+        "found": True,
+        "regions": [{
+            "source_text": "Squid",
+            "text": "Squid",
+            "x": 40,
+            "y": 70,
+            "width": 20,
+            "height": 8,
+            "align": "center",
+            "font_role": "display",
+            "font_size": 6,
+            "text_color": "#FFFFFF",
+        }],
+    }
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        payload = main_payload if len(calls) == 1 else protected_only
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *_args: pytest.fail("protected-only visual must not reach placement probing"),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Official Squid visual",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
     )
 
     assert len(calls) == 3
@@ -3798,6 +4325,62 @@ def test_squid_malformed_visual_copy_fails_closed_after_bounded_discovery(monkey
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["visual_localization_status"] == "cleanup_failed"
+
+
+def test_squid_visual_discovery_timeout_then_invalid_response_is_categorized_and_fails_closed(
+    monkeypatch,
+    capsys,
+):
+    calls = 0
+
+    class APITimeoutError(RuntimeError):
+        pass
+
+    def fake_create_message(client, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.21",
+                "headline": "Celo와 Squid의 연결을 전합니다",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))],
+            )
+        if calls == 2:
+            raise APITimeoutError("sensitive provider detail must not be logged")
+        raise ValueError("sensitive parser detail must not be logged")
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid has moved $800m in and out of Celo since launch.",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=1800,
+            height=693,
+        ),
+    )
+
+    logs = capsys.readouterr().out
+    assert calls == 3
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+    assert "attempt 1 failed safely: reason=provider_timeout" in logs
+    assert "attempt 2 failed safely: reason=invalid_response" in logs
+    assert "sensitive provider detail" not in logs
+    assert "sensitive parser detail" not in logs
 
 
 def test_source_logo_is_never_reported_without_an_attached_image(monkeypatch):

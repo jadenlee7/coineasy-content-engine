@@ -21,7 +21,10 @@ from core.automation.content_signals import (
     DemandTerm,
     PromotionCandidate,
 )
-from core.automation.generation_client import GeneratedCatalogResult
+from core.automation.generation_client import (
+    GeneratedCatalogResult,
+    GenerationRequestError,
+)
 from core.automation.models import (
     AutomationState,
     ClaimedJob,
@@ -534,6 +537,68 @@ async def test_catalog_completion_failure_leaves_lease_for_idempotent_retry():
     assert repo.failed == []
     assert summary.errors == 1
     assert any(item.get("detail") == "automation_database_unavailable" for item in summary.outcomes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attempts", "expected_retryable", "expected_status"),
+    [
+        (1, True, "generation_retry_scheduled"),
+        (3, False, "generation_failed"),
+    ],
+)
+async def test_retryable_studio_failure_reports_terminal_max_attempt_exactly(
+    attempts,
+    expected_retryable,
+    expected_status,
+):
+    states = {
+        client_id: AutomationState(None, True, ())
+        for client_id in AUTOMATION_CLIENTS
+    }
+    repo = FakeRepository(states)
+    repo.claims.append(ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="squid",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="Squid official localized visual retry.",
+        source_url="https://x.com/SquidRouter/status/456",
+        source_image_url="https://pbs.twimg.com/media/official.jpg",
+        manual_only=False,
+        attempts=attempts,
+        max_attempts=3,
+        locked_by="placeholder",
+    ))
+
+    class LocalizationFailureClient:
+        async def generate(self, **_kwargs):
+            raise GenerationRequestError(
+                "squid_visual_localization_incomplete",
+                retryable=True,
+            )
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        LocalizationFailureClient(),
+    ).run()
+
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["error_code"] == "squid_visual_localization_incomplete"
+    assert repo.failed[0]["retryable"] is expected_retryable
+    assert (repo.failed[0]["retry_at"] is not None) is expected_retryable
+    assert summary.errors == 1
+    assert any(
+        item == {
+            "client_id": "squid",
+            "status": "error",
+            "detail": expected_status,
+        }
+        for item in summary.outcomes
+    )
 
 
 def test_request_uuid_is_stable_and_bound_to_mode():
