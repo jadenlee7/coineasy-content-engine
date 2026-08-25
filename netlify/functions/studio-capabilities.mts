@@ -1,4 +1,5 @@
 import type { Config } from "@netlify/functions";
+import { currentStudioReleaseSha } from "./_shared/studio-release.mts";
 import { hasValidStudioAutomationAccess } from "./_shared/studio-session.mts";
 
 const BODY = {
@@ -24,7 +25,10 @@ export default async (req: Request): Promise<Response> => {
   if (!hasValidStudioAutomationAccess(req)) {
     return json({ error: "studio_automation_auth_required" }, 401);
   }
-  return json(BODY);
+  return json({
+    ...BODY,
+    netlify_release_sha: currentStudioReleaseSha(),
+  });
 };
 
 export const config: Config = {

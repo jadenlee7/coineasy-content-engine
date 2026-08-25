@@ -23,6 +23,7 @@ _UUID_PATTERN = re.compile(
 )
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,119}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+_RELEASE_SHA_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 _X_STATUS_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$")
 _ALLOWED_PRODUCTION_HOST = "coineasy-newscard.netlify.app"
 _GENERATION_CONTRACT = "double-fact-check@1"
@@ -158,7 +159,12 @@ class StudioGenerationClient:
         self.timeout_seconds = timeout_seconds
         self.transport = transport
 
-    async def _require_generation_contract(self, client: httpx.AsyncClient) -> None:
+    async def _require_generation_contract(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        expected_release_sha: str = "",
+    ) -> None:
         """Preflight before any mutating request to prevent staggered-deploy poisoning."""
         try:
             response = await client.get(
@@ -185,10 +191,27 @@ class StudioGenerationClient:
             or body.get("generation_contract") != _GENERATION_CONTRACT
             or body.get("tutorial_claims_contract") != _TUTORIAL_CLAIMS_CONTRACT
             or body.get("generated_content_kinds") != ["daily_news", "article", "tutorial"]
+            or (
+                expected_release_sha
+                and body.get("netlify_release_sha") != expected_release_sha
+            )
         ):
             raise GenerationRequestError(
                 "studio_generation_contract_unavailable",
                 retryable=True,
+            )
+
+    async def require_release(self, expected_release_sha: str) -> None:
+        if _RELEASE_SHA_PATTERN.fullmatch(expected_release_sha) is None:
+            raise ValueError("expected Studio release SHA is invalid")
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds,
+            follow_redirects=False,
+            transport=self.transport,
+        ) as client:
+            await self._require_generation_contract(
+                client,
+                expected_release_sha=expected_release_sha,
             )
 
     async def generate(
@@ -203,11 +226,17 @@ class StudioGenerationClient:
         template_style: str = "classic",
         style_references: tuple[StyleReference, ...] = (),
         style_reference_pack_hash: str = "",
+        expected_studio_release_sha: str = "",
     ) -> GeneratedCatalogResult:
         if not _UUID_PATTERN.fullmatch(request_id):
             raise ValueError("automation request_id must be a UUID")
         if client_id not in {"yellow", "origintrail", "squid", "babylon"}:
             raise ValueError("unsupported automation client")
+        if (
+            expected_studio_release_sha
+            and _RELEASE_SHA_PATTERN.fullmatch(expected_studio_release_sha) is None
+        ):
+            raise ValueError("expected Studio release SHA is invalid")
         source_content = source_content.strip()
         source_url = _validated_source_url(source_url)
         if source_image_url and template_style == "remix":
@@ -286,14 +315,22 @@ class StudioGenerationClient:
                 follow_redirects=False,
                 transport=self.transport,
             ) as client:
-                await self._require_generation_contract(client)
+                await self._require_generation_contract(
+                    client,
+                    expected_release_sha=expected_studio_release_sha,
+                )
+                headers = {
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": request_id,
+                    "X-Studio-Automation-Key": self.automation_token,
+                }
+                if expected_studio_release_sha:
+                    headers["X-Studio-Expected-Release-Sha"] = (
+                        expected_studio_release_sha
+                    )
                 response = await client.post(
                     f"{self.base_url}{route}",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Idempotency-Key": request_id,
-                        "X-Studio-Automation-Key": self.automation_token,
-                    },
+                    headers=headers,
                     json=payload,
                 )
         except (httpx.TimeoutException, httpx.TransportError) as exc:

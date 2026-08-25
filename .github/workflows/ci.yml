@@ -35,6 +35,49 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
 
+  automation-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Official X automation image
+        run: >-
+          docker build
+          --file Dockerfile.automation
+          --tag coineasy-official-x-ci
+          .
+      - name: Prove the recovery CLI is packaged
+        run: >-
+          docker run --rm --network none
+          coineasy-official-x-ci
+          python -m scripts.run_squid_failed_draft_recovery --help
+      - name: Prove a self-declared release cannot reach the database
+        run: |
+          set +e
+          output="$(docker run --rm --network none \
+            --env SUPABASE_URL=https://project-ref.supabase.co \
+            --env SUPABASE_SERVICE_ROLE_KEY=ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss \
+            --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
+            --env X_BEARER_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            --env STUDIO_BASE_URL=https://coineasy-newscard.netlify.app \
+            --env STUDIO_AUTOMATION_TOKEN=tttttttttttttttttttttttttttttttttttttttt \
+            --env OFFICIAL_X_RECOVERY_RELEASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env RAILWAY_GIT_COMMIT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            --env RAILWAY_ENVIRONMENT_NAME=production \
+            coineasy-official-x-ci \
+            python -m scripts.run_squid_failed_draft_recovery authorize \
+            --job-id 33333333-3333-4333-8333-333333333333 \
+            --recovery-id 66666666-6666-4666-8666-666666666666 \
+            --release-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --approval-id 77777777-7777-4777-8777-777777777777 \
+            --approved-by ci:release-fence \
+            --approved-at 2026-08-25T08:00:00Z \
+            --expires-at 2026-08-25T09:00:00Z \
+            --subject-sha256 5555555555555555555555555555555555555555555555555555555555555555)"
+          status=$?
+          set -e
+          test "$status" -eq 2
+          test "$output" = '{"ok":false,"error":"recovery_configuration_invalid"}'
+
   grok-qa-image:
     runs-on: ubuntu-latest
     steps:
@@ -286,7 +329,16 @@ jobs:
       - name: Run Netlify function and console tests
         run: npm run test:functions
       - name: Build Netlify site
+        env:
+          COMMIT_REF: ${{ github.sha }}
         run: npx --yes netlify-cli@27.0.1 build --offline --context production
+      - name: Verify the build-stamped Netlify release
+        env:
+          EXPECTED_STUDIO_RELEASE_SHA: ${{ github.sha }}
+        run: >-
+          node --test
+          tests_js/studio-release-stamp.test.mts
+          tests_js/studio-capabilities.test.mts
 
   postgres:
     runs-on: ubuntu-latest
@@ -325,3 +377,7 @@ jobs:
                        supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
+      - name: Serialize Squid recovery behind official X intake
+        run: >-
+          bash
+          supabase/tests/squid_failed_draft_recovery_concurrency.sh

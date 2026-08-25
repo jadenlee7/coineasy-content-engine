@@ -51,6 +51,9 @@ from core.squid_visual_style import SQUID_VISUAL_POLICY_VERSION
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 VERSION_ID = "99999999-9999-4999-8999-999999999999"
+RECOVERY_JOB_ID = "33333333-3333-4333-8333-333333333333"
+RECOVERY_REQUEST_ID = "44444444-4444-4444-8444-444444444444"
+RECOVERY_ID = "66666666-6666-4666-8666-666666666666"
 NOW = datetime(2026, 7, 22, 0, 10, tzinfo=timezone.utc)
 CANARY_KST_DAY_START = datetime(2026, 7, 21, 15, tzinfo=timezone.utc)
 
@@ -159,6 +162,8 @@ class FakeRepository:
         self.queues = []
         self.style_packs = []
         self.claims = []
+        self.failed_recovery_claim = None
+        self.failed_recovery_claims = []
         self.completed = []
         self.batch_handoffs = []
         self.batch_recoveries = []
@@ -286,6 +291,17 @@ class FakeRepository:
         item = self.claims.pop(0)
         return ClaimedJob(**{**item.__dict__, "locked_by": kwargs["worker_id"]})
 
+    async def claim_failed_draft_recovery(self, **kwargs):
+        self.failed_recovery_claims.append(kwargs)
+        if self.failed_recovery_claim is None:
+            return None
+        item = self.failed_recovery_claim
+        self.failed_recovery_claim = None
+        return ClaimedJob(**{
+            **item.__dict__,
+            "locked_by": kwargs["worker_id"],
+        })
+
     async def bind_execution_plane(self, **kwargs):
         plane = self.execution_planes.get(kwargs["job_id"])
         if plane is None:
@@ -333,6 +349,10 @@ class FakeXClient:
 class FakeGenerationClient:
     def __init__(self):
         self.calls = []
+        self.release_checks = []
+
+    async def require_release(self, expected_release_sha):
+        self.release_checks.append(expected_release_sha)
 
     async def generate(self, **kwargs):
         self.calls.append(kwargs)
@@ -409,6 +429,7 @@ def runner(
     content_signals_client=None,
     batch_settings=None,
     batch_bridge=None,
+    now_factory=None,
     **setting_overrides,
 ):
     return OfficialXDailyRunner(
@@ -420,8 +441,212 @@ def runner(
         batch_bridge=batch_bridge,
         content_signals_client=content_signals_client,
         clients_dir=ROOT / "clients",
-        now_factory=lambda: NOW,
+        now_factory=now_factory or (lambda: NOW),
     )
+
+
+def failed_squid_recovery_claim() -> ClaimedJob:
+    return ClaimedJob(
+        job_id=RECOVERY_JOB_ID,
+        client_id="squid",
+        kst_date=NOW.astimezone(timezone(timedelta(hours=9))).date(),
+        content_kind="daily_news",
+        request_id=RECOVERY_REQUEST_ID,
+        primary_source_item_id="22222222-2222-4222-8222-222222222222",
+        source_content="A sufficiently long official Squid product update.",
+        source_url="https://x.com/SquidRouter/status/123",
+        source_image_url="https://pbs.twimg.com/media/source.jpg",
+        manual_only=False,
+        attempts=3,
+        max_attempts=3,
+        locked_by="placeholder",
+        origintrail_batch_eligible=False,
+        batch_handoff_recovery_only=False,
+        failed_draft_recovery_only=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_draft_recovery_calls_only_targeted_claim_and_generation_once():
+    repo = FakeRepository({})
+    repo.failed_recovery_claim = failed_squid_recovery_claim()
+    x_client = FakeXClient()
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, x_client, generation).recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert summary.generated == 1
+    assert summary.errors == 0
+    assert len(repo.failed_recovery_claims) == 1
+    assert repo.claims == []
+    assert repo.records == []
+    assert repo.queues == []
+    assert x_client.calls == []
+    assert len(generation.calls) == 1
+    assert generation.release_checks == ["a" * 40]
+    assert generation.calls[0]["request_id"] == RECOVERY_REQUEST_ID
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["expected_studio_release_sha"] == "a" * 40
+    assert len(repo.completed) == 1
+    assert repo.completed[0]["content_item_id"] == RECOVERY_REQUEST_ID
+
+
+@pytest.mark.asyncio
+async def test_consumed_recovery_hold_never_calls_generation_or_generic_work():
+    repo = FakeRepository({})
+    x_client = FakeXClient()
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, x_client, generation).recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert summary.generated == 0
+    assert summary.skipped == 1
+    assert summary.outcomes == [{
+        "client_id": "squid",
+        "status": "recovery_not_claimed",
+    }]
+    assert generation.calls == []
+    assert repo.claims == []
+    assert repo.records == []
+    assert repo.queues == []
+    assert x_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_release_mismatch_never_claims_or_calls_generation():
+    repo = FakeRepository({})
+
+    class MismatchedGenerationClient(FakeGenerationClient):
+        async def require_release(self, expected_release_sha):
+            self.release_checks.append(expected_release_sha)
+            raise GenerationRequestError(
+                "studio_generation_contract_unavailable",
+                retryable=True,
+            )
+
+    generation = MismatchedGenerationClient()
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+    ).recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert summary.errors == 1
+    assert repo.failed_recovery_claims == []
+    assert generation.calls == []
+    assert generation.release_checks == ["a" * 40]
+
+
+@pytest.mark.asyncio
+async def test_recovery_kst_rollover_after_claim_terminalizes_without_provider():
+    repo = FakeRepository({})
+    generation = FakeGenerationClient()
+    before_midnight = datetime(2026, 8, 25, 14, 59, 59, tzinfo=timezone.utc)
+    after_midnight = datetime(2026, 8, 25, 15, 0, 1, tzinfo=timezone.utc)
+    base_claim = failed_squid_recovery_claim()
+    repo.failed_recovery_claim = ClaimedJob(**{
+        **base_claim.__dict__,
+        "kst_date": before_midnight.astimezone(
+            timezone(timedelta(hours=9))
+        ).date(),
+    })
+    times = iter((before_midnight, after_midnight))
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        now_factory=lambda: next(times),
+    ).recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert summary.generated == 0
+    assert summary.errors == 1
+    assert generation.calls == []
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["error_code"] == "failed_draft_recovery_kst_rolled_over"
+    assert repo.failed[0]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_recovery_generation_failure_is_terminal_at_max_attempts():
+    repo = FakeRepository({})
+    repo.failed_recovery_claim = failed_squid_recovery_claim()
+
+    class FailingGenerationClient(FakeGenerationClient):
+        async def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            raise GenerationRequestError(
+                "studio_generation_unavailable",
+                retryable=True,
+            )
+
+    generation = FailingGenerationClient()
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+    ).recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert summary.generated == 0
+    assert summary.errors == 1
+    assert len(generation.calls) == 1
+    assert len(repo.failed) == 1
+    assert repo.failed[0]["retryable"] is False
+    assert repo.failed[0]["retry_at"] is None
+    assert repo.claims == []
+
+
+@pytest.mark.asyncio
+async def test_uncertain_recovery_completion_never_reclaims_or_regenerates():
+    repo = FakeRepository({})
+    repo.failed_recovery_claim = failed_squid_recovery_claim()
+    repo.complete_error = True
+    generation = FakeGenerationClient()
+    automation = runner(repo, FakeXClient(), generation)
+
+    first = await automation.recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+    second = await automation.recover_failed_draft_once(
+        job_id=RECOVERY_JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha="a" * 40,
+    )
+
+    assert first.errors == 1
+    assert second.skipped == 1
+    assert len(generation.calls) == 1
+    assert repo.completed == []
+    assert repo.failed == []
 
 
 @pytest.mark.asyncio

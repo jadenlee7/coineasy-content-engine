@@ -19,6 +19,7 @@ import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
 } from "./_shared/studio-session.mts";
+import { requireExpectedStudioRelease } from "./_shared/studio-release.mts";
 import {
   parseStyleReferencePack,
   StyleReferenceInputError,
@@ -945,6 +946,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
+  const studioReleaseError = requireExpectedStudioRelease(req);
+  if (studioReleaseError) return studioReleaseError;
 
   const clientParam = context.params.clientId;
   if (!clientParam || !ALLOWED_CLIENTS.has(clientParam as ContentCatalogClient)) {

@@ -2,6 +2,7 @@
   "name": "coineasy-content-engine-console",
   "private": true,
   "scripts": {
+    "pretest:functions": "node scripts/stamp-netlify-release.mjs --allow-unstamped",
     "test:functions": "node --test tests_js/*.test.mts"
   },
   "devDependencies": {
