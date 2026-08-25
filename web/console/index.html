@@ -629,6 +629,7 @@
     .harmony-client-tab strong { font-size: 12px; }
     .harmony-client-tab small { margin-top: 7px; color: var(--muted); font-size: 9px; }
     .harmony-client-tab.active { background: var(--harmony-client-accent, var(--accent)); box-shadow: 4px 4px 0 var(--outline); transform: translate(-1px, -1px); }
+    .harmony-client-tab:disabled { color: #6f6872; background: #ece9ef; box-shadow: none; cursor: not-allowed; opacity: .7; }
     .harmony-client-tab:focus-visible { outline: 3px solid rgba(255,107,23,.28); outline-offset: 3px; }
     .harmony-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     .harmony-metric { min-width: 0; padding: 16px; border: 1.5px solid var(--outline); border-radius: 11px; background: #fff; box-shadow: 3px 3px 0 rgba(35,35,35,.1); }
@@ -642,6 +643,9 @@
     .harmony-card-head h2 { margin: 0; font-size: 18px; letter-spacing: -.5px; }
     .harmony-card-head p { max-width: 620px; margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
     .harmony-contract-chip { flex: 0 0 auto; display: inline-flex; min-height: 26px; align-items: center; padding: 0 9px; border: 1px solid var(--outline); border-radius: 999px; background: #fff; font: 800 8px/1 Inter, sans-serif; }
+    .harmony-flow-section + .harmony-flow-section { border-top: 1.5px solid var(--outline); }
+    .harmony-flow-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0; padding: 12px 17px; background: #f7f3ed; color: #49424c; font-size: 10px; }
+    .harmony-flow-label strong { color: var(--ink); font-size: 11px; }
     .harmony-round { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--outline); }
     .harmony-turn { position: relative; min-height: 178px; padding: 17px; background: #fff; }
     .harmony-turn-number { display: inline-grid; place-items: center; width: 27px; height: 27px; border: 1.5px solid var(--outline); border-radius: 50%; background: var(--surface-soft); font: 850 9px/1 Inter, sans-serif; }
@@ -983,7 +987,7 @@
       </section>
     </section>
 
-    <section class="harmony-shell" id="harmony-view" hidden aria-labelledby="harmony-title" data-preview-contract="agent-harmony-round@1">
+    <section class="harmony-shell" id="harmony-view" hidden aria-labelledby="harmony-title" data-preview-contract="harmony-preview-dashboard@2">
       <header class="harmony-hero">
         <div class="harmony-hero-copy">
           <p class="harmony-kicker">CoinEasy AI Company · P0 control room</p>
@@ -1002,25 +1006,32 @@
 
       <nav class="harmony-client-tabs" id="harmony-client-tabs" role="tablist" aria-label="Harmony 고객 선택">
         <button class="harmony-client-tab active" type="button" role="tab" data-harmony-client="squid" aria-selected="true" style="--harmony-client-accent:#efff5a"><strong>Squid</strong><small>P0 첫 slice · 선택됨</small></button>
-        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="origintrail" aria-selected="false" style="--harmony-client-accent:#dcd4ff"><strong>OriginTrail</strong><small>확장 슬롯 · 신호 미연결</small></button>
-        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="yellow" aria-selected="false" style="--harmony-client-accent:#fdda16"><strong>Yellow</strong><small>확장 슬롯 · 신호 미연결</small></button>
-        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="babylon" aria-selected="false" style="--harmony-client-accent:#f4c8b2"><strong>Babylon</strong><small>확장 슬롯 · 신호 미연결</small></button>
+        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="origintrail" aria-selected="false" aria-disabled="true" disabled style="--harmony-client-accent:#dcd4ff"><strong>OriginTrail</strong><small>정적 확장 슬롯 · 연결 안 됨</small></button>
+        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="yellow" aria-selected="false" aria-disabled="true" disabled style="--harmony-client-accent:#fdda16"><strong>Yellow</strong><small>정적 확장 슬롯 · 연결 안 됨</small></button>
+        <button class="harmony-client-tab" type="button" role="tab" data-harmony-client="babylon" aria-selected="false" aria-disabled="true" disabled style="--harmony-client-accent:#f4c8b2"><strong>Babylon</strong><small>정적 확장 슬롯 · 연결 안 됨</small></button>
       </nav>
 
       <section class="harmony-metrics" aria-label="비용과 완료 현황">
         <article class="harmony-metric"><span>Typed inputs</span><strong id="harmony-input-count">0 / 4</strong><small>신뢰된 입력 신호</small></article>
         <article class="harmony-metric"><span>Structural QA</span><strong id="harmony-qa-count">0 / 1</strong><small>typed terminal receipt</small></article>
         <article class="harmony-metric"><span>대표 승인함</span><strong id="harmony-inbox-metric">0건</strong><small>실행 불가능 Preview 제안</small></article>
-        <article class="harmony-metric"><span>비용 · 완료</span><strong>미관측</strong><small>상한 0 µUSD · 완료 0/1</small></article>
+        <article class="harmony-metric"><span>비용 · 완료</span><strong id="harmony-cost-count">미관측</strong><small id="harmony-completion-count">0 / 5 specialist receipts</small></article>
       </section>
 
       <div class="harmony-primary-grid">
         <section class="panel harmony-card" aria-labelledby="harmony-round-title">
           <header class="harmony-card-head">
-            <div><h2 id="harmony-round-title"><span id="harmony-selected-client">Squid</span> typed round</h2><p>각 역할은 정해진 신호만 넘깁니다. 공식 출처 외 입력은 사실 근거가 될 수 없고, 한 단계가 막히면 뒤 단계도 fail-closed로 멈춥니다.</p></div>
-            <span class="harmony-contract-chip">agent-harmony-round@1</span>
+            <div><h2 id="harmony-round-title"><span id="harmony-selected-client">Squid</span> typed collaboration</h2><p>입력 신호 4개와 실제 specialist receipt 5개를 분리합니다. 공식 출처 외 입력은 사실 근거가 될 수 없고, 한 단계가 막히면 뒤 단계도 fail-closed로 멈춥니다.</p></div>
+            <span class="harmony-contract-chip">dashboard@2</span>
           </header>
-          <div class="harmony-round" id="harmony-round" aria-live="polite"></div>
+          <section class="harmony-flow-section" aria-labelledby="harmony-contributors-title">
+            <h3 class="harmony-flow-label" id="harmony-contributors-title"><strong>신호 기여자 · 4 lanes</strong><span>집계·공식 근거 입력</span></h3>
+            <div class="harmony-round" id="harmony-contributors" aria-live="polite"></div>
+          </section>
+          <section class="harmony-flow-section" aria-labelledby="harmony-specialists-title">
+            <h3 class="harmony-flow-label" id="harmony-specialists-title"><strong>실행 specialist rail · 5 receipts</strong><span>hash-chain 순서 고정</span></h3>
+            <div class="harmony-round" id="harmony-specialists" aria-live="polite"></div>
+          </section>
         </section>
 
         <aside class="panel harmony-card" aria-labelledby="harmony-approval-title">
@@ -1159,7 +1170,7 @@
           phase: "P0 첫 slice",
           status: "waiting_for_attestation",
           statusLabel: "신뢰 증명 대기",
-          summary: "Squid의 여섯 역할과 안전 경계가 Preview 계약으로 정렬됐습니다. 아직 runtime 신뢰 증명과 typed signal이 없어 실제 기획 라운드는 시작하지 않았습니다.",
+          summary: "Squid의 신호 기여자 4개와 specialist 5개가 Preview 계약으로 분리됐습니다. 아직 runtime 신뢰 증명과 typed signal이 없으면 실제 기획 라운드는 시작하지 않습니다.",
           next: "Squid adapter의 runtime identity를 검증한 뒤 집계 신호 4종 중 첫 1건을 연결",
           source: "공식 @squidrouter 근거만 허용"
         }),
@@ -1168,7 +1179,7 @@
           phase: "확장 슬롯",
           status: "waiting_for_attestation",
           statusLabel: "신뢰 증명 대기",
-          summary: "OriginTrail은 동일한 여섯 역할 계약을 재사용할 수 있는 확장 슬롯입니다. 고객 간 원문·브랜드 자산·지시문은 공유하지 않습니다.",
+          summary: "OriginTrail은 같은 typed collaboration을 재사용할 수 있는 정적 확장 슬롯입니다. 아직 데이터 연결은 없고 고객 간 원문·브랜드 자산·지시문을 공유하지 않습니다.",
           next: "OriginTrail 전용 trust registry와 aggregate signal adapter를 별도 연결",
           source: "OriginTrail 공식 근거만 허용"
         }),
@@ -1191,13 +1202,18 @@
           source: "Babylon 공식 근거만 허용"
         })
       });
-      const HARMONY_TURNS = Object.freeze([
+      const HARMONY_CONTRIBUTORS = Object.freeze([
         Object.freeze({ role: "quiz_bot", label: "Quiz Bot", signal: "quiz_learning", detail: "개별 답변이 아닌 집계 학습 신호만 제안합니다.", state: "blocked" }),
         Object.freeze({ role: "community_ops", label: "Community Ops", signal: "community_demand", detail: "개인정보 없이 반복 질문과 수요 패턴만 전달합니다.", state: "blocked" }),
         Object.freeze({ role: "content_source", label: "Content Source", signal: "official_source", detail: "사실 권한이 있는 유일한 lane입니다. 공식 근거 없이는 중단합니다.", state: "blocked" }),
-        Object.freeze({ role: "recap", label: "Recap", signal: "recap_metric", detail: "관측 가능한 집계 지표만 전달하고 미관측을 0으로 바꾸지 않습니다.", state: "blocked" }),
-        Object.freeze({ role: "coordinator", label: "Grok Coordinator", signal: "typed synthesis", detail: "네 신호를 기획 제안으로 묶되 실행 권한은 갖지 않습니다.", state: "guard" }),
-        Object.freeze({ role: "independent_qa", label: "Independent Structural QA", signal: "typed terminal receipt", detail: "조율 principal과 다른 역할이 고정된 근거·격리·중복·안전 조건 및 prior-output SHA를 검증합니다.", state: "guard" })
+        Object.freeze({ role: "recap_signal", label: "Recap Signal", signal: "recap_metric", detail: "관측 가능한 집계 지표만 전달하고 미관측을 0으로 바꾸지 않습니다.", state: "blocked" })
+      ]);
+      const HARMONY_SPECIALISTS = Object.freeze([
+        Object.freeze({ stage: "plan", specialistCode: "squid_planner", actor: "grok_bot", capability: "harmony_plan", label: "Grok Planner", detail: "네 입력을 기획안으로 묶되 실행 권한은 갖지 않습니다." }),
+        Object.freeze({ stage: "private_content", specialistCode: "squid_private_content_producer", actor: "content_engine", capability: "harmony_prepare_private_content", label: "Content Engine", detail: "공식 근거에 묶인 비공개 검토 초안만 준비합니다." }),
+        Object.freeze({ stage: "independent_qa", specialistCode: "squid_independent_qa", actor: "codex", capability: "harmony_independent_qa", label: "Independent QA", detail: "다른 principal이 prior-output SHA와 고정 기준을 독립 검증합니다." }),
+        Object.freeze({ stage: "operator_inbox", specialistCode: "coineasy_representative_inbox", actor: "human_operator_inbox", capability: "harmony_operator_inbox", label: "대표 승인함", detail: "QA output에 묶인 읽기 전용 결정 항목만 노출합니다." }),
+        Object.freeze({ stage: "recap", specialistCode: "squid_recap", actor: "coineasy_recap", capability: "harmony_recap", label: "CoinEasy Recap", detail: "실제 receipt·비용·발행 여부를 terminal artifact로 요약합니다." })
       ]);
       const HARMONY_QA_CHECKS = Object.freeze([
         Object.freeze({ label: "고객 격리", detail: "tenant 경계와 역할 allowlist가 계약에 포함됨", waiting: false }),
@@ -1236,7 +1252,8 @@
       const harmonyView = document.getElementById("harmony-view");
       const harmonyClientTabs = document.getElementById("harmony-client-tabs");
       const harmonySelectedClient = document.getElementById("harmony-selected-client");
-      const harmonyRound = document.getElementById("harmony-round");
+      const harmonyContributors = document.getElementById("harmony-contributors");
+      const harmonySpecialists = document.getElementById("harmony-specialists");
       const harmonyQaList = document.getElementById("harmony-qa-list");
       const harmonyRecap = document.getElementById("harmony-recap");
       const harmonyEmptyTitle = document.getElementById("harmony-empty-title");
@@ -1245,6 +1262,8 @@
       const harmonyQaCount = document.getElementById("harmony-qa-count");
       const harmonyInboxMetric = document.getElementById("harmony-inbox-metric");
       const harmonyInboxCount = document.getElementById("harmony-inbox-count");
+      const harmonyCostCount = document.getElementById("harmony-cost-count");
+      const harmonyCompletionCount = document.getElementById("harmony-completion-count");
       const harmonyLiveState = document.getElementById("harmony-live-state");
       const harmonyApprovalAction = document.getElementById("harmony-approval-action");
       const harmonyFootnote = document.getElementById("harmony-footnote");
@@ -2958,7 +2977,7 @@
         const trust = record(top.trust);
         const flags = record(top.flags);
         if (
-          top.schema_version !== "harmony-preview-dashboard@1"
+          top.schema_version !== "harmony-preview-dashboard@2"
           || !uuid(top.workspace_id)
           || top.client_id !== "squid"
           || !time(top.observed_at)
@@ -2986,8 +3005,12 @@
           || !Array.isArray(top.operator_inbox)
           || top.operator_inbox.length > 25
         ) return null;
-        const expectedStages = [
-          "plan", "private_content", "independent_qa", "operator_inbox", "recap"
+        const expectedSpecialists = [
+          { stage: "plan", specialistCode: "squid_planner", actor: "grok_bot", capability: "harmony_plan" },
+          { stage: "private_content", specialistCode: "squid_private_content_producer", actor: "content_engine", capability: "harmony_prepare_private_content" },
+          { stage: "independent_qa", specialistCode: "squid_independent_qa", actor: "codex", capability: "harmony_independent_qa" },
+          { stage: "operator_inbox", specialistCode: "coineasy_representative_inbox", actor: "human_operator_inbox", capability: "harmony_operator_inbox" },
+          { stage: "recap", specialistCode: "squid_recap", actor: "coineasy_recap", capability: "harmony_recap" }
         ];
         let latestRound = null;
         if (top.latest_round !== null) {
@@ -2997,9 +3020,9 @@
             || !exact(round, [
               "schema_version", "round_id", "plan_id", "input_set_sha256",
               "round_sha256", "status", "headline_ko", "summary_ko",
-              "stages", "automatic_publication"
+              "stages", "recap", "automatic_publication"
             ])
-            || round.schema_version !== "harmony-dashboard-round@1"
+            || round.schema_version !== "harmony-dashboard-round@2"
             || !uuid(round.round_id)
             || !uuid(round.plan_id)
             || !hash(round.input_set_sha256)
@@ -3009,26 +3032,73 @@
             || !safeText(round.summary_ko, 600, false)
             || round.automatic_publication !== false
             || !Array.isArray(round.stages)
-            || round.stages.length !== 5
+            || ![4, 5].includes(round.stages.length)
           ) return null;
           const stagesValid = round.stages.every((rawStage, index) => {
             const stage = record(rawStage);
+            const expected = expectedSpecialists[index];
             return Boolean(
               stage
               && exact(stage, [
-                "stage", "ordinal", "receipt_sha256", "input_sha256",
+                "stage", "ordinal", "actor", "capability",
+                "specialist_code", "specialist_binding_sha256",
+                "operation_key_sha256", "principal_id",
+                "producer_release_sha", "config_sha256",
+                "receipt_sha256", "input_sha256",
                 "output_sha256", "recorded_at", "verdict"
               ])
-              && stage.stage === expectedStages[index]
+              && stage.stage === expected.stage
               && stage.ordinal === index + 1
+              && stage.actor === expected.actor
+              && stage.capability === expected.capability
+              && stage.specialist_code === expected.specialistCode
+              && hash(stage.specialist_binding_sha256)
+              && hash(stage.operation_key_sha256)
+              && uuid(stage.principal_id)
+              && typeof stage.producer_release_sha === "string"
+              && /^[a-f0-9]{40}$/.test(stage.producer_release_sha)
+              && hash(stage.config_sha256)
               && hash(stage.receipt_sha256)
               && hash(stage.input_sha256)
               && hash(stage.output_sha256)
               && time(stage.recorded_at)
-              && (stage.verdict === null || stage.verdict === "passed")
+              && stage.verdict === (expected.stage === "independent_qa" ? "passed" : null)
             );
           });
-          if (!stagesValid || round.stages[2].verdict !== "passed") return null;
+          const principalsDistinct = stagesValid
+            && new Set(round.stages.map((stage) => stage.principal_id)).size
+              === round.stages.length;
+          const chainValid = principalsDistinct
+            && round.stages[0].input_sha256 === round.input_set_sha256
+            && round.stages.every((stage, index) =>
+              index === 0 || stage.input_sha256 === round.stages[index - 1].output_sha256
+            );
+          if (!chainValid) return null;
+          if (round.stages.length === 4) {
+            if (round.recap !== null) return null;
+          } else {
+            const recap = record(round.recap);
+            const recapStage = round.stages[4];
+            if (
+              !recap
+              || !exact(recap, [
+                "schema_version", "receipt_sha256", "input_sha256",
+                "output_sha256", "actual_cost_microusd",
+                "stage_receipt_count", "operator_decision_observed",
+                "publication_count", "synthetic", "automatic_publication"
+              ])
+              || recap.schema_version !== "harmony-dashboard-recap@1"
+              || recap.receipt_sha256 !== recapStage.receipt_sha256
+              || recap.input_sha256 !== recapStage.input_sha256
+              || recap.output_sha256 !== recapStage.output_sha256
+              || recap.actual_cost_microusd !== 0
+              || recap.stage_receipt_count !== 5
+              || recap.operator_decision_observed !== false
+              || recap.publication_count !== 0
+              || recap.synthetic !== true
+              || recap.automatic_publication !== false
+            ) return null;
+          }
           latestRound = round;
         }
         const inbox = top.operator_inbox.map(rawItem => {
@@ -3037,9 +3107,11 @@
             && exact(item, [
               "schema_version", "inbox_id", "round_id", "plan_id", "status",
               "scope_sha256", "qa_receipt_id", "qa_receipt_sha256",
-              "qa_output_sha256", "created_at", "automatic_publication"
+              "qa_output_sha256", "round_sha256", "recap_receipt_sha256",
+              "recap_output_sha256", "headline_ko", "summary_ko",
+              "created_at", "operator_decision_recorded", "automatic_publication"
             ])
-            && item.schema_version === "harmony-dashboard-inbox@1"
+            && item.schema_version === "harmony-dashboard-inbox@2"
             && uuid(item.inbox_id)
             && uuid(item.round_id)
             && uuid(item.plan_id)
@@ -3048,7 +3120,15 @@
             && uuid(item.qa_receipt_id)
             && hash(item.qa_receipt_sha256)
             && hash(item.qa_output_sha256)
+            && hash(item.round_sha256)
+            && (
+              (item.recap_receipt_sha256 === null && item.recap_output_sha256 === null)
+              || (hash(item.recap_receipt_sha256) && hash(item.recap_output_sha256))
+            )
+            && safeText(item.headline_ko, 160, true)
+            && safeText(item.summary_ko, 600, false)
             && time(item.created_at)
+            && item.operator_decision_recorded === false
             && item.automatic_publication === false
             ? item
             : null;
@@ -3076,36 +3156,58 @@
             || counts.connector_receipts < 4
             || counts.rounds < 1
             || counts.plans < 1
-            || counts.stage_receipts < 5
+            || counts.stage_receipts < latestRound.stages.length
             || matchingLatest.length !== 1
             || matchingLatest[0].plan_id !== latestRound.plan_id
             || matchingLatest[0].qa_receipt_sha256
               !== latestRound.stages[2].receipt_sha256
             || matchingLatest[0].qa_output_sha256
               !== latestRound.stages[2].output_sha256
+            || matchingLatest[0].scope_sha256
+              !== latestRound.stages[3].output_sha256
+            || matchingLatest[0].round_sha256 !== latestRound.round_sha256
+            || matchingLatest[0].headline_ko !== latestRound.headline_ko
+            || matchingLatest[0].summary_ko !== latestRound.summary_ko
+            || (latestRound.stages[4]
+              ? (
+                matchingLatest[0].recap_receipt_sha256
+                  !== latestRound.stages[4].receipt_sha256
+                || matchingLatest[0].recap_output_sha256
+                  !== latestRound.stages[4].output_sha256
+              )
+              : (
+                matchingLatest[0].recap_receipt_sha256 !== null
+                || matchingLatest[0].recap_output_sha256 !== null
+              ))
           ))
         ) return null;
         return { ...top, latest_round: latestRound, operator_inbox: validInbox };
       }
 
-      function harmonyTurnStatus(turn, index, dashboard) {
-        if (dashboard?.latest_round) {
-          if (index < 4) return "신뢰 signal receipt 확인";
-          if (turn.role === "coordinator") return "plan receipt 확인";
-          if (turn.role === "independent_qa") return "구조 QA receipt 확인";
-        }
-        if (turn.role === "coordinator") return "입력 4종 대기";
-        if (turn.role === "independent_qa") return "조율 결과 대기";
-        return "typed signal 대기";
+      function harmonyContributorStatus(dashboard) {
+        return dashboard?.latest_round ? "신뢰 signal receipt 확인" : "typed signal 대기";
+      }
+
+      function harmonySpecialistStatus(specialist, stage) {
+        if (!stage) return specialist.stage === "plan" ? "입력 4종 대기" : "prior receipt 대기";
+        if (specialist.stage === "independent_qa") return "passed · 독립 QA receipt";
+        if (specialist.stage === "operator_inbox") return "대표 inbox scope receipt";
+        if (specialist.stage === "recap") return "terminal recap receipt";
+        return "typed stage receipt 확인";
       }
 
       function renderHarmonyView() {
         const client = HARMONY_CLIENTS[harmonyState.client] || HARMONY_CLIENTS.squid;
         const dashboard = harmonyState.client === "squid" ? harmonyState.dashboard : null;
         const latestRound = dashboard?.latest_round || null;
+        const latestInbox = latestRound
+          ? dashboard.operator_inbox.find(item => item.round_id === latestRound.round_id) || null
+          : null;
+        const recap = latestRound?.recap || null;
         const signalCount = dashboard ? Math.min(4, dashboard.counts.signals) : 0;
         const qaPassed = latestRound?.stages?.[2]?.verdict === "passed";
         const pendingInbox = dashboard?.counts?.pending_operator_inbox || 0;
+        const completedStages = latestRound?.stages?.length || 0;
         harmonySelectedClient.textContent = client.name;
         harmonyClientTabs.querySelectorAll("[data-harmony-client]").forEach(button => {
           const active = button.dataset.harmonyClient === harmonyState.client;
@@ -3116,6 +3218,8 @@
         harmonyQaCount.textContent = (qaPassed ? 1 : 0) + " / 1";
         harmonyInboxMetric.textContent = pendingInbox.toLocaleString("ko-KR") + "건";
         harmonyInboxCount.textContent = pendingInbox.toLocaleString("ko-KR");
+        harmonyCostCount.textContent = recap ? recap.actual_cost_microusd.toLocaleString("ko-KR") + " µUSD" : "미관측";
+        harmonyCompletionCount.textContent = completedStages + " / 5 specialist receipts";
         harmonyLiveState.textContent = harmonyState.client !== "squid"
           ? "확장 슬롯 · 정적"
           : harmonyState.observation === "loading"
@@ -3123,15 +3227,26 @@
             : dashboard
               ? "Scoped Preview 관측됨"
               : "Preview 상태 미관측";
-        harmonyRound.innerHTML = HARMONY_TURNS.map((turn, index) =>
+        harmonyContributors.innerHTML = HARMONY_CONTRIBUTORS.map((turn, index) =>
           '<article class="harmony-turn" data-harmony-role="' + escapeHtml(turn.role) + '" data-turn-state="' + escapeHtml(latestRound ? "guard" : turn.state) + '">' +
             '<span class="harmony-turn-number" aria-hidden="true">' + String(index + 1).padStart(2, "0") + '</span>' +
             '<h3>' + escapeHtml(turn.label) + '</h3>' +
             '<code>' + escapeHtml(turn.role) + ' · ' + escapeHtml(turn.signal) + '</code>' +
             '<p>' + escapeHtml(turn.detail) + '</p>' +
-            '<span class="harmony-turn-status">' + escapeHtml(harmonyTurnStatus(turn, index, dashboard)) + '</span>' +
+            '<span class="harmony-turn-status">' + escapeHtml(harmonyContributorStatus(dashboard)) + '</span>' +
           '</article>'
         ).join("");
+        harmonySpecialists.innerHTML = HARMONY_SPECIALISTS.map((specialist, index) => {
+          const stage = latestRound?.stages?.[index] || null;
+          return '<article class="harmony-turn" data-harmony-stage="' + escapeHtml(specialist.stage) + '" data-turn-state="' + (stage ? 'guard' : 'blocked') + '">' +
+            '<span class="harmony-turn-number" aria-hidden="true">S' + String(index + 1) + '</span>' +
+            '<h3>' + escapeHtml(specialist.label) + '</h3>' +
+            '<code>' + escapeHtml(stage?.specialist_code || specialist.specialistCode) + ' · ' + escapeHtml(specialist.actor) + ' · ' + escapeHtml(specialist.capability) + '</code>' +
+            '<p>' + escapeHtml(specialist.detail) + '</p>' +
+            (stage ? '<small>principal ' + escapeHtml(stage.principal_id.slice(0, 8)) + '… · release ' + escapeHtml(stage.producer_release_sha.slice(0, 8)) + '… · config ' + escapeHtml(stage.config_sha256.slice(0, 8)) + '… · binding ' + escapeHtml(stage.specialist_binding_sha256.slice(0, 8)) + '…</small>' : '') +
+            '<span class="harmony-turn-status">' + escapeHtml(harmonySpecialistStatus(specialist, stage)) + '</span>' +
+          '</article>'
+        }).join("");
         harmonyQaList.innerHTML = HARMONY_QA_CHECKS.map(check => {
           const waiting = check.label === "Runtime 검증" ? !qaPassed : check.waiting;
           const detail = check.label === "Runtime 검증" && qaPassed
@@ -3143,17 +3258,34 @@
           '</article>'
         }).join("");
         if (latestRound) {
-          harmonyRecap.innerHTML =
-            '<p><strong>' + escapeHtml(latestRound.headline_ko) + '</strong><br>' + escapeHtml(latestRound.summary_ko) + '</p>' +
-            '<ul class="harmony-recap-list">' +
-              '<li><strong>현재 상태</strong><span>구조 QA receipt 확인 · 대표 검토 대기</span></li>' +
-              '<li><strong>신뢰 입력</strong><span>signal ' + escapeHtml(dashboard.counts.signals) + '건 · connector receipt ' + escapeHtml(dashboard.counts.connector_receipts) + '건</span></li>' +
-              '<li><strong>비용</strong><span>실제 비용 미관측 · 자동 발행 OFF</span></li>' +
-              '<li><strong>관측 시각</strong><span>' + escapeHtml(dashboard.observed_at) + '</span></li>' +
-            '</ul>';
-          harmonyEmptyTitle.textContent = "구조 QA receipt 확인 Preview 제안 " + pendingInbox.toLocaleString("ko-KR") + "건";
-          harmonyEmptyCopy.textContent = "현재 화면은 읽기 전용입니다. 제안과 receipt를 확인할 수 있지만 승인·전송·발행은 실행할 수 없습니다.";
-          harmonyApprovalAction.textContent = "Preview 제안 " + pendingInbox.toLocaleString("ko-KR") + "건 · 읽기 전용";
+          if (recap) {
+            harmonyRecap.innerHTML =
+              '<p><strong>terminal recap artifact 확인</strong><br>' + escapeHtml(latestRound.summary_ko) + '</p>' +
+              '<ul class="harmony-recap-list">' +
+                '<li><strong>Receipt</strong><span>' + escapeHtml(recap.receipt_sha256.slice(0, 16)) + '… · hash chain 5/5</span></li>' +
+                '<li><strong>비용</strong><span>' + escapeHtml(recap.actual_cost_microusd) + ' µUSD · 실제 artifact 값</span></li>' +
+                '<li><strong>대표 결정</strong><span>' + (recap.operator_decision_observed ? '기록됨' : '미기록 · 승인 대기') + '</span></li>' +
+                '<li><strong>발행</strong><span>' + escapeHtml(recap.publication_count) + '건 · 자동 발행 OFF</span></li>' +
+              '</ul>';
+          } else {
+            harmonyRecap.innerHTML =
+              '<p><strong>terminal recap 미생성</strong><br>' + escapeHtml(latestRound.summary_ko) + '</p>' +
+              '<ul class="harmony-recap-list">' +
+                '<li><strong>현재 상태</strong><span>operator inbox receipt 확인 · recap 단계 대기</span></li>' +
+                '<li><strong>Hash chain</strong><span>' + escapeHtml(completedStages) + ' / 5 specialist receipts</span></li>' +
+                '<li><strong>비용</strong><span>terminal artifact 전에는 미관측</span></li>' +
+                '<li><strong>발행</strong><span>0건 · 자동 발행 OFF</span></li>' +
+              '</ul>';
+          }
+          harmonyEmptyTitle.textContent = latestInbox
+            ? latestInbox.headline_ko
+            : "대표 inbox binding 미관측";
+          harmonyEmptyCopy.textContent = latestInbox
+            ? latestInbox.summary_ko + " · Round " + latestInbox.round_sha256.slice(0, 12) + "… · 대표 결정 미기록"
+            : "QA와 operator scope가 exact hash로 묶인 항목만 대표 승인함에 표시합니다.";
+          harmonyApprovalAction.textContent = latestInbox
+            ? "대표 결정 대기 · 읽기 전용"
+            : "승인 대상 없음";
           harmonyFootnote.innerHTML = "Scoped JWT로 Squid Preview의 안전 projection만 읽었습니다. Production ledger·provider·Buzz·Telegram·X·publication은 호출하지 않았고 자동 발행은 <strong>OFF</strong>입니다.";
         } else {
           harmonyRecap.innerHTML =
@@ -3167,6 +3299,8 @@
           harmonyEmptyTitle.textContent = client.name + " · " + client.statusLabel;
           harmonyEmptyCopy.textContent = client.phase + "에서는 runtime-verified attestation과 typed signal 4종이 모이기 전 대표 handoff를 만들지 않습니다.";
           harmonyApprovalAction.textContent = "승인 대상 없음";
+          harmonyCostCount.textContent = "미관측";
+          harmonyCompletionCount.textContent = "0 / 5 specialist receipts";
           harmonyFootnote.innerHTML = "Preview 상태를 읽지 못했거나 기능이 OFF입니다. 정적 안전 계약을 유지하고 비용·성과는 0이 아니라 <strong>미관측</strong>으로 표시하며 어떤 버튼도 외부 행동을 만들 수 없습니다.";
         }
         harmonyApprovalAction.disabled = true;
@@ -4138,7 +4272,12 @@
 
       harmonyClientTabs.addEventListener("click", event => {
         const button = event.target.closest("[data-harmony-client]");
-        if (!button || !HARMONY_CLIENTS[button.dataset.harmonyClient]) return;
+        if (
+          !button
+          || button.disabled
+          || button.dataset.harmonyClient !== "squid"
+          || !HARMONY_CLIENTS[button.dataset.harmonyClient]
+        ) return;
         harmonyState.client = button.dataset.harmonyClient;
         renderHarmonyView();
       });

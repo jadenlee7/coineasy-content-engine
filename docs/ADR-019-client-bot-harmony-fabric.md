@@ -1,7 +1,9 @@
 # ADR-019: Federated client-bot Harmony collaboration fabric
 
-**Status:** Accepted for disposable Preview P0; child branch verified and
-deleted, not applied to Production
+**Status:** Accepted for disposable Preview P0. The original six-migration
+slice was verified on a deleted child branch; the additive fixed-specialist
+seventh migration is locally verified only and is not applied to Production or
+a remote Preview branch.
 **Date:** 2026-08-25
 **Deciders:** CoinEasy representative, content, community, and engineering leads
 
@@ -44,7 +46,7 @@ flowchart LR
     X[Official-source claim] --> A
     C[Recap claim] --> A
     A --> R[Client-scoped Harmony rehearsal]
-    R --> G[Grok coordinator synthesis]
+    R --> G[Fixed planning specialist]
     G --> V[Independent structural QA]
     V --> H[Human scope-review inbox]
     H -. future explicit promotion .-> W[Domain work-order v2]
@@ -126,8 +128,8 @@ rehearsal turns:
 2. Community Ops supports or challenges it;
 3. Content Engine binds verified official evidence;
 4. Recap supplies observed or explicitly unobserved performance context;
-5. Grok Bot synthesizes or challenges;
-6. a Codex-role contract check previews independent verification.
+5. the fixed Grok planning specialist synthesizes or challenges;
+6. the fixed Codex QA specialist previews independent verification.
 
 These turns are not evidence that the named bots actually conversed or that a
 separate reviewer receipt exists. No turn accepts instructions from a signal.
@@ -137,6 +139,12 @@ alignment state, never partial execution.
 An explicitly unobserved Recap metric may preserve the Recap lane but cannot
 vote for topic consensus. Turn speakers, lanes, and signal partitions are
 validated against the fixed six-role sequence.
+
+Harmony does not auto-assign a task to whichever model appears suitable. Each
+client slice has a versioned specialist roster. Planning, private-content
+preparation, independent QA, the representative inbox, and Recap each bind to
+one distinct role and principal before a round can start. A role change creates
+a new reviewed roster version; it is not a runtime model decision.
 
 ### `agent-harmony-handoff@1`
 
@@ -232,11 +240,16 @@ responsibility, review, receipts, and the representative dashboard.
 - Current profiles are loaded from the four existing client configs.
 - The CLI always uses the empty registry, so even a complete caller-authored
   four-lane JSON cannot enter the representative approval inbox.
-- Six disposable-Preview migrations add the client-scoped signal and
+- The original six disposable-Preview migrations add the client-scoped signal and
   database-generated connector-attestation ledgers, the Squid-only typed
   stage chain, FORCE RLS, seven least-privilege roles, and a read-only
   dashboard projection. They are empty by default and require an exact,
   expiring Preview branch fence before any RPC can accept a claim.
+- A seventh additive Preview-only migration adds a five-entry Squid specialist
+  roster. Each stage is prebound to one distinct principal, release, config,
+  branch ref, and maximum two-hour expiry. Stable retries may renew receipt
+  UUIDs and JWT metadata but must converge on the same immutable operation key.
+  No runtime AI assignment path exists.
 - The Squid slice derives private Korean headline/summary only from an existing
   current `needs_review` Daily News version whose natural
   `official_x_review_draft_completed` outbox and canonical `@SquidRouter`
@@ -244,26 +257,32 @@ responsibility, review, receipts, and the representative dashboard.
   AI provider, send a message, record an approval, or create a publication.
 - The independent-QA stage uses a distinct scoped principal and an exact typed
   evidence object bound to the prior private-content output SHA. The operator
-  inbox is materialized only after the complete five-stage receipt chain and
-  remains `pending`; it has no decision or publication mutation.
+  inbox is materialized exactly once by stage 4 and remains `pending`; stage 5
+  Recap validates that same inbox and adds no second inbox. Neither stage has a
+  decision or publication mutation.
 - `GET /api/harmony/dashboard` is Deploy-Preview-only, default OFF, Studio
   session protected, service-role-fallback-free, and requires a short-lived
   Squid dashboard JWT plus a publishable project key. Its UI keeps approval
-  and publication controls disabled.
-- A clean disposable local PostgreSQL run applied the full migration chain,
-  passed the canonical security smoke, and raced 64 independent scoped-role
-  `psql` connections against one identical signal. The result was one insert,
-  63 exact reuses, one signal row, one connector receipt, and one common set
-  of IDs/hashes. The complete Squid rehearsal ended with 4 signals, 4
-  connector receipts, 1 round, 1 plan, 5 stage receipts, and 1 pending inbox;
-  approval, publication, Buzz, provider, and cost baselines were unchanged.
-- Approved disposable Supabase child `ynelpztctwonnadrlpfq` applied the same
-  six migrations and both transactional security suites. Real scoped
+  and publication controls disabled. Dashboard v2 exposes each stage's fixed
+  specialist code, principal, release/config, binding SHA, and stable operation
+  key so the representative does not have to trust an actor label alone.
+- A clean disposable local PostgreSQL 16 run applied all seven migrations and
+  raced 64 independent scoped-role connections against the same quiz signal,
+  plan, and each of four downstream stages. Every operation produced one new
+  receipt and 63 stable reuses. The complete Squid rehearsal ended with 4
+  signals, 4 connector receipts, 1 round, 1 plan, 5 fixed-principal stage
+  receipts, 5 distinct operation keys, and 1 pending inbox. Wrong-principal
+  preemption wrote zero rows; stage 4 added the inbox and Recap added none.
+  Approval, publication, Buzz, provider, and cost baselines were unchanged.
+- The earlier approved disposable Supabase child `ynelpztctwonnadrlpfq`
+  applied only the original six migrations and both transactional security suites. Real scoped
   HS256-JWT/PostgREST traffic produced 64 calls as one new receipt and 63 exact
   reuses with one identity; the negative matrix rejected wrong scope, role,
   ref, time window, service role, and payload tampering without extra rows.
   The Squid slice ended at 4 signals, 4 connector receipts, 1 round, 1 plan,
-  5 stage receipts, and 1 pending operator inbox with recap cost 0.
+  5 stage receipts, and 1 pending operator inbox with recap cost 0. This prior
+  remote receipt is not evidence for the fixed-specialist migration, dashboard
+  v2, or stage-4 inbox timing.
 - The child branch and Preview secrets were deleted after verification. No
   external Quiz connector, scheduler, provider, private message, Production
   adapter, approval decision, or publication path has been activated.
@@ -293,9 +312,10 @@ responsibility, review, receipts, and the representative dashboard.
 
 ## Next rollout gates
 
-1. Commit the reviewed Netlify runtime-context and round-to-inbox binding
-   corrections, regenerate an exact-SHA Deploy Preview, and verify that the
-   dashboard remains default OFF before any scoped read test.
+1. Stage, commit, and push the fixed-specialist corrections only after a
+   separate gate. Regenerate an exact-SHA Deploy Preview and verify that the
+   dashboard remains default OFF before any scoped read test; Draft removal
+   and merge are separate approvals.
 2. If a second live dashboard read is desired, obtain a fresh explicit
    cost/organization/TTL approval for exactly one disposable child branch;
    bind only the exact new Preview SHA and delete its secrets and branch in the

@@ -164,12 +164,14 @@ Netlify Functions, Railway cron, 환경변수, provider, Buzz 메시지, publica
 ### Phase 1 — 회사 운영실
 
 - Supabase 공통 업무 원장과 append-only 이벤트
-- 사람 승인 시에만 생기는 정책 기반 배정 outbox
+- 사람 승인 시에만 생기는 정책 기반 전담 outbox
 - 결과·독립 검증·대표 결정·완료 receipt
 - active branch/idempotency 충돌 차단
 - 읽기 전용 대표 승인함과 비용·완료 대시보드
 
-첫 P0에서는 배정 outbox까지만 만듭니다. Devin, Claude Code, Codex,
+역할은 AI가 그때그때 선택하지 않습니다. 대표가 승인한 업무 계약과 버전된
+역할 정책이 owner와 서로 다른 reviewer를 미리 고정합니다. 첫 P0에서는 이
+전담 outbox까지만 만듭니다. Devin, Claude Code, Codex,
 Grok Build provider adapter와 Grok `CoinEasy-Ops` MCP, Buzz 완료·장애 전송은
 각각 별도 gate입니다. 따라서 migration을 적용해도 외부 실행은 시작되지
 않습니다.

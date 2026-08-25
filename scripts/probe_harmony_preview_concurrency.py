@@ -2,10 +2,11 @@
 """Prove the disposable Harmony Preview slice with 64 real DB connections.
 
 The probe is deliberately local/disposable only.  It seeds one immutable Squid
-official-X review fixture, races the same quiz signal through 64 independent
-``psql`` processes, submits the remaining three typed signals, and completes
-one private five-stage round.  It never calls a provider, Buzz, or publication
-routine.  The target database is expected to be discarded after the run.
+official-X review fixture and a five-role fixed-specialist roster, then races
+the same quiz signal, plan, and each of the four downstream stages through 64
+independent ``psql`` processes.  It never calls a provider, Buzz, approval, or
+publication routine.  The target database is expected to be discarded after
+the run.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from typing import Callable
 import uuid
 
 
@@ -273,6 +275,7 @@ def _environment_preflight_sql() -> str:
     return """
 select pg_catalog.jsonb_build_object(
   'fences', (select pg_catalog.count(*) from private.harmony_preview_environment_fence),
+  'specialists', (select pg_catalog.count(*) from private.harmony_preview_squid_specialist_bindings),
   'signals', (select pg_catalog.count(*) from agent_runtime.harmony_signals),
   'connector_receipts', (select pg_catalog.count(*) from agent_runtime.harmony_connector_attestation_receipts),
   'rounds', (select pg_catalog.count(*) from agent_runtime.harmony_rounds),
@@ -382,6 +385,144 @@ select pg_catalog.jsonb_build_object(
 """
 
 
+def _seed_specialists_sql(
+    ids: dict[str, str],
+    principals: dict[str, str],
+    branch_ref: str,
+    release_sha: str,
+    config_sha256: str,
+    expires_at: str,
+) -> str:
+    rows = (
+        (
+            "plan",
+            "squid_planner",
+            "coineasy_harmony_orchestrator",
+            "harmony_plan",
+            "grok_bot",
+        ),
+        (
+            "private_content",
+            "squid_private_content_producer",
+            "coineasy_harmony_content",
+            "harmony_prepare_private_content",
+            "content_engine",
+        ),
+        (
+            "independent_qa",
+            "squid_independent_qa",
+            "coineasy_harmony_qa",
+            "harmony_independent_qa",
+            "codex",
+        ),
+        (
+            "operator_inbox",
+            "coineasy_representative_inbox",
+            "coineasy_harmony_operator",
+            "harmony_operator_inbox",
+            "human_operator_inbox",
+        ),
+        (
+            "recap",
+            "squid_recap",
+            "coineasy_harmony_recap",
+            "harmony_recap",
+            "coineasy_recap",
+        ),
+    )
+    values = ",\n".join(
+        "(" + ", ".join(
+            (
+                _sql_literal(branch_ref),
+                f"'{ids['workspace']}'::uuid",
+                "'squid'",
+                _sql_literal(stage),
+                _sql_literal(specialist_code),
+                _sql_literal(role),
+                _sql_literal(capability),
+                _sql_literal(actor),
+                f"'{principals[stage]}'::uuid",
+                _sql_literal(release_sha),
+                _sql_literal(config_sha256),
+                f"'{expires_at}'::timestamptz",
+            )
+        ) + ")"
+        for stage, specialist_code, role, capability, actor in rows
+    )
+    return f"""
+insert into private.harmony_preview_squid_specialist_bindings(
+  branch_ref, workspace_id, client_id, stage, specialist_code,
+  role_name, capability, actor, principal_id, producer_release_sha,
+  config_sha256, expires_at
+) values
+{values};
+select pg_catalog.jsonb_build_object(
+  'specialists', pg_catalog.count(*),
+  'distinct_principals', pg_catalog.count(distinct specialist.principal_id),
+  'all_current', pg_catalog.bool_and(
+      specialist.expires_at > statement_timestamp()
+      and specialist.expires_at <= fence.expires_at
+      and fence.active
+  )
+)::text
+from private.harmony_preview_squid_specialist_bindings specialist
+join private.harmony_preview_environment_fence fence
+  on fence.branch_ref = specialist.branch_ref
+where specialist.workspace_id = '{ids['workspace']}'::uuid
+  and specialist.client_id = 'squid';
+"""
+
+
+def _assert_no_forbidden_side_effects(
+    operation: str,
+    rows: list[dict[str, object]],
+) -> None:
+    if any(
+        row.get("ok") is not True
+        or row.get("external_calls") is not False
+        or row.get("provider_calls") is not False
+        or row.get("publication_calls") is not False
+        or row.get("automatic_publication") is not False
+        for row in rows
+    ):
+        raise RuntimeError(f"{operation} race reported a forbidden side effect")
+
+
+def _race_exactly_once(
+    operation: str,
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    barrier = threading.Barrier(CONCURRENCY)
+
+    def race(index: int) -> dict[str, object]:
+        barrier.wait(timeout=30)
+        return invoke(index)
+
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        rows = list(pool.map(race, range(CONCURRENCY)))
+    new_count = sum(row.get("reused") is False for row in rows)
+    reused_count = sum(row.get("reused") is True for row in rows)
+    if (new_count, reused_count) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            f"{operation} exactly-once race failed: "
+            f"new={new_count}, reused={reused_count}"
+        )
+    _assert_no_forbidden_side_effects(operation, rows)
+    identities = {
+        _compact(row.get("stage_receipt"))
+        for row in rows
+    }
+    if len(identities) != 1:
+        raise RuntimeError(f"{operation} race returned divergent receipts")
+    canonical = rows[0]
+    receipt = canonical.get("stage_receipt")
+    if not isinstance(receipt, dict):
+        raise RuntimeError(f"{operation} race returned no stage receipt")
+    if not HEX_SHA256_PATTERN.fullmatch(str(receipt.get("operation_key_sha256", ""))):
+        raise RuntimeError(f"{operation} race returned no stable operation key")
+    return canonical, {"new": new_count, "reused": reused_count}
+
+
 def _submit_expression(
     ids: dict[str, str],
     receipt_id: str,
@@ -456,6 +597,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     preflight = psql.json(_environment_preflight_sql())
     expected_empty = {
         "fences": 0,
+        "specialists": 0,
         "signals": 0,
         "connector_receipts": 0,
         "rounds": 0,
@@ -475,9 +617,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     ids = {
         "workspace": uid(), "feed": uid(), "source": uid(), "item": uid(),
         "version": uid(), "job": uid(), "round": uid(), "plan": uid(),
-        "plan_receipt": uid(), "private_receipt": uid(), "qa_receipt": uid(),
-        "operator_receipt": uid(), "recap_receipt": uid(), "inbox": uid(),
-        "slug": uuid.uuid4().hex[:12],
+        "inbox": uid(), "slug": uuid.uuid4().hex[:12],
+    }
+    specialist_principals = {
+        stage: uid()
+        for stage in (
+            "plan",
+            "private_content",
+            "independent_qa",
+            "operator_inbox",
+            "recap",
+        )
     }
     branch_ref = branch_ref or uuid.uuid4().hex[:BRANCH_REF_LENGTH]
     fence_expiry = (
@@ -493,6 +643,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     seed = psql.json(_seed_sql(ids))
     if seed != {"ok": True, "grok_rows": 1, "publication_rows": 0}:
         raise RuntimeError(f"fixture seed failed closed: {seed}")
+    specialist_seed = psql.json(_seed_specialists_sql(
+        ids,
+        specialist_principals,
+        branch_ref,
+        args.release_sha,
+        args.config_sha256,
+        fence_expiry,
+    ))
+    if specialist_seed != {
+        "specialists": 5,
+        "distinct_principals": 5,
+        "all_current": True,
+    }:
+        raise RuntimeError(
+            f"fixed-specialist roster failed closed: {specialist_seed}"
+        )
     before = psql.json(_baseline_sql(ids["workspace"], ids["version"]))
 
     observed = (datetime.now(UTC) - timedelta(seconds=5)).replace(microsecond=0)
@@ -657,65 +823,131 @@ select pg_catalog.jsonb_build_object(
     if source_result.get("reused") is not False:
         raise RuntimeError(f"official source submission failed: {source_result}")
 
-    signal_hashes = sorted([row[2]["payload_sha256"] for row in signals] + [source_signal["payload_sha256"]])
-    orchestrator_id = uid()
-    orchestrator = _claims(
-        workspace_id=ids["workspace"], branch_ref=branch_ref,
-        role="coineasy_harmony_orchestrator", capability="harmony_plan",
-        principal_id=orchestrator_id, release_sha=args.release_sha,
-        config_sha256=args.config_sha256,
+    signal_hashes = sorted(
+        [row[2]["payload_sha256"] for row in signals]
+        + [source_signal["payload_sha256"]]
     )
     array_sql = "array[" + ",".join(_sql_literal(value) for value in signal_hashes) + "]::text[]"
-    plan_expression = (
-        "public.create_preview_harmony_squid_plan("
-        f"'{ids['workspace']}'::uuid, 'squid', '{ids['round']}'::uuid, "
-        f"'{ids['plan']}'::uuid, '{ids['plan_receipt']}'::uuid, {array_sql}, '{topic}')"
+
+    def plan_expression(
+        receipt_id: str,
+        round_id: str = ids["round"],
+        plan_id: str = ids["plan"],
+    ) -> str:
+        return (
+            "public.create_preview_harmony_squid_plan("
+            f"'{ids['workspace']}'::uuid, 'squid', '{round_id}'::uuid, "
+            f"'{plan_id}'::uuid, '{receipt_id}'::uuid, {array_sql}, '{topic}')"
+        )
+
+    wrong_plan_claims = _claims(
+        workspace_id=ids["workspace"], branch_ref=branch_ref,
+        role="coineasy_harmony_orchestrator", capability="harmony_plan",
+        principal_id=uid(), release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
     )
-    plan = psql.json(_rpc_sql(orchestrator, plan_expression))
-    if plan.get("reused") is not False:
-        raise RuntimeError(f"plan did not materialize exactly once: {plan}")
-    plan_replay = psql.json(_rpc_sql(orchestrator, plan_expression))
-    if plan_replay.get("reused") is not True or plan_replay != {
-        **plan,
-        "reused": True,
+    psql.expect_error(
+        _rpc_sql(wrong_plan_claims, plan_expression(uid())),
+        "harmony_preview_plan_scope_invalid",
+    )
+    plan_after_wrong_principal = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'rounds', (select pg_catalog.count(*) from agent_runtime.harmony_rounds
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'plans', (select pg_catalog.count(*) from agent_runtime.harmony_plans
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'plan_receipts', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and stage = 'plan')
+)::text;
+""")
+    if plan_after_wrong_principal != {
+        "rounds": 0,
+        "plans": 0,
+        "plan_receipts": 0,
     }:
-        raise RuntimeError(f"plan exact replay diverged: {plan_replay}")
+        raise RuntimeError(
+            "wrong plan principal preempted the fixed specialist: "
+            f"{plan_after_wrong_principal}"
+        )
+
+    def invoke_plan(_: int) -> dict[str, object]:
+        claims = _claims(
+            workspace_id=ids["workspace"], branch_ref=branch_ref,
+            role="coineasy_harmony_orchestrator", capability="harmony_plan",
+            principal_id=specialist_principals["plan"],
+            release_sha=args.release_sha, config_sha256=args.config_sha256,
+        )
+        return psql.json(_rpc_sql(claims, plan_expression(uid())))
+
+    plan, plan_race = _race_exactly_once("plan", invoke_plan)
+    operation_races: dict[str, dict[str, int]] = {"plan": plan_race}
+    plan_rows = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'rounds', (select pg_catalog.count(*) from agent_runtime.harmony_rounds
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'plans', (select pg_catalog.count(*) from agent_runtime.harmony_plans
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'plan_receipts', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and stage = 'plan')
+)::text;
+""")
+    if plan_rows != {"rounds": 1, "plans": 1, "plan_receipts": 1}:
+        raise RuntimeError(f"plan race wrote more than one ledger row: {plan_rows}")
     conflicting_ids = {
         **ids,
         "round": uid(),
         "plan": uid(),
-        "plan_receipt": uid(),
     }
-    conflicting_plan_expression = (
-        "public.create_preview_harmony_squid_plan("
-        f"'{ids['workspace']}'::uuid, 'squid', '{conflicting_ids['round']}'::uuid, "
-        f"'{conflicting_ids['plan']}'::uuid, '{conflicting_ids['plan_receipt']}'::uuid, "
-        f"{array_sql}, '{topic}')"
+    orchestrator = _claims(
+        workspace_id=ids["workspace"], branch_ref=branch_ref,
+        role="coineasy_harmony_orchestrator", capability="harmony_plan",
+        principal_id=specialist_principals["plan"],
+        release_sha=args.release_sha, config_sha256=args.config_sha256,
     )
     psql.expect_error(
-        _rpc_sql(orchestrator, conflicting_plan_expression),
+        _rpc_sql(
+            orchestrator,
+            plan_expression(
+                uid(), conflicting_ids["round"], conflicting_ids["plan"]
+            ),
+        ),
         "harmony_preview_plan_idempotency_conflict",
     )
 
     stage_specs = [
-        ("private_content", "coineasy_harmony_content", "harmony_prepare_private_content", ids["private_receipt"]),
-        ("independent_qa", "coineasy_harmony_qa", "harmony_independent_qa", ids["qa_receipt"]),
-        ("operator_inbox", "coineasy_harmony_operator", "harmony_operator_inbox", ids["operator_receipt"]),
-        ("recap", "coineasy_harmony_recap", "harmony_recap", ids["recap_receipt"]),
+        (
+            "private_content",
+            "coineasy_harmony_content",
+            "harmony_prepare_private_content",
+        ),
+        (
+            "independent_qa",
+            "coineasy_harmony_qa",
+            "harmony_independent_qa",
+        ),
+        (
+            "operator_inbox",
+            "coineasy_harmony_operator",
+            "harmony_operator_inbox",
+        ),
+        ("recap", "coineasy_harmony_recap", "harmony_recap"),
     ]
     stage_results: list[dict[str, object]] = []
-    principal_ids: dict[str, str] = {}
-    for stage, role, capability, receipt_id in stage_specs:
-        principal_ids[stage] = uid()
-        claims = _claims(
-            workspace_id=ids["workspace"], branch_ref=branch_ref,
-            role=role, capability=capability, principal_id=principal_ids[stage],
-            release_sha=args.release_sha, config_sha256=args.config_sha256,
-        )
-        qa_evidence = None
-        inbox_id = ids["inbox"] if stage == "recap" else None
+    wrong_principal_preemption_rows = 0
+    operator_inbox_stage4_delta = 0
+    recap_operator_inbox_delta = 0
+    for stage, role, capability in stage_specs:
+        qa_evidence: dict[str, object] | None = None
+        inbox_id = ids["inbox"] if stage in {"operator_inbox", "recap"} else None
         if stage == "independent_qa":
-            reviewed = stage_results[-1]["stage_receipt"]["output_sha256"]
+            previous_receipt = stage_results[-1].get("stage_receipt")
+            if not isinstance(previous_receipt, dict):
+                raise RuntimeError("private-content race returned no receipt")
+            reviewed = str(previous_receipt["output_sha256"])
             qa_evidence = {
                 "schema_version": "harmony-independent-qa-evidence@1",
                 "reviewed_output_sha256": reviewed,
@@ -724,31 +956,103 @@ select pg_catalog.jsonb_build_object(
                 "findings": [], "verdict": "passed",
                 "verifier_version": "harmony-deterministic-qa@1",
             }
-        result = psql.json(
-            _rpc_sql(claims, _stage_expression(ids, stage, receipt_id, inbox_id, qa_evidence))
+        before_stage = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'stage_rows', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid and stage = '{stage}'),
+  'operator_inbox', (select pg_catalog.count(*)
+    from agent_runtime.harmony_operator_inbox
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid)
+)::text;
+""")
+        if before_stage.get("stage_rows") != 0:
+            raise RuntimeError(f"stage was not empty before race: {stage}: {before_stage}")
+        wrong_claims = _claims(
+            workspace_id=ids["workspace"], branch_ref=branch_ref,
+            role=role, capability=capability, principal_id=uid(),
+            release_sha=args.release_sha, config_sha256=args.config_sha256,
         )
-        if result.get("reused") is not False:
-            raise RuntimeError(f"stage did not append exactly once: {stage}: {result}")
-        replay = psql.json(
-            _rpc_sql(
-                claims,
-                _stage_expression(
-                    ids, stage, receipt_id, inbox_id, qa_evidence
-                ),
-            )
-        )
-        if replay.get("reused") is not True or replay != {
-            **result,
-            "reused": True,
-        }:
-            raise RuntimeError(f"stage exact replay diverged: {stage}: {replay}")
         psql.expect_error(
             _rpc_sql(
-                claims,
+                wrong_claims,
                 _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
             ),
-            "harmony_preview_stage_idempotency_conflict",
+            "harmony_preview_stage_claim_invalid",
         )
+        after_wrong_principal = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'stage_rows', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid and stage = '{stage}'),
+  'operator_inbox', (select pg_catalog.count(*)
+    from agent_runtime.harmony_operator_inbox
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid)
+)::text;
+""")
+        if after_wrong_principal != before_stage:
+            wrong_principal_preemption_rows += int(
+                after_wrong_principal.get("stage_rows", 0)
+            ) - int(before_stage.get("stage_rows", 0))
+            raise RuntimeError(
+                f"wrong principal preempted fixed specialist {stage}: "
+                f"{before_stage} -> {after_wrong_principal}"
+            )
+
+        def invoke_stage(_: int) -> dict[str, object]:
+            claims = _claims(
+                workspace_id=ids["workspace"], branch_ref=branch_ref,
+                role=role, capability=capability,
+                principal_id=specialist_principals[stage],
+                release_sha=args.release_sha,
+                config_sha256=args.config_sha256,
+            )
+            return psql.json(_rpc_sql(
+                claims,
+                _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
+            ))
+
+        result, stage_race = _race_exactly_once(stage, invoke_stage)
+        operation_races[stage] = stage_race
+        after_stage = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'stage_rows', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid and stage = '{stage}'),
+  'operator_inbox', (select pg_catalog.count(*)
+    from agent_runtime.harmony_operator_inbox
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and plan_id = '{ids['plan']}'::uuid)
+)::text;
+""")
+        if after_stage.get("stage_rows") != 1:
+            raise RuntimeError(
+                f"{stage} race wrote more than one receipt: {after_stage}"
+            )
+        inbox_delta = int(after_stage["operator_inbox"]) - int(
+            before_stage["operator_inbox"]
+        )
+        if stage == "operator_inbox":
+            operator_inbox_stage4_delta = inbox_delta
+            if inbox_delta != 1:
+                raise RuntimeError(
+                    f"stage 4 did not create exactly one inbox: {after_stage}"
+                )
+        elif stage == "recap":
+            recap_operator_inbox_delta = inbox_delta
+            if inbox_delta != 0:
+                raise RuntimeError(
+                    f"recap created or removed an inbox: {after_stage}"
+                )
+        elif inbox_delta != 0:
+            raise RuntimeError(
+                f"{stage} changed the representative inbox early: {after_stage}"
+            )
         stage_results.append(result)
 
     after = psql.json(_baseline_sql(ids["workspace"], ids["version"]))
@@ -764,7 +1068,16 @@ select pg_catalog.jsonb_build_object(
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'plans', (select pg_catalog.count(*) from agent_runtime.harmony_plans
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'specialists', (select pg_catalog.count(*)
+    from private.harmony_preview_squid_specialist_bindings
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'distinct_specialist_principals', (select pg_catalog.count(distinct principal_id)
+    from private.harmony_preview_squid_specialist_bindings
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'stage_receipts', (select pg_catalog.count(*) from agent_runtime.harmony_stage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'distinct_operation_keys', (select pg_catalog.count(distinct operation_key_sha256)
+    from agent_runtime.harmony_stage_receipts
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'operator_inbox', (select pg_catalog.count(*) from agent_runtime.harmony_operator_inbox
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
@@ -784,7 +1097,9 @@ select pg_catalog.jsonb_build_object(
 """)
     expected = {
         "signals": 4, "connector_receipts": 4, "rounds": 1, "plans": 1,
-        "stage_receipts": 5, "operator_inbox": 1,
+        "specialists": 5, "distinct_specialist_principals": 5,
+        "stage_receipts": 5, "distinct_operation_keys": 5,
+        "operator_inbox": 1,
         "qa_principal_independent": True, "automatic_publication": False,
         "recap_cost_microusd": 0,
     }
@@ -792,17 +1107,24 @@ select pg_catalog.jsonb_build_object(
         raise RuntimeError(f"vertical slice ledger mismatch: {counts}")
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@1",
+        "schema_version": "harmony-preview-concurrency-proof@2",
         "connections": CONCURRENCY,
         "release_sha": args.release_sha,
         "config_sha256": args.config_sha256,
         "fence_expires_at": fence_expiry,
         "new": new_count,
         "reused": reused_count,
-        "plan_exact_replay": True,
+        "operation_races": operation_races,
+        "plan_exact_replay": plan_race == {
+            "new": 1,
+            "reused": CONCURRENCY - 1,
+        },
         "plan_conflict_rejected": True,
-        "stage_exact_replays": 4,
-        "stage_conflicts_rejected": 4,
+        "stage_concurrency_proofs": 4,
+        "wrong_principal_attempts": 5,
+        "wrong_principal_preemption_rows": wrong_principal_preemption_rows,
+        "operator_inbox_stage4_delta": operator_inbox_stage4_delta,
+        "recap_operator_inbox_delta": recap_operator_inbox_delta,
         "counts": counts,
         "side_effect_baseline_unchanged": True,
         "automatic_publication": False,

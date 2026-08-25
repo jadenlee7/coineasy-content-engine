@@ -40,8 +40,8 @@ Recap aggregate ┘                                      v
 
 ### Preview 마이그레이션 순서
 
-Preview 전용 네 파일은 같은 exact commit의 공통 원장 함수와 role closure에
-의존하므로 아래 **여섯 파일 전체**를 각각 SHA-256으로 고정해 순서대로
+Preview 전용 원장은 같은 exact commit의 공통 함수와 role closure에
+의존하므로 아래 **일곱 파일 전체**를 각각 SHA-256으로 고정해 순서대로
 적용합니다. 전체 repository migration을 밀어 넣는 unconstrained `db push`는
 사용하지 않습니다.
 
@@ -51,14 +51,15 @@ Preview 전용 네 파일은 같은 exact commit의 공통 원장 함수와 role
 4. `20260825133000_harmony_preview_vertical_slice.sql`
 5. `20260825134000_harmony_preview_stage_chain.sql`
 6. `20260825135000_harmony_preview_dashboard_roles.sql`
+7. `20260825140000_harmony_preview_fixed_specialist_chain.sql`
 
 공개 RPC와 허용 role은 다음과 같습니다.
 
 | RPC | 허용 role | 효과 |
 |---|---|---|
 | `submit_preview_harmony_signal(uuid,text,uuid,jsonb)` | `coineasy_harmony_connector` | signal과 DB-검증 connector receipt를 원자적으로 추가 |
-| `create_preview_harmony_squid_plan(uuid,text,uuid,uuid,uuid,text[],text)` | `coineasy_harmony_orchestrator` | Squid plan, round, plan-stage receipt 생성 |
-| `append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)` | `coineasy_harmony_content`, `coineasy_harmony_qa`, `coineasy_harmony_operator`, `coineasy_harmony_recap` | role별 다음 stage 하나 추가. QA 단계만 typed evidence JSON을 요구 |
+| `create_preview_harmony_squid_plan(uuid,text,uuid,uuid,uuid,text[],text)` | `coineasy_harmony_orchestrator` | 고정 `squid_planner` principal만 Squid plan, round, plan-stage receipt 생성 |
+| `append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)` | `coineasy_harmony_content`, `coineasy_harmony_qa`, `coineasy_harmony_operator`, `coineasy_harmony_recap` | 사전 결속된 specialist만 다음 stage 하나 추가. QA만 typed evidence JSON을 요구하며 stage 4가 pending inbox를 생성 |
 | `get_preview_harmony_round(uuid,text,uuid)` | `coineasy_harmony_orchestrator`, `coineasy_harmony_operator` | 완성된 private round 조회 |
 | `get_preview_harmony_dashboard(uuid,text)` | `coineasy_harmony_dashboard` | 읽기 전용 운영실 projection 조회 |
 
@@ -74,6 +75,10 @@ Stage capability는 순서대로 `harmony_plan`,
 `harmony_operator_inbox`, `harmony_recap`입니다. 모든 role은 `NOLOGIN`,
 `NOINHERIT`, `NOBYPASSRLS`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,
 `NOREPLICATION`이어야 하고, Harmony 테이블 직접 grant는 0이어야 합니다.
+DB owner가 seed하는 고정 roster는 stage마다 principal 한 명만 허용하고,
+principal/release/config/Preview ref/만료 시각을 하나의 immutable binding SHA로
+결속합니다. 환경 fence와 specialist binding TTL은 DB constraint에서도 최대
+2시간이며, runtime이 모델을 골라 배정하는 경로는 없습니다.
 P0의 `harmony_independent_qa`는 실제 Codex/Grok 모델 호출이 아니라 별도
 principal이 prior-output SHA와 고정된 구조 조건을 attestation하는
 deterministic gate입니다. 의미 기반 QA나 실패 verdict 원장은 이 검증의
@@ -99,7 +104,7 @@ Netlify 계약은 다음과 같습니다.
 ### Preview 실행 전 남은 검증 차단점
 
 계약 구현 파일이 존재하는 것만으로 Gate 1을 통과하지 않습니다. exact Git
-SHA에서 여섯 migration의 disposable PostgreSQL 적용, security smoke,
+SHA에서 일곱 migration의 disposable PostgreSQL 적용, security smoke,
 `scripts/probe_harmony_preview_concurrency.py`의 64개 실제 DB connection 결과,
 그리고 `scripts/probe_harmony_preview_postgrest.py`의 실제 서명 JWT/PostgREST
 64-way connector 결과가 모두 성공해야 합니다. dashboard 응답은
@@ -122,7 +127,7 @@ project ref, 예상 TTL, 최대 예상액과 함께 대표에게 제시합니다
 
 승인 receipt에 다음을 기록합니다.
 
-- exact Git SHA와 여섯 마이그레이션 SHA-256
+- exact Git SHA와 일곱 마이그레이션 SHA-256
 - `examples/harmony-preview-squid-config.json`의 canonical byte SHA-256
 - Supabase 조직과 parent project ref
 - branch 이름, 현재 시간당 비용, 자동 삭제 예정 UTC 시각
@@ -152,14 +157,15 @@ Deploy Preview에는 scoped dashboard JWT만 bearer로 저장하며
 
 ### Gate 3 — Preview DB 적용
 
-별도 승인 후 여섯 마이그레이션을 **Preview branch ref를 재확인한 연결**에만
+별도 승인 후 일곱 마이그레이션을 **Preview branch ref를 재확인한 연결**에만
 순서대로 적용합니다. DB owner가 `private.harmony_preview_environment_fence`
 에 exact branch ref와 짧은 만료 시각을 한 번 seed합니다. 이 table은
 immutable하므로 오류 시 row를 수정/삭제하지 않고 branch 전체를 삭제합니다.
 
 적용 직후, E2E 입력 전 아래를 읽기 전용으로 확인합니다.
 
-- 여섯 원장 table 모두 RLS와 FORCE RLS 활성
+- 모든 Harmony 원장, environment fence, specialist roster table에 RLS와
+  FORCE RLS 활성
 - Harmony role의 모든 직접 table/view/sequence grant 0
 - public/anon/authenticated/service_role의 Harmony 원장 table 직접 grant 0
 - service_role의 다섯 공개 RPC execute grant 0
@@ -170,6 +176,8 @@ immutable하므로 오류 시 row를 수정/삭제하지 않고 branch 전체를
   `ADMIN=true`, `SET=false`, `INHERIT=false` 관리 edge는 허용하되 런타임
   assume 권한으로 간주하지 않으며, 그 밖의 principal edge는 0이어야 합니다.
 - environment fence는 exact Preview ref 한 건, active, 미만료
+- 고정 specialist roster는 Squid 5단계와 정확히 일치하고 principal 5개가
+  모두 다르며, 각 binding과 fence의 남은 TTL이 2시간 이내
 - Harmony signal/receipt/round/plan/stage/inbox row 모두 0
 - Production 연결과 Production row delta 0
 
@@ -194,7 +202,9 @@ context에서 같은 route는 403, flag OFF는 503, 비인증 요청은 거절�
 별도 승인 후 synthetic/aggregate 입력만 사용합니다. 먼저 64개의 독립 DB
 connection/transaction이 동일한 exact signal request를 동시에 제출합니다.
 그 뒤 나머지 세 typed signal을 각각 한 번 기록하고, plan과 네 후속 stage를
-순서대로 한 번씩 호출합니다. provider, relay, message, publication client는
+각 단계마다 64개의 독립 connection으로 순서대로 race합니다. 각 race는 새
+receipt UUID와 새 short-lived JWT `jti`를 쓰되 동일한 specialist binding과
+logical input을 사용합니다. provider, relay, message, publication client는
 구성하거나 실행하지 않습니다.
 
 실행기는 Management API에서 직전에 읽기 전용 확인한 parent Production ref와
@@ -214,14 +224,18 @@ Squid `content_source`는 Preview에 복제된 다음 자연 원장과 exact has
 - `x_post_text`, media 없음, 비어 있지 않은 본문
 - source body SHA-256과 immutable content/outbox binding 일치
 
-64-signal race 뒤에는 동일 plan/stage의 concurrent exact replay와 서로 다른
-receipt ID conflict도 각각 실행합니다. exact replay는 하나의 동일 receipt로
-수렴해야 하고 conflict는 row delta 0으로 거절되어야 합니다. 이어 wrong
-client/workspace/lane/role, future/expired JWT, service role, self-review, stage
-순서 위반, signal/hash/source 변조를 실제 signed-JWT PostgREST 경로에서 모두
-거절하는지 확인합니다. 마지막으로 receipt 만료와 current source-version
-변경을 각각 재현해 round·inbox·dashboard count가 즉시 projection에서
-제외되는지 검증합니다.
+64-signal race 뒤에는 동일 plan/stage의 concurrent stable replay와 logical
+identity conflict를 각각 실행합니다. 새 receipt UUID나 갱신 JWT는 transport
+metadata이므로 하나의 기존 receipt로 수렴해야 합니다. 다른 round/plan/topic,
+QA evidence 또는 inbox identity는 conflict로 row delta 0 거절되어야 합니다.
+이어 connector 경계의 wrong client/workspace/lane/role, future/expired JWT,
+service role, signal/hash/source 변조는 실제 signed-JWT PostgREST 경로에서
+거절하는지 확인합니다. plan/stage 경계의 self-review, specialist principal 재사용,
+stage 순서 위반과 logical identity conflict는 동일 claims를 주입한 direct-PG
+transaction probe로 검증합니다. 이 결과는 stage RPC의 실제 PostgREST 검증으로
+과장하지 않습니다. 마지막으로 receipt 만료와 current source-version 변경을
+각각 재현해 round·inbox·dashboard count가 즉시 projection에서 제외되는지
+검증합니다.
 
 DB race만으로 connector attestation 성공을 주장하지 않습니다. 실제 JWT
 runner는 child publishable key와 Legacy JWT secret을 고정된 환경변수에서 한 번
@@ -232,13 +246,18 @@ runner는 child publishable key와 Legacy JWT secret을 고정된 환경변수�
 
 다음 조건을 **모두** 하나의 redacted receipt에 기록해야 성공입니다.
 
-1. 64개 호출이 모두 같은 idempotency 결과로 수렴합니다. 정확히 하나만
-   `reused=false`, 63개는 `reused=true`이며 signal/connector receipt ID와
-   SHA-256이 같습니다. timeout이나 commit-unknown은 재시도하지 않고 실패로
-   처리합니다.
-2. 64-call phase의 물리 row delta는 `harmony_signals +1`,
-   `harmony_connector_attestation_receipts +1`뿐입니다. 다른 고객 row delta와
-   round/plan/stage/inbox delta는 0입니다.
+1. signal, plan, private-content, independent-QA, operator-inbox, Recap의 각
+   64개 호출이 같은 idempotency 결과로 수렴합니다. 각 race마다 정확히
+   하나만 `reused=false`, 63개는 `reused=true`이고 동일 receipt와 stable
+   operation key를 반환합니다. timeout이나 commit-unknown은 재시도하지 않고
+   실패로 처리합니다.
+2. 첫 `quiz_learning` signal의 64-way race에서 물리 row delta는
+   `harmony_signals +1`, `harmony_connector_attestation_receipts +1`뿐이고
+   round/plan/stage/inbox delta는 0입니다. 이후 plan race는
+   round/plan/stage receipt를 각각 `+1`, private-content와 independent-QA race는
+   stage receipt만 각각 `+1`, operator-inbox race는 stage receipt와 inbox를
+   각각 `+1`, Recap race는 stage receipt만 `+1`이고 inbox delta는 0이어야
+   합니다. 각 phase에서 다른 고객 row delta는 0입니다.
 3. 최종 Squid row 수는 signals 4, connector receipts 4, rounds 1, plans 1,
    stage receipts 5, pending operator inbox 1입니다. 중복 key/group은 0입니다.
 4. stage order와 ordinal은 정확히
@@ -247,6 +266,9 @@ runner는 child publishable key와 Legacy JWT secret을 고정된 환경변수�
    직전 receipt에 연결됩니다.
 5. QA principal은 plan/content principal과 다르고, verdict는 `passed`이며,
    operator inbox는 그 QA receipt와 output hash에 정확히 묶여 있습니다.
+   다섯 specialist principal은 모두 다르고 각 stage receipt는 exact
+   specialist binding/release/config/operation key를 가집니다. stage 4의 inbox
+   delta는 `+1`, stage 5 Recap의 inbox delta는 `0`입니다.
 6. private headline/summary에는 비어 있지 않은 한국어가 있고 factual source
    binding이 일치합니다. operator inbox는 `pending`, operator decision은 0,
    publication은 0입니다.
@@ -255,8 +277,14 @@ runner는 child publishable key와 Legacy JWT secret을 고정된 환경변수�
    흔적이 없어야 합니다.
 8. `get_preview_harmony_dashboard`와 `GET /api/harmony/dashboard`가 같은 exact
    workspace/Squid projection을 반환합니다. response schema는
-   `harmony-preview-dashboard@1`, 최신 상태는 `operator_review_pending`, flags는
+   `harmony-preview-dashboard@2`, 최신 상태는 `operator_review_pending`, flags는
    read-only true와 네 side-effect false입니다.
+   각 stage projection은 specialist code, principal, release/config, binding SHA,
+   operation key를 보존합니다. Netlify API는 다섯 principal의 전원 고유성과
+   workspace/client/plan/stage/input/output/binding으로부터 operation key를 다시
+   계산합니다. binding SHA 자체는 DB roster·fence join이 attestation한 opaque
+   evidence이며, 브라우저는 same-origin API가 검증한 exact shape와 principal
+   고유성만 다시 확인합니다.
 9. 다른 client/workspace JWT, 다른 lane capability, 만료/future JWT,
    service_role, 자기 QA, stage 순서 위반, hash 변조는 모두 fail-closed이고 row
    delta 0입니다.
@@ -294,7 +322,7 @@ Preview 성공은 Production 적용, 다른 고객 연결, 실제 승인 또는 
 ## 로컬 사전 검증 체크리스트
 
 - [ ] exact branch/head와 dirty worktree 목록을 receipt에 기록
-- [ ] 여섯 마이그레이션과 Netlify adapter의 계약 키가 완전히 일치
+- [ ] 일곱 마이그레이션과 Netlify adapter의 계약 키가 완전히 일치
 - [ ] 관련 Python/JavaScript/SQL security 테스트 통과
 - [ ] 임시 PostgreSQL에서 전체 마이그레이션과 64-connection harness 통과
 - [ ] `git diff --check` 통과

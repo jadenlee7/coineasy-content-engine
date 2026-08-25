@@ -1,5 +1,5 @@
 -- Transactional security smoke for the disposable Harmony Preview fabric.
--- Run as database owner after migrations 20260825130000..135000. No rows persist.
+-- Run as database owner after migrations 20260825130000..140000. No rows persist.
 
 begin;
 
@@ -16,7 +16,8 @@ begin
         'agent_runtime.harmony_plans',
         'agent_runtime.harmony_stage_receipts',
         'agent_runtime.harmony_operator_inbox',
-        'private.harmony_preview_environment_fence'
+        'private.harmony_preview_environment_fence',
+        'private.harmony_preview_squid_specialist_bindings'
     ] loop
         if not exists (
             select 1
@@ -121,6 +122,16 @@ begin
             raise exception 'Harmony role belongs to another role: %', role_name;
         end if;
     end loop;
+end
+$test$;
+
+do $test$
+begin
+    if exists (
+        select 1 from private.harmony_preview_squid_specialist_bindings
+    ) then
+        raise exception 'fixed-specialist roster was not empty by default';
+    end if;
 end
 $test$;
 

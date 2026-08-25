@@ -26,6 +26,7 @@ from core.agent_control.preview_collaboration import (
     bind_preview_collaboration_round,
     bind_preview_connector_receipt,
     bind_preview_stage_receipt,
+    preview_stage_operation_key_sha256,
     validate_squid_preview_signal_set,
 )
 
@@ -228,7 +229,12 @@ def test_signal_topic_taxonomy_is_closed(topic_code: str) -> None:
         })
 
 
-def _round(*, qa_principal: str = _uuid(5003), inbox_qa_output: str | None = None):
+def _round(
+    *,
+    qa_principal: str = _uuid(5003),
+    recap_principal: str = _uuid(5005),
+    inbox_qa_output: str | None = None,
+):
     signals = _signals()
     receipts = tuple(_receipt(signal, index) for index, signal in enumerate(signals))
     sorted_receipts = tuple(sorted(receipts, key=lambda item: item.lane.value))
@@ -254,19 +260,32 @@ def _round(*, qa_principal: str = _uuid(5003), inbox_qa_output: str | None = Non
     input_sha = _sha([item.model_dump(mode="python") for item in manifest])
     round_id, plan_id = _uuid(4001), _uuid(4002)
     mapping = (
-        (PreviewHarmonyStage.PLAN, "grok_bot", "harmony_plan", _uuid(5001)),
+        (
+            PreviewHarmonyStage.PLAN, "grok_bot", "harmony_plan",
+            "squid_planner", _uuid(5001),
+        ),
         (PreviewHarmonyStage.PRIVATE_CONTENT, "content_engine",
-            "harmony_prepare_private_content", _uuid(5002)),
+            "harmony_prepare_private_content",
+            "squid_private_content_producer", _uuid(5002)),
         (PreviewHarmonyStage.INDEPENDENT_QA, "codex",
-            "harmony_independent_qa", qa_principal),
+            "harmony_independent_qa", "squid_independent_qa", qa_principal),
         (PreviewHarmonyStage.OPERATOR_INBOX, "human_operator_inbox",
-            "harmony_operator_inbox", _uuid(5004)),
-        (PreviewHarmonyStage.RECAP, "coineasy_recap", "harmony_recap", _uuid(5005)),
+            "harmony_operator_inbox", "coineasy_representative_inbox",
+            _uuid(5004)),
+        (PreviewHarmonyStage.RECAP, "coineasy_recap", "harmony_recap",
+            "squid_recap", recap_principal),
     )
     stage_receipts = []
     previous_receipt, previous_output = None, input_sha
-    for ordinal, (stage, actor, capability, principal) in enumerate(mapping, start=1):
+    for ordinal, (
+        stage, actor, capability, specialist_code, principal,
+    ) in enumerate(mapping, start=1):
         output = _sha({"stage": stage.value, "input": previous_output})
+        specialist_binding = _sha({
+            "stage": stage.value,
+            "principal_id": principal,
+            "specialist_code": specialist_code,
+        })
         payload = bind_preview_stage_receipt({
             "receipt_id": _uuid(6000 + ordinal),
             "workspace_id": WORKSPACE_ID, "client_id": "squid",
@@ -274,6 +293,17 @@ def _round(*, qa_principal: str = _uuid(5003), inbox_qa_output: str | None = Non
             "stage": stage, "ordinal": ordinal, "actor": actor,
             "principal_id": principal, "producer_release_sha": "1" * 40,
             "config_sha256": "2" * 64, "capability": capability,
+            "specialist_code": specialist_code,
+            "specialist_binding_sha256": specialist_binding,
+            "operation_key_sha256": preview_stage_operation_key_sha256(
+                specialist_binding_sha256=specialist_binding,
+                workspace_id=WORKSPACE_ID,
+                client_id="squid",
+                plan_id=plan_id,
+                stage=stage,
+                input_sha256=previous_output,
+                output_sha256=output,
+            ),
             "binding_receipt_sha256": "3" * 64,
             "verdict": "passed" if stage == PreviewHarmonyStage.INDEPENDENT_QA else None,
             "reviewer_principal_id": (
@@ -312,9 +342,39 @@ def test_typed_round_binds_every_stage_and_exact_qa_inbox() -> None:
     assert result.publication_calls is False
 
 
+def test_typed_round_is_representative_visible_before_recap() -> None:
+    payload = _round()
+    payload["stage_receipts"] = payload["stage_receipts"][:4]
+    payload["stage_receipt_count"] = 4
+    result = PreviewHarmonyCollaborationRound.model_validate(
+        bind_preview_collaboration_round(payload)
+    )
+    assert len(result.stage_receipts) == 4
+    assert result.stage_receipt_count == 4
+
+
+def test_typed_round_rejects_stage_count_mismatch() -> None:
+    payload = _round()
+    payload["stage_receipt_count"] = 4
+    with pytest.raises(ValidationError, match="harmony_preview_stage_order_invalid"):
+        PreviewHarmonyCollaborationRound.model_validate(
+            bind_preview_collaboration_round(payload)
+        )
+
+
 def test_typed_round_rejects_qa_self_review() -> None:
     with pytest.raises(ValidationError, match="harmony_preview_qa_separation_invalid"):
         PreviewHarmonyCollaborationRound.model_validate(_round(qa_principal=_uuid(5001)))
+
+
+def test_typed_round_rejects_any_reused_specialist_principal() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="harmony_preview_specialist_separation_invalid",
+    ):
+        PreviewHarmonyCollaborationRound.model_validate(
+            _round(recap_principal=_uuid(5001))
+        )
 
 
 def test_typed_round_rejects_inbox_qa_output_tamper() -> None:
@@ -331,6 +391,15 @@ def test_typed_round_rejects_stage_input_tamper_even_with_new_digests() -> None:
     stages = list(payload["stage_receipts"])
     stage = stages[1].model_dump(mode="python")
     stage["input_sha256"] = "8" * 64
+    stage["operation_key_sha256"] = preview_stage_operation_key_sha256(
+        specialist_binding_sha256=stage["specialist_binding_sha256"],
+        workspace_id=stage["workspace_id"],
+        client_id=stage["client_id"],
+        plan_id=stage["plan_id"],
+        stage=stage["stage"],
+        input_sha256=stage["input_sha256"],
+        output_sha256=stage["output_sha256"],
+    )
     stages[1] = PreviewHarmonyStageReceipt.model_validate(
         bind_preview_stage_receipt(stage)
     )
