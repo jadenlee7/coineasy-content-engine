@@ -24,6 +24,9 @@ WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 SOURCE_ID = "22222222-2222-4222-8222-222222222222"
 JOB_ID = "33333333-3333-4333-8333-333333333333"
 REQUEST_ID = "44444444-4444-4444-8444-444444444444"
+RECOVERY_ID = "66666666-6666-4666-8666-666666666666"
+APPROVAL_ID = "77777777-7777-4777-8777-777777777777"
+RELEASE_SHA = "a" * 40
 SERVICE_KEY = "service-role-key-that-is-longer-than-thirty-two-characters"
 PROMOTION_URL = "https://x.com/squidkorea/status/123456789"
 PROMOTION_CANDIDATE_ID = hashlib.sha256(
@@ -757,3 +760,340 @@ async def test_recover_batch_handoff_allows_an_exact_receipt_miss():
     )
 
     assert recovered is False
+
+
+def _recovery_subject() -> dict[str, object]:
+    return {
+        "contract": "squid-failed-draft-recovery@1",
+        "workspace_id": WORKSPACE_ID,
+        "job_id": JOB_ID,
+        "recovery_id": RECOVERY_ID,
+        "request_id": REQUEST_ID,
+        "source_item_id": SOURCE_ID,
+        "kst_date": "2026-08-25",
+        "job_input_sha256": "1" * 64,
+        "source_snapshot_sha256": "2" * 64,
+        "style_pack_sha256": "3" * 64,
+        "failed_output_sha256": "4" * 64,
+        "failure_code": "squid_visual_localization_incomplete",
+        "failed_attempts": 3,
+        "failed_max_attempts": 3,
+        "approval_id": APPROVAL_ID,
+        "approved_by": "codex:user",
+        "approved_at": "2026-08-25T08:00:00+00:00",
+        "expires_at": "2026-08-25T09:00:00+00:00",
+        "release_sha": RELEASE_SHA,
+        "claims_allowed": 1,
+        "same_job": True,
+        "same_request_id": True,
+        "automatic_approval": False,
+        "automatic_publication": False,
+        "human_review_required": True,
+        "legacy_failure_requires_explicit_review": True,
+        "failed_output_snapshot": {
+            "execution_plane": "studio_sync",
+            "last_error_code": "squid_visual_localization_incomplete",
+            "last_failure_error_code": "squid_visual_localization_incomplete",
+            "last_failure_retryable": False,
+            "finished_at": "2026-08-25T07:47:42+00:00",
+        },
+    }
+
+
+def _recovery_inspection(*, authorized: bool = False) -> dict[str, object]:
+    return {
+        "eligible": True,
+        "authorized": authorized,
+        "recovery_id": RECOVERY_ID,
+        "job_id": JOB_ID,
+        "request_id": REQUEST_ID,
+        "source_item_id": SOURCE_ID,
+        "approval_subject": _recovery_subject(),
+        "approval_subject_sha256": "5" * 64,
+        "claims_allowed": 1,
+        "claims_consumed": 0,
+        "expires_at": "2026-08-25T09:00:00+00:00",
+        "release_sha": RELEASE_SHA,
+    }
+
+
+@pytest.mark.asyncio
+async def test_inspect_failed_draft_recovery_uses_exact_safe_rpc_contract():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(
+            "/rpc/inspect_squid_failed_draft_recovery"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_recovery_inspection())
+
+    inspected = await _repo(handler).inspect_failed_draft_recovery(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_id=APPROVAL_ID,
+        approved_by="codex:user",
+        approved_at=datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc),
+        release_sha=RELEASE_SHA,
+    )
+
+    assert inspected.request_id == REQUEST_ID
+    assert inspected.source_item_id == SOURCE_ID
+    assert inspected.approval_subject_sha256 == "5" * 64
+    assert set(captured) == {
+        "target_workspace_id",
+        "target_job_id",
+        "target_recovery_id",
+        "target_approval_id",
+        "target_approved_by",
+        "target_approved_at",
+        "target_expires_at",
+        "target_release_sha",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutate",),
+    [
+        (lambda response: response.update({"claims_allowed": True}),),
+        (
+            lambda response: response["approval_subject"].update(
+                {"same_request_id": False}
+            ),
+        ),
+        (
+            lambda response: response["approval_subject"].update(
+                {"approved_by": "another-operator"}
+            ),
+        ),
+        (
+            lambda response: response.update(
+                {"request_id": "99999999-9999-4999-8999-999999999999"}
+            ),
+        ),
+    ],
+)
+async def test_recovery_inspection_rejects_loose_types_or_unbound_subject(
+    mutate,
+):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        response = _recovery_inspection()
+        mutate(response)
+        return httpx.Response(200, json=response)
+
+    with pytest.raises(
+        AutomationRepositoryError,
+        match="invalid_recovery_inspection_response",
+    ):
+        await _repo(handler).inspect_failed_draft_recovery(
+            workspace_id=WORKSPACE_ID,
+            job_id=JOB_ID,
+            recovery_id=RECOVERY_ID,
+            approval_id=APPROVAL_ID,
+            approved_by="codex:user",
+            approved_at=datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc),
+            expires_at=datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc),
+            release_sha=RELEASE_SHA,
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_failed_draft_recovery_rechecks_subject_before_write():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        name = request.url.path.rsplit("/", 1)[-1]
+        calls.append((name, json.loads(request.content)))
+        if name == "inspect_squid_failed_draft_recovery":
+            return httpx.Response(200, json=_recovery_inspection())
+        assert name == "authorize_squid_failed_draft_recovery"
+        return httpx.Response(200, json={
+            "authorized": True,
+            "reused": False,
+            "recovery_id": RECOVERY_ID,
+            "job_id": JOB_ID,
+            "request_id": REQUEST_ID,
+            "approval_subject_sha256": "5" * 64,
+            "claims_allowed": 1,
+            "claims_consumed": 0,
+            "expires_at": "2026-08-25T09:00:00+00:00",
+            "release_sha": RELEASE_SHA,
+        })
+
+    reused = await _repo(handler).authorize_failed_draft_recovery(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_id=APPROVAL_ID,
+        approved_by="codex:user",
+        approved_at=datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc),
+        release_sha=RELEASE_SHA,
+        approval_subject_sha256="5" * 64,
+    )
+
+    assert reused is False
+    assert [name for name, _payload in calls] == [
+        "inspect_squid_failed_draft_recovery",
+        "authorize_squid_failed_draft_recovery",
+    ]
+    assert set(calls[1][1]) == {
+        "target_workspace_id",
+        "target_job_id",
+        "target_recovery_id",
+        "target_approval_id",
+        "target_approved_by",
+        "target_approved_at",
+        "target_expires_at",
+        "target_release_sha",
+        "target_approval_subject_sha256",
+    }
+
+
+def _recovery_claim(*, granted: bool) -> dict[str, object]:
+    common = {
+        "claim_granted": granted,
+        "generation_allowed": granted,
+        "failed_draft_recovery_only": True,
+        "recovery_id": RECOVERY_ID,
+        "job_id": JOB_ID,
+        "request_id": REQUEST_ID,
+        "approval_subject_sha256": "5" * 64,
+        "claims_allowed": 1,
+        "claims_consumed": 1 if granted else 0,
+        "release_sha": RELEASE_SHA,
+    }
+    if not granted:
+        return common
+    return {
+        **common,
+        "workspace_id": WORKSPACE_ID,
+        "client_id": "squid",
+        "status": "running",
+        "attempts": 3,
+        "max_attempts": 3,
+        "origintrail_batch_eligible": False,
+        "batch_handoff_recovery_only": False,
+        "locked_by": f"squid-recovery:{RECOVERY_ID}",
+        "lease_expires_at": "2026-08-25T08:15:00+00:00",
+        "input": {
+            "workflow": "official_x_review_draft_v1",
+            "kst_date": "2026-08-25",
+            "source_item_ids": [SOURCE_ID],
+            "content_kind": "daily_news",
+            "request_id": REQUEST_ID,
+            "source_content": "A sufficiently long Squid official update.",
+            "source_url": "https://x.com/SquidRouter/status/123",
+            "source_image_url": "https://pbs.twimg.com/media/source.jpg",
+            "manual_only": False,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_targeted_recovery_claim_requires_explicit_generation_fence():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(
+            "/rpc/claim_squid_failed_draft_recovery"
+        )
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_recovery_claim(granted=True))
+
+    claimed = await _repo(handler).claim_failed_draft_recovery(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha=RELEASE_SHA,
+        worker_id=f"squid-recovery:{RECOVERY_ID}",
+    )
+
+    assert claimed is not None
+    assert claimed.failed_draft_recovery_only is True
+    assert claimed.request_id == REQUEST_ID
+    assert claimed.attempts == claimed.max_attempts == 3
+    assert set(captured) == {
+        "target_workspace_id",
+        "target_job_id",
+        "target_recovery_id",
+        "target_approval_subject_sha256",
+        "target_release_sha",
+        "target_worker_id",
+        "target_lease_seconds",
+    }
+
+
+@pytest.mark.asyncio
+async def test_consumed_recovery_claim_never_becomes_generation_work():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_recovery_claim(granted=False))
+
+    claimed = await _repo(handler).claim_failed_draft_recovery(
+        workspace_id=WORKSPACE_ID,
+        job_id=JOB_ID,
+        recovery_id=RECOVERY_ID,
+        approval_subject_sha256="5" * 64,
+        release_sha=RELEASE_SHA,
+        worker_id=f"squid-recovery:{RECOVERY_ID}",
+    )
+
+    assert claimed is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_claim_rejects_unexpected_raw_fields():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            **_recovery_claim(granted=True),
+            "provider_body": "must never reach the runner",
+        })
+
+    with pytest.raises(
+        AutomationRepositoryError,
+        match="invalid_recovery_claim_response",
+    ):
+        await _repo(handler).claim_failed_draft_recovery(
+            workspace_id=WORKSPACE_ID,
+            job_id=JOB_ID,
+            recovery_id=RECOVERY_ID,
+            approval_subject_sha256="5" * 64,
+            release_sha=RELEASE_SHA,
+            worker_id=f"squid-recovery:{RECOVERY_ID}",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"claims_consumed": True},
+        {"attempts": True, "max_attempts": True},
+        {"workspace_id": "99999999-9999-4999-8999-999999999999"},
+    ],
+)
+async def test_recovery_claim_rejects_boolean_counters_and_identity_drift(
+    mutation,
+):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            **_recovery_claim(granted=True),
+            **mutation,
+        })
+
+    with pytest.raises(
+        AutomationRepositoryError,
+        match="invalid_recovery_claim_response",
+    ):
+        await _repo(handler).claim_failed_draft_recovery(
+            workspace_id=WORKSPACE_ID,
+            job_id=JOB_ID,
+            recovery_id=RECOVERY_ID,
+            approval_subject_sha256="5" * 64,
+            release_sha=RELEASE_SHA,
+            worker_id=f"squid-recovery:{RECOVERY_ID}",
+        )

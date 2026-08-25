@@ -173,6 +173,9 @@ class AutomationRepository(Protocol):
     async def bind_execution_plane(self, **kwargs) -> str: ...
     async def queue_job(self, **kwargs) -> QueueResult: ...
     async def claim_job(self, **kwargs) -> ClaimedJob | None: ...
+    async def inspect_failed_draft_recovery(self, **kwargs): ...
+    async def authorize_failed_draft_recovery(self, **kwargs) -> bool: ...
+    async def claim_failed_draft_recovery(self, **kwargs) -> ClaimedJob | None: ...
     async def complete_job(self, **kwargs) -> None: ...
     async def complete_batch_handoff(self, **kwargs) -> None: ...
     async def recover_batch_handoff(self, **kwargs) -> bool: ...
@@ -288,6 +291,82 @@ class OfficialXDailyRunner:
 
         if not dry_run:
             await self._drain_jobs(worker_id, summary)
+        return summary
+
+    async def recover_failed_draft_once(
+        self,
+        *,
+        job_id: str,
+        recovery_id: str,
+        approval_subject_sha256: str,
+        release_sha: str,
+    ) -> DailyRunSummary:
+        """Run only one preauthorized failed Squid draft recovery.
+
+        This path deliberately skips official-X polling, candidate selection,
+        normal queueing, and the generic FIFO drain.
+        """
+        kst_date = self._now().astimezone(_KST).date()
+        summary = DailyRunSummary(kst_date=kst_date.isoformat(), dry_run=False)
+        worker_id = f"squid-recovery:{recovery_id}"
+        try:
+            await self.generation_client.require_release(release_sha)
+        except GenerationRequestError as exc:
+            self._error(summary, "squid", exc.code)
+            return summary
+        except (ValueError, RuntimeError):
+            self._error(summary, "squid", "studio_release_preflight_failed")
+            return summary
+        try:
+            job = await self.repository.claim_failed_draft_recovery(
+                workspace_id=self.settings.workspace_id,
+                job_id=job_id,
+                recovery_id=recovery_id,
+                approval_subject_sha256=approval_subject_sha256,
+                release_sha=release_sha,
+                worker_id=worker_id,
+                lease_seconds=900,
+            )
+        except AutomationRepositoryError as exc:
+            self._error(summary, "squid", exc.code)
+            return summary
+        if job is None:
+            summary.skipped += 1
+            summary.add("squid", "recovery_not_claimed")
+            return summary
+        if (
+            not job.failed_draft_recovery_only
+            or job.job_id != job_id
+            or job.client_id != "squid"
+            or job.content_kind != "daily_news"
+            or job.manual_only
+            or job.attempts != job.max_attempts
+            or job.origintrail_batch_eligible
+            or job.batch_handoff_recovery_only
+        ):
+            await self._mark_failed(
+                job,
+                worker_id,
+                "invalid_failed_draft_recovery_claim",
+                None,
+                summary,
+            )
+            return summary
+        if job.kst_date != self._now().astimezone(_KST).date():
+            await self._mark_failed(
+                job,
+                worker_id,
+                "failed_draft_recovery_kst_rolled_over",
+                None,
+                summary,
+            )
+            return summary
+        await self._run_claimed_job(
+            job,
+            worker_id,
+            summary,
+            expected_studio_release_sha=release_sha,
+        )
         return summary
 
     async def _intake_client(
@@ -666,6 +745,7 @@ class OfficialXDailyRunner:
         job: ClaimedJob,
         worker_id: str,
         summary: DailyRunSummary,
+        expected_studio_release_sha: str = "",
     ) -> None:
         try:
             now = self._now()
@@ -735,20 +815,27 @@ class OfficialXDailyRunner:
                     summary=summary,
                 )
                 return
-            result = await self.generation_client.generate(
-                client_id=job.client_id,
-                content_kind=job.content_kind,
-                request_id=job.request_id,
-                source_content=job.source_content,
-                source_url=job.source_url,
-                source_image_url=job.source_image_url,
-                template_style=choose_automation_template_style(
+            generation_args = {
+                "client_id": job.client_id,
+                "content_kind": job.content_kind,
+                "request_id": job.request_id,
+                "source_content": job.source_content,
+                "source_url": job.source_url,
+                "source_image_url": job.source_image_url,
+                "template_style": choose_automation_template_style(
                     client_id=job.client_id,
                     content_kind=job.content_kind,
                     source_image_url=job.source_image_url,
                 ),
-                style_references=reference_pack.references,
-                style_reference_pack_hash=reference_pack.reference_pack_hash,
+                "style_references": reference_pack.references,
+                "style_reference_pack_hash": reference_pack.reference_pack_hash,
+            }
+            if expected_studio_release_sha:
+                generation_args["expected_studio_release_sha"] = (
+                    expected_studio_release_sha
+                )
+            result = await self.generation_client.generate(
+                **generation_args,
             )
         except AutomationRepositoryError as exc:
             retry_at = (

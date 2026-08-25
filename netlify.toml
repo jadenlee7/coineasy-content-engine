@@ -1,4 +1,5 @@
 [build]
+  command = "node scripts/stamp-netlify-release.mjs"
   publish = "web/console"
 
 [build.environment]

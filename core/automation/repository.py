@@ -12,6 +12,7 @@ import httpx
 from core.automation.models import (
     AutomationState,
     ClaimedJob,
+    FailedDraftRecoveryInspection,
     PendingSource,
     QueueResult,
     StyleReference,
@@ -31,6 +32,50 @@ _X_STATUS_RE = re.compile(
 )
 _SAFE_ERROR_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+_RELEASE_SHA_RE = re.compile(r"^[a-f0-9]{40}$")
+_RECOVERY_SUBJECT_KEYS = frozenset({
+    "contract",
+    "workspace_id",
+    "job_id",
+    "recovery_id",
+    "request_id",
+    "source_item_id",
+    "kst_date",
+    "job_input_sha256",
+    "source_snapshot_sha256",
+    "style_pack_sha256",
+    "failed_output_sha256",
+    "failure_code",
+    "failed_attempts",
+    "failed_max_attempts",
+    "approval_id",
+    "approved_by",
+    "approved_at",
+    "expires_at",
+    "release_sha",
+    "claims_allowed",
+    "same_job",
+    "same_request_id",
+    "automatic_approval",
+    "automatic_publication",
+    "human_review_required",
+    "legacy_failure_requires_explicit_review",
+    "failed_output_snapshot",
+})
+_RECOVERY_INSPECTION_KEYS = frozenset({
+    "eligible",
+    "authorized",
+    "recovery_id",
+    "job_id",
+    "request_id",
+    "source_item_id",
+    "approval_subject",
+    "approval_subject_sha256",
+    "claims_allowed",
+    "claims_consumed",
+    "expires_at",
+    "release_sha",
+})
 _CONTENT_SIGNAL_RANKING_VERSIONS = frozenset({
     "official-x-demand-v1",
     "official-x-demand-v2",
@@ -90,6 +135,103 @@ def _date(value: object, name: str) -> date:
     if parsed.isoformat() != value:
         raise AutomationRepositoryError(f"invalid_{name}", retryable=False)
     return parsed
+
+
+def _aware_iso(value: datetime, name: str) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return value.isoformat()
+
+
+def _aware_datetime(value: object, name: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include a timezone")
+    return parsed
+
+
+def _validated_recovery_subject(
+    value: object,
+    *,
+    workspace_id: str,
+    job_id: str,
+    recovery_id: str,
+    approval_id: str,
+    approved_by: str,
+    approved_at: datetime,
+    expires_at: datetime,
+    release_sha: str,
+) -> tuple[str, str]:
+    if not isinstance(value, Mapping) or set(value) != _RECOVERY_SUBJECT_KEYS:
+        raise ValueError("recovery subject shape is invalid")
+    request_id = _uuid(value.get("request_id"), "recovery_request_id")
+    source_item_id = _uuid(
+        value.get("source_item_id"),
+        "recovery_source_item_id",
+    )
+    safe_failure = value.get("failed_output_snapshot")
+    if (
+        value.get("contract") != "squid-failed-draft-recovery@1"
+        or _uuid(value.get("workspace_id"), "recovery_workspace_id")
+            != workspace_id
+        or _uuid(value.get("job_id"), "recovery_job_id") != job_id
+        or _uuid(value.get("recovery_id"), "recovery_id") != recovery_id
+        or _uuid(value.get("approval_id"), "approval_id") != approval_id
+        or value.get("approved_by") != approved_by
+        or _aware_datetime(value.get("approved_at"), "approved_at")
+            != approved_at
+        or _aware_datetime(value.get("expires_at"), "expires_at")
+            != expires_at
+        or value.get("release_sha") != release_sha
+        or _date(value.get("kst_date"), "recovery_kst_date") is None
+        or type(value.get("claims_allowed")) is not int
+        or value.get("claims_allowed") != 1
+        or value.get("failure_code")
+            != "squid_visual_localization_incomplete"
+        or type(value.get("failed_attempts")) is not int
+        or value.get("failed_attempts") != 3
+        or type(value.get("failed_max_attempts")) is not int
+        or value.get("failed_max_attempts") != 3
+        or value.get("same_job") is not True
+        or value.get("same_request_id") is not True
+        or value.get("automatic_approval") is not False
+        or value.get("automatic_publication") is not False
+        or value.get("human_review_required") is not True
+        or value.get("legacy_failure_requires_explicit_review") is not True
+        or not isinstance(safe_failure, Mapping)
+        or set(safe_failure) != {
+            "execution_plane",
+            "last_error_code",
+            "last_failure_error_code",
+            "last_failure_retryable",
+            "finished_at",
+        }
+        or safe_failure.get("execution_plane") != "studio_sync"
+        or safe_failure.get("last_error_code")
+            != "squid_visual_localization_incomplete"
+        or safe_failure.get("last_failure_error_code")
+            != "squid_visual_localization_incomplete"
+        or safe_failure.get("last_failure_retryable") is not False
+    ):
+        raise ValueError("recovery subject binding is invalid")
+    _aware_datetime(safe_failure.get("finished_at"), "recovery_finished_at")
+    for name in (
+        "job_input_sha256",
+        "source_snapshot_sha256",
+        "style_pack_sha256",
+        "failed_output_sha256",
+    ):
+        if (
+            not isinstance(value.get(name), str)
+            or _SHA256_RE.fullmatch(value[name]) is None
+        ):
+            raise ValueError("recovery subject digest is invalid")
+    return request_id, source_item_id
 
 
 def _pending_source(value: object) -> PendingSource:
@@ -599,6 +741,15 @@ class SupabaseAutomationRepository:
         })
         if raw is None:
             return None
+        return self._claimed_job(raw, worker_id=worker_id)
+
+    def _claimed_job(
+        self,
+        raw: object,
+        *,
+        worker_id: str,
+        failed_draft_recovery_only: bool = False,
+    ) -> ClaimedJob:
         if not isinstance(raw, Mapping) or not isinstance(raw.get("input"), Mapping):
             raise AutomationRepositoryError("invalid_claim_response", retryable=False)
         job_input = raw["input"]
@@ -615,8 +766,8 @@ class SupabaseAutomationRepository:
         raw_source_item_ids = job_input.get("source_item_ids")
         if (
             raw.get("locked_by") != worker_id
-            or not isinstance(attempts, int)
-            or not isinstance(max_attempts, int)
+            or type(attempts) is not int
+            or type(max_attempts) is not int
             or attempts < 1
             or max_attempts < attempts
             or not isinstance(batch_handoff_recovery_only, bool)
@@ -660,7 +811,348 @@ class SupabaseAutomationRepository:
             batch_handoff_recovery_only=(
                 batch_handoff_recovery_only
             ),
+            failed_draft_recovery_only=failed_draft_recovery_only,
         )
+
+    async def inspect_failed_draft_recovery(
+        self,
+        *,
+        workspace_id: str,
+        job_id: str,
+        recovery_id: str,
+        approval_id: str,
+        approved_by: str,
+        approved_at: datetime,
+        expires_at: datetime,
+        release_sha: str,
+    ) -> FailedDraftRecoveryInspection:
+        normalized_workspace_id = _uuid(workspace_id, "workspace_id")
+        normalized_job_id = _uuid(job_id, "job_id")
+        normalized_recovery_id = _uuid(recovery_id, "recovery_id")
+        normalized_approval_id = _uuid(approval_id, "approval_id")
+        if not _RELEASE_SHA_RE.fullmatch(release_sha):
+            raise ValueError("release_sha must be an exact Git SHA")
+        if not re.fullmatch(r"[A-Za-z0-9@._:-]{3,120}", approved_by):
+            raise ValueError("approved_by is invalid")
+        raw = await self._rpc("inspect_squid_failed_draft_recovery", {
+            "target_workspace_id": normalized_workspace_id,
+            "target_job_id": normalized_job_id,
+            "target_recovery_id": normalized_recovery_id,
+            "target_approval_id": normalized_approval_id,
+            "target_approved_by": approved_by,
+            "target_approved_at": _aware_iso(approved_at, "approved_at"),
+            "target_expires_at": _aware_iso(expires_at, "expires_at"),
+            "target_release_sha": release_sha,
+        })
+        if not isinstance(raw, Mapping) or set(raw) != _RECOVERY_INSPECTION_KEYS:
+            raise AutomationRepositoryError(
+                "invalid_recovery_inspection_response",
+                retryable=False,
+            )
+        try:
+            subject_request_id, subject_source_item_id = (
+                _validated_recovery_subject(
+                    raw.get("approval_subject"),
+                    workspace_id=normalized_workspace_id,
+                    job_id=normalized_job_id,
+                    recovery_id=normalized_recovery_id,
+                    approval_id=normalized_approval_id,
+                    approved_by=approved_by,
+                    approved_at=approved_at,
+                    expires_at=expires_at,
+                    release_sha=release_sha,
+                )
+            )
+            raw_request_id = _uuid(raw.get("request_id"), "request_id")
+            raw_source_item_id = _uuid(
+                raw.get("source_item_id"),
+                "source_item_id",
+            )
+            response_expires_at = _aware_datetime(
+                raw.get("expires_at"),
+                "expires_at",
+            )
+        except (AutomationRepositoryError, ValueError) as exc:
+            raise AutomationRepositoryError(
+                "invalid_recovery_inspection_response",
+                retryable=False,
+            ) from exc
+        if (
+            raw.get("eligible") is not True
+            or type(raw.get("authorized")) is not bool
+            or _uuid(raw.get("recovery_id"), "recovery_id")
+                != normalized_recovery_id
+            or _uuid(raw.get("job_id"), "job_id") != normalized_job_id
+            or raw_request_id != subject_request_id
+            or raw_source_item_id != subject_source_item_id
+            or type(raw.get("claims_allowed")) is not int
+            or raw.get("claims_allowed") != 1
+            or type(raw.get("claims_consumed")) is not int
+            or raw.get("claims_consumed") not in {0, 1}
+            or not isinstance(raw.get("approval_subject_sha256"), str)
+            or _SHA256_RE.fullmatch(raw["approval_subject_sha256"]) is None
+            or raw.get("release_sha") != release_sha
+            or response_expires_at != expires_at
+        ):
+            raise AutomationRepositoryError(
+                "invalid_recovery_inspection_response",
+                retryable=False,
+            )
+        return FailedDraftRecoveryInspection(
+            recovery_id=normalized_recovery_id,
+            job_id=normalized_job_id,
+            request_id=subject_request_id,
+            source_item_id=subject_source_item_id,
+            approval_subject=dict(raw["approval_subject"]),
+            approval_subject_sha256=raw["approval_subject_sha256"],
+            authorized=raw["authorized"],
+            claims_allowed=1,
+            claims_consumed=raw["claims_consumed"],
+            expires_at=raw["expires_at"],
+            release_sha=release_sha,
+        )
+
+    async def authorize_failed_draft_recovery(
+        self,
+        *,
+        workspace_id: str,
+        job_id: str,
+        recovery_id: str,
+        approval_id: str,
+        approved_by: str,
+        approved_at: datetime,
+        expires_at: datetime,
+        release_sha: str,
+        approval_subject_sha256: str,
+    ) -> bool:
+        if _SHA256_RE.fullmatch(approval_subject_sha256) is None:
+            raise ValueError("approval_subject_sha256 is invalid")
+        inspection = await self.inspect_failed_draft_recovery(
+            workspace_id=workspace_id,
+            job_id=job_id,
+            recovery_id=recovery_id,
+            approval_id=approval_id,
+            approved_by=approved_by,
+            approved_at=approved_at,
+            expires_at=expires_at,
+            release_sha=release_sha,
+        )
+        if inspection.approval_subject_sha256 != approval_subject_sha256:
+            raise AutomationRepositoryError(
+                "recovery_approval_subject_changed",
+                retryable=False,
+            )
+        raw = await self._rpc("authorize_squid_failed_draft_recovery", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_job_id": _uuid(job_id, "job_id"),
+            "target_recovery_id": _uuid(recovery_id, "recovery_id"),
+            "target_approval_id": _uuid(approval_id, "approval_id"),
+            "target_approved_by": approved_by,
+            "target_approved_at": _aware_iso(approved_at, "approved_at"),
+            "target_expires_at": _aware_iso(expires_at, "expires_at"),
+            "target_release_sha": release_sha,
+            "target_approval_subject_sha256": approval_subject_sha256,
+        })
+        expected_keys = {
+            "authorized",
+            "reused",
+            "recovery_id",
+            "job_id",
+            "request_id",
+            "approval_subject_sha256",
+            "claims_allowed",
+            "claims_consumed",
+            "expires_at",
+            "release_sha",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected_keys:
+            raise AutomationRepositoryError(
+                "invalid_recovery_authorization_response",
+                retryable=False,
+            )
+        try:
+            response_expires_at = _aware_datetime(
+                raw.get("expires_at"),
+                "expires_at",
+            )
+        except ValueError as exc:
+            raise AutomationRepositoryError(
+                "invalid_recovery_authorization_response",
+                retryable=False,
+            ) from exc
+        if (
+            raw.get("authorized") is not True
+            or type(raw.get("reused")) is not bool
+            or _uuid(raw.get("recovery_id"), "recovery_id")
+                != inspection.recovery_id
+            or _uuid(raw.get("job_id"), "job_id") != inspection.job_id
+            or _uuid(raw.get("request_id"), "request_id")
+                != inspection.request_id
+            or raw.get("approval_subject_sha256")
+                != approval_subject_sha256
+            or type(raw.get("claims_allowed")) is not int
+            or raw.get("claims_allowed") != 1
+            or type(raw.get("claims_consumed")) is not int
+            or raw.get("claims_consumed") != 0
+            or raw.get("release_sha") != release_sha
+            or response_expires_at != expires_at
+        ):
+            raise AutomationRepositoryError(
+                "invalid_recovery_authorization_response",
+                retryable=False,
+            )
+        return raw["reused"]
+
+    async def claim_failed_draft_recovery(
+        self,
+        *,
+        workspace_id: str,
+        job_id: str,
+        recovery_id: str,
+        approval_subject_sha256: str,
+        release_sha: str,
+        worker_id: str,
+        lease_seconds: int = 900,
+    ) -> ClaimedJob | None:
+        normalized_workspace_id = _uuid(workspace_id, "workspace_id")
+        normalized_job_id = _uuid(job_id, "job_id")
+        normalized_recovery_id = _uuid(recovery_id, "recovery_id")
+        worker_id = self._worker(worker_id)
+        if _SHA256_RE.fullmatch(approval_subject_sha256) is None:
+            raise ValueError("approval_subject_sha256 is invalid")
+        if _RELEASE_SHA_RE.fullmatch(release_sha) is None:
+            raise ValueError("release_sha must be an exact Git SHA")
+        raw = await self._rpc("claim_squid_failed_draft_recovery", {
+            "target_workspace_id": normalized_workspace_id,
+            "target_job_id": normalized_job_id,
+            "target_recovery_id": normalized_recovery_id,
+            "target_approval_subject_sha256": approval_subject_sha256,
+            "target_release_sha": release_sha,
+            "target_worker_id": worker_id,
+            "target_lease_seconds": max(60, min(lease_seconds, 1_800)),
+        })
+        if not isinstance(raw, Mapping):
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            )
+        common = {
+            "claim_granted",
+            "generation_allowed",
+            "failed_draft_recovery_only",
+            "recovery_id",
+            "job_id",
+            "request_id",
+            "approval_subject_sha256",
+            "claims_allowed",
+            "claims_consumed",
+            "release_sha",
+        }
+        try:
+            response_request_id = _uuid(raw.get("request_id"), "request_id")
+            response_recovery_id = _uuid(
+                raw.get("recovery_id"),
+                "recovery_id",
+            )
+            response_job_id = _uuid(raw.get("job_id"), "job_id")
+        except AutomationRepositoryError as exc:
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            ) from exc
+        if (
+            type(raw.get("claim_granted")) is not bool
+            or type(raw.get("generation_allowed")) is not bool
+            or raw.get("failed_draft_recovery_only") is not True
+            or response_recovery_id != normalized_recovery_id
+            or response_job_id != normalized_job_id
+            or raw.get("approval_subject_sha256")
+                != approval_subject_sha256
+            or type(raw.get("claims_allowed")) is not int
+            or raw.get("claims_allowed") != 1
+            or type(raw.get("claims_consumed")) is not int
+            or raw.get("claims_consumed") not in {0, 1}
+            or raw.get("release_sha") != release_sha
+        ):
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            )
+        if raw.get("claim_granted") is False:
+            if set(raw) != common or raw.get("generation_allowed") is not False:
+                raise AutomationRepositoryError(
+                    "invalid_recovery_claim_response",
+                    retryable=False,
+                )
+            return None
+        success_keys = common | {
+            "workspace_id",
+            "client_id",
+            "status",
+            "attempts",
+            "max_attempts",
+            "origintrail_batch_eligible",
+            "batch_handoff_recovery_only",
+            "locked_by",
+            "lease_expires_at",
+            "input",
+        }
+        if set(raw) != success_keys:
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            )
+        try:
+            response_workspace_id = _uuid(
+                raw.get("workspace_id"),
+                "workspace_id",
+            )
+            _aware_datetime(
+                raw.get("lease_expires_at"),
+                "lease_expires_at",
+            )
+        except (AutomationRepositoryError, ValueError) as exc:
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            ) from exc
+        response_input = raw.get("input")
+        if (
+            raw.get("claim_granted") is not True
+            or raw.get("generation_allowed") is not True
+            or raw.get("claims_consumed") != 1
+            or response_workspace_id != normalized_workspace_id
+            or raw.get("client_id") != "squid"
+            or raw.get("status") != "running"
+            or raw.get("attempts") != raw.get("max_attempts")
+            or raw.get("origintrail_batch_eligible") is not False
+            or raw.get("batch_handoff_recovery_only") is not False
+            or not isinstance(response_input, Mapping)
+            or response_input.get("workflow")
+                != "official_x_review_draft_v1"
+            or response_input.get("manual_only") is not False
+        ):
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            )
+        try:
+            claimed = self._claimed_job(
+                raw,
+                worker_id=worker_id,
+                failed_draft_recovery_only=True,
+            )
+        except AutomationRepositoryError as exc:
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            ) from exc
+        if claimed.request_id != response_request_id:
+            raise AutomationRepositoryError(
+                "invalid_recovery_claim_response",
+                retryable=False,
+            )
+        return claimed
 
     async def bind_execution_plane(
         self,

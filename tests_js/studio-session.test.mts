@@ -139,6 +139,29 @@ test("generation accepts a separate server automation key without broadening tea
   });
 });
 
+test("recovery generation rejects an expected Netlify release mismatch before work", async () => {
+  await withNetlifyEnvironment({
+    STUDIO_AUTOMATION_TOKEN: AUTOMATION_TOKEN,
+  }, async () => {
+    const response = await newsCardHandler(new Request(
+      "https://console.example/api/news-card/squid",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "11111111-1111-4111-8111-111111111111",
+          "x-studio-automation-key": AUTOMATION_TOKEN,
+          "x-studio-expected-release-sha": "d".repeat(40),
+        },
+        body: JSON.stringify({ source_content: "must not be parsed" }),
+      },
+    ), { params: { clientId: "squid" } } as never);
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "studio_release_mismatch" });
+  });
+});
+
 test("session endpoint fails closed when STUDIO_ACCESS_TOKEN is missing", async () => {
   await withNetlifyEnvironment({}, async () => {
     const response = await studioSessionHandler(new Request(

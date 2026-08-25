@@ -21,6 +21,7 @@ ASSET_ID = "33333333-3333-4333-8333-333333333333"
 AUTOMATION_TOKEN = "automation-token-that-is-longer-than-32-bytes"
 SOURCE_IMAGE_URL = "https://pbs.twimg.com/media/source.jpg?name=orig"
 SOURCE_IMAGE_SHA256 = "a" * 64
+RELEASE_SHA = "c" * 40
 
 
 def generation_capabilities() -> dict:
@@ -29,6 +30,7 @@ def generation_capabilities() -> dict:
         "generation_contract": "double-fact-check@1",
         "generated_content_kinds": ["daily_news", "article", "tutorial"],
         "tutorial_claims_contract": "lessons@1",
+        "netlify_release_sha": RELEASE_SHA,
     }
 
 
@@ -481,6 +483,65 @@ async def test_generation_preflight_blocks_mutation_until_the_current_contract_e
         )
     assert error.value.retryable is True
     assert methods == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_release_preflight_blocks_before_any_generation_post():
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(200, json={
+            **generation_capabilities(),
+            "netlify_release_sha": "d" * 40,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_contract_unavailable",
+    ):
+        await client.require_release(RELEASE_SHA)
+    assert methods == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_generation_rechecks_and_sends_exact_netlify_release():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=generation_capabilities())
+        return httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+            "fact_check": fact_check("daily_news"),
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(handler),
+    )
+    await client.generate(
+        client_id="squid",
+        content_kind="daily_news",
+        request_id=REQUEST_ID,
+        source_content="A sufficiently long official Squid update.",
+        source_url="https://x.com/SquidRouter/status/123",
+        expected_studio_release_sha=RELEASE_SHA,
+    )
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+    assert requests[1].headers["x-studio-expected-release-sha"] == RELEASE_SHA
 
 
 @pytest.mark.asyncio
