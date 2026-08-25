@@ -555,11 +555,16 @@ async def test_article_reconciliation_is_bounded_and_preserves_the_original_erro
     assert error.value.retryable is True
     assert len(posts) == 4
     assert (
-        sum(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
-        + len(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
-        * generation_client_module._ARTICLE_RECONCILE_TIMEOUT_SECONDS
-        <= 3.0
+        len(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
+        == len(generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS)
+        == 3
     )
+    assert (
+        sum(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
+        + sum(generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS)
+        <= 8.0
+    )
+    assert generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS[-1] == 5.0
 
 
 @pytest.mark.asyncio
@@ -612,8 +617,8 @@ async def test_article_reconciliation_has_a_strict_wall_clock_timeout(monkeypatc
     )
     monkeypatch.setattr(
         generation_client_module,
-        "_ARTICLE_RECONCILE_TIMEOUT_SECONDS",
-        0.01,
+        "_ARTICLE_RECONCILE_TIMEOUTS_SECONDS",
+        (0.01, 0.01, 0.01),
     )
 
     class SlowReadbackTransport(httpx.AsyncBaseTransport):
@@ -655,6 +660,48 @@ async def test_article_reconciliation_has_a_strict_wall_clock_timeout(monkeypatc
     assert error.value.retryable is True
     assert transport.post_count == 4
     assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_article_reconciliation_recovers_after_observed_cold_readback_latency():
+    class ColdReadbackTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.post_count = 0
+
+        async def handle_async_request(
+            self,
+            request: httpx.Request,
+        ) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json=generation_capabilities())
+            self.post_count += 1
+            if self.post_count == 1:
+                return httpx.Response(502, text="gateway response was lost")
+            if self.post_count in {2, 3}:
+                await asyncio.sleep(10)
+            else:
+                # The incident readback took 3.421 seconds. The final bounded
+                # attempt must be long enough to recover that durable result.
+                await asyncio.sleep(3.421)
+            return httpx.Response(200, json=article_result())
+
+    transport = ColdReadbackTransport()
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=transport,
+    )
+
+    result = await client.generate(
+        client_id="yellow",
+        content_kind="article",
+        request_id=REQUEST_ID,
+        source_content="a" * 300,
+        source_url="https://x.com/Yellow/status/123",
+    )
+
+    assert transport.post_count == 4
+    assert result.reused is True
 
 
 @pytest.mark.asyncio

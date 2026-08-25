@@ -31,7 +31,7 @@ _GENERATION_CONTRACT = "double-fact-check@1"
 _TUTORIAL_CLAIMS_CONTRACT = "lessons@1"
 _ARTICLE_RECONCILIATION_CONTRACT = "request-bound-readback@1"
 _ARTICLE_RECONCILE_DELAYS_SECONDS = (0.0, 0.15, 0.35)
-_ARTICLE_RECONCILE_TIMEOUT_SECONDS = 0.8
+_ARTICLE_RECONCILE_TIMEOUTS_SECONDS = (0.8, 1.6, 5.0)
 _PINNED_SOURCE_PROOF_CLIENTS = frozenset({
     "squid",
     "yellow",
@@ -346,7 +346,10 @@ class StudioGenerationClient:
         template_style: str,
     ) -> GeneratedCatalogResult | None:
         reconcile_route = f"/api/article-result/{client_id}/{request_id.lower()}"
-        for delay_seconds in _ARTICLE_RECONCILE_DELAYS_SECONDS:
+        for delay_seconds, timeout_seconds in zip(
+            _ARTICLE_RECONCILE_DELAYS_SECONDS,
+            _ARTICLE_RECONCILE_TIMEOUTS_SECONDS,
+        ):
             if delay_seconds:
                 await asyncio.sleep(delay_seconds)
             try:
@@ -355,9 +358,9 @@ class StudioGenerationClient:
                         f"{self.base_url}{reconcile_route}",
                         headers=headers,
                         json=payload,
-                        timeout=_ARTICLE_RECONCILE_TIMEOUT_SECONDS,
+                        timeout=timeout_seconds,
                     ),
-                    timeout=_ARTICLE_RECONCILE_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                 )
             except (
                 asyncio.TimeoutError,
