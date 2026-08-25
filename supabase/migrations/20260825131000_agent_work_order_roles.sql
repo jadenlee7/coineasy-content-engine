@@ -32,11 +32,30 @@ begin
                 role_name
             );
         end if;
+        -- Supabase's migration owner has CREATEROLE but is intentionally not
+        -- a true superuser.  PostgreSQL therefore rejects ALTER ROLE clauses
+        -- that mention NOSUPERUSER/NOREPLICATION even when the target is
+        -- already unprivileged.  Apply the supported hardening flags and then
+        -- fail closed if any immutable privileged attribute is present.
         execute pg_catalog.format(
-            'alter role %I nologin noinherit nosuperuser '
-            'nocreaterole nocreatedb noreplication nobypassrls',
-            role_name
+            'alter role %I nologin noinherit nobypassrls', role_name
         );
+        if exists (
+            select 1
+            from pg_catalog.pg_roles
+            where rolname = role_name
+              and (
+                  rolsuper
+                  or rolcreaterole
+                  or rolcreatedb
+                  or rolcanlogin
+                  or rolreplication
+                  or rolbypassrls
+                  or rolinherit
+              )
+        ) then
+            raise exception 'Agent work order role is privileged: %', role_name;
+        end if;
         execute pg_catalog.format('grant usage on schema public to %I', role_name);
         execute pg_catalog.format('grant %I to authenticator', role_name);
     end loop;

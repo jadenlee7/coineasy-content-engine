@@ -364,10 +364,29 @@ begin
         ) then
             execute pg_catalog.format('create role %I', role_name);
         end if;
+        -- Supabase's migration owner is not a true superuser, so PostgreSQL
+        -- rejects ALTER ROLE clauses that mention NOSUPERUSER/NOREPLICATION.
+        -- Harden the supported flags and validate every privileged attribute
+        -- explicitly before granting PostgREST adoption.
         execute pg_catalog.format(
-            'alter role %I nologin noinherit nobypassrls nosuperuser ' ||
-            'nocreatedb nocreaterole noreplication', role_name
+            'alter role %I nologin noinherit nobypassrls', role_name
         );
+        if exists (
+            select 1
+            from pg_catalog.pg_roles
+            where rolname = role_name
+              and (
+                  rolsuper
+                  or rolcreaterole
+                  or rolcreatedb
+                  or rolcanlogin
+                  or rolreplication
+                  or rolbypassrls
+                  or rolinherit
+              )
+        ) then
+            raise exception 'Harmony Preview role is privileged: %', role_name;
+        end if;
         execute pg_catalog.format('grant %I to authenticator', role_name);
     end loop;
 end
