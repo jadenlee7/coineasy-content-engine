@@ -163,11 +163,76 @@ Netlify Functions, Railway cron, 환경변수, provider, Buzz 메시지, publica
 
 ### Phase 1 — 회사 운영실
 
-- Supabase 업무 원장과 이벤트
-- 승인·결과·검증·완료 receipt와 active branch unique lease
-- 읽기 전용 운영실 대시보드
-- Grok `CoinEasy-Ops` MCP
-- Buzz 완료·장애 영수증
+- Supabase 공통 업무 원장과 append-only 이벤트
+- 사람 승인 시에만 생기는 정책 기반 배정 outbox
+- 결과·독립 검증·대표 결정·완료 receipt
+- active branch/idempotency 충돌 차단
+- 읽기 전용 대표 승인함과 비용·완료 대시보드
+
+첫 P0에서는 배정 outbox까지만 만듭니다. Devin, Claude Code, Codex,
+Grok Build provider adapter와 Grok `CoinEasy-Ops` MCP, Buzz 완료·장애 전송은
+각각 별도 gate입니다. 따라서 migration을 적용해도 외부 실행은 시작되지
+않습니다.
+
+대표 화면에서 한 작업은 아래처럼 읽습니다.
+
+```text
+무슨 일: exact scope hash에 묶인 업무 제목
+담당/검증: 한 명의 owner / 서로 다른 reviewer
+현재 gate: 범위 승인 / 실행 결과 대기 / 독립 검증 / 대표 결정 / 완료
+비용: 관측 금액 또는 미관측(0원으로 대체 금지)
+안전: 외부 행동 0 / 자동 발행 OFF
+```
+
+완료율은 `completed` 문자열만 보지 않고, scope·result·verification·operator
+decision에 모두 결속된 completion receipt가 있는 작업만 계산합니다.
+`authorized` 이후 상태도 사람 authorization receipt와 같은 scope에 묶인
+dispatch outbox packet이 함께 있어야 대표 화면에 표시됩니다.
+
+향후 Ops adapter가 명시적으로 구성한 sanitized snapshot은 네트워크 없이
+먼저 검증하고 읽을 수 있습니다. 현재 SQL RPC 응답을 이 파일 형식으로
+바꾸는 live adapter는 P0 범위에 포함하지 않습니다.
+
+```text
+PYTHONPATH=. python -m scripts.run_agent_company_dashboard \
+  --input /path/to/sanitized-ledger-snapshot.json \
+  --observed-at 2026-08-25T12:00:00Z \
+  --dashboard
+```
+
+입력 SHA, owner/reviewer 결속, receipt 순서 또는 비용 관측 표기가 맞지
+않으면 대시보드는 부분 결과를 보여주지 않고 실패합니다.
+
+### Phase 1C — 네 고객 Harmony 운영실
+
+Yellow, OriginTrail, Squid, Babylon의 Quiz 학습, Community Ops, 공식 소스,
+Recap을 자유 채팅이 아닌 고객별 최대 6턴의 구조화 라운드로 결합합니다.
+자세한 계약과 대표 화면은
+[ADR-019](ADR-019-client-bot-harmony-fabric.md) 및
+[Harmony 운영 가이드](AI_COMPANY_HARMONY.md)를 따릅니다.
+
+현재 구현은 네 고객 설정과 caller-authored sanitized claim을 읽는 로컬
+rehearsal projection입니다.
+`*_quiz_bot`은 logical `contract_only` participant이며 외부 퀴즈봇 API나
+credential이 연결됐다는 뜻이 아닙니다. 고객별 신호가 모두 fresh하고 공식
+주제가 Quiz/Community/관측된 Recap 중 두 개 이상에서 지지되더라도, 별도
+runtime registry가 JWT 또는 immutable DB receipt로 네 신호를 검증하기
+전에는 private handoff를 만들지 않습니다. 로컬 CLI에는 이 registry를
+주입하는 옵션이 없으며 `test_fixture`도 대표 승인 대상을 만들 수 없습니다.
+
+```text
+PYTHONPATH=. python -m scripts.run_agent_harmony \
+  --input examples/agent-harmony-empty-input.json \
+  --clients-dir clients \
+  --observed-at 2026-08-25T12:00:00Z \
+  --dashboard
+```
+
+교차 고객 패턴은 기획 관행만 공유합니다. 카피, 공식 근거, 브랜드 자산,
+개별 사용자 데이터, audience ranking은 공유하지 않습니다. Production DB,
+live bot adapter, provider, Buzz, publication은 별도 Preview와 승인 gate입니다.
+64-way local projection은 결정론만 확인하며 durable exactly-once 증거가
+아닙니다. Preview 원장의 독립 transaction concurrency 검증이 별도로 필요합니다.
 
 ### Phase 2 — 개발 자동화
 

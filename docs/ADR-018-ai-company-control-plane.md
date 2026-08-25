@@ -1,6 +1,6 @@
 # ADR-018: CoinEasy AI company control plane
 
-**Status:** Proposed
+**Status:** Accepted; Phase 1B implementation staged locally, not deployed
 
 **Date:** 2026-08-20
 **Deciders:** CoinEasy operator
@@ -156,10 +156,50 @@ This proves that the participants can read one contract and that the operator
 can understand the combined state. It is not the durable Phase 1 ledger and
 does not satisfy the gate for unattended execution.
 
-## Future durable model
+## Phase 1B durable P0 boundary
 
-After the local contract passes three manual tasks, add separate FORCE-RLS
-tables rather than overloading Content Studio jobs:
+Phase 1B implements the common ledger and operator projection, but it still does
+not turn on an agent provider. Its bounded flow is:
+
+```mermaid
+flowchart LR
+    P["Validated work order"] --> L["Durable common ledger"]
+    L --> H["Human authorization"]
+    H --> A["Policy-bound assignment outbox"]
+    A -. "later owner adapter" .-> R["Hash-bound result receipt"]
+    R -. "later reviewer adapter" .-> V["Independent verification receipt"]
+    V --> I["Operator approval inbox"]
+    I --> C["Control-plane completion receipt"]
+    L --> D["Cost and completion dashboard"]
+    A -. "provider adapter remains absent" .-> X["No external execution"]
+```
+
+The migration is intentionally deploy-inert until separately applied. Even
+after schema deployment, assignment means only a durable `pending` outbox row;
+there is no claim, provider-attempt, messaging, deployment, or publication RPC
+in this P0 surface. Result and verification receipt types are reserved and
+validated, but their writer adapters are also absent. A later provider adapter
+requires its own approval and commit-once attempt fence.
+
+P0 keeps every accepted work order at `max_cost_microusd = 0`,
+`max_external_actions = 0`, and `automatic_publication = false`. Human operator
+writes are bound to the authenticated workspace owner/admin identity instead of
+an actor string supplied by the caller. Read models recompute the Python work
+order, authorization payload, dispatch packet, and branch digests before showing
+an assignment, verification gate, or completion count. A terminal stop requires
+a matching human decision receipt. Unknown cost is shown as unobserved, never as
+zero; in this zero-cost P0 an observed positive amount is rejected.
+
+The local implementation is split across the two forward-only migrations
+`20260825130000_agent_work_order_ledger.sql` and
+`20260825131000_agent_work_order_roles.sql`, plus the strict no-I/O projection
+in `core/agent_control/durable.py`. None of them has been applied to Production
+by this change.
+
+## Durable model
+
+The P0 implementation uses separate FORCE-RLS tables rather than overloading
+Content Studio jobs:
 
 - `agent_runtime.agent_work_orders`
 - `agent_runtime.agent_work_order_events`
@@ -168,13 +208,13 @@ tables rather than overloading Content Studio jobs:
 - `agent_runtime.agent_action_receipts`
 - `agent_runtime.agent_incidents`
 
-Security-definer RPCs will own transitions. Authorization will insert the
+Security-definer RPCs own the exposed P0 transitions. Authorization inserts the
 approval event and dispatch outbox row in one transaction. Provider-attempt
-fences, lease expiry, and `delivery_unknown` semantics will reuse the proven
-Buzz and Grok QA patterns. The ledger will enforce a partial unique index on
+fences, lease expiry, and `delivery_unknown` semantics will later reuse the
+proven Buzz and Grok QA patterns. The ledger enforces a partial unique index on
 active branch scope keys and idempotency keys.
 
-Durable records will include separate `agent-work-result@1`,
+Durable records reserve separate `agent-work-result@1`,
 `agent-verification-receipt@1`, `operator-decision@1`, and
 `agent-completion-receipt@1` digests. No forward transition will be possible
 after the work or authorization expiry.
