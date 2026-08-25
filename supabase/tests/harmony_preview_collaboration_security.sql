@@ -73,6 +73,10 @@ begin
         if not pg_catalog.pg_has_role('authenticator', role_name, 'MEMBER') then
             raise exception 'authenticator cannot assume Harmony role: %', role_name;
         end if;
+        -- PostgreSQL 16 grants the creating CREATEROLE principal an
+        -- ADMIN-only membership with SET/INHERIT disabled.  Supabase creates
+        -- custom roles as postgres, so accept that non-assumable management
+        -- edge together with the one intended authenticator SET edge.
         if exists (
             select 1
             from pg_catalog.pg_auth_members membership
@@ -81,7 +85,20 @@ begin
             join pg_catalog.pg_roles member_role
               on member_role.oid = membership.member
             where granted_role.rolname = role_name
-              and member_role.rolname <> 'authenticator'
+              and not (
+                  (
+                      member_role.rolname = 'authenticator'
+                      and not membership.admin_option
+                      and not membership.inherit_option
+                      and membership.set_option
+                  )
+                  or (
+                      member_role.rolname = 'postgres'
+                      and membership.admin_option
+                      and not membership.inherit_option
+                      and not membership.set_option
+                  )
+              )
         ) then
             raise exception 'unexpected principal can assume Harmony role: %', role_name;
         end if;

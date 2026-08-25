@@ -360,12 +360,13 @@ from (values
 
 grant select on table agent_terminal_scopes to authenticated;
 
--- auth.uid() is sourced from request.jwt.claim.sub.  A valid JWT-shaped claims
--- document alone must not impersonate an operator, and workspace membership is
--- checked for every write.
+-- Supabase auth.uid() reads request.jwt.claim.sub first and falls back to the
+-- signed request.jwt.claims document.  With no subject in either location the
+-- caller must not impersonate an operator, and workspace membership is checked
+-- for every write.
 select pg_catalog.set_config(
     'request.jwt.claims',
-    '{"role":"authenticated","sub":"af000000-0000-4000-8000-000000000001"}',
+    '{"role":"authenticated"}',
     true
 );
 select pg_catalog.set_config('request.jwt.claim.sub', '', true);
@@ -390,7 +391,7 @@ begin
             scope,
             '3ca4df5a2d7c8f2ee145a473094bfa8e86510dd3bc0342cac12f643d44ab624d'
         );
-        raise exception 'claims JSON impersonated an operator without auth.uid';
+        raise exception 'missing JWT subject impersonated an operator';
     exception when insufficient_privilege then null;
     end;
 end
