@@ -2955,6 +2955,7 @@ def generate_news_card_spec(
             if source_image is not None
             else False
         )
+        _validate_result(result)
         return result
 
     config = get_client_config(client_id)
@@ -3153,6 +3154,16 @@ REQUIRED_KEYS = (
     "source_text_visible",
     "translation_regions",
 )
+NEWS_CARD_KOREAN_LOCALIZATION_ERROR = (
+    "news_card_korean_localization_incomplete"
+)
+
+
+class NewsCardKoreanLocalizationError(ValueError):
+    """Safe, stable failure for English-only Korean GTM card copy."""
+
+    def __init__(self) -> None:
+        super().__init__(NEWS_CARD_KOREAN_LOCALIZATION_ERROR)
 
 
 def _validate_result(result: dict):
@@ -3163,6 +3174,8 @@ def _validate_result(result: dict):
         "news_card: 'label' must be non-empty string"
     assert isinstance(result["headline"], str) and result["headline"].strip(), \
         "news_card: 'headline' must be non-empty string"
+    if not _HANGUL.search(result["headline"]):
+        raise NewsCardKoreanLocalizationError()
 
     assert DATE_PATTERN.match(result["date"]), \
         f"news_card: 'date' must be YYYY.MM.DD, got '{result['date']}'"
@@ -3186,6 +3199,8 @@ def _validate_result(result: dict):
     for i, line in enumerate(body):
         assert isinstance(line, str) and line.strip(), \
             f"news_card: body_lines[{i}] must be non-empty string"
+    if not _HANGUL.search(" ".join(body)):
+        raise NewsCardKoreanLocalizationError()
 
     assert isinstance(result["source_url"], str), "news_card: 'source_url' must be string"
 

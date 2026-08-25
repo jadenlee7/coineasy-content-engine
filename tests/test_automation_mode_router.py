@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from core.automation.mode_router import (
     _normalize_demand_term,
     choose_content_mode,
@@ -145,7 +147,11 @@ def test_equal_scores_use_numeric_post_id_not_lexicographic_order():
     assert select_official_candidate([older_digits, newer_digits])["id"] == "10"
 
 
-def test_squid_fresh_post_beats_four_day_old_high_scoring_backlog():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_fresh_post_beats_four_day_old_high_scoring_backlog(client_id):
     latest = post(
         "100",
         "Squid has moved $800m in and out of Celo since launch.",
@@ -162,14 +168,18 @@ def test_squid_fresh_post_beats_four_day_old_high_scoring_backlog():
 
     selected = select_official_candidate(
         [old_high_score, latest],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is latest
 
 
-def test_squid_freshness_bucket_still_uses_relevance_signals():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_freshness_bucket_still_uses_relevance_signals(client_id):
     newest = post(
         "110",
         "A short ecosystem update is available.",
@@ -183,14 +193,18 @@ def test_squid_freshness_bucket_still_uses_relevance_signals():
 
     selected = select_official_candidate(
         [newest, relevant],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is relevant
 
 
-def test_squid_freshness_bucket_includes_exact_24_hour_boundary():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_freshness_bucket_includes_exact_24_hour_boundary(client_id):
     at_cutoff = post(
         "115",
         "Our routing update is available.",
@@ -205,14 +219,18 @@ def test_squid_freshness_bucket_includes_exact_24_hour_boundary():
 
     selected = select_official_candidate(
         [just_outside, at_cutoff],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is at_cutoff
 
 
-def test_squid_stale_backlog_is_not_reused_as_new_content():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_stale_backlog_is_not_reused_as_new_content(client_id):
     newest = post(
         "120",
         "A short ecosystem update is available.",
@@ -227,14 +245,14 @@ def test_squid_stale_backlog_is_not_reused_as_new_content():
 
     selected = select_official_candidate(
         [older_high_score, newest],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is None
 
 
-def test_non_squid_selection_keeps_existing_relevance_first_behavior():
+def test_unscoped_selection_keeps_existing_relevance_first_behavior():
     newest = post(
         "130",
         "A short ecosystem update is available.",
@@ -249,14 +267,17 @@ def test_non_squid_selection_keeps_existing_relevance_first_behavior():
 
     selected = select_official_candidate(
         [older_high_score, newest],
-        client_id="yellow",
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is older_high_score
 
 
-def test_squid_ranking_ignores_provider_link_metadata_copy():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_ranking_ignores_provider_link_metadata_copy(client_id):
     provider_enriched = post(
         "139",
         "Happy Sunday.\n\n"
@@ -272,14 +293,18 @@ def test_squid_ranking_ignores_provider_link_metadata_copy():
 
     selected = select_official_candidate(
         [provider_enriched, official_announcement],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
     )
 
     assert selected is official_announcement
 
 
-def test_squid_skip_patterns_ignore_provider_link_metadata_copy():
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_skip_patterns_ignore_provider_link_metadata_copy(client_id):
     source = post(
         "150",
         "Our routing update is live today.\n\n"
@@ -290,9 +315,44 @@ def test_squid_skip_patterns_ignore_provider_link_metadata_copy():
 
     selected = select_official_candidate(
         [source],
-        client_id="squid",
+        client_id=client_id,
         now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
         skip_patterns=["AMA", "15 minutes"],
     )
 
     assert selected is source
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    ["yellow", "origintrail", "squid", "babylon"],
+)
+def test_x_article_text_remains_rankable_when_link_metadata_is_ignored(
+    client_id,
+):
+    article = post(
+        "160",
+        "https://t.co/official-article\n\n"
+        "[X Article]\n\n"
+        "Title: Major network release\n"
+        "Plain text: Our major mainnet integration launch is now live with "
+        "a detailed developer update.\n\n"
+        "[X-provided link metadata]\n\n"
+        "Title: Unrelated partner preview\n"
+        "Description: Join the AMA in 15 minutes.",
+        created_at="2026-08-20T15:00:00Z",
+    )
+    short_update = post(
+        "161",
+        "A short ecosystem update is available.",
+        created_at="2026-08-20T15:30:00Z",
+    )
+
+    selected = select_official_candidate(
+        [article, short_update],
+        client_id=client_id,
+        now=datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc),
+        skip_patterns=["AMA", "15 minutes"],
+    )
+
+    assert selected is article

@@ -32,16 +32,20 @@ contract.
 | Tutorial signal for Yellow or Squid | Article or Daily News draft; no Tutorial is generated automatically |
 | Low-signal social post, reply, retweet, or configured skip phrase | No draft |
 
-Squid has an additional freshness fence. Only eligible official root posts from
-the preceding 24 hours may become an automatic draft; when that set is empty,
-the worker creates no Squid draft instead of recycling an older pending post.
-Within the fresh set, the existing announcement, aggregate demand, and tutorial
-signals may rank candidates. Provider-added `[X-provided link metadata]` is
-excluded from that routing score and from skip-pattern matching, so it cannot
-make an old or low-signal post appear more important than the official post
-text. A text-only Squid visual that requires manual review is reported and
-removed from the current run's candidate set, allowing the next fresh eligible
-post to proceed without weakening the manual-review boundary.
+All four production clients have the same freshness fence. Only eligible
+official root posts from the preceding 24 hours may become an automatic draft;
+when that set is empty, the worker creates no draft instead of recycling an
+older pending post. The fence applies equally to newly fetched posts and the
+durable pending-source ledger, so re-enabling a paused client does not backfill
+old campaigns. Within the fresh set, the existing announcement, aggregate
+demand, and tutorial signals may rank candidates. Provider-added
+`[X-provided link metadata]` is excluded from routing scores and skip-pattern
+matching for every client, so it cannot make an old or low-signal post appear
+more important than the official post text. Provider-owned `[X Article]` copy
+that precedes that marker remains eligible source evidence. A text-only Squid
+visual that requires manual review is reported and removed from the current
+run's candidate set, allowing the next fresh eligible post to proceed without
+weakening the manual-review boundary.
 
 A Squid Quiz bot notification is an operations wake-up hint, not factual source
 evidence. The scheduled worker always re-fetches the canonical root post from
@@ -77,8 +81,10 @@ Daily News automation uses a client-specific visual policy:
   a source-heavy framed `remix`. The first-party square poster receives 780px
   of the 1080px canvas; its marks, contrast, typography, Bitcoin/provenance
   motif, and proof hierarchy stay intact while Korean context remains in a
-  compact lower panel. Text-only sources continue to use each deterministic
-  `classic` card.
+  compact lower panel. Their text-only Daily News sources stop with
+  `approved_classic_template_missing` before a style pack or daily slot is
+  reserved because those clients do not yet have an approved canonical classic
+  frame. The worker may continue to the next fresh image-backed candidate.
 - A Squid Daily News source with an official X photo or canonical video poster
   uses `remix` automatically. The complete official crop remains authoritative
   and its native aspect ratio becomes the primary X deliverable; only audited
@@ -99,6 +105,25 @@ Daily News automation uses a client-specific visual policy:
   hashes, preventing an older family render from being reused as current. An
   exact stored pre-policy result remains replayable only when its immutable spec
   has no family/policy fields and its original request hash matches.
+- An automation-owned official-media `remix` for Yellow, OriginTrail, Babylon,
+  or Squid never downgrades to `classic` when preparation or rendering fails.
+  An exact, post-resolution, or concurrent replay of a stored Yellow,
+  OriginTrail, or Babylon fallback is rejected before asset download with
+  `news_card_remix_regeneration_required`. Manual Studio compatibility does not
+  weaken this scheduled-worker boundary.
+
+Every generated Daily News draft must also pass a deterministic Korean GTM
+boundary before its PNG is fetched or stored. The generated headline and the
+combined body copy must each contain Hangul. Product names, token symbols, and
+other protected English terms may remain in the label or alongside Korean
+copy; official source-image typography is not rewritten by this check. The
+Railway generator and Netlify persistence boundary both enforce the rule. An
+English-only result fails with
+`news_card_korean_localization_incomplete` and creates no asset, catalog
+version, or Grok QA outbox item. An exact or concurrent replay of a stored
+pre-policy English card is also rejected before asset download with
+`news_card_korean_localization_regeneration_required`; it is never returned as
+a successful reused result.
 
 ## Performance recommendation handoff
 
@@ -252,14 +277,21 @@ editable export, review a version, or publish it.
    `supabase/tests/content_performance_promotions_security.sql` against the
    target schema and require its exact-version, exact-URL, account-allowlist,
    idempotency, immutability, and no-side-effect checks to pass.
-3. Deploy the Content Engine Railway worker. Configure the separate cron service
-   with the custom config path and server-only variables above, with no public
-   domain. Run `python -m scripts.run_official_x_daily --dry-run`; it reads
-   candidates but creates no source, job, asset, or content rows.
-4. Deploy the Netlify functions and console with the dedicated automation token
-   only after the migrations and Railway checks pass. Trigger one real worker
-   run and confirm every generated result remains `needs_review` before enabling
-   the schedule.
+3. Deploy the Content Engine Railway API, Netlify functions, and the dedicated
+   cron worker from the same reviewed Git SHA. Keep the cron service private and
+   use the custom config path and server-only variables above. Run
+   `python -m scripts.run_official_x_daily --dry-run` with all four clients; it
+   may read Supabase, X, and EasyFarm, but it must create no source, cursor, job,
+   asset, catalog, approval, or publication record. Require `errors=0` and
+   confirm every planned source is no more than 24 hours old.
+4. Preserve the existing clients in `AUTOMATION_ALLOWED_CLIENTS`, then add
+   Yellow and Babylon one at a time. After each natural cron, verify the exact
+   deployment SHA, feed cursor movement, at most one KST-day slot, and either a
+   safe `no_candidate` result or one immutable `needs_review` version. A Daily
+   News canary must have a Hangul headline/body, the correct official source
+   account, the expected classic/remix brand profile, exactly one private PNG,
+   and zero approval/publication rows. An Article may store its source-locked
+   visual story for on-demand rendering, but remains outside the Grok outbox.
 5. Provision the EasyFarm bridge token in both server environments and confirm
    the worker reports only `signals_used` with bounded term/candidate counts or
    the safe `signals_unavailable` fallback. No raw term text, public URL, or
@@ -292,6 +324,13 @@ publisher credentials, deleting immutable evidence/history, or writing into
 EasyFarm; the provider can remain on backward-compatible schemas `1.0` and
 `1.1` while the consumer is disabled.
 
+For a client rollout regression, first restore
+`AUTOMATION_ALLOWED_CLIENTS=origintrail,squid`; do not reset a feed cursor,
+delete a pending source, or replay an older campaign. Disable Grok dispatch
+independently if its exact release fence, private relay, or per-client canary
+fails. Existing immutable `needs_review` evidence remains available for human
+inspection, and no rollback step grants publication authority.
+
 Durable Figma links and the internal import plugin remain downstream of
 approval and are not exposed by the current shared-session UI.
 `record_approved_figma_link` requires a real Supabase Auth user and workspace
@@ -300,10 +339,12 @@ membership. The scheduled X worker has no Figma write path or plugin secret.
 At `needs_review`, a reviewer can request a local, non-persistent
 Figma-editable SVG using the fields shown in the current Daily News detail.
 This does not create a durable asset or Figma link and does not change workflow
-status. Every scheduled client draft with pinned official media uses `remix`;
-text-only drafts use that client's `classic` treatment. A historical `remix`
-whose external source image or Railway-cleaned Squid visual cannot be loaded
-fails closed instead of returning an image-less SVG.
+status. Every scheduled client draft with pinned official media uses `remix`.
+Text-only Yellow uses its approved classic, while Squid uses its reviewed
+generated routing policy. OriginTrail and Babylon text-only Daily News remain
+manual until their canonical classic frames are approved. A historical
+`remix` whose external source image or Railway-cleaned Squid visual cannot be
+loaded fails closed instead of returning an image-less SVG.
 
 Article jobs also store a source-locked visual story: one `1200x630` hero and
 two `1200x675` inline editorial visuals. The Studio library regenerates them
