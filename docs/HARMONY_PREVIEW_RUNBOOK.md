@@ -160,7 +160,11 @@ immutable하므로 오류 시 row를 수정/삭제하지 않고 branch 전체를
 - public/anon/authenticated/service_role의 Harmony 원장 table 직접 grant 0
 - service_role의 다섯 공개 RPC execute grant 0
 - 각 Harmony role의 execute-set이 위 표와 정확히 일치
-- role 특권과 상호 role membership 0; `authenticator` membership만 존재
+- role 특권과 상호 role membership 0. 런타임 assume edge는
+  `authenticator`의 `SET=true`, `ADMIN=false`, `INHERIT=false` 한 건뿐입니다.
+  Supabase PostgreSQL 16이 custom role 생성자 `postgres`에 자동으로 남기는
+  `ADMIN=true`, `SET=false`, `INHERIT=false` 관리 edge는 허용하되 런타임
+  assume 권한으로 간주하지 않으며, 그 밖의 principal edge는 0이어야 합니다.
 - environment fence는 exact Preview ref 한 건, active, 미만료
 - Harmony signal/receipt/round/plan/stage/inbox row 모두 0
 - Production 연결과 Production row delta 0

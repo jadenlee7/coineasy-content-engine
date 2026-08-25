@@ -1,5 +1,5 @@
 -- Transactional security smoke for the disposable Harmony Preview fabric.
--- Run as database owner after migrations 20260825122000..125000. No rows persist.
+-- Run as database owner after migrations 20260825130000..135000. No rows persist.
 
 begin;
 
