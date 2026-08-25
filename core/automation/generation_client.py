@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Mapping
@@ -28,6 +29,9 @@ _X_STATUS_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_]{1,15}/status/[0-9]{1,19}$")
 _ALLOWED_PRODUCTION_HOST = "coineasy-newscard.netlify.app"
 _GENERATION_CONTRACT = "double-fact-check@1"
 _TUTORIAL_CLAIMS_CONTRACT = "lessons@1"
+_ARTICLE_RECONCILIATION_CONTRACT = "request-bound-readback@1"
+_ARTICLE_RECONCILE_DELAYS_SECONDS = (0.0, 0.15, 0.35)
+_ARTICLE_RECONCILE_TIMEOUT_SECONDS = 0.8
 _PINNED_SOURCE_PROOF_CLIENTS = frozenset({
     "squid",
     "yellow",
@@ -164,7 +168,8 @@ class StudioGenerationClient:
         client: httpx.AsyncClient,
         *,
         expected_release_sha: str = "",
-    ) -> None:
+        require_article_reconciliation: bool = False,
+    ) -> str:
         """Preflight before any mutating request to prevent staggered-deploy poisoning."""
         try:
             response = await client.get(
@@ -190,7 +195,13 @@ class StudioGenerationClient:
             or body.get("schema_version") != "1.0"
             or body.get("generation_contract") != _GENERATION_CONTRACT
             or body.get("tutorial_claims_contract") != _TUTORIAL_CLAIMS_CONTRACT
+            or (require_article_reconciliation and (
+                body.get("article_reconciliation_contract")
+                != _ARTICLE_RECONCILIATION_CONTRACT
+            ))
             or body.get("generated_content_kinds") != ["daily_news", "article", "tutorial"]
+            or not isinstance(body.get("netlify_release_sha"), str)
+            or _RELEASE_SHA_PATTERN.fullmatch(body["netlify_release_sha"]) is None
             or (
                 expected_release_sha
                 and body.get("netlify_release_sha") != expected_release_sha
@@ -200,6 +211,192 @@ class StudioGenerationClient:
                 "studio_generation_contract_unavailable",
                 retryable=True,
             )
+        return body["netlify_release_sha"]
+
+    def _validated_generation_result(
+        self,
+        response: httpx.Response,
+        *,
+        client_id: str,
+        content_kind: str,
+        request_id: str,
+        source_image_url: str,
+        template_style: str,
+    ) -> GeneratedCatalogResult:
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=response.status_code >= 500,
+            ) from exc
+        if not isinstance(body, Mapping):
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=False,
+            )
+        if response.status_code < 200 or response.status_code >= 300:
+            code = body.get("error")
+            safe_code = (
+                code
+                if isinstance(code, str) and _ERROR_CODE_PATTERN.fullmatch(code)
+                else "studio_generation_failed"
+            )
+            raw_reason = body.get("reason_code")
+            reason_code = (
+                raw_reason
+                if safe_code == "squid_visual_localization_incomplete"
+                and (
+                    body.get("diagnostic_version")
+                    == SQUID_LOCALIZATION_DIAGNOSTIC_VERSION
+                )
+                and isinstance(raw_reason, str)
+                and raw_reason in SQUID_LOCALIZATION_REASON_CODES
+                else ""
+            )
+            raise GenerationRequestError(
+                safe_code,
+                retryable=(
+                    squid_localization_reason_retryable(reason_code)
+                    if reason_code
+                    else response.status_code in {429, 502, 503, 504}
+                ),
+                reason_code=reason_code,
+            )
+
+        content_item_id = body.get("content_item_id")
+        content_version_id = body.get("content_version_id")
+        raw_asset_ids = body.get("asset_ids", [])
+        if (
+            content_item_id != request_id.lower()
+            or not isinstance(content_version_id, str)
+            or not _UUID_PATTERN.fullmatch(content_version_id)
+            or not isinstance(raw_asset_ids, list)
+            or any(
+                not isinstance(item, str) or not _UUID_PATTERN.fullmatch(item)
+                for item in raw_asset_ids
+            )
+            or body.get("storage_backend") != "supabase"
+        ):
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=False,
+            )
+        if not _has_valid_fact_check(body.get("fact_check"), content_kind):
+            # During a staggered deploy an older Netlify boundary may persist a
+            # version without the mandatory report. Keep the automation job
+            # retryable and never mark that version completed/approvable.
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=True,
+            )
+        if content_kind == "daily_news" and len(raw_asset_ids) != 1:
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=False,
+            )
+        if (
+            content_kind == "daily_news"
+            and client_id in _PINNED_SOURCE_PROOF_CLIENTS
+            and template_style == "remix"
+            and (
+                not source_image_url
+                or body.get("requested_template_style") != "remix"
+                or body.get("template_style") != "remix"
+                or body.get("source_image_used") is not True
+                or body.get("source_image_url") != source_image_url
+                or body.get("source_media_status") != "present"
+                or not isinstance(body.get("source_image_sha256"), str)
+                or not _SHA256_PATTERN.fullmatch(body["source_image_sha256"])
+            )
+        ):
+            # A staggered Netlify/Railway rollout can briefly omit the proof.
+            # Keep the durable job retryable; never complete it without proof.
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=True,
+            )
+        if content_kind == "article" and raw_asset_ids:
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=False,
+            )
+        if content_kind == "tutorial" and not 1 <= len(raw_asset_ids) <= 12:
+            raise GenerationRequestError(
+                "studio_generation_invalid_response",
+                retryable=False,
+            )
+
+        return GeneratedCatalogResult(
+            content_item_id=content_item_id,
+            content_version_id=content_version_id.lower(),
+            asset_ids=tuple(item.lower() for item in raw_asset_ids),
+            reused=body.get("reused") is True,
+        )
+
+    async def _reconcile_ambiguous_article(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        client_id: str,
+        request_id: str,
+        source_image_url: str,
+        template_style: str,
+    ) -> GeneratedCatalogResult | None:
+        reconcile_route = f"/api/article-result/{client_id}/{request_id.lower()}"
+        for delay_seconds in _ARTICLE_RECONCILE_DELAYS_SECONDS:
+            if delay_seconds:
+                await asyncio.sleep(delay_seconds)
+            try:
+                response = await asyncio.wait_for(
+                    client.post(
+                        f"{self.base_url}{reconcile_route}",
+                        headers=headers,
+                        json=payload,
+                        timeout=_ARTICLE_RECONCILE_TIMEOUT_SECONDS,
+                    ),
+                    timeout=_ARTICLE_RECONCILE_TIMEOUT_SECONDS,
+                )
+            except (
+                asyncio.TimeoutError,
+                httpx.TimeoutException,
+                httpx.TransportError,
+            ):
+                continue
+            if response.status_code == 202:
+                try:
+                    pending = response.json()
+                except ValueError:
+                    continue
+                if pending == {
+                    "status": "generating",
+                    "content_item_id": request_id.lower(),
+                }:
+                    continue
+            if response.status_code in {404, 405}:
+                continue
+            try:
+                result = self._validated_generation_result(
+                    response,
+                    client_id=client_id,
+                    content_kind="article",
+                    request_id=request_id,
+                    source_image_url=source_image_url,
+                    template_style=template_style,
+                )
+                if not result.reused:
+                    raise GenerationRequestError(
+                        "studio_generation_invalid_response",
+                        retryable=False,
+                    )
+                return result
+            except GenerationRequestError as exc:
+                if exc.retryable:
+                    continue
+                raise
+        return None
 
     async def require_release(self, expected_release_sha: str) -> None:
         if _RELEASE_SHA_PATTERN.fullmatch(expected_release_sha) is None:
@@ -309,116 +506,68 @@ class StudioGenerationClient:
             payload["style_references"] = reference_payload
             payload["style_reference_pack_hash"] = style_reference_pack_hash
 
-        try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout_seconds,
-                follow_redirects=False,
-                transport=self.transport,
-            ) as client:
-                await self._require_generation_contract(
-                    client,
-                    expected_release_sha=expected_studio_release_sha,
-                )
-                headers = {
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": request_id,
-                    "X-Studio-Automation-Key": self.automation_token,
-                }
-                if expected_studio_release_sha:
-                    headers["X-Studio-Expected-Release-Sha"] = (
-                        expected_studio_release_sha
-                    )
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds,
+            follow_redirects=False,
+            transport=self.transport,
+        ) as client:
+            studio_release_sha = await self._require_generation_contract(
+                client,
+                expected_release_sha=expected_studio_release_sha,
+                require_article_reconciliation=content_kind == "article",
+            )
+            headers = {
+                "Content-Type": "application/json",
+                "Idempotency-Key": request_id,
+                "X-Studio-Automation-Key": self.automation_token,
+                "X-Studio-Expected-Release-Sha": studio_release_sha,
+            }
+            try:
                 response = await client.post(
                     f"{self.base_url}{route}",
                     headers=headers,
                     json=payload,
                 )
-        except (httpx.TimeoutException, httpx.TransportError) as exc:
-            raise GenerationRequestError("studio_generation_unavailable", retryable=True) from exc
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise GenerationRequestError(
-                "studio_generation_invalid_response",
-                retryable=response.status_code >= 500,
-            ) from exc
-        if not isinstance(body, Mapping):
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
-        if response.status_code < 200 or response.status_code >= 300:
-            code = body.get("error")
-            safe_code = (
-                code
-                if isinstance(code, str) and _ERROR_CODE_PATTERN.fullmatch(code)
-                else "studio_generation_failed"
-            )
-            raw_reason = body.get("reason_code")
-            reason_code = (
-                raw_reason
-                if safe_code == "squid_visual_localization_incomplete"
-                and (
-                    body.get("diagnostic_version")
-                    == SQUID_LOCALIZATION_DIAGNOSTIC_VERSION
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                original_error = GenerationRequestError(
+                    "studio_generation_unavailable",
+                    retryable=True,
                 )
-                and isinstance(raw_reason, str)
-                and raw_reason in SQUID_LOCALIZATION_REASON_CODES
-                else ""
-            )
-            raise GenerationRequestError(
-                safe_code,
-                retryable=(
-                    squid_localization_reason_retryable(reason_code)
-                    if reason_code
-                    else response.status_code in {429, 502, 503, 504}
-                ),
-                reason_code=reason_code,
-            )
+                if content_kind == "article":
+                    recovered = await self._reconcile_ambiguous_article(
+                        client,
+                        headers=headers,
+                        payload=payload,
+                        client_id=client_id,
+                        request_id=request_id,
+                        source_image_url=source_image_url,
+                        template_style=template_style,
+                    )
+                    if recovered is not None:
+                        return recovered
+                raise original_error from exc
 
-        content_item_id = body.get("content_item_id")
-        content_version_id = body.get("content_version_id")
-        raw_asset_ids = body.get("asset_ids", [])
-        if (
-            content_item_id != request_id.lower()
-            or not isinstance(content_version_id, str)
-            or not _UUID_PATTERN.fullmatch(content_version_id)
-            or not isinstance(raw_asset_ids, list)
-            or any(not isinstance(item, str) or not _UUID_PATTERN.fullmatch(item) for item in raw_asset_ids)
-            or body.get("storage_backend") != "supabase"
-        ):
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
-        if not _has_valid_fact_check(body.get("fact_check"), content_kind):
-            # During a staggered deploy an older Netlify boundary may persist a
-            # version without the mandatory report. Keep the automation job
-            # retryable and never mark that version completed/approvable.
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=True)
-        if content_kind == "daily_news" and len(raw_asset_ids) != 1:
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
-        if (
-            content_kind == "daily_news"
-            and client_id in _PINNED_SOURCE_PROOF_CLIENTS
-            and template_style == "remix"
-            and (
-                not source_image_url
-                or body.get("requested_template_style") != "remix"
-                or body.get("template_style") != "remix"
-                or body.get("source_image_used") is not True
-                or body.get("source_image_url") != source_image_url
-                or body.get("source_media_status") != "present"
-                or not isinstance(body.get("source_image_sha256"), str)
-                or not _SHA256_PATTERN.fullmatch(body["source_image_sha256"])
-            )
-        ):
-            # A staggered Netlify/Railway rollout can briefly omit the proof.
-            # Keep the durable job retryable; never complete it without proof.
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=True)
-        if content_kind == "article" and raw_asset_ids:
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
-        if content_kind == "tutorial" and not 1 <= len(raw_asset_ids) <= 12:
-            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
-
-        return GeneratedCatalogResult(
-            content_item_id=content_item_id,
-            content_version_id=content_version_id.lower(),
-            asset_ids=tuple(item.lower() for item in raw_asset_ids),
-            reused=body.get("reused") is True,
-        )
+            try:
+                return self._validated_generation_result(
+                    response,
+                    client_id=client_id,
+                    content_kind=content_kind,
+                    request_id=request_id,
+                    source_image_url=source_image_url,
+                    template_style=template_style,
+                )
+            except GenerationRequestError as original_error:
+                if content_kind != "article" or not original_error.retryable:
+                    raise
+                recovered = await self._reconcile_ambiguous_article(
+                    client,
+                    headers=headers,
+                    payload=payload,
+                    client_id=client_id,
+                    request_id=request_id,
+                    source_image_url=source_image_url,
+                    template_style=template_style,
+                )
+                if recovered is not None:
+                    return recovered
+                raise

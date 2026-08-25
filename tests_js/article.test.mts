@@ -5,6 +5,7 @@ import test from "node:test";
 import articleHandler, {
   articleRequestHash,
   deadlineSignal as articleDeadlineSignal,
+  handleArticleRequest,
   isRailwayArticleResponse,
 } from "../netlify/functions/article.mts";
 import {
@@ -57,6 +58,8 @@ const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
 const VERSION_ID = "33333333-3333-4333-8333-333333333333";
 const APPROVED_ITEM_ID = "44444444-4444-4444-8444-444444444444";
 const APPROVED_VERSION_ID = "55555555-5555-4555-8555-555555555555";
+const AUTOMATION_TOKEN = "article-automation-token-that-is-long-enough";
+const RELEASE_SHA = "c".repeat(40);
 
 const PASTED_SOURCE = (
   "Squid published a cross-chain routing update for App, API, SDK, and Widget. "
@@ -70,6 +73,7 @@ const PASTED_SOURCE = (
 async function withArticleEnvironment(
   fetchImpl: typeof fetch,
   run: () => Promise<void>,
+  apiSecret: string | null = "article-secret",
 ): Promise<void> {
   const originalFetch = globalThis.fetch;
   const originalNetlify = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
@@ -79,9 +83,10 @@ async function withArticleEnvironment(
     value: {
       env: {
         get(name: string): string | undefined {
-          if (name === "API_SECRET") return "article-secret";
+          if (name === "API_SECRET") return apiSecret || undefined;
           if (name === "RAILWAY_API_URL") return "https://railway.example/";
           if (name === "STUDIO_ACCESS_TOKEN") return "article-studio-access-token";
+          if (name === "STUDIO_AUTOMATION_TOKEN") return AUTOMATION_TOKEN;
           if (name === "SUPABASE_URL") return "https://project.supabase.co";
           if (name === "SUPABASE_SERVICE_ROLE_KEY") return "server-only-service-key";
           if (name === "CONTENT_STUDIO_WORKSPACE_ID") return WORKSPACE_ID;
@@ -277,6 +282,63 @@ test("article proxy rejects URL-only or short input without fetching", async () 
     assert.deepEqual(await response.json(), {
       error: "source_content_must_be_300_to_60000_chars",
     });
+    assert.equal(fetched, false);
+  });
+});
+
+test("article generation still requires API_SECRET before body or catalog work", async () => {
+  let fetched = false;
+  await withArticleEnvironment(async () => {
+    fetched = true;
+    throw new Error("catalog must not be queried");
+  }, async () => {
+    const response = await articleHandler(new Request(
+      "https://console.example/api/article/yellow",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": REQUEST_ID,
+          cookie: `${STUDIO_SESSION_COOKIE}=${createStudioSessionValue("article-studio-access-token")}`,
+        },
+        body: "not-json",
+      },
+    ), { params: { clientId: "yellow" } } as never);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "server_not_configured" });
+    assert.equal(fetched, false);
+  }, null);
+});
+
+test("automation article requests require an exact release before body or catalog access", async () => {
+  let fetched = false;
+  await withArticleEnvironment(async () => {
+    fetched = true;
+    throw new Error("catalog must not be queried");
+  }, async () => {
+    const missing = await handleArticleRequest(new Request(
+      "https://console.example/api/article/yellow",
+      {
+        method: "POST",
+        headers: { "X-Studio-Automation-Key": AUTOMATION_TOKEN },
+        body: "not-json",
+      },
+    ), { params: { clientId: "yellow" } } as never, RELEASE_SHA);
+    assert.equal(missing.status, 503);
+    assert.deepEqual(await missing.json(), { error: "studio_release_mismatch" });
+
+    const mismatched = await handleArticleRequest(new Request(
+      "https://console.example/api/article/yellow",
+      {
+        method: "POST",
+        headers: {
+          "X-Studio-Automation-Key": AUTOMATION_TOKEN,
+          "X-Studio-Expected-Release-Sha": "d".repeat(40),
+        },
+        body: "not-json",
+      },
+    ), { params: { clientId: "yellow" } } as never, RELEASE_SHA);
+    assert.equal(mismatched.status, 503);
+    assert.deepEqual(await mismatched.json(), { error: "studio_release_mismatch" });
     assert.equal(fetched, false);
   });
 });

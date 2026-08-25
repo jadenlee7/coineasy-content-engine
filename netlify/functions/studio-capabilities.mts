@@ -7,6 +7,7 @@ const BODY = {
   generation_contract: "double-fact-check@1",
   generated_content_kinds: ["daily_news", "article", "tutorial"],
   tutorial_claims_contract: "lessons@1",
+  article_reconciliation_contract: "request-bound-readback@1",
 } as const;
 
 function json(body: unknown, status = 200): Response {

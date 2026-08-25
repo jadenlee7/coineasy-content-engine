@@ -38,6 +38,7 @@ test("automation capability preflight is authenticated and declares the exact ge
       generation_contract: "double-fact-check@1",
       generated_content_kinds: ["daily_news", "article", "tutorial"],
       tutorial_claims_contract: "lessons@1",
+      article_reconciliation_contract: "request-bound-readback@1",
       netlify_release_sha: STUDIO_BUILD_RELEASE_SHA,
     });
 
