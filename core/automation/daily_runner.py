@@ -67,6 +67,7 @@ _OFFICIAL_SOURCE_REMIX_CLIENTS = frozenset({
     "origintrail",
     "babylon",
 })
+_APPROVED_CLASSIC_DAILY_NEWS_CLIENTS = frozenset({"squid", "yellow"})
 _YELLOW_SOURCE_VISUAL_POLICY_VERSION = "yellow-source-visual-routing@1"
 _STANDARD_SOURCE_VISUAL_POLICY_VERSION = "standard-source-visual-routing@1"
 _ORIGINTRAIL_BATCH_OUTPUT_SCHEMA = {
@@ -152,7 +153,8 @@ def choose_automation_template_style(
 
     Every active client has an approved official-source visual rule, so a
     photo-backed news post keeps the verified original creative dominant.
-    Text-only posts retain each client's deterministic classic card.
+    Eligible text-only posts retain the client's deterministic classic card.
+    Intake separately blocks clients without an approved classic template.
     """
     if (
         client_id in _OFFICIAL_SOURCE_REMIX_CLIENTS
@@ -479,7 +481,7 @@ class OfficialXDailyRunner:
                 for item in state.pending_sources
             )
         remaining_candidates = tuple(candidate_posts)
-        skipped_manual_candidate = False
+        skipped_guarded_candidate = False
         while True:
             selected = select_official_candidate(
                 remaining_candidates,
@@ -491,7 +493,7 @@ class OfficialXDailyRunner:
             )
 
             if selected is None:
-                if not skipped_manual_candidate:
+                if not skipped_guarded_candidate:
                     summary.skipped += 1
                     summary.add(client_id, "no_candidate")
                 return
@@ -504,36 +506,47 @@ class OfficialXDailyRunner:
             source_item_id = selected.get("source_item_id")
             source_content = selected.get("text")
             source_url = selected.get("url")
-            source_image_url = (
-                _pinned_source_image_url(selected)
-                if client_id in {"origintrail", "squid"}
-                else selected.get("source_image_url", "")
-            )
+            # X exposes video/GIF poster frames in ``media`` while retaining
+            # the legacy ``source_image_url`` field for photos.  Pin the same
+            # validated fallback for every production client so first-party
+            # official creatives consistently reach the remix renderer.
+            source_image_url = _pinned_source_image_url(selected)
             if (
                 not isinstance(source_content, str)
                 or not isinstance(source_url, str)
                 or not isinstance(source_image_url, str)
             ):
                 raise ValueError("recorded source is incomplete")
-            if not (
+            guarded_status = ""
+            guarded_detail = ""
+            if (
+                decision.content_kind == "daily_news"
+                and not source_image_url
+                and client_id not in _APPROVED_CLASSIC_DAILY_NEWS_CLIENTS
+            ):
+                guarded_status = "approved_classic_template_missing"
+            elif (
                 client_id == "squid"
                 and decision.content_kind == "daily_news"
             ):
-                break
-            visual_decision = classify_squid_visual_style(
-                source_content,
-                source_url=source_url,
-                has_official_media=bool(source_image_url),
-            )
-            if not visual_decision.manual_review_required:
+                visual_decision = classify_squid_visual_style(
+                    source_content,
+                    source_url=source_url,
+                    has_official_media=bool(source_image_url),
+                )
+                if visual_decision.manual_review_required:
+                    guarded_status = "manual_visual_review_required"
+                    guarded_detail = visual_decision.family
+
+            if not guarded_status:
                 break
 
-            skipped_manual_candidate = True
+            skipped_guarded_candidate = True
             summary.skipped += 1
             summary.add(
                 client_id,
-                "manual_visual_review_required",
-                visual_decision.family,
+                guarded_status,
+                guarded_detail,
             )
             selected_post_id = selected.get("id")
             next_candidates = tuple(

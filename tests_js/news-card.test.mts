@@ -4,10 +4,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import newsCardHandler, {
+  APPROVED_CLASSIC_TEMPLATE_MISSING_ERROR,
   deadlineSignal as newsCardDeadlineSignal,
   MAX_NEWS_CARD_BYTES,
   NEWS_BRAND_PROFILE_POLICY_VERSION,
   NEWS_BRAND_PROFILES,
+  NEWS_CARD_KOREAN_LOCALIZATION_ERROR,
+  NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR,
+  NEWS_CARD_REMIX_REGENERATION_ERROR,
   SQUID_CREATIVE_FAMILY_POLICY_VERSION,
   SQUID_GENERATED_DESIGN_PROFILE_ID,
   SQUID_GENERATED_DESIGN_PROFILE_VERSION,
@@ -18,11 +22,13 @@ import newsCardHandler, {
   isOfficialClientXStatusUrl,
   isOfficialSquidXStatusUrl,
   newsCardFactCheckPublicText,
+  newsCardKoreanLocalizationError,
   newsCardRequestHash,
   normalizedFigmaTemplate,
   squidRemixLocalizationError,
   squidRemixLocalizationFailure,
   storedNewsTemplatePair,
+  upstreamNewsCardKoreanLocalizationError,
   validNewsTemplatePair,
   validStandardNewsBrandMetadata,
   validSquidCreativeMetadata,
@@ -384,6 +390,99 @@ function storedSquidRemixLookup(
   };
 }
 
+function storedSquidClassicLookup(
+  requestHash: string,
+  spec: Record<string, unknown>,
+  png = minimalPng(),
+): Record<string, unknown> {
+  return {
+    content_item_id: REQUEST_ID,
+    content_version_id: VERSION_ID,
+    client_id: "squid",
+    content_kind: "daily_news",
+    status: "needs_review",
+    title: "Squid 저장 카드",
+    content: {
+      request_hash: requestHash,
+      spec,
+      source: { mode: "provided", image_url: "", media_status: "not_requested" },
+      render: { template_style: "classic", requested_template_style: "classic" },
+    },
+    channel_copy: { telegram: "텔레그램", x: "X" },
+    generation_meta: {
+      request_hash: requestHash,
+      duration_ms: 1234,
+      mock_mode: false,
+      fact_check: validFactCheck(),
+    },
+    assets: [{
+      asset_id: ASSET_ID,
+      asset_kind: "png",
+      storage_bucket: "content-studio",
+      storage_path: `${WORKSPACE_ID}/squid/${ASSET_ID}/news-card.png`,
+      filename: "news-card.png",
+      mime_type: "image/png",
+      byte_size: png.byteLength,
+      sha256: createHash("sha256").update(png).digest("hex"),
+      width: 1080,
+      height: 1080,
+    }],
+  };
+}
+
+function storedStandardClassicFallbackLookup(
+  clientId: "yellow" | "origintrail" | "babylon",
+  requestHash: string,
+  sourceImageUrl: string,
+  png = minimalPng(),
+): Record<string, unknown> {
+  return {
+    content_item_id: REQUEST_ID,
+    content_version_id: VERSION_ID,
+    client_id: clientId,
+    content_kind: "daily_news",
+    status: "needs_review",
+    title: `${clientId} 한국어 업데이트`,
+    content: {
+      request_hash: requestHash,
+      spec: {
+        label: "업데이트",
+        headline: `${clientId} 공식 소식을 한국어로 전합니다`,
+        body_lines: ["공식 원문과 이미지를 기준으로 정리합니다"],
+      },
+      source: {
+        mode: "x_import",
+        image_url: sourceImageUrl,
+        media_status: "present",
+      },
+      render: {
+        template_style: "classic",
+        requested_template_style: "remix",
+        source_image_used: false,
+      },
+    },
+    channel_copy: { telegram: "텔레그램", x: "X" },
+    generation_meta: {
+      request_hash: requestHash,
+      duration_ms: 987,
+      mock_mode: false,
+      fact_check: validFactCheck(),
+    },
+    assets: [{
+      asset_id: ASSET_ID,
+      asset_kind: "png",
+      storage_bucket: "content-studio",
+      storage_path: `${WORKSPACE_ID}/${clientId}/${ASSET_ID}/news-card.png`,
+      filename: "news-card.png",
+      mime_type: "image/png",
+      byte_size: png.byteLength,
+      sha256: createHash("sha256").update(png).digest("hex"),
+      width: 1080,
+      height: 1080,
+    }],
+  };
+}
+
 function minimalPng(width = 1080, height = 1080): Uint8Array {
   const bytes = new Uint8Array(25);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -456,6 +555,106 @@ async function withEnvironment(
     else Reflect.deleteProperty(globalThis, "Netlify");
   }
 }
+
+test("Daily News Korean GTM boundary allows protected English terms but rejects English copy", () => {
+  assert.equal(newsCardKoreanLocalizationError({
+    label: "$QUID / IBC",
+    headline: "$QUID로 여러 체인을 연결합니다",
+    body_lines: ["IBC routing", "한국 사용자에게 핵심 내용을 안내합니다"],
+  }), null);
+  assert.equal(newsCardKoreanLocalizationError({
+    label: "$QUID",
+    headline: "Squid connects every chain",
+    body_lines: ["한국 사용자에게 핵심 내용을 안내합니다"],
+  }), NEWS_CARD_KOREAN_LOCALIZATION_ERROR);
+  assert.equal(newsCardKoreanLocalizationError({
+    label: "$QUID",
+    headline: "$QUID로 여러 체인을 연결합니다",
+    body_lines: ["IBC routing", "Cross-chain liquidity"],
+  }), NEWS_CARD_KOREAN_LOCALIZATION_ERROR);
+  assert.equal(newsCardKoreanLocalizationError({
+    headline: "$QUID로 여러 체인을 연결합니다",
+    body_lines: [],
+  }), "invalid_generation_response");
+  assert.equal(upstreamNewsCardKoreanLocalizationError(JSON.stringify({
+    detail: (
+      "Generation failed: NewsCardKoreanLocalizationError: "
+      + NEWS_CARD_KOREAN_LOCALIZATION_ERROR
+    ),
+  })), NEWS_CARD_KOREAN_LOCALIZATION_ERROR);
+  assert.equal(upstreamNewsCardKoreanLocalizationError(JSON.stringify({
+    detail: "Generation failed: ValueError: unrelated detail",
+  })), null);
+  assert.equal(upstreamNewsCardKoreanLocalizationError("not-json"), null);
+});
+
+test("English-only Daily News fails before PNG fetch, storage, catalog, or QA outbox", async () => {
+  let pngFetches = 0;
+  let storageWrites = 0;
+  let catalogWrites = 0;
+  let outboxWrites = 0;
+
+  await withEnvironment(async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+    if (url.endsWith("/clients/squid/generate/news-card")) {
+      return Response.json({
+        client_id: "squid",
+        content_type: "news_card",
+        spec: {
+          ...squidCreativeMetadata("classic"),
+          label: "$QUID",
+          headline: "Squid connects every chain",
+          body_lines: ["Cross-chain routing for everyone"],
+          source_url: SOURCE_URL,
+        },
+        png_path: "/app/output/squid/news_123/news_card_classic.png",
+        template_style: "classic",
+        requested_template_style: "classic",
+        source_image_used: false,
+        source_visual_path: null,
+        figma_template: null,
+        manifest_path: "/app/output/squid/news_123/manifest.json",
+        duration_ms: 1234,
+      });
+    }
+    if (url.includes("/files/")) {
+      pngFetches += 1;
+      return new Response(minimalPng());
+    }
+    if (url.includes("/storage/v1/object/") && init?.method === "POST") {
+      storageWrites += 1;
+      return Response.json({ Key: "unexpected" });
+    }
+    if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+      catalogWrites += 1;
+      return Response.json({});
+    }
+    if (url.includes("grok") || url.includes("outbox")) {
+      outboxWrites += 1;
+      return Response.json({});
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest(), {
+      params: { clientId: "squid" },
+    } as never);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      error: NEWS_CARD_KOREAN_LOCALIZATION_ERROR,
+    });
+    assert.equal(pngFetches, 0);
+    assert.equal(storageWrites, 0);
+    assert.equal(catalogWrites, 0);
+    assert.equal(outboxWrites, 0);
+  });
+});
 
 test("news card request hash binds every submitted generation input", () => {
   const input = {
@@ -682,6 +881,305 @@ test("fails closed on inconsistent requested and rendered template families", ()
   assert.equal(validNewsTemplatePair("squid", "editorial", "editorial", "editorial"), false);
   assert.equal(validNewsTemplatePair("squid", "signal", "classic", "classic"), false);
   assert.equal(validNewsTemplatePair("yellow", "editorial", "editorial", "classic"), false);
+});
+
+test("automation rejects unapproved OriginTrail and Babylon classic templates before I/O", async () => {
+  for (const clientId of ["origintrail", "babylon"] as const) {
+    let fetched = false;
+    await withEnvironment(async () => {
+      fetched = true;
+      return Response.json({});
+    }, async () => {
+      const response = await newsCardHandler(studioRequest({
+        source_content: "Official source text with enough context for a Daily News card.",
+        source_type: "tweet",
+        source_url: SOURCE_URL,
+        mock_mode: false,
+        template_style: "classic",
+      }, true, true), { params: { clientId } } as never);
+      assert.equal(response.status, 422);
+      assert.deepEqual(await response.json(), {
+        error: APPROVED_CLASSIC_TEMPLATE_MISSING_ERROR,
+      });
+      assert.equal(fetched, false);
+    });
+  }
+});
+
+test("automation never downgrades verified official remix media to classic", async () => {
+  const cases = [
+    { clientId: "yellow", handle: "Yellow", userId: "2651", statusId: "2087177332670750834" },
+    { clientId: "origintrail", handle: "origin_trail", userId: "2501522515", statusId: "2078063452996661578" },
+    { clientId: "babylon", handle: "babylonlabs_io", userId: "1558731723243810816", statusId: "2061801513488429361" },
+  ] as const;
+
+  for (const item of cases) {
+    const sourceUrl = `https://x.com/${item.handle}/status/${item.statusId}`;
+    const sourceImage = `https://pbs.twimg.com/media/${item.clientId}-official.jpg`;
+    let generatedPngFetches = 0;
+    let storageWrites = 0;
+
+    await withEnvironment(async (input, init) => {
+      const url = String(input);
+      if (url.includes("cdn.syndication.twimg.com")) {
+        return Response.json({
+          id_str: item.statusId,
+          text: `Official ${item.clientId} source post with verified media.`,
+          user: { id_str: item.userId, screen_name: item.handle },
+          photos: [{ url: sourceImage }],
+        });
+      }
+      if (url.endsWith("/storage/v1/bucket/content-studio")) {
+        return Response.json({ id: "content-studio", public: false });
+      }
+      if (url.includes("/rest/v1/workspace_clients")) {
+        return Response.json([{ workspace_id: WORKSPACE_ID, client_id: item.clientId, active: true }]);
+      }
+      if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+      if (url.endsWith("/rest/v1/rpc/get_brand_review_guidance")) return Response.json([]);
+      if (url.endsWith(`/clients/${item.clientId}/generate/news-card`)) {
+        return Response.json({
+          client_id: item.clientId,
+          content_type: "news_card",
+          spec: {
+            label: "업데이트",
+            headline: "공식 소식을 한국어로 전합니다",
+            body_lines: ["공식 원문과 이미지를 기준으로 정리합니다"],
+          },
+          png_path: `/app/output/${item.clientId}/news_123/news_card_classic.png`,
+          template_style: "classic",
+          requested_template_style: "remix",
+          source_image_used: false,
+          source_visual_path: null,
+          figma_template: null,
+          manifest_path: `/app/output/${item.clientId}/news_123/manifest.json`,
+          duration_ms: 1234,
+        });
+      }
+      if (url.includes("/files/")) {
+        generatedPngFetches += 1;
+        return new Response(minimalPng());
+      }
+      if (url.includes("/storage/v1/object/") && init?.method === "POST") {
+        storageWrites += 1;
+        return Response.json({ Key: "unexpected" });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      const response = await newsCardHandler(studioRequest({
+        source_content: `Official ${item.clientId} source content for Korean GTM.`,
+        source_type: "tweet",
+        source_url: sourceUrl,
+        source_image_url: sourceImage,
+        mock_mode: false,
+        template_style: "remix",
+      }, true, true), { params: { clientId: item.clientId } } as never);
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: "invalid_generation_response" });
+      assert.equal(generatedPngFetches, 0);
+      assert.equal(storageWrites, 0);
+    });
+  }
+});
+
+test("automation never replays a stored official remix that previously fell back to classic", async () => {
+  const cases = [
+    { clientId: "yellow", handle: "Yellow", statusId: "2087177332670750834" },
+    { clientId: "origintrail", handle: "origin_trail", statusId: "2078063452996661578" },
+    { clientId: "babylon", handle: "babylonlabs_io", statusId: "2061801513488429361" },
+  ] as const;
+
+  for (const item of cases) {
+    const sourceContent = `Official ${item.clientId} source content for Korean GTM.`;
+    const sourceUrl = `https://x.com/${item.handle}/status/${item.statusId}`;
+    const sourceImage = `https://pbs.twimg.com/media/${item.clientId}-stored.jpg?name=orig`;
+    const requestHash = newsCardRequestHash({
+      clientId: item.clientId,
+      sourceContent,
+      sourceType: "tweet",
+      sourceUrl,
+      mockMode: false,
+      templateStyle: "remix",
+      sourceImageUrl: sourceImage,
+    });
+    let assetDownloads = 0;
+    let syndicationCalls = 0;
+    let railwayCalls = 0;
+
+    await withEnvironment(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/storage/v1/bucket/content-studio")) {
+        return Response.json({ id: "content-studio", public: false });
+      }
+      if (url.includes("/rest/v1/workspace_clients")) {
+        return Response.json([{
+          workspace_id: WORKSPACE_ID,
+          client_id: item.clientId,
+          active: true,
+        }]);
+      }
+      if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+        return Response.json(storedStandardClassicFallbackLookup(
+          item.clientId,
+          requestHash,
+          sourceImage,
+        ));
+      }
+      if (url.includes("/storage/v1/object/content-studio/")) {
+        assetDownloads += 1;
+        return new Response(minimalPng());
+      }
+      if (url.includes("cdn.syndication.twimg.com")) {
+        syndicationCalls += 1;
+        return Response.json({});
+      }
+      if (url.includes("railway.example")) {
+        railwayCalls += 1;
+        return Response.json({});
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }, async () => {
+      const response = await newsCardHandler(studioRequest({
+        source_content: sourceContent,
+        source_type: "tweet",
+        source_url: sourceUrl,
+        source_image_url: sourceImage,
+        mock_mode: false,
+        template_style: "remix",
+      }, true, true), { params: { clientId: item.clientId } } as never);
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error: NEWS_CARD_REMIX_REGENERATION_ERROR,
+      });
+      assert.equal(assetDownloads, 0);
+      assert.equal(syndicationCalls, 0);
+      assert.equal(railwayCalls, 0);
+    });
+  }
+});
+
+test("automation rejects a concurrent stored classic winner for an official remix", async () => {
+  const clientId = "yellow" as const;
+  const sourceContent = "Official Yellow source content for a Korean GTM remix.";
+  const sourceUrl = "https://x.com/Yellow/status/2087177332670750834";
+  const submittedImage = "https://pbs.twimg.com/media/yellow-concurrent.jpg";
+  const pinnedImage = `${submittedImage}?name=orig`;
+  const requestHash = newsCardRequestHash({
+    clientId,
+    sourceContent,
+    sourceType: "tweet",
+    sourceUrl,
+    mockMode: false,
+    templateStyle: "remix",
+    sourceImageUrl: pinnedImage,
+  });
+  const profile = NEWS_BRAND_PROFILES.yellow;
+  let catalogLookups = 0;
+  let generatedPngFetches = 0;
+  let storedAssetDownloads = 0;
+  let cleanupCalls = 0;
+
+  await withEnvironment(async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{
+        workspace_id: WORKSPACE_ID,
+        client_id: clientId,
+        active: true,
+      }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+      catalogLookups += 1;
+      return catalogLookups === 1
+        ? Response.json(null)
+        : Response.json(storedStandardClassicFallbackLookup(
+          clientId,
+          requestHash,
+          pinnedImage,
+        ));
+    }
+    if (url.endsWith("/rest/v1/rpc/get_brand_review_guidance")) return Response.json([]);
+    if (url.includes("cdn.syndication.twimg.com")) {
+      return Response.json({
+        id_str: "2087177332670750834",
+        text: "Official Yellow source post with verified media.",
+        user: { id_str: "2651", screen_name: "Yellow" },
+        photos: [{ url: submittedImage }],
+      });
+    }
+    if (url.endsWith("/clients/yellow/generate/news-card")) {
+      return Response.json({
+        client_id: clientId,
+        content_type: "news_card",
+        spec: {
+          brand_profile_policy_version: NEWS_BRAND_PROFILE_POLICY_VERSION,
+          render_strategy: "source_remix",
+          channel_profile: "x_square",
+          brand_tokens_version: profile.brandTokensVersion,
+          template_version: "yellow-news-remix@1",
+          asset_pack_version: profile.assetPackVersion,
+          visual_design_profile_id: profile.designProfileId,
+          visual_design_profile_version: profile.designProfileVersion,
+          label: "업데이트",
+          headline: "Yellow 공식 소식을 한국어로 전합니다",
+          body_lines: ["공식 원문과 이미지를 기준으로 정리합니다"],
+          source_url: sourceUrl,
+          source_logo_visible: true,
+          theme: "dark",
+        },
+        png_path: "/app/output/yellow/news_888/news_card_remix.png",
+        template_style: "remix",
+        requested_template_style: "remix",
+        source_image_used: true,
+        source_image_url: pinnedImage,
+        source_image_sha256: SOURCE_IMAGE_SHA256,
+        source_visual_path: null,
+        figma_template: null,
+        manifest_path: "/app/output/yellow/news_888/manifest.json",
+        duration_ms: 987,
+      });
+    }
+    if (url.endsWith("/files/yellow/news_888/news_card_remix.png")) {
+      generatedPngFetches += 1;
+      return new Response(minimalPng(), { headers: { "content-type": "image/png" } });
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && method === "POST") {
+      return Response.json({ Key: "stored" });
+    }
+    if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+      return new Response("conflict", { status: 409 });
+    }
+    if (url.endsWith("/storage/v1/object/content-studio") && method === "DELETE") {
+      cleanupCalls += 1;
+      return new Response(null, { status: 200 });
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && method === "GET") {
+      storedAssetDownloads += 1;
+      return new Response(minimalPng());
+    }
+    throw new Error(`unexpected fetch ${method} ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest({
+      source_content: sourceContent,
+      source_type: "tweet",
+      source_url: sourceUrl,
+      source_image_url: submittedImage,
+      mock_mode: false,
+      template_style: "remix",
+    }, true, true), { params: { clientId } } as never);
+    assert.equal(response.status, 409, JSON.stringify(await response.clone().json()));
+    assert.deepEqual(await response.json(), {
+      error: NEWS_CARD_REMIX_REGENERATION_ERROR,
+    });
+    assert.equal(catalogLookups, 2);
+    assert.equal(generatedPngFetches, 1);
+    assert.equal(cleanupCalls, 1);
+    assert.equal(storedAssetDownloads, 0);
+  });
 });
 
 test("stored news card replay requires both explicit compatible template styles", () => {
@@ -1636,6 +2134,143 @@ test("an exact news card retry replays verified Supabase bytes without Railway",
   });
 });
 
+test("an exact English stored card requires Korean regeneration before asset download", async () => {
+  const png = minimalPng();
+  const requestHash = newsCardRequestHash({
+    clientId: "squid",
+    sourceContent: SOURCE,
+    sourceType: "tweet",
+    sourceUrl: SOURCE_URL,
+    mockMode: false,
+    templateStyle: "classic",
+  });
+  let assetDownloads = 0;
+  let railwayCalls = 0;
+
+  await withEnvironment(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+      return Response.json(storedSquidClassicLookup(requestHash, {
+        headline: "Squid connects every chain",
+        body_lines: ["Cross-chain routing for everyone"],
+      }, png));
+    }
+    if (url.includes("/storage/v1/object/content-studio/")) {
+      assetDownloads += 1;
+      return new Response(png);
+    }
+    if (url.includes("railway.example")) railwayCalls += 1;
+    throw new Error(`unexpected fetch ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest(), {
+      params: { clientId: "squid" },
+    } as never);
+    assert.notEqual(response.status, 200);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR,
+    });
+    assert.equal(assetDownloads, 0);
+    assert.equal(railwayCalls, 0);
+  });
+});
+
+test("a concurrent English catalog winner never replays its asset or returns success", async () => {
+  const png = minimalPng();
+  const requestHash = newsCardRequestHash({
+    clientId: "squid",
+    sourceContent: SOURCE,
+    sourceType: "tweet",
+    sourceUrl: SOURCE_URL,
+    mockMode: false,
+    templateStyle: "classic",
+  });
+  let catalogLookups = 0;
+  let storedAssetDownloads = 0;
+  let generatedPngFetches = 0;
+  let cleanupCalls = 0;
+
+  await withEnvironment(async (input, init) => {
+    const url = String(input);
+    const method = init?.method || "GET";
+    if (url.endsWith("/storage/v1/bucket/content-studio")) {
+      return Response.json({ id: "content-studio", public: false });
+    }
+    if (url.includes("/rest/v1/workspace_clients")) {
+      return Response.json([{ workspace_id: WORKSPACE_ID, client_id: "squid", active: true }]);
+    }
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) {
+      catalogLookups += 1;
+      return catalogLookups === 1
+        ? Response.json(null)
+        : Response.json(storedSquidClassicLookup(requestHash, {
+          headline: "Squid connects every chain",
+          body_lines: ["Cross-chain routing for everyone"],
+        }, png));
+    }
+    if (url.endsWith("/rest/v1/rpc/get_brand_review_guidance")) return Response.json([]);
+    if (url.endsWith("/clients/squid/generate/news-card")) {
+      return Response.json({
+        client_id: "squid",
+        content_type: "news_card",
+        spec: {
+          ...squidCreativeMetadata("classic"),
+          label: "업데이트",
+          headline: "Squid 라우팅 업데이트",
+          body_lines: ["원문에 근거한 업데이트"],
+          source_url: SOURCE_URL,
+        },
+        png_path: "/app/output/squid/news_999/news_card_classic.png",
+        template_style: "classic",
+        requested_template_style: "classic",
+        source_image_used: false,
+        source_visual_path: null,
+        figma_template: null,
+        manifest_path: "/app/output/squid/news_999/manifest.json",
+        duration_ms: 1234,
+      });
+    }
+    if (url.endsWith("/files/squid/news_999/news_card_classic.png")) {
+      generatedPngFetches += 1;
+      return new Response(png, { headers: { "content-type": "image/png" } });
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && method === "POST") {
+      return Response.json({ Key: "stored" });
+    }
+    if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
+      return new Response("conflict", { status: 409 });
+    }
+    if (url.endsWith("/storage/v1/object/content-studio") && method === "DELETE") {
+      cleanupCalls += 1;
+      return new Response(null, { status: 200 });
+    }
+    if (url.includes("/storage/v1/object/content-studio/") && method === "GET") {
+      storedAssetDownloads += 1;
+      return new Response(png);
+    }
+    throw new Error(`unexpected fetch ${method} ${url}`);
+  }, async () => {
+    const response = await newsCardHandler(studioRequest(), {
+      params: { clientId: "squid" },
+    } as never);
+    assert.notEqual(response.status, 200);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR,
+    });
+    assert.equal(catalogLookups, 2);
+    assert.equal(generatedPngFetches, 1);
+    assert.equal(cleanupCalls, 1);
+    assert.equal(storedAssetDownloads, 0);
+  });
+});
+
 test("an unpinned Squid remix replay binds stored proof to the currently resolved X image", async () => {
   const png = minimalPng();
   const resolvedImage = "https://pbs.twimg.com/media/current-source.jpg?name=orig";
@@ -2180,6 +2815,7 @@ test("news card generation rejects a PNG that cannot fit safely in base64 JSON",
         spec: {
           ...squidCreativeMetadata("classic"),
           headline: "Squid 라우팅 업데이트",
+          body_lines: ["원문에 근거한 업데이트"],
         },
         png_path: "/app/output/squid/news_123/news_card_classic.png",
         template_style: "classic",
