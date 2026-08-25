@@ -29,27 +29,25 @@ function json(
   });
 }
 
-export default async (
+export async function handleHarmonyDashboard(
   request: Request,
-  _context?: Context,
-): Promise<Response> => {
+  context: Context,
+  buildReleaseSha?: string | null,
+): Promise<Response> {
   if (request.method !== "GET") {
     return json({ error: "method_not_allowed" }, 405, { Allow: "GET" });
   }
 
   const getEnv = (name: string) => Netlify.env.get(name);
-  const previewOrigin = harmonyDashboardPreviewOrigin(getEnv);
+  const previewOrigin = harmonyDashboardPreviewOrigin(request.url, context);
   if (!previewOrigin) {
     return json({ error: "harmony_dashboard_preview_only" }, 403);
-  }
-  if (!harmonyDashboardPreviewCommitMatches(getEnv)) {
-    return json({ error: "harmony_dashboard_preview_commit_mismatch" }, 409);
   }
   if (!harmonyDashboardPreviewEnabled(getEnv)) {
     return json({ error: "harmony_dashboard_preview_disabled" }, 503);
   }
-  if (new URL(request.url).origin !== previewOrigin) {
-    return json({ error: "invalid_harmony_dashboard_preview_host" }, 421);
+  if (!harmonyDashboardPreviewCommitMatches(getEnv, buildReleaseSha)) {
+    return json({ error: "harmony_dashboard_preview_commit_mismatch" }, 409);
   }
 
   const sessionError = requireStudioSession(request);
@@ -68,7 +66,12 @@ export default async (
       : "harmony_dashboard_unavailable";
     return json({ error: code }, 502);
   }
-};
+}
+
+export default async (
+  request: Request,
+  context: Context,
+): Promise<Response> => handleHarmonyDashboard(request, context);
 
 export const config: Config = {
   path: "/api/harmony/dashboard",

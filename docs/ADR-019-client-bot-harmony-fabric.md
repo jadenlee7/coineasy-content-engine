@@ -1,7 +1,7 @@
 # ADR-019: Federated client-bot Harmony collaboration fabric
 
-**Status:** Accepted for local P0; Preview SQL and dashboard staged locally,
-not applied to Supabase or Production
+**Status:** Accepted for disposable Preview P0; child branch verified and
+deleted, not applied to Production
 **Date:** 2026-08-25
 **Deciders:** CoinEasy representative, content, community, and engineering leads
 
@@ -55,8 +55,9 @@ flowchart LR
 The default local CLI has an empty trust registry. It can validate and display
 claims, but it cannot create a human handoff. A handoff exists only when a
 separately injected runtime verifier has bound all four signals to JWT or
-immutable database-receipt attestations. P0 makes no database, provider,
-messaging, deployment, or publication call.
+immutable database-receipt attestations. The approved P0 verification used one
+disposable Supabase child branch and one Netlify Deploy Preview; it made no
+Production, provider, messaging, approval-decision, or publication call.
 
 ## Confirmed client and connector state
 
@@ -64,7 +65,7 @@ messaging, deployment, or publication call.
 |---|---|---|---|---|
 | Yellow | Configured | Daily News, Article, Tutorial | Aggregate contract only | No |
 | OriginTrail | Configured | Daily News, Article | Aggregate contract only | No |
-| Squid | Configured | Daily News, Article, Tutorial | Aggregate contract only | No |
+| Squid | Configured | Daily News, Article, Tutorial | Aggregate contract only | Read-only Deploy Preview, default OFF |
 | Babylon | Configured | Daily News, Article | Aggregate contract only | No |
 
 Logical participant IDs such as `yellow_quiz_bot` identify a client-scoped
@@ -221,7 +222,7 @@ responsibility, review, receipts, and the representative dashboard.
 - QA or representative approval does not replace exact-version publication
   approval and a separate publisher credential.
 
-## Local P0 implementation
+## P0 implementation and disposable Preview receipt
 
 - `core/agent_control/harmony.py` implements canonical signals, participants,
   typed attestations, an empty-by-default trust registry, six-turn rehearsal
@@ -231,7 +232,7 @@ responsibility, review, receipts, and the representative dashboard.
 - Current profiles are loaded from the four existing client configs.
 - The CLI always uses the empty registry, so even a complete caller-authored
   four-lane JSON cannot enter the representative approval inbox.
-- Four disposable-Preview migrations add the client-scoped signal and
+- Six disposable-Preview migrations add the client-scoped signal and
   database-generated connector-attestation ledgers, the Squid-only typed
   stage chain, FORCE RLS, seven least-privilege roles, and a read-only
   dashboard projection. They are empty by default and require an exact,
@@ -256,8 +257,16 @@ responsibility, review, receipts, and the representative dashboard.
   of IDs/hashes. The complete Squid rehearsal ended with 4 signals, 4
   connector receipts, 1 round, 1 plan, 5 stage receipts, and 1 pending inbox;
   approval, publication, Buzz, provider, and cost baselines were unchanged.
-- No Supabase Preview branch, external Quiz connector, scheduler, provider,
-  private message, Production adapter, or publication path has been activated.
+- Approved disposable Supabase child `ynelpztctwonnadrlpfq` applied the same
+  six migrations and both transactional security suites. Real scoped
+  HS256-JWT/PostgREST traffic produced 64 calls as one new receipt and 63 exact
+  reuses with one identity; the negative matrix rejected wrong scope, role,
+  ref, time window, service role, and payload tampering without extra rows.
+  The Squid slice ended at 4 signals, 4 connector receipts, 1 round, 1 plan,
+  5 stage receipts, and 1 pending operator inbox with recap cost 0.
+- The child branch and Preview secrets were deleted after verification. No
+  external Quiz connector, scheduler, provider, private message, Production
+  adapter, approval decision, or publication path has been activated.
 
 ## Known P0 limitations
 
@@ -276,27 +285,28 @@ responsibility, review, receipts, and the representative dashboard.
 - External Quiz services remain `contract_only`. Their real service identity,
   aggregate event receipt, owner, and capability must be inventoried and
   verified one customer at a time.
-- The local 64-connection proof establishes PostgreSQL behavior, not Supabase
-  branch identity or PostgREST delivery. Those must be repeated through the
-  exact disposable child branch and scoped auth path after a fresh cost gate.
+- Direct PostgreSQL 64-connection verification against the child branch was
+  unavailable because the branch database endpoint was IPv6-only from this
+  runner. PostgreSQL concurrency remains covered by the disposable local run;
+  branch identity, scoped auth, and exactly-once delivery were separately
+  proven by the 64-way signed PostgREST run.
 
 ## Next rollout gates
 
-1. Obtain a fresh explicit cost/organization/TTL approval, create exactly one
-   disposable Supabase Preview branch, and verify its ref before applying the
-   four already-tested Preview migrations.
-2. Mint short-lived, client/capability/release/config/ref-bound JWTs in memory,
-   prove the exact RPC grant matrix and cross-client/lane denial through the
-   Preview auth path, and repeat the 64-connection proof on that branch.
-3. Create an exact-SHA Netlify Deploy Preview, expose only the scoped read-only
-   dashboard route, and verify the CoinEasy News Card Harmony tab against the
-   same Squid projection. Turn the Preview flag OFF and delete the branch in
-   the same work window.
-4. Inventory each external Quiz bot's service, owner, event schema,
+1. Commit the reviewed Netlify runtime-context and round-to-inbox binding
+   corrections, regenerate an exact-SHA Deploy Preview, and verify that the
+   dashboard remains default OFF before any scoped read test.
+2. If a second live dashboard read is desired, obtain a fresh explicit
+   cost/organization/TTL approval for exactly one disposable child branch;
+   bind only the exact new Preview SHA and delete its secrets and branch in the
+   same work window.
+3. Inventory each external Quiz bot's service, owner, event schema,
    destination, and capability. Replace only the synthetic connector lane with
    one actual aggregate-only connector at a time; raw user/chat data remains
    forbidden.
-5. After a clean Squid observation window, add clients one at a time and prove
+4. Add a revocable attestation registry, signed request digest/nonce, and an
+   append-only negative-QA ledger before any long-running or Production use.
+5. After 20 clean Squid Preview or staging rounds, add clients one at a time and prove
    isolated typed rounds. Keep every provider, messaging, approval-decision,
    and publication adapter separately gated and default OFF.
 

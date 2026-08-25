@@ -87,8 +87,12 @@ Netlify 계약은 다음과 같습니다.
 - project `apikey`: `SUPABASE_PUBLISHABLE_KEY`
 - branch URL: `SUPABASE_URL`
 - workspace scope: `CONTENT_STUDIO_WORKSPACE_ID`
-- host fence: `CONTEXT=deploy-preview`, `DEPLOY_PRIME_URL != URL`
-- commit fence: `COMMIT_REF=HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA` (40-hex)
+- host fence: function `Context.deploy.context=deploy-preview`,
+  `Context.deploy.published=false`, and request host
+  `deploy-preview-<PR>--<Context.site.name>.netlify.app`
+- commit fence: build-stamped `STUDIO_BUILD_RELEASE_SHA` equals
+  `HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA` (40-hex); runtime `COMMIT_REF` is not
+  trusted or required
 - Studio session 인증 필수, `Cache-Control: no-store`
 - service-role fallback 없음
 
@@ -177,10 +181,13 @@ key, scoped dashboard JWT, workspace ID와 exact commit fence를 설정합니다
 `false`인 OFF deploy를 확인한 뒤, 승인된 관측 시간에만
 `HARMONY_DASHBOARD_PREVIEW_ENABLED=true`로 다시 배포합니다.
 
-성공 전제는 deploy state `ready`, context `deploy-preview`, `COMMIT_REF`와
-`HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA`의 exact 일치,
-Production origin과 다른 `DEPLOY_PRIME_URL`입니다. Production context에서
-같은 route는 403, flag OFF는 503, 비인증 요청은 거절되어야 합니다.
+성공 전제는 Netlify Deploy API의 state `ready`, context `deploy-preview`,
+deploy `commit_ref`가 승인 SHA와 exact 일치하는 것입니다. 함수 런타임은
+`Context.deploy.context/published`, `Context.site.name/url`, request URL을
+함께 검사하고, build 시 생성된 release SHA가
+`HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA`와 같은지 검증합니다. Production
+context에서 같은 route는 403, flag OFF는 503, 비인증 요청은 거절되어야
+합니다.
 
 ### Gate 5 — 64 동시성 및 Squid E2E
 

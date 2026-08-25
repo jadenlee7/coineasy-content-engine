@@ -1,3 +1,5 @@
+import { currentStudioReleaseSha } from "./studio-release.mts";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -25,6 +27,17 @@ export type HarmonyDashboardConfig = {
   authorizationKey: string;
   workspaceId: string;
   clientId: typeof PREVIEW_CLIENT_ID;
+};
+
+export type HarmonyDashboardRuntimeContext = {
+  deploy?: {
+    context?: string;
+    published?: boolean;
+  };
+  site?: {
+    name?: string;
+    url?: string;
+  };
 };
 
 export type HarmonyDashboardStage = {
@@ -240,6 +253,7 @@ function httpsOrigin(value: string | undefined): string | null {
       url.protocol !== "https:"
       || url.username
       || url.password
+      || url.port
       || (url.pathname !== "" && url.pathname !== "/")
       || url.search
       || url.hash
@@ -250,20 +264,63 @@ function httpsOrigin(value: string | undefined): string | null {
   }
 }
 
+function httpsRequestOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:"
+      || url.username
+      || url.password
+      || url.port
+    ) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function netlifyPreviewHostMatches(
+  previewOrigin: string,
+  siteName: string | undefined,
+): boolean {
+  const previewHost = new URL(previewOrigin).hostname.toLowerCase();
+  const normalizedSiteName = (siteName || "").trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,63}$/.test(normalizedSiteName)) return false;
+  const escapedSiteName = normalizedSiteName.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  return new RegExp(
+    "^deploy-preview-[1-9][0-9]*--"
+      + escapedSiteName
+      + "\\.netlify\\.app$",
+  ).test(previewHost);
+}
+
 export function harmonyDashboardPreviewOrigin(
-  getEnv: (name: string) => string | undefined,
+  requestUrl: string,
+  context: HarmonyDashboardRuntimeContext,
 ): string | null {
-  if (getEnv("CONTEXT") !== "deploy-preview") return null;
-  const previewOrigin = httpsOrigin(getEnv("DEPLOY_PRIME_URL"));
-  const productionOrigin = httpsOrigin(getEnv("URL"));
-  if (!previewOrigin || !productionOrigin || previewOrigin === productionOrigin) return null;
+  if (
+    context.deploy?.context !== "deploy-preview"
+    || context.deploy.published !== false
+  ) return null;
+  const previewOrigin = httpsRequestOrigin(requestUrl);
+  const productionOrigin = httpsOrigin(context.site?.url);
+  if (
+    !previewOrigin
+    || !productionOrigin
+    || previewOrigin === productionOrigin
+    || !netlifyPreviewHostMatches(previewOrigin, context.site?.name)
+  ) return null;
   return previewOrigin;
 }
 
 export function harmonyDashboardPreviewCommitMatches(
   getEnv: (name: string) => string | undefined,
+  buildReleaseSha: string | null = currentStudioReleaseSha(),
 ): boolean {
-  const actual = (getEnv("COMMIT_REF") || "").trim().toLowerCase();
+  const actual = (buildReleaseSha || "").trim().toLowerCase();
   const expected = (
     getEnv("HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA") || ""
   ).trim().toLowerCase();
@@ -491,14 +548,15 @@ export function normalizeHarmonyDashboard(
 
   if (latestRound) {
     const qaStage = latestRound.stages[2];
-    const matchingLatest = validInbox.find(
+    const matchingLatest = validInbox.filter(
       (item) => item.round_id === latestRound.round_id,
     );
-    if (matchingLatest && (
-      matchingLatest.plan_id !== latestRound.plan_id
-      || matchingLatest.qa_receipt_sha256 !== qaStage.receipt_sha256
-      || matchingLatest.qa_output_sha256 !== qaStage.output_sha256
-    )) {
+    if (
+      matchingLatest.length !== 1
+      || matchingLatest[0].plan_id !== latestRound.plan_id
+      || matchingLatest[0].qa_receipt_sha256 !== qaStage.receipt_sha256
+      || matchingLatest[0].qa_output_sha256 !== qaStage.output_sha256
+    ) {
       throw new HarmonyDashboardError("harmony_dashboard_invalid_response");
     }
   }

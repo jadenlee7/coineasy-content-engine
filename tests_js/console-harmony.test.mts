@@ -131,4 +131,71 @@ test("browser projection rejects unknown keys, wrong tenant, and unsafe flags", 
     ...empty,
     flags: { ...empty.flags, automatic_publication: true },
   }), null);
+
+  const stages = [
+    "plan",
+    "private_content",
+    "independent_qa",
+    "operator_inbox",
+    "recap",
+  ].map((stage, index) => ({
+    stage,
+    ordinal: index + 1,
+    receipt_sha256: String(index + 1).repeat(64),
+    input_sha256: "a".repeat(64),
+    output_sha256: index === 2 ? "c".repeat(64) : "b".repeat(64),
+    recorded_at: `2026-08-25T10:0${index}:00Z`,
+    verdict: index === 2 ? "passed" : null,
+  }));
+  const latestRound = {
+    schema_version: "harmony-dashboard-round@1",
+    round_id: "b0000000-0000-4000-8000-000000000001",
+    plan_id: "c0000000-0000-4000-8000-000000000001",
+    input_set_sha256: "d".repeat(64),
+    round_sha256: "e".repeat(64),
+    status: "operator_review_pending",
+    headline_ko: "Squid 한국 커뮤니티 첫 협업 라운드",
+    summary_ko: "공식 근거와 집계 신호를 분리한 Preview 제안입니다.",
+    stages,
+    automatic_publication: false,
+  };
+  const inboxItem = {
+    schema_version: "harmony-dashboard-inbox@1",
+    inbox_id: "d0000000-0000-4000-8000-000000000001",
+    round_id: latestRound.round_id,
+    plan_id: latestRound.plan_id,
+    status: "pending",
+    scope_sha256: "f".repeat(64),
+    qa_receipt_id: "e0000000-0000-4000-8000-000000000001",
+    qa_receipt_sha256: stages[2].receipt_sha256,
+    qa_output_sha256: stages[2].output_sha256,
+    created_at: "2026-08-25T10:03:00Z",
+    automatic_publication: false,
+  };
+  const observed = {
+    ...empty,
+    counts: {
+      signals: 4,
+      connector_receipts: 4,
+      rounds: 1,
+      plans: 1,
+      stage_receipts: 5,
+      pending_operator_inbox: 1,
+    },
+    latest_round: latestRound,
+    operator_inbox: [inboxItem],
+  };
+  assert.deepEqual(normalize(observed), observed);
+  assert.equal(normalize({
+    ...observed,
+    counts: { ...observed.counts, pending_operator_inbox: 0 },
+    operator_inbox: [],
+  }), null);
+  assert.equal(normalize({
+    ...observed,
+    operator_inbox: [{
+      ...inboxItem,
+      qa_receipt_sha256: "0".repeat(64),
+    }],
+  }), null);
 });

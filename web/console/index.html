@@ -3055,6 +3055,9 @@
         });
         const validInbox = inbox.filter(Boolean);
         const inboxIds = validInbox.map(item => item.inbox_id);
+        const matchingLatest = latestRound
+          ? validInbox.filter(item => item.round_id === latestRound.round_id)
+          : [];
         const ordered = validInbox.every((item, index) =>
           index === 0
           || Date.parse(validInbox[index - 1].created_at) >= Date.parse(item.created_at)
@@ -3074,6 +3077,12 @@
             || counts.rounds < 1
             || counts.plans < 1
             || counts.stage_receipts < 5
+            || matchingLatest.length !== 1
+            || matchingLatest[0].plan_id !== latestRound.plan_id
+            || matchingLatest[0].qa_receipt_sha256
+              !== latestRound.stages[2].receipt_sha256
+            || matchingLatest[0].qa_output_sha256
+              !== latestRound.stages[2].output_sha256
           ))
         ) return null;
         return { ...top, latest_round: latestRound, operator_inbox: validInbox };

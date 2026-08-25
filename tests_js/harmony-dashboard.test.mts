@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import type { Context } from "@netlify/functions";
 
-import harmonyDashboardHandler from "../netlify/functions/harmony-dashboard.mts";
+import { handleHarmonyDashboard } from "../netlify/functions/harmony-dashboard.mts";
 import {
   getHarmonyDashboard,
   harmonyDashboardConfig,
@@ -58,10 +59,6 @@ function environment(
   overrides: Record<string, string | undefined> = {},
 ): Record<string, string> {
   const values: Record<string, string | undefined> = {
-    CONTEXT: "deploy-preview",
-    DEPLOY_PRIME_URL: PREVIEW_ORIGIN,
-    URL: PRODUCTION_ORIGIN,
-    COMMIT_REF: COMMIT_SHA,
     HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA: COMMIT_SHA,
     HARMONY_DASHBOARD_PREVIEW_ENABLED: "true",
     STUDIO_ACCESS_TOKEN: STUDIO_TOKEN,
@@ -76,6 +73,34 @@ function environment(
       typeof entry[1] === "string"
     ),
   );
+}
+
+function runtimeContext(
+  overrides: {
+    deployContext?: string;
+    published?: boolean;
+    siteName?: string;
+    siteUrl?: string;
+  } = {},
+): Context {
+  return {
+    deploy: {
+      context: overrides.deployContext ?? "deploy-preview",
+      published: overrides.published ?? false,
+    },
+    site: {
+      name: overrides.siteName ?? "coineasy-newscard",
+      url: overrides.siteUrl ?? PRODUCTION_ORIGIN,
+    },
+  } as unknown as Context;
+}
+
+function harmonyDashboardHandler(
+  targetRequest: Request,
+  context: Context = runtimeContext(),
+  buildReleaseSha: string | null = COMMIT_SHA,
+): Promise<Response> {
+  return handleHarmonyDashboard(targetRequest, context, buildReleaseSha);
 }
 
 async function withGlobals<T>(
@@ -199,24 +224,51 @@ test("Preview flag is default-off and accepts only literal true", () => {
 
 test("deployment guard requires deploy-preview and distinct canonical origins", () => {
   assert.equal(
-    harmonyDashboardPreviewOrigin((name) => environment()[name]),
+    harmonyDashboardPreviewOrigin(
+      PREVIEW_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext(),
+    ),
     PREVIEW_ORIGIN,
   );
   assert.equal(
-    harmonyDashboardPreviewOrigin((name) =>
-      environment({ CONTEXT: "production" })[name]
+    harmonyDashboardPreviewOrigin(
+      PREVIEW_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext({ deployContext: "production" }),
     ),
     null,
   );
   assert.equal(
-    harmonyDashboardPreviewOrigin((name) =>
-      environment({ DEPLOY_PRIME_URL: PRODUCTION_ORIGIN })[name]
+    harmonyDashboardPreviewOrigin(
+      PRODUCTION_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext(),
     ),
     null,
   );
   assert.equal(
-    harmonyDashboardPreviewOrigin((name) =>
-      environment({ URL: undefined })[name]
+    harmonyDashboardPreviewOrigin(
+      "https://attacker.example/api/harmony/dashboard",
+      runtimeContext(),
+    ),
+    null,
+  );
+  assert.equal(
+    harmonyDashboardPreviewOrigin(
+      PREVIEW_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext({ published: true }),
+    ),
+    null,
+  );
+  assert.equal(
+    harmonyDashboardPreviewOrigin(
+      PREVIEW_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext({ siteUrl: "https://example.com" }),
+    ),
+    PREVIEW_ORIGIN,
+  );
+  assert.equal(
+    harmonyDashboardPreviewOrigin(
+      PREVIEW_ORIGIN + "/api/harmony/dashboard",
+      runtimeContext({ siteName: "attacker" }),
     ),
     null,
   );
@@ -224,17 +276,23 @@ test("deployment guard requires deploy-preview and distinct canonical origins", 
 
 test("deployment guard requires the exact approved commit SHA", () => {
   assert.equal(
-    harmonyDashboardPreviewCommitMatches((name) => environment()[name]),
+    harmonyDashboardPreviewCommitMatches(
+      (name) => environment()[name],
+      COMMIT_SHA,
+    ),
     true,
   );
-  for (const values of [
-    environment({ COMMIT_REF: undefined }),
-    environment({ HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA: undefined }),
-    environment({ COMMIT_REF: "2".repeat(40) }),
-    environment({ HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA: "main" }),
-  ]) {
+  for (const [values, buildReleaseSha] of [
+    [environment(), null],
+    [environment({ HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA: undefined }), COMMIT_SHA],
+    [environment(), "2".repeat(40)],
+    [environment({ HARMONY_DASHBOARD_EXPECTED_COMMIT_SHA: "main" }), COMMIT_SHA],
+  ] as const) {
     assert.equal(
-      harmonyDashboardPreviewCommitMatches((name) => values[name]),
+      harmonyDashboardPreviewCommitMatches(
+        (name) => values[name],
+        buildReleaseSha,
+      ),
       false,
     );
   }
@@ -247,19 +305,26 @@ test("HTTP adapter blocks method, Production, disabled flag, and wrong host befo
     assert.equal(response.headers.get("allow"), "GET");
     assert.equal(response.headers.get("cache-control"), "no-store");
   });
-  await withGlobals(environment({ CONTEXT: "production" }), forbiddenFetch, async () => {
-    const response = await harmonyDashboardHandler(request());
+  await withGlobals(environment(), forbiddenFetch, async () => {
+    const response = await harmonyDashboardHandler(
+      request(),
+      runtimeContext({ deployContext: "production" }),
+    );
     assert.equal(response.status, 403);
     assert.deepEqual(await response.json(), { error: "harmony_dashboard_preview_only" });
   });
-  await withGlobals(environment({ COMMIT_REF: "2".repeat(40) }), forbiddenFetch, async () => {
-    const response = await harmonyDashboardHandler(request());
+  await withGlobals(environment(), forbiddenFetch, async () => {
+    const response = await harmonyDashboardHandler(
+      request(),
+      runtimeContext(),
+      "2".repeat(40),
+    );
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), {
       error: "harmony_dashboard_preview_commit_mismatch",
     });
   });
-  await withGlobals(environment({ DEPLOY_PRIME_URL: PRODUCTION_ORIGIN }), forbiddenFetch, async () => {
+  await withGlobals(environment(), forbiddenFetch, async () => {
     assert.equal(
       (await harmonyDashboardHandler(request("GET", PRODUCTION_ORIGIN))).status,
       403,
@@ -271,10 +336,13 @@ test("HTTP adapter blocks method, Production, disabled flag, and wrong host befo
     assert.deepEqual(await response.json(), { error: "harmony_dashboard_preview_disabled" });
   });
   await withGlobals(environment(), forbiddenFetch, async () => {
-    assert.equal(
-      (await harmonyDashboardHandler(request("GET", "https://attacker.example"))).status,
-      421,
+    const response = await harmonyDashboardHandler(
+      request("GET", "https://attacker.example"),
     );
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), {
+      error: "harmony_dashboard_preview_only",
+    });
   });
 });
 
@@ -480,6 +548,14 @@ test("projection rejects drift, unsafe content, and broken QA bindings", () => {
     },
     {
       ...dashboard(),
+      operator_inbox: [],
+      counts: {
+        ...dashboard().counts,
+        pending_operator_inbox: 0,
+      },
+    },
+    {
+      ...dashboard(),
       latest_round: null,
       operator_inbox: [],
       counts: {
@@ -506,6 +582,12 @@ test("adapter has no write, service fallback, provider, subprocess, or secret ou
   ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
   assert.match(source, /get_preview_harmony_dashboard/);
   assert.match(source, /method: "GET"/);
+  assert.match(source, /context\.deploy/);
+  assert.match(source, /currentStudioReleaseSha/);
+  assert.doesNotMatch(
+    source,
+    /getEnv\("(?:CONTEXT|DEPLOY_PRIME_URL|URL|COMMIT_REF)"\)/,
+  );
   assert.doesNotMatch(source, /method:\s*"POST"|node:child_process|spawn\(|execFile|console\.(?:log|error)|OPENAI_API_KEY|XAI_API_KEY|TELEGRAM_BOT_TOKEN|PUBLICATION_WORKER_TOKEN/);
   assert.doesNotMatch(source, /authorizationKey\s*\?\?|projectKey\s*\?\?|serviceRoleKey/);
 });

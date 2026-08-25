@@ -76,7 +76,7 @@ Preview 자료입니다. 다른 프로세스에서 실행 입력으로 사용할
 
 ## 자동 회사로 가는 순서
 
-로컬 P0는 다음까지 통과했습니다.
+P0는 다음까지 통과했습니다.
 
 - 네 고객의 typed signal 계약과 고객별 scope
 - DB가 scoped JWT에서 직접 만드는 connector attestation receipt
@@ -85,8 +85,13 @@ Preview 자료입니다. 다른 프로세스에서 실행 입력으로 사용할
 - Squid 한 곳의 `기획 -> private 콘텐츠 -> 독립 QA -> 대표 승인함 -> Recap`
 - CoinEasy News Card의 GET-only Harmony 운영실 화면
 - 원장상 external/provider 비용 0, 외부/provider/Buzz/승인/publication 호출 0,
-  자동 발행 OFF. 실제 disposable Preview 인프라 비용은 아직 미관측이며 별도
-  비용 승인·영수증으로 관리합니다.
+  자동 발행 OFF
+- 승인된 disposable Supabase child `ynelpztctwonnadrlpfq`에서 여섯 migration,
+  scoped JWT/RLS negative matrix, 실제 PostgREST 64-way exactly-once(신규 1,
+  exact reuse 63), Squid 수직 E2E를 통과한 뒤 branch와 Preview 비밀 삭제
+
+해당 branch의 승인 단가는 시간당 `$0.01344`였고 지금은 삭제되어 추가 비용이
+쌓이지 않습니다. 실제 청구액은 아직 미관측이므로 0으로 표기하지 않습니다.
 
 여기서 `독립 QA`는 현재 **별도 role/JWT와 고정 조건을 쓰는 구조 QA**입니다.
 실제 Codex·Grok 모델이 콘텐츠 의미를 평가한 것이 아니며, 실패 verdict를
@@ -95,14 +100,15 @@ receipt와 실행 불가능 Preview 제안으로만 표시합니다.
 
 다음 순서는 아래와 같습니다.
 
-1. 시간당 비용·조직·TTL을 다시 확인하고 disposable Supabase Preview 한 곳을
-   별도 승인으로 생성합니다.
-2. 이미 로컬에서 통과한 마이그레이션·RLS·64동시성·Squid 수직 테스트를 실제
-   Preview auth 경로에서 재현합니다.
-3. exact SHA의 Netlify Deploy Preview에서 Harmony 탭을 읽기 전용으로 확인한
-   뒤 즉시 flag OFF, 비밀 제거, Preview branch 삭제까지 한 창에서 끝냅니다.
-4. 외부 Quiz 봇 네 개의 실제 connector inventory를 확정하고 Squid 한 곳의
+1. Netlify runtime context와 최신 round↔operator inbox binding 보완을 exact
+   SHA로 commit하고 새 Deploy Preview에서 default OFF를 확인합니다.
+2. 실제 dashboard read가 필요하면 별도 비용 승인으로 disposable branch를
+   한 번만 재생성하고, scoped read 1회 뒤 flag OFF·비밀 제거·branch 삭제를
+   같은 창에서 끝냅니다.
+3. 외부 Quiz 봇 네 개의 실제 connector inventory를 확정하고 Squid 한 곳의
    aggregate-only connector부터 교체합니다.
+4. request digest/nonce를 서명 claim에 결속하고, 취소 가능한 attestation
+   registry와 negative-QA 원장을 추가합니다.
 5. 20회 clean run 후 다음 고객을 한 명씩 연결합니다. 공개 발행은 기존
    exact-version human gate를 계속 사용합니다.
 
