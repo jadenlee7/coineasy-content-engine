@@ -466,6 +466,26 @@ def failed_squid_recovery_claim() -> ClaimedJob:
     )
 
 
+def origintrail_batch_claim() -> ClaimedJob:
+    """Represent copy-only work reserved before the classic-template gate."""
+    return ClaimedJob(
+        job_id="77777777-7777-4777-8777-777777777777",
+        client_id="origintrail",
+        kst_date=date(2026, 7, 22),
+        content_kind="daily_news",
+        request_id="66666666-6666-4666-8666-666666666666",
+        primary_source_item_id="55555555-5555-4555-8555-555555555555",
+        source_content="An immutable official OriginTrail product update.",
+        source_url="https://x.com/origin_trail/status/456",
+        source_image_url="",
+        manual_only=False,
+        attempts=1,
+        max_attempts=3,
+        locked_by="placeholder",
+        origintrail_batch_eligible=True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_failed_draft_recovery_calls_only_targeted_claim_and_generation_once():
     repo = FakeRepository({})
@@ -976,7 +996,12 @@ async def test_one_client_intake_failure_does_not_stop_other_clients():
     states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("origintrail"),),
+        (pending(
+            "origintrail",
+            source_image_url=(
+                "https://pbs.twimg.com/media/origintrail-official.jpg"
+            ),
+        ),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -1172,6 +1197,104 @@ async def test_standard_client_photo_daily_news_reaches_generation_as_source_dom
     assert generation.calls[0]["source_image_url"].endswith(
         f"/official-{client_id}.jpg"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["origintrail", "babylon"])
+async def test_text_only_daily_news_requires_an_approved_classic_template(
+    client_id,
+):
+    states = {
+        active_client_id: AutomationState(
+            None,
+            active_client_id != client_id,
+            (),
+        )
+        for active_client_id in AUTOMATION_CLIENTS
+    }
+    states[client_id] = AutomationState(
+        None,
+        False,
+        (pending(client_id),),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 0
+    assert repo.style_packs == []
+    assert repo.queues == []
+    assert generation.calls == []
+    assert {
+        "client_id": client_id,
+        "status": "approved_classic_template_missing",
+    } in summary.outcomes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["origintrail", "babylon"])
+async def test_unapproved_classic_candidate_does_not_starve_media_candidate(
+    client_id,
+):
+    text_only = PendingSource(
+        **{
+            **pending(
+                client_id,
+                text=(
+                    "Our major mainnet integration launch is live with a "
+                    "detailed developer release update. " * 4
+                ),
+            ).__dict__,
+            "source_item_id": "66666666-6666-4666-8666-666666666666",
+            "post_id": "802",
+            "published_at": "2026-07-22T00:05:00Z",
+        }
+    )
+    image_url = f"https://pbs.twimg.com/media/{client_id}-official.jpg"
+    image_backed = PendingSource(
+        **{
+            **pending(
+                client_id,
+                text="Our official product update is now live.",
+                source_image_url=image_url,
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "801",
+            "published_at": "2026-07-22T00:04:00Z",
+        }
+    )
+    states = {
+        active_client_id: AutomationState(
+            None,
+            active_client_id != client_id,
+            (),
+        )
+        for active_client_id in AUTOMATION_CLIENTS
+    }
+    states[client_id] = AutomationState(
+        "802",
+        False,
+        (text_only, image_backed),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(repo, FakeXClient(), generation).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_item_ids"] == [
+        image_backed.source_item_id,
+    ]
+    assert repo.queues[0]["source_image_url"] == image_url
+    assert generation.calls[0]["template_style"] == "remix"
+    assert generation.calls[0]["source_content"] == (
+        image_backed.source_content
+    )
+    assert {
+        "client_id": client_id,
+        "status": "approved_classic_template_missing",
+    } in summary.outcomes
 
 
 @pytest.mark.asyncio
@@ -1696,6 +1819,9 @@ async def test_latest_origintrail_quote_does_not_advance_past_committed_post():
         "created_at": "2026-07-22T00:00:00Z",
         "url": "https://x.com/origin_trail/status/2082883998829752782",
         "is_quote": False,
+        "source_image_url": (
+            "https://pbs.twimg.com/media/origintrail-committed.jpg"
+        ),
     }
     repo = FakeRepository(states)
 
@@ -1764,15 +1890,11 @@ async def test_origintrail_references_other_than_quotes_are_not_allowlisted(
 @pytest.mark.asyncio
 async def test_active_origintrail_job_hands_immutable_copy_only_work_to_batch():
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
 
@@ -2072,19 +2194,30 @@ async def test_visual_media_origintrail_source_stays_on_the_sync_plane(
 
 
 @pytest.mark.asyncio
-async def test_visual_media_fallback_is_limited_to_origintrail_canary():
-    preview_url = "https://pbs.twimg.com/media/yellow-video.jpg"
+@pytest.mark.parametrize("client_id", AUTOMATION_CLIENTS)
+@pytest.mark.parametrize("media_type", ["video", "animated_gif"])
+async def test_visual_media_poster_fallback_applies_to_every_client(
+    client_id,
+    media_type,
+):
+    preview_url = (
+        f"https://pbs.twimg.com/media/{client_id}-{media_type}.jpg"
+    )
     states = {
-        client_id: AutomationState(None, client_id != "yellow", ())
-        for client_id in AUTOMATION_CLIENTS
+        active_client_id: AutomationState(
+            None,
+            active_client_id != client_id,
+            (),
+        )
+        for active_client_id in AUTOMATION_CLIENTS
     }
-    states["yellow"] = AutomationState(
+    states[client_id] = AutomationState(
         None,
         False,
         (
             pending(
-                "yellow",
-                media=({"type": "video", "url": preview_url},),
+                client_id,
+                media=({"type": media_type, "url": preview_url},),
             ),
         ),
     )
@@ -2094,8 +2227,9 @@ async def test_visual_media_fallback_is_limited_to_origintrail_canary():
     summary = await runner(repo, FakeXClient(), generation).run()
 
     assert summary.generated == 1
-    assert repo.queues[0]["source_image_url"] == ""
-    assert generation.calls[0]["source_image_url"] == ""
+    assert repo.queues[0]["source_image_url"] == preview_url
+    assert generation.calls[0]["source_image_url"] == preview_url
+    assert generation.calls[0]["template_style"] == "remix"
 
 
 @pytest.mark.asyncio
@@ -2152,15 +2286,11 @@ async def test_active_backlog_uses_the_queue_attempt_kst_budget():
 @pytest.mark.asyncio
 async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository()
     ending_soon = canary_batch_settings(
@@ -2193,15 +2323,11 @@ async def test_last_26_hours_are_a_batch_drain_window_without_sync_fallback():
 @pytest.mark.asyncio
 async def test_batch_deadline_is_clamped_to_the_experiment_end():
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     batch_repository = FakeBatchQueueRepository()
     clamped = active_batch_settings()
     experiment_end = clamped.experiment_end_at
@@ -2525,15 +2651,11 @@ async def test_batch_plane_binding_never_falls_back_to_sync_when_disabled():
 @pytest.mark.asyncio
 async def test_batch_queue_failure_never_falls_through_to_sync_generation():
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository(error=BatchRepositoryError(
         "batch_database_unavailable",
@@ -2559,15 +2681,11 @@ async def test_batch_queue_failure_never_falls_through_to_sync_generation():
 @pytest.mark.parametrize("retryable", [True, False])
 async def test_producer_first_budget_failure_never_queues_or_syncs(retryable):
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     generation = FakeGenerationClient()
     batch_repository = FakeBatchQueueRepository(
         budget_error=BatchRepositoryError(
@@ -2639,15 +2757,11 @@ async def test_batch_policy_rejection_never_falls_through_to_sync_generation():
 @pytest.mark.asyncio
 async def test_batch_handoff_completion_failure_leaves_durable_queue_for_replay():
     states = {
-        client_id: AutomationState(None, client_id != "origintrail", ())
+        client_id: AutomationState(None, True, ())
         for client_id in AUTOMATION_CLIENTS
     }
-    states["origintrail"] = AutomationState(
-        None,
-        False,
-        (pending("origintrail"),),
-    )
     repo = FakeRepository(states)
+    repo.claims.append(origintrail_batch_claim())
     repo.batch_handoff_error = AutomationRepositoryError(
         "automation_database_unavailable",
         retryable=True,
@@ -2685,7 +2799,12 @@ async def test_batch_experiment_does_not_change_non_origintrail_generation(
     states[client_id] = AutomationState(
         None,
         False,
-        (pending(client_id),),
+        (pending(
+            client_id,
+            source_image_url=(
+                f"https://pbs.twimg.com/media/{client_id}-official.jpg"
+            ),
+        ),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -2713,7 +2832,12 @@ async def test_origintrail_uses_existing_sync_path_outside_experiment_window():
     states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("origintrail"),),
+        (pending(
+            "origintrail",
+            source_image_url=(
+                "https://pbs.twimg.com/media/origintrail-official.jpg"
+            ),
+        ),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()
@@ -2744,7 +2868,12 @@ async def test_new_origintrail_job_resumes_sync_after_experiment_expiry():
     states["origintrail"] = AutomationState(
         None,
         False,
-        (pending("origintrail"),),
+        (pending(
+            "origintrail",
+            source_image_url=(
+                "https://pbs.twimg.com/media/origintrail-official.jpg"
+            ),
+        ),),
     )
     repo = FakeRepository(states)
     generation = FakeGenerationClient()

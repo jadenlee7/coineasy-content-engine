@@ -100,6 +100,17 @@ const OFFICIAL_SOURCE_REMIX_CLIENTS = new Set<OfficialSourceClient>([
   "origintrail",
   "babylon",
 ]);
+const AUTOMATION_CLASSIC_TEMPLATE_MISSING_CLIENTS = new Set<ContentCatalogClient>([
+  "origintrail",
+  "babylon",
+]);
+const AUTOMATION_STRICT_REMIX_CLIENTS = new Set<ContentCatalogClient>([
+  "yellow",
+  "origintrail",
+  "babylon",
+]);
+export const APPROVED_CLASSIC_TEMPLATE_MISSING_ERROR =
+  "approved_classic_template_missing" as const;
 const OFFICIAL_SOURCE_X_HANDLES: Record<OfficialSourceClient, string> = {
   squid: "squidrouter",
   yellow: "yellow",
@@ -108,6 +119,13 @@ const OFFICIAL_SOURCE_X_HANDLES: Record<OfficialSourceClient, string> = {
 };
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const HANGUL_PATTERN = /[\uAC00-\uD7A3]/;
+export const NEWS_CARD_KOREAN_LOCALIZATION_ERROR =
+  "news_card_korean_localization_incomplete" as const;
+export const NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR =
+  "news_card_korean_localization_regeneration_required" as const;
+export const NEWS_CARD_REMIX_REGENERATION_ERROR =
+  "news_card_remix_regeneration_required" as const;
 const SQUID_SOURCE_NATIVE_POLICY = "official_source_native_v1";
 export const SQUID_LOCALIZATION_DIAGNOSTIC_VERSION = "squid-localization-failure@1";
 export const SQUID_LOCALIZATION_FAILURE_POLICY = {
@@ -294,6 +312,8 @@ function catalogRetryErrorStatus(code: string, deadlineExceeded: boolean): numbe
   if (
     code === "fact_check_regeneration_required"
     || code === "squid_visual_localization_regeneration_required"
+    || code === NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR
+    || code === NEWS_CARD_REMIX_REGENERATION_ERROR
   ) return 409;
   return NEWS_CARD_PROVIDER_RESULT_ERRORS.has(code) ? 502 : 503;
 }
@@ -646,6 +666,48 @@ function isRailwayNewsCardResponse(
     && result.duration_ms >= 0;
 }
 
+export function newsCardKoreanLocalizationError(
+  spec: Record<string, unknown>,
+): "invalid_generation_response" | typeof NEWS_CARD_KOREAN_LOCALIZATION_ERROR | null {
+  const headline = spec.headline;
+  const bodyLines = spec.body_lines;
+  if (
+    typeof headline !== "string"
+    || !headline.trim()
+    || !Array.isArray(bodyLines)
+    || bodyLines.length < 1
+    || bodyLines.length > 3
+    || bodyLines.some((line) => typeof line !== "string" || !line.trim())
+  ) {
+    return "invalid_generation_response";
+  }
+  const hasKoreanHeadline = HANGUL_PATTERN.test(headline);
+  const hasKoreanBody = HANGUL_PATTERN.test(bodyLines.join(" "));
+  return hasKoreanHeadline && hasKoreanBody
+    ? null
+    : NEWS_CARD_KOREAN_LOCALIZATION_ERROR;
+}
+
+export function upstreamNewsCardKoreanLocalizationError(
+  detailText: string,
+): typeof NEWS_CARD_KOREAN_LOCALIZATION_ERROR | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(detailText);
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const detail = (payload as Record<string, unknown>).detail;
+  const wrappedDetail = (
+    "Generation failed: NewsCardKoreanLocalizationError: "
+    + NEWS_CARD_KOREAN_LOCALIZATION_ERROR
+  );
+  return detail === NEWS_CARD_KOREAN_LOCALIZATION_ERROR || detail === wrappedDetail
+    ? NEWS_CARD_KOREAN_LOCALIZATION_ERROR
+    : null;
+}
+
 export function validNewsTemplatePair(
   clientId: string,
   submittedTemplateStyle: string,
@@ -701,6 +763,7 @@ async function catalogRetryResponse(
   clientId: ContentCatalogClient,
   deadline: number,
   expectedVerifiedSourceImageUrl = "",
+  strictAutomationRemix = false,
 ): Promise<Record<string, unknown>> {
   if (existing.assets.length !== 1) {
     throw new ContentCatalogError("durable_storage_invalid_response");
@@ -723,11 +786,25 @@ async function catalogRetryResponse(
   const render = objectValue(existing.content.render);
   const source = objectValue(existing.content.source);
   const spec = objectValue(existing.content.spec);
+  if (newsCardKoreanLocalizationError(spec)) {
+    throw new ContentCatalogError(
+      NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR,
+    );
+  }
   const templatePair = storedNewsTemplatePair(clientId, render);
   if (!templatePair) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
   const { actualTemplateStyle, requestedTemplateStyle } = templatePair;
+  if (
+    strictAutomationRemix
+    && (
+      requestedTemplateStyle !== "remix"
+      || actualTemplateStyle !== "remix"
+    )
+  ) {
+    throw new ContentCatalogError(NEWS_CARD_REMIX_REGENERATION_ERROR);
+  }
   const storedSourceImageUrl = typeof source.image_url === "string" ? source.image_url : "";
   const storedSourceImageSha256 = typeof source.prepared_sha256 === "string"
     && SHA256_PATTERN.test(source.prepared_sha256)
@@ -946,6 +1023,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
   const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
+  const automationRequest = hasValidStudioAutomationAccess(req);
   const studioReleaseError = requireExpectedStudioRelease(req);
   if (studioReleaseError) return studioReleaseError;
 
@@ -988,6 +1066,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (!allowedTemplateStyles.has(templateStyle)) {
     return json({ error: "invalid_template_style" }, 400);
   }
+  if (
+    automationRequest
+    && templateStyle === "classic"
+    && AUTOMATION_CLASSIC_TEMPLATE_MISSING_CLIENTS.has(clientId)
+  ) {
+    return json({ error: APPROVED_CLASSIC_TEMPLATE_MISSING_ERROR }, 422);
+  }
   if (body.source_image_url !== undefined && typeof body.source_image_url !== "string") {
     return json({ error: "invalid_source_image_url" }, 422);
   }
@@ -996,7 +1081,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     : "";
   let pinnedSourceImageUrl = "";
   if (sourceImageCandidate) {
-    if (!hasValidStudioAutomationAccess(req)) {
+    if (!automationRequest) {
       return json({ error: "source_image_url_automation_only" }, 403);
     }
     pinnedSourceImageUrl = normalizeXImageUrl(sourceImageCandidate);
@@ -1011,7 +1096,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
   const submittedStyleReferences = body.style_references !== undefined
     || body.style_reference_pack_hash !== undefined;
-  if (submittedStyleReferences && !hasValidStudioAutomationAccess(req)) {
+  if (submittedStyleReferences && !automationRequest) {
     return json({ error: "style_references_automation_only" }, 403);
   }
   let styleReferencePack: StyleReferencePack;
@@ -1029,6 +1114,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const mockMode = body.mock_mode === true;
   const requiresVerifiedOfficialSource = isOfficialSourceClient(clientId)
     && templateStyle === "remix";
+  const strictAutomationRemix = automationRequest
+    && requiresVerifiedOfficialSource
+    && AUTOMATION_STRICT_REMIX_CLIENTS.has(clientId);
   const requestHashInput = {
     clientId,
     sourceContent,
@@ -1091,6 +1179,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           clientId,
           requestDeadline,
           pinnedSourceImageUrl,
+          strictAutomationRemix,
         ));
       } catch (error) {
         const code = error instanceof ContentCatalogError
@@ -1176,6 +1265,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         clientId,
         requestDeadline,
         requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
+        strictAutomationRemix,
       ));
     } catch (error) {
       const code = error instanceof ContentCatalogError
@@ -1230,6 +1320,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
     if (!generationResponse.ok) {
       const detail = await generationResponse.text();
+      const koreanLocalizationError = upstreamNewsCardKoreanLocalizationError(detail);
+      if (koreanLocalizationError) {
+        return json({ error: koreanLocalizationError }, 502);
+      }
       return json(
         {
           error: "generation_failed",
@@ -1251,8 +1345,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
     const actualTemplateStyle = result.template_style || templateStyle;
     const reportedRequestedTemplateStyle = result.requested_template_style ?? templateStyle;
+    const rejectedAutomationRemixFallback = (
+      automationRequest
+      && requiresVerifiedOfficialSource
+      && AUTOMATION_STRICT_REMIX_CLIENTS.has(clientId)
+      && actualTemplateStyle !== "remix"
+    );
     if (
-      !allowedTemplateStyles.has(actualTemplateStyle)
+      rejectedAutomationRemixFallback
+      || !allowedTemplateStyles.has(actualTemplateStyle)
       || !validNewsTemplatePair(
         clientId,
         templateStyle,
@@ -1308,6 +1409,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
       )
     ) {
       return json({ error: "invalid_generation_response" }, 502);
+    }
+    const koreanLocalizationError = newsCardKoreanLocalizationError(result.spec);
+    if (koreanLocalizationError) {
+      return json({ error: koreanLocalizationError }, 502);
     }
     if (
       clientId === "squid"
@@ -1567,6 +1672,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
               clientId,
               requestDeadline,
               requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
+              strictAutomationRemix,
             ));
           }
           return json({ error: "news_card_idempotency_conflict" }, 409);

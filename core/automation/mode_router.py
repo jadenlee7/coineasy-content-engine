@@ -41,7 +41,13 @@ _LOW_SIGNAL_PATTERN = re.compile(
 )
 _DEMAND_SIGNAL_BONUS_CAP = 3.0
 _TUTORIAL_LEARNING_BONUS_CAP = 2.0
-_SQUID_FRESHNESS_WINDOW = timedelta(hours=24)
+_FRESH_OFFICIAL_SOURCE_CLIENTS = frozenset({
+    "yellow",
+    "origintrail",
+    "squid",
+    "babylon",
+})
+_OFFICIAL_SOURCE_FRESHNESS_WINDOW = timedelta(hours=24)
 _X_LINK_METADATA_MARKER = "[X-provided link metadata]"
 _ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
 _TEMPORAL_DEMAND_PATTERN = re.compile(
@@ -216,7 +222,7 @@ def select_official_candidate(
         and 0 <= float(tutorial_priority) <= 1
         else 0.0
     )
-    squid_routing = client_id == "squid"
+    freshness_required = client_id in _FRESH_OFFICIAL_SOURCE_CLIENTS
     candidates: list[
         tuple[Mapping[str, object], Mapping[str, object]]
     ] = []
@@ -228,9 +234,11 @@ def select_official_candidate(
             or not str(post.get("id")).isdigit()
         ):
             continue
-        ranking_post = (
-            _without_x_link_metadata(post) if squid_routing else post
-        )
+        # Provider-enriched link cards are immutable source evidence, but
+        # their title/description must not promote an otherwise low-signal X
+        # post.  Actual X Article copy appears before this marker and remains
+        # available to the ranking policy.
+        ranking_post = _without_x_link_metadata(post)
         ranking_text = str(ranking_post.get("text") or "").lower()
         if (
             any(pattern in ranking_text for pattern in normalized_skips)
@@ -256,14 +264,15 @@ def select_official_candidate(
             int(str(post["id"])),
         )
 
-    if not squid_routing:
+    if not freshness_required:
         return max(candidates, key=relevance_key)[0]
 
     reference_now = now or datetime.now(timezone.utc)
     if reference_now.tzinfo is None:
         reference_now = reference_now.replace(tzinfo=timezone.utc)
     freshness_cutoff = (
-        reference_now.astimezone(timezone.utc) - _SQUID_FRESHNESS_WINDOW
+        reference_now.astimezone(timezone.utc)
+        - _OFFICIAL_SOURCE_FRESHNESS_WINDOW
     ).timestamp()
     fresh_candidates = [
         candidate
