@@ -14,6 +14,7 @@ MIGRATIONS = tuple(
         "20260825133000_harmony_preview_vertical_slice.sql",
         "20260825134000_harmony_preview_stage_chain.sql",
         "20260825135000_harmony_preview_dashboard_roles.sql",
+        "20260825140000_harmony_preview_fixed_specialist_chain.sql",
     )
 )
 SECURITY = (
@@ -62,8 +63,8 @@ def test_stage_receipts_are_unique_per_verified_jwt_binding() -> None:
     assert "qa_receipt_id uuid not null" in sql
 
 
-def test_plan_replay_requires_exact_ids_and_jwt_binding() -> None:
-    sql = _sql(MIGRATIONS[1])
+def test_plan_replay_uses_stable_specialist_operation_not_transport_ids() -> None:
+    sql = _sql(MIGRATIONS[4])
     request_hash_start = sql.index(
         "request_sha := private.agent_json_sha256"
     )
@@ -72,29 +73,35 @@ def test_plan_replay_requires_exact_ids_and_jwt_binding() -> None:
     request_hash = sql[request_hash_start:replay_start]
     replay = sql[replay_start:replay_end]
     for field in (
+        "workspace_id",
+        "client_id",
         "round_id",
         "plan_id",
-        "stage_receipt_id",
-        "principal_id",
-        "release_sha",
-        "config_sha256",
+        "input_set_sha256",
+        "specialist_binding_sha256",
+        "stage",
+        "topic_code",
     ):
         assert f"'{field}'" in request_hash
+    for transport_field in ("stage_receipt_id", "jti", "iat", "exp"):
+        assert f"'{transport_field}'" not in request_hash
     for binding in (
         "existing.round_id <> target_round_id",
         "existing.plan_id <> target_plan_id",
-        "existing_stage.receipt_id <> target_stage_receipt_id",
         "existing_stage.principal_id",
         "existing_stage.producer_release_sha",
         "existing_stage.config_sha256",
         "existing_stage.capability",
+        "existing_stage.specialist_binding_sha256",
     ):
         assert binding in replay
+    assert "existing_stage.receipt_id <> target_stage_receipt_id" not in replay
+    assert "binding_receipt_sha256" not in replay
     assert "harmony_preview_plan_idempotency_conflict" in replay
 
 
 def test_projection_fails_closed_when_round_inputs_are_not_current() -> None:
-    sql = _sql(MIGRATIONS[3])
+    sql = _sql(MIGRATIONS[4])
     collaboration_start = sql.index(
         "create or replace function private.harmony_preview_collaboration_object"
     )
@@ -120,26 +127,126 @@ def test_append_rpc_contract_is_eight_arguments_everywhere() -> None:
     )
     compact_stage = re.sub(r"\s+", "", _sql(MIGRATIONS[2]))
     compact_roles = re.sub(r"\s+", "", _sql(MIGRATIONS[3]))
+    compact_fixed = re.sub(r"\s+", "", _sql(MIGRATIONS[4]))
     compact_smoke = re.sub(r"\s+", "", _sql(SECURITY))
     assert signature in compact_stage
     assert signature in compact_roles
+    assert signature in compact_fixed
     assert signature in compact_smoke
     assert "uuid,text,uuid,uuid,text,uuid,uuid)" not in compact_roles
 
 
 def test_typed_qa_and_complete_chain_gate_operator_inbox() -> None:
-    sql = _sql(MIGRATIONS[2])
+    sql = _sql(MIGRATIONS[4])
     assert "harmony-independent-qa-evidence@1" in sql
     assert "harmony-deterministic-qa@1" in sql
     assert "reviewed_output_sha256" in sql
     assert "harmony_preview_qa_self_review_forbidden" in sql
     assert "candidate.stage in ('plan', 'private_content')" in sql
     assert "previous_row.reviewer_principal_id <> previous_row.principal_id" in sql
-    recap_branch = sql.index("if target_stage = 'recap' then")
+    operator_branch = sql.index("if target_stage = 'operator_inbox' then")
     inbox_insert = sql.index(
-        "insert into agent_runtime.harmony_operator_inbox", recap_branch
+        "insert into agent_runtime.harmony_operator_inbox", operator_branch
     )
-    assert recap_branch < inbox_insert
+    assert operator_branch < inbox_insert
+    assert sql.count("insert into agent_runtime.harmony_operator_inbox") == 1
+    assert "'inbox_id', target_inbox_id::text" in sql
+
+
+def test_fixed_specialist_roster_is_expiring_empty_force_rls_and_immutable() -> None:
+    sql = _sql(MIGRATIONS[4])
+    digest_start = sql.index(
+        "create or replace function private.harmony_preview_specialist_binding_sha"
+    )
+    digest_end = sql.index("create table", digest_start)
+    digest = sql[digest_start:digest_end]
+    for binding_field in (
+        "target_branch_ref",
+        "target_workspace_id",
+        "target_client_id",
+        "target_stage",
+        "target_specialist_code",
+        "target_role_name",
+        "target_capability",
+        "target_actor",
+        "target_principal_id",
+        "target_release_sha",
+        "target_config_sha256",
+        "target_expires_at",
+    ):
+        assert binding_field in digest
+    assert "target_expires_at at time zone 'UTC'" in digest
+    assert "harmony_preview_fixed_specialist_requires_empty_ledger" in sql
+    assert "harmony_preview_environment_fence_two_hour_check" in sql
+    assert sql.count("expires_at - created_at <= interval '2 hours'") == 2
+    assert "force row level security" in sql.lower()
+    assert "harmony_preview_squid_specialist_bindings_immutable" in sql
+    assert "revoke all on table private.harmony_preview_squid_specialist_bindings" in sql
+    for stage, specialist, actor in (
+        ("plan", "squid_planner", "grok_bot"),
+        ("private_content", "squid_private_content_producer", "content_engine"),
+        ("independent_qa", "squid_independent_qa", "codex"),
+        ("operator_inbox", "coineasy_representative_inbox", "human_operator_inbox"),
+        ("recap", "squid_recap", "coineasy_recap"),
+    ):
+        assert f"('{stage}', '{specialist}'" in sql
+        assert f"'{actor}'" in sql
+
+
+def test_stage_replay_is_stable_across_receipt_uuid_and_refreshed_jwt() -> None:
+    sql = _sql(MIGRATIONS[4])
+    append_start = sql.index(
+        "create or replace function public.append_preview_harmony_squid_stage"
+    )
+    replay_start = sql.index("select * into existing", append_start)
+    replay_end = sql.index("select * into strict previous_row", replay_start)
+    replay = sql[replay_start:replay_end]
+    assert "existing.receipt_id <> target_receipt_id" not in replay
+    assert "existing.binding_receipt_sha256" not in replay
+    assert "existing.specialist_binding_sha256" in replay
+    assert "private.agent_json_sha256(target_qa_evidence)" in replay
+    assert "existing.artifact ->> 'inbox_id'" in replay
+    operation_start = sql.index(
+        "create or replace function private.harmony_preview_stage_operation_key"
+    )
+    operation_end = sql.index("create or replace function", operation_start + 1)
+    operation = sql[operation_start:operation_end]
+    for field in (
+        "specialist_binding_sha256", "workspace_id", "client_id",
+        "plan_id", "stage", "input_sha256", "output_sha256",
+    ):
+        assert f"'{field}'" in operation
+
+
+def test_dashboard_v2_projects_full_chain_and_nullable_recap_binding() -> None:
+    sql = _sql(MIGRATIONS[4])
+    start = sql.index(
+        "create or replace function public.get_preview_harmony_dashboard"
+    )
+    dashboard = sql[start:]
+    for schema in (
+        "harmony-preview-dashboard@2",
+        "harmony-dashboard-round@2",
+        "harmony-dashboard-inbox@2",
+        "harmony-dashboard-recap@1",
+    ):
+        assert schema in dashboard
+    for key in (
+        "'actor'", "'capability'", "'specialist_code'",
+        "'specialist_binding_sha256'", "'operation_key_sha256'",
+        "'principal_id'", "'producer_release_sha'", "'config_sha256'",
+        "'receipt_sha256'",
+        "'input_sha256'", "'output_sha256'", "'round_sha256'",
+        "'recap_receipt_sha256'", "'recap_output_sha256'",
+        "'operator_decision_recorded'", "'operator_decision_observed'",
+        "'actual_cost_microusd'", "'publication_count'",
+        "'stage_receipt_count'", "'synthetic'",
+    ):
+        assert key in dashboard
+    assert "left join agent_runtime.harmony_stage_receipts recap_stage" in dashboard
+    assert "join private.harmony_preview_squid_specialist_bindings specialist" in dashboard
+    assert "pg_catalog.left(\n                content_stage.artifact ->> 'headline_ko', 160" in dashboard
+    assert "pg_catalog.left(\n                content_stage.artifact ->> 'summary_ko', 600" in dashboard
 
 
 def test_official_binding_hash_uses_immutable_identity_not_dispatch_state() -> None:

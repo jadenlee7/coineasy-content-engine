@@ -17,6 +17,8 @@ The control plane must:
 
 - let the operator set direction and approve exceptions in natural Korean;
 - route one bounded task to one owner;
+- bind the owner and independent reviewer from a versioned specialist policy
+  or an operator-authored work order, never from open-ended AI auto-assignment;
 - preserve exact input, version, repository SHA, evidence, budget, and policy;
 - separate planner, executor, reviewer, approver, and external-action writer;
 - remain useful when any conversational or coding provider is unavailable;
@@ -165,7 +167,7 @@ not turn on an agent provider. Its bounded flow is:
 flowchart LR
     P["Validated work order"] --> L["Durable common ledger"]
     L --> H["Human authorization"]
-    H --> A["Policy-bound assignment outbox"]
+    H --> A["Policy-bound specialist outbox"]
     A -. "later owner adapter" .-> R["Hash-bound result receipt"]
     R -. "later reviewer adapter" .-> V["Independent verification receipt"]
     V --> I["Operator approval inbox"]
@@ -175,7 +177,7 @@ flowchart LR
 ```
 
 The migration is intentionally deploy-inert until separately applied. Even
-after schema deployment, assignment means only a durable `pending` outbox row;
+after schema deployment, owner routing means only a durable `pending` outbox row;
 there is no claim, provider-attempt, messaging, deployment, or publication RPC
 in this P0 surface. Result and verification receipt types are reserved and
 validated, but their writer adapters are also absent. A later provider adapter
@@ -186,7 +188,7 @@ P0 keeps every accepted work order at `max_cost_microusd = 0`,
 writes are bound to the authenticated workspace owner/admin identity instead of
 an actor string supplied by the caller. Read models recompute the Python work
 order, authorization payload, dispatch packet, and branch digests before showing
-an assignment, verification gate, or completion count. A terminal stop requires
+a specialist route, verification gate, or completion count. A terminal stop requires
 a matching human decision receipt. Unknown cost is shown as unobserved, never as
 zero; in this zero-cost P0 an observed positive amount is rejected.
 
@@ -245,6 +247,9 @@ after the work or authorization expiry.
 
 - One owner, branch, and idempotency key per work order. Phase zero checks the
   fields locally; the future ledger enforces cross-order uniqueness and lease.
+- Owner and reviewer are fixed before dispatch by the versioned role policy or
+  operator-authored contract. The control plane does not ask an AI to choose
+  whoever should perform a task at runtime.
 - No agent-to-agent free-form loops; every handoff references the work order.
 - Maximum child depth 3, handoffs 5, and pre-action retries 3.
 - No retry after an external action becomes unknown.

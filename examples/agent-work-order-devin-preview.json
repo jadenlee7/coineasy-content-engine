@@ -27,7 +27,7 @@
   "evidence": [
     {
       "uri": "docs/ADR-018-ai-company-control-plane.md",
-      "sha256": "8b31d0a1b63667d7ab7a6a2e1d10b541eba10b6d62449aa87a6d01e5ed3ee8a4"
+      "sha256": "85ece55199a25b40b5103a2b482b5b91c4096b228f703662e7cec174361224ae"
     },
     {
       "uri": "docs/GROK_AGENT_REVIEW_RUNBOOK.md",

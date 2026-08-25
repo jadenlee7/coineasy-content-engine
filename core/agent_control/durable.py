@@ -824,7 +824,7 @@ def render_durable_company_dashboard(snapshot: DurableCompanySnapshot) -> str:
             f"다음 `{item.next_gate}`"
         )
         for item in snapshot.assignments
-    ) or "- 배정된 업무 없음"
+    ) or "- 전담 업무 없음"
     review_lines = "\n".join(
         (
             f"- `{item.work_order_id}`: 독립 검증 "
@@ -867,11 +867,12 @@ def render_durable_company_dashboard(snapshot: DurableCompanySnapshot) -> str:
 
 {state_lines}
 
-## 3. AI 자동 배정
+## 3. 고정 전담 역할
 
 {assignment_lines}
 
-이 투영과 owner planning packet은 실행 승인서가 아닙니다.
+각 owner와 reviewer는 업무 계약에 미리 고정됩니다. 이 투영과 owner
+planning packet은 실행 승인서가 아닙니다.
 
 ## 4. 독립 검증 · 대표 승인함
 

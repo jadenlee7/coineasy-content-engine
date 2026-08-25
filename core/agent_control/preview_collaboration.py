@@ -278,6 +278,29 @@ def preview_stage_receipt_sha256(payload: dict[str, object]) -> str:
     })
 
 
+def preview_stage_operation_key_sha256(
+    *,
+    specialist_binding_sha256: str,
+    workspace_id: UUID | str,
+    client_id: str,
+    plan_id: UUID | str,
+    stage: PreviewHarmonyStage | str,
+    input_sha256: str,
+    output_sha256: str,
+) -> str:
+    """Return the stable logical operation key used by the Preview ledger."""
+    return _sha256({
+        "client_id": client_id,
+        "input_sha256": input_sha256,
+        "output_sha256": output_sha256,
+        "plan_id": plan_id,
+        "schema_version": "harmony-stage-operation@1",
+        "specialist_binding_sha256": specialist_binding_sha256,
+        "stage": stage,
+        "workspace_id": workspace_id,
+    })
+
+
 def bind_preview_stage_receipt(
     payload: dict[str, object],
 ) -> dict[str, object]:
@@ -324,6 +347,15 @@ class PreviewHarmonyStageReceipt(BaseModel):
         "harmony_operator_inbox",
         "harmony_recap",
     ]
+    specialist_code: Literal[
+        "squid_planner",
+        "squid_private_content_producer",
+        "squid_independent_qa",
+        "coineasy_representative_inbox",
+        "squid_recap",
+    ]
+    specialist_binding_sha256: str = Field(pattern=_SHA256_PATTERN)
+    operation_key_sha256: str = Field(pattern=_SHA256_PATTERN)
     binding_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
     verdict: Literal["passed"] | None = None
     reviewer_principal_id: UUID4 | None = None
@@ -351,32 +383,39 @@ class PreviewHarmonyStageReceipt(BaseModel):
     @model_validator(mode="after")
     def validate_receipt(self) -> "PreviewHarmonyStageReceipt":
         expected_order = {
-            PreviewHarmonyStage.PLAN: (1, "grok_bot", "harmony_plan"),
+            PreviewHarmonyStage.PLAN: (
+                1, "grok_bot", "harmony_plan", "squid_planner",
+            ),
             PreviewHarmonyStage.PRIVATE_CONTENT: (
                 2,
                 "content_engine",
                 "harmony_prepare_private_content",
+                "squid_private_content_producer",
             ),
             PreviewHarmonyStage.INDEPENDENT_QA: (
                 3,
                 "codex",
                 "harmony_independent_qa",
+                "squid_independent_qa",
             ),
             PreviewHarmonyStage.OPERATOR_INBOX: (
                 4,
                 "human_operator_inbox",
                 "harmony_operator_inbox",
+                "coineasy_representative_inbox",
             ),
             PreviewHarmonyStage.RECAP: (
                 5,
                 "coineasy_recap",
                 "harmony_recap",
+                "squid_recap",
             ),
         }
         if (
             self.ordinal,
             self.actor,
             self.capability,
+            self.specialist_code,
         ) != expected_order[self.stage]:
             raise ValueError("harmony_stage_receipt_role_invalid")
         is_qa = self.stage == PreviewHarmonyStage.INDEPENDENT_QA
@@ -388,6 +427,17 @@ class PreviewHarmonyStageReceipt(BaseModel):
             raise ValueError("harmony_stage_receipt_qa_principal_invalid")
         if (self.ordinal == 1) != (self.previous_receipt_sha256 is None):
             raise ValueError("harmony_stage_receipt_chain_invalid")
+        expected_operation_key = preview_stage_operation_key_sha256(
+            specialist_binding_sha256=self.specialist_binding_sha256,
+            workspace_id=self.workspace_id,
+            client_id=self.client_id,
+            plan_id=self.plan_id,
+            stage=self.stage,
+            input_sha256=self.input_sha256,
+            output_sha256=self.output_sha256,
+        )
+        if self.operation_key_sha256 != expected_operation_key:
+            raise ValueError("harmony_stage_operation_key_invalid")
         expected = _sha256(self.model_dump(
             mode="python",
             exclude={"receipt_sha256"},
@@ -447,9 +497,10 @@ class PreviewHarmonyCollaborationRound(BaseModel):
         ...,
     ] = Field(min_length=4, max_length=4)
     stage_receipts: tuple[PreviewHarmonyStageReceipt, ...] = Field(
-        min_length=5,
+        min_length=4,
         max_length=5,
     )
+    stage_receipt_count: Literal[4, 5]
     operator_inbox: PreviewHarmonyOperatorInboxItem
     status: Literal["operator_review_pending"] = "operator_review_pending"
     synthetic: Literal[True] = True
@@ -505,8 +556,11 @@ class PreviewHarmonyCollaborationRound(BaseModel):
         ]):
             raise ValueError("harmony_preview_input_set_invalid")
 
-        expected_stages = tuple(PreviewHarmonyStage)
-        if tuple(item.stage for item in self.stage_receipts) != expected_stages:
+        expected_stages = tuple(PreviewHarmonyStage)[:len(self.stage_receipts)]
+        if (
+            tuple(item.stage for item in self.stage_receipts) != expected_stages
+            or self.stage_receipt_count != len(self.stage_receipts)
+        ):
             raise ValueError("harmony_preview_stage_order_invalid")
         previous: str | None = None
         previous_output = self.input_set_sha256
@@ -529,6 +583,10 @@ class PreviewHarmonyCollaborationRound(BaseModel):
             self.stage_receipts[1].principal_id,
         }:
             raise ValueError("harmony_preview_qa_separation_invalid")
+        if len({receipt.principal_id for receipt in self.stage_receipts}) != len(
+            self.stage_receipts
+        ):
+            raise ValueError("harmony_preview_specialist_separation_invalid")
         inbox_stage = self.stage_receipts[3]
         if (
             self.operator_inbox.workspace_id != self.workspace_id
@@ -576,6 +634,9 @@ def bind_preview_collaboration_round(
     bound.setdefault("publication_calls", False)
     bound.setdefault("actual_cost_microusd", 0)
     bound.setdefault("automatic_publication", False)
+    stage_receipts = bound.get("stage_receipts")
+    if isinstance(stage_receipts, (list, tuple)):
+        bound.setdefault("stage_receipt_count", len(stage_receipts))
     bound["round_sha256"] = preview_collaboration_round_sha256(bound)
     return bound
 
@@ -637,6 +698,7 @@ __all__ = [
     "bind_preview_stage_receipt",
     "preview_collaboration_round_sha256",
     "preview_connector_receipt_sha256",
+    "preview_stage_operation_key_sha256",
     "preview_stage_receipt_sha256",
     "validate_squid_preview_signal_set",
 ]

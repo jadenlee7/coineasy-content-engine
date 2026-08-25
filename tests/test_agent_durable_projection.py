@@ -814,7 +814,8 @@ def test_company_snapshot_and_five_section_dashboard_are_golden_and_order_stable
     assert dashboard.count("## ") == 5
     assert "## 1. 회사 상태" in dashboard
     assert "## 2. 공통 업무 원장" in dashboard
-    assert "## 3. AI 자동 배정" in dashboard
+    assert "## 3. 고정 전담 역할" in dashboard
+    assert "각 owner와 reviewer는 업무 계약에 미리 고정됩니다." in dashboard
     assert "## 4. 독립 검증 · 대표 승인함" in dashboard
     assert "## 5. 비용 · 완료" in dashboard
     assert "자동 발행: `OFF`" in dashboard
@@ -831,7 +832,7 @@ def test_empty_company_dashboard_is_valid_and_reports_no_assignments():
     assert snapshot.counts.observed_cost_microusd == 0
     assert snapshot.counts.observed_cost_rows == 0
     assert snapshot.counts.unobserved_cost_rows == 0
-    assert "배정된 업무 없음" in dashboard
+    assert "전담 업무 없음" in dashboard
     assert "비용 미관측: 0건 (0으로 환산하지 않음)" in dashboard
 
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { Context } from "@netlify/functions";
@@ -142,24 +143,96 @@ function request(
   return new Request(origin + "/api/harmony/dashboard", { method, headers });
 }
 
-function dashboard(): Record<string, any> {
-  const stages = [
-    "plan",
-    "private_content",
-    "independent_qa",
-    "operator_inbox",
-    "recap",
-  ].map((stage, index) => ({
+function stageOperationKey(
+  stage: string,
+  specialistBinding: string,
+  inputSha: string,
+  outputSha: string,
+): string {
+  const canonical = JSON.stringify({
+    client_id: "squid",
+    input_sha256: inputSha,
+    output_sha256: outputSha,
+    plan_id: PLAN_ID,
+    schema_version: "harmony-stage-operation@1",
+    specialist_binding_sha256: specialistBinding,
     stage,
-    ordinal: index + 1,
-    receipt_sha256: String(index + 1).repeat(64),
-    input_sha256: "a".repeat(64),
-    output_sha256: index === 2 ? "c".repeat(64) : "b".repeat(64),
-    recorded_at: "2026-08-25T10:0" + index + ":00Z",
-    verdict: index === 2 ? "passed" : null,
-  }));
+    workspace_id: WORKSPACE_ID,
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function dashboard(stageCount: 4 | 5 = 5): Record<string, any> {
+  const inputSetSha = "d".repeat(64);
+  const outputs = ["1", "2", "3", "4", "5"].map((value) => value.repeat(64));
+  const specialists = [
+    {
+      stage: "plan", actor: "grok_bot", capability: "harmony_plan",
+      specialist_code: "squid_planner",
+    },
+    {
+      stage: "private_content",
+      actor: "content_engine",
+      capability: "harmony_prepare_private_content",
+      specialist_code: "squid_private_content_producer",
+    },
+    {
+      stage: "independent_qa",
+      actor: "codex",
+      capability: "harmony_independent_qa",
+      specialist_code: "squid_independent_qa",
+    },
+    {
+      stage: "operator_inbox",
+      actor: "human_operator_inbox",
+      capability: "harmony_operator_inbox",
+      specialist_code: "coineasy_representative_inbox",
+    },
+    {
+      stage: "recap", actor: "coineasy_recap", capability: "harmony_recap",
+      specialist_code: "squid_recap",
+    },
+  ];
+  const stages = specialists.map((specialist, index) => {
+    const specialistBinding = ["b", "c", "d", "e", "f"][index].repeat(64);
+    const inputSha = index === 0 ? inputSetSha : outputs[index - 1];
+    const outputSha = outputs[index];
+    return {
+      ...specialist,
+      ordinal: index + 1,
+      specialist_binding_sha256: specialistBinding,
+      operation_key_sha256: stageOperationKey(
+        specialist.stage,
+        specialistBinding,
+        inputSha,
+        outputSha,
+      ),
+      principal_id: `f0000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      producer_release_sha: "1".repeat(40),
+      config_sha256: "2".repeat(64),
+      receipt_sha256: ["6", "7", "8", "9", "a"][index].repeat(64),
+      input_sha256: inputSha,
+      output_sha256: outputSha,
+      recorded_at: "2026-08-25T10:0" + index + ":00Z",
+      verdict: index === 2 ? "passed" : null,
+    };
+  }).slice(0, stageCount);
+  const recap = stageCount === 5
+    ? {
+      schema_version: "harmony-dashboard-recap@1",
+      receipt_sha256: stages[4].receipt_sha256,
+      input_sha256: stages[4].input_sha256,
+      output_sha256: stages[4].output_sha256,
+      actual_cost_microusd: 0,
+      stage_receipt_count: 5,
+      operator_decision_observed: false,
+      publication_count: 0,
+      synthetic: true,
+      automatic_publication: false,
+    }
+    : null;
   return {
-    schema_version: "harmony-preview-dashboard@1",
+    schema_version: "harmony-preview-dashboard@2",
     workspace_id: WORKSPACE_ID,
     client_id: "squid",
     observed_at: "2026-08-25T10:10:00Z",
@@ -168,32 +241,39 @@ function dashboard(): Record<string, any> {
       connector_receipts: 4,
       rounds: 1,
       plans: 1,
-      stage_receipts: 5,
+      stage_receipts: stageCount,
       pending_operator_inbox: 1,
     },
     latest_round: {
-      schema_version: "harmony-dashboard-round@1",
+      schema_version: "harmony-dashboard-round@2",
       round_id: ROUND_ID,
       plan_id: PLAN_ID,
-      input_set_sha256: "d".repeat(64),
+      input_set_sha256: inputSetSha,
       round_sha256: "e".repeat(64),
       status: "operator_review_pending",
       headline_ko: "Squid 한국 커뮤니티 첫 협업 라운드",
       summary_ko: "집계 신호와 공식 근거를 분리하고 독립 QA를 통과한 Preview 제안입니다.",
       stages,
+      recap,
       automatic_publication: false,
     },
     operator_inbox: [{
-      schema_version: "harmony-dashboard-inbox@1",
+      schema_version: "harmony-dashboard-inbox@2",
       inbox_id: INBOX_ID,
       round_id: ROUND_ID,
       plan_id: PLAN_ID,
       status: "pending",
-      scope_sha256: "f".repeat(64),
+      scope_sha256: stages[3].output_sha256,
       qa_receipt_id: QA_RECEIPT_ID,
-      qa_receipt_sha256: "3".repeat(64),
-      qa_output_sha256: "c".repeat(64),
+      qa_receipt_sha256: stages[2].receipt_sha256,
+      qa_output_sha256: stages[2].output_sha256,
+      round_sha256: "e".repeat(64),
+      recap_receipt_sha256: recap?.receipt_sha256 ?? null,
+      recap_output_sha256: recap?.output_sha256 ?? null,
+      headline_ko: "Squid 한국 커뮤니티 첫 협업 라운드",
+      summary_ko: "집계 신호와 공식 근거를 분리하고 독립 QA를 통과한 Preview 제안입니다.",
       created_at: "2026-08-25T10:03:00Z",
+      operator_decision_recorded: false,
       automatic_publication: false,
     }],
     trust: {
@@ -466,8 +546,9 @@ test("Supabase read uses GET with publishable apikey and scoped JWT bearer", asy
     return Response.json(dashboard());
   });
   assert.equal(calls, 1);
-  assert.equal(result.schema_version, "harmony-preview-dashboard@1");
+  assert.equal(result.schema_version, "harmony-preview-dashboard@2");
   assert.equal(result.latest_round?.stages.length, 5);
+  assert.equal(result.latest_round?.recap?.stage_receipt_count, 5);
   assert.equal(result.operator_inbox.length, 1);
   assert.equal(
     JSON.stringify(result).includes(values.SUPABASE_HARMONY_DASHBOARD_KEY),
@@ -517,6 +598,18 @@ test("projection accepts newest-first pending inbox items from different rounds"
   assert.equal(normalized.operator_inbox[1].round_id, olderInbox.round_id);
 });
 
+test("projection accepts the stage-four operator inbox before terminal recap", () => {
+  const value = dashboard(4);
+  const normalized = normalizeHarmonyDashboard(value, {
+    workspaceId: WORKSPACE_ID,
+    clientId: "squid",
+  });
+  assert.equal(normalized.latest_round?.stages.length, 4);
+  assert.equal(normalized.latest_round?.recap, null);
+  assert.equal(normalized.operator_inbox[0].recap_receipt_sha256, null);
+  assert.equal(normalized.operator_inbox[0].recap_output_sha256, null);
+});
+
 test("projection rejects drift, unsafe content, and broken QA bindings", () => {
   const config = { workspaceId: WORKSPACE_ID, clientId: "squid" as const };
   const cases = [
@@ -541,10 +634,101 @@ test("projection rejects drift, unsafe content, and broken QA bindings", () => {
     },
     {
       ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 0 ? { ...stage, actor: "self_reported_bot" } : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 4
+            ? { ...stage, principal_id: dashboard().latest_round.stages[0].principal_id }
+            : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 2 ? { ...stage, operation_key_sha256: "0".repeat(64) } : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 0 ? { ...stage, input_sha256: "0".repeat(64) } : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 1 ? { ...stage, input_sha256: "0".repeat(64) } : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        stages: dashboard().latest_round.stages.map((stage: any, index: number) =>
+          index === 0 ? { ...stage, verdict: "passed" } : stage
+        ),
+      },
+    },
+    {
+      ...dashboard(),
       operator_inbox: [{
         ...dashboard().operator_inbox[0],
         qa_receipt_sha256: "0".repeat(64),
       }],
+    },
+    {
+      ...dashboard(),
+      operator_inbox: [{
+        ...dashboard().operator_inbox[0],
+        scope_sha256: "0".repeat(64),
+      }],
+    },
+    {
+      ...dashboard(),
+      operator_inbox: [{
+        ...dashboard().operator_inbox[0],
+        round_sha256: "0".repeat(64),
+      }],
+    },
+    {
+      ...dashboard(),
+      latest_round: {
+        ...dashboard().latest_round,
+        recap: {
+          ...dashboard().latest_round.recap,
+          output_sha256: "0".repeat(64),
+        },
+      },
+    },
+    {
+      ...dashboard(),
+      latest_round: { ...dashboard().latest_round, recap: null },
+    },
+    {
+      ...dashboard(4),
+      latest_round: {
+        ...dashboard(4).latest_round,
+        recap: dashboard().latest_round.recap,
+      },
     },
     {
       ...dashboard(),
