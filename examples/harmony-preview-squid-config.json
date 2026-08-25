@@ -1,0 +1,28 @@
+{
+  "approval_decision_writes": false,
+  "automatic_publication": false,
+  "buzz_calls": false,
+  "client_id": "squid",
+  "concurrency": 64,
+  "connector_lanes": [
+    "quiz_bot",
+    "community_ops",
+    "content_source",
+    "recap"
+  ],
+  "environment": "preview",
+  "fence_ttl_minutes": 120,
+  "max_cost_microusd": 0,
+  "max_external_actions": 0,
+  "parent_project_ref": "isuqcqwxpojgzevxfdwr",
+  "provider_calls": false,
+  "publication_calls": false,
+  "schema_version": "harmony-preview-squid-config@1",
+  "stages": [
+    "plan",
+    "private_content",
+    "independent_qa",
+    "operator_inbox",
+    "recap"
+  ]
+}
