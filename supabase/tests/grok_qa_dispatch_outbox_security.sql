@@ -8,7 +8,7 @@ declare
     signature text;
 begin
     foreach signature in array array[
-        'public.claim_grok_qa_dispatch_job(uuid,text,integer,text[],uuid)',
+        'public.claim_grok_qa_dispatch_job(uuid,text,integer,text[],integer,uuid)',
         'public.mark_grok_qa_dispatch_provider_attempt(uuid,uuid,text,text,text)',
         'public.stage_grok_qa_dispatch_verdict(uuid,uuid,text,jsonb,text,text,text,text,text,bigint,jsonb,smallint)',
         'public.complete_grok_qa_dispatch_job(uuid,uuid,text,text,text,text)',
@@ -21,6 +21,11 @@ begin
             raise exception 'Grok QA dispatch RPC privilege is invalid: %', signature;
         end if;
     end loop;
+    if to_regprocedure(
+        'public.claim_grok_qa_dispatch_job(uuid,text,integer,text[],uuid)'
+    ) is not null then
+        raise exception 'legacy Grok QA claim RPC bypass remains available';
+    end if;
     if has_table_privilege(
         'anon', 'private.grok_qa_dispatch_outbox', 'select'
     ) or has_table_privilege(
@@ -65,7 +70,7 @@ insert into public.source_items (
     '2083266484789514640', 'tweet',
     'https://x.com/SquidRouter/status/2083266484789514640',
     '@SquidRouter',
-    '2026-08-13T08:00:00Z'::timestamptz,
+    transaction_timestamp() - interval '1 hour',
     'Squid official source used by the immutable Korean GTM review package.',
     'official-x:squid:2083266484789514640'
 );
@@ -266,11 +271,74 @@ begin
                     'https://x.com/SquidRouter/status/2083266484789514640'
               or source_author_handle <> '@SquidRouter'
               or source_published_at <>
-                    '2026-08-13T08:00:00Z'::timestamptz
+                    transaction_timestamp() - interval '1 hour'
           )
     ) then
         raise exception 'exact official-X events did not enqueue frozen sources';
     end if;
+end
+$test$;
+
+-- Normal FIFO never leases stale official-X work, while an exact immutable
+-- canary UUID remains available for an operator-authorized recovery probe.
+do $test$
+declare
+    normal_stale jsonb;
+    exact_stale_canary jsonb;
+    future_canary jsonb;
+begin
+    begin
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days'
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+
+        normal_stale := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:freshness-worker', 300, array['squid'], 86400
+        );
+        exact_stale_canary := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:freshness-canary', 300, array['squid'], 86400,
+            'e1400000-0000-4000-8000-000000000001'
+        );
+        if normal_stale -> 'job' <> 'null'::jsonb
+           or exact_stale_canary -> 'job' ->> 'content_version_id'
+                <> 'e1400000-0000-4000-8000-000000000001' then
+            raise exception 'normal FIFO freshness fence or exact canary bypass failed: %, %',
+                normal_stale, exact_stale_canary;
+        end if;
+        raise exception 'rollback Grok QA freshness probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback Grok QA freshness probe' then
+            raise;
+        end if;
+    end;
+    begin
+        update public.source_items
+        set published_at = transaction_timestamp() + interval '10 minutes'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() + interval '10 minutes'
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+
+        future_canary := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:future-canary', 300, array['squid'], 86400,
+            'e1400000-0000-4000-8000-000000000001'
+        );
+        if future_canary -> 'job' <> 'null'::jsonb then
+            raise exception 'future-dated exact canary bypassed clock-skew fence: %',
+                future_canary;
+        end if;
+        raise exception 'rollback Grok QA future-source probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback Grok QA future-source probe' then
+            raise;
+        end if;
+    end;
 end
 $test$;
 
@@ -290,7 +358,7 @@ declare
 begin
     exact_obsolete := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:canary-worker', 300, array['squid'],
+        'grok-qa:canary-worker', 300, array['squid'], 86400,
         'e1400000-0000-4000-8000-000000000002'
     );
     if exact_obsolete -> 'job' <> 'null'::jsonb then
@@ -345,7 +413,7 @@ declare
 begin
     filtered := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:test-worker', 300, array['yellow']
+        'grok-qa:test-worker', 300, array['yellow'], 86400
     );
     if filtered -> 'job' <> 'null'::jsonb then
         raise exception 'allowed_clients leaked a Squid dispatch: %', filtered;
@@ -353,7 +421,7 @@ begin
     begin
         perform public.claim_grok_qa_dispatch_job(
             'e1000000-0000-4000-8000-000000000001',
-            'grok-qa:test-worker', 300, array['squid', 'squid']
+            'grok-qa:test-worker', 300, array['squid', 'squid'], 86400
         );
         raise exception 'duplicate allowed_clients were accepted';
     exception when invalid_parameter_value then
@@ -365,7 +433,7 @@ begin
     begin
         canary_claimed := public.claim_grok_qa_dispatch_job(
             'e1000000-0000-4000-8000-000000000001',
-            'grok-qa:canary-worker', 300, array['squid'],
+            'grok-qa:canary-worker', 300, array['squid'], 86400,
             'e1400000-0000-4000-8000-000000000002'
         );
         if canary_claimed -> 'job' ->> 'content_version_id'
@@ -384,7 +452,7 @@ begin
 
     claimed := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:test-worker', 300, array['squid']
+        'grok-qa:test-worker', 300, array['squid'], 86400
     );
     if claimed -> 'job' ->> 'content_version_id'
             <> 'e1400000-0000-4000-8000-000000000001'
@@ -392,7 +460,7 @@ begin
             <> 'https://x.com/SquidRouter/status/2083266484789514640'
        or claimed -> 'job' ->> 'source_author_handle' <> '@SquidRouter'
        or (claimed -> 'job' ->> 'source_published_at')::timestamptz
-            <> '2026-08-13T08:00:00Z'::timestamptz
+            <> transaction_timestamp() - interval '1 hour'
        or claimed -> 'job' -> 'claim_granted' <> 'true'::jsonb
        or claimed -> 'job' -> 'provider_call_required' <> 'true'::jsonb
        or claimed -> 'job' ->> 'attempts' <> '1' then
@@ -413,7 +481,7 @@ begin
         );
         stale_after_mark := public.claim_grok_qa_dispatch_job(
             'e1000000-0000-4000-8000-000000000001',
-            'grok-qa:canary-worker', 300, array['squid'],
+            'grok-qa:canary-worker', 300, array['squid'], 86400,
             'e1400000-0000-4000-8000-000000000001'
         );
         if stale_fence -> 'authorized_once' <> 'false'::jsonb
@@ -581,6 +649,279 @@ begin
 end
 $test$;
 
+-- Stale delivery-only work never reaches the relay. Without a durable receipt,
+-- both an expired claimed verdict and a reconciled staged verdict close as a
+-- terminal source-expired failure. With an exact receipt, maintenance mirrors
+-- the receipt state instead of overwriting known delivery evidence.
+do $test$
+declare
+    maintenance jsonb;
+    reconciled jsonb;
+    receipt jsonb;
+    finalized jsonb;
+    staged_payload jsonb;
+begin
+    select verdict into staged_payload
+    from private.grok_qa_dispatch_outbox
+    where workspace_id = 'e1000000-0000-4000-8000-000000000001'
+      and content_version_id = 'e1400000-0000-4000-8000-000000000001';
+
+    -- A manually recorded durable receipt can predate this dispatcher's
+    -- staged state. Stale maintenance imports that exact evidence and closes
+    -- the pending row without a provider attempt or Telegram relay.
+    begin
+        receipt := public.claim_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1300000-0000-4000-8000-000000000002',
+            'e1400000-0000-4000-8000-000000000002', staged_payload
+        );
+        finalized := public.finalize_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000002',
+            receipt ->> 'payload_sha256', 'sent', null
+        );
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days',
+            locked_at = case when status = 'claimed'
+                then statement_timestamp() - interval '10 minutes'
+                else locked_at end,
+            lease_expires_at = case when status = 'claimed'
+                then statement_timestamp() - interval '5 minutes'
+                else lease_expires_at end
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:manual-receipt', 300, array['squid'], 86400
+        );
+        if finalized ->> 'status' <> 'sent'
+           or maintenance -> 'job' <> 'null'::jsonb or not exists (
+                select 1 from private.grok_qa_dispatch_outbox
+                where content_version_id = 'e1400000-0000-4000-8000-000000000002'
+                  and status = 'sent'
+                  and error_code is null
+                  and attempts = 0
+                  and provider_attempt_started_at is null
+                  and verdict = staged_payload
+                  and verdict_sha256 = receipt ->> 'payload_sha256'
+                  and model is null
+                  and prompt_version = 'grok-qa-external-receipt@1'
+           ) then
+            raise exception 'stale pending manual receipt was not imported exactly: %, %, %',
+                finalized, receipt, maintenance;
+        end if;
+        raise exception 'rollback stale pending manual-receipt probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale pending manual-receipt probe' then
+            raise;
+        end if;
+    end;
+
+    begin
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days',
+            locked_at = case when status = 'claimed'
+                then statement_timestamp() - interval '10 minutes'
+                else locked_at end,
+            lease_expires_at = case when status = 'claimed'
+                then statement_timestamp() - interval '5 minutes'
+                else lease_expires_at end
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:stale-claimed', 300, array['squid'], 86400
+        );
+        if maintenance -> 'job' <> 'null'::jsonb or not exists (
+            select 1 from private.grok_qa_dispatch_outbox
+            where content_version_id = 'e1400000-0000-4000-8000-000000000001'
+              and status = 'failed'
+              and error_code = 'grok_qa_source_expired'
+              and attempts = 1
+        ) then
+            raise exception 'stale claimed verdict was not terminalized without relay: %',
+                maintenance;
+        end if;
+        raise exception 'rollback stale claimed-verdict probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale claimed-verdict probe' then
+            raise;
+        end if;
+    end;
+
+    begin
+        update private.grok_qa_dispatch_outbox
+        set locked_at = statement_timestamp() - interval '10 minutes',
+            lease_expires_at = statement_timestamp() - interval '5 minutes'
+        where content_version_id = 'e1400000-0000-4000-8000-000000000001';
+        reconciled := public.reconcile_grok_qa_dispatch_leases(
+            'e1000000-0000-4000-8000-000000000001', 10
+        );
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days'
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:stale-staged', 300, array['squid'], 86400
+        );
+        if reconciled ->> 'pending' <> '1'
+           or maintenance -> 'job' <> 'null'::jsonb or not exists (
+                select 1 from private.grok_qa_dispatch_outbox
+                where content_version_id = 'e1400000-0000-4000-8000-000000000001'
+                  and status = 'failed'
+                  and error_code = 'grok_qa_source_expired'
+                  and attempts = 1
+           ) then
+            raise exception 'stale staged verdict was not terminalized without relay: %, %',
+                reconciled, maintenance;
+        end if;
+        raise exception 'rollback stale staged-verdict probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale staged-verdict probe' then
+            raise;
+        end if;
+    end;
+
+    begin
+        receipt := public.claim_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1300000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000001', staged_payload
+        );
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days',
+            locked_at = case when status = 'claimed'
+                then statement_timestamp() - interval '10 minutes'
+                else locked_at end,
+            lease_expires_at = case when status = 'claimed'
+                then statement_timestamp() - interval '5 minutes'
+                else lease_expires_at end
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:claimed-receipt', 300, array['squid'], 86400
+        );
+        if maintenance -> 'job' <> 'null'::jsonb or not exists (
+            select 1 from private.grok_qa_dispatch_outbox
+            where content_version_id = 'e1400000-0000-4000-8000-000000000001'
+              and status = 'delivery_unknown'
+              and error_code = 'grok_qa_receipt_claimed'
+              and verdict_sha256 = receipt ->> 'payload_sha256'
+        ) then
+            raise exception 'stale claimed receipt was not reconciled as delivery_unknown: %, %',
+                receipt, maintenance;
+        end if;
+        raise exception 'rollback stale claimed-receipt probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale claimed-receipt probe' then
+            raise;
+        end if;
+    end;
+
+    begin
+        receipt := public.claim_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1300000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000001', staged_payload
+        );
+        finalized := public.finalize_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000001',
+            receipt ->> 'payload_sha256', 'failed', 'grok_qa_relay_failed'
+        );
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days',
+            locked_at = case when status = 'claimed'
+                then statement_timestamp() - interval '10 minutes'
+                else locked_at end,
+            lease_expires_at = case when status = 'claimed'
+                then statement_timestamp() - interval '5 minutes'
+                else lease_expires_at end
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:failed-receipt', 300, array['squid'], 86400
+        );
+        if finalized ->> 'status' <> 'failed'
+           or maintenance -> 'job' <> 'null'::jsonb or not exists (
+                select 1 from private.grok_qa_dispatch_outbox
+                where content_version_id = 'e1400000-0000-4000-8000-000000000001'
+                  and status = 'failed'
+                  and error_code = 'grok_qa_relay_failed'
+                  and verdict_sha256 = receipt ->> 'payload_sha256'
+           ) then
+            raise exception 'stale failed receipt was not reconciled exactly: %, %, %',
+                finalized, receipt, maintenance;
+        end if;
+        raise exception 'rollback stale failed-receipt probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale failed-receipt probe' then
+            raise;
+        end if;
+    end;
+
+    begin
+        update private.grok_qa_dispatch_outbox
+        set locked_at = statement_timestamp() - interval '10 minutes',
+            lease_expires_at = statement_timestamp() - interval '5 minutes'
+        where content_version_id = 'e1400000-0000-4000-8000-000000000001';
+        reconciled := public.reconcile_grok_qa_dispatch_leases(
+            'e1000000-0000-4000-8000-000000000001', 10
+        );
+        receipt := public.claim_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1300000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000001', staged_payload
+        );
+        finalized := public.finalize_grok_qa_verdict(
+            'e1000000-0000-4000-8000-000000000001',
+            'e1400000-0000-4000-8000-000000000001',
+            receipt ->> 'payload_sha256', 'sent', null
+        );
+        update public.source_items
+        set published_at = transaction_timestamp() - interval '2 days'
+        where id = 'e1200000-0000-4000-8000-000000000001';
+        update private.grok_qa_dispatch_outbox
+        set source_published_at = transaction_timestamp() - interval '2 days'
+        where workspace_id = 'e1000000-0000-4000-8000-000000000001';
+        maintenance := public.claim_grok_qa_dispatch_job(
+            'e1000000-0000-4000-8000-000000000001',
+            'grok-qa:stale-receipt', 300, array['squid'], 86400
+        );
+        if finalized ->> 'status' <> 'sent'
+           or reconciled ->> 'pending' <> '1'
+           or maintenance -> 'job' <> 'null'::jsonb or not exists (
+                select 1 from private.grok_qa_dispatch_outbox
+                where content_version_id = 'e1400000-0000-4000-8000-000000000001'
+                  and status = 'sent'
+                  and error_code is null
+                  and verdict_sha256 = receipt ->> 'payload_sha256'
+           ) then
+            raise exception 'stale staged sent receipt was not reconciled without relay: %, %, %, %',
+                finalized, reconciled, receipt, maintenance;
+        end if;
+        raise exception 'rollback stale receipt-reconciliation probe';
+    exception when raise_exception then
+        if sqlerrm <> 'rollback stale receipt-reconciliation probe' then
+            raise;
+        end if;
+    end;
+end
+$test$;
+
 -- An expired lease with a fully staged provider result is delivery-only work.
 -- Even at max_attempts it must be reclaimable with all evidence preserved and
 -- without another provider fence or attempt increment.
@@ -603,7 +944,7 @@ begin
     );
     replayed := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:test-worker', 300, array['squid'],
+        'grok-qa:test-worker', 300, array['squid'], 86400,
         'e1400000-0000-4000-8000-000000000001'
     );
     if reconciled ->> 'pending' <> '1'
@@ -679,7 +1020,7 @@ declare
 begin
     claimed := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:retry-worker', 300, array['squid']
+        'grok-qa:retry-worker', 300, array['squid'], 86400
     );
     failed := public.fail_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
@@ -714,7 +1055,7 @@ declare
 begin
     result := public.claim_grok_qa_dispatch_job(
         'e1000000-0000-4000-8000-000000000001',
-        'grok-qa:stale-source', 300, array['squid'],
+        'grok-qa:stale-source', 300, array['squid'], 86400,
         'e1400000-0000-4000-8000-000000000002'
     );
     if result -> 'job' <> 'null'::jsonb then

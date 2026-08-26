@@ -109,7 +109,7 @@ jobs:
             --env GROK_QA_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
             coineasy-grok-qa-ci \
             python -m scripts.run_grok_qa_dispatch --validate-only \
-          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "validate_only", "model": "grok-4.5", "allowed_clients": ["squid"], "canary_mode": False, "canary_target_configured": False, "runtime_environment_verified": True, "runtime_release_verified": True, "provider_calls": False, "database_calls": False, "relay_calls": False, "publication_calls": False}'
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "validate_only", "model": "grok-4.5", "allowed_clients": ["squid"], "canary_mode": False, "canary_target_configured": False, "max_source_age_seconds": 86400, "runtime_environment_verified": True, "runtime_release_verified": True, "provider_calls": False, "database_calls": False, "relay_calls": False, "publication_calls": False}'
       - name: Prove the image has no publication or source-monitor modules
         run: |
           docker run --rm --network none coineasy-grok-qa-ci \

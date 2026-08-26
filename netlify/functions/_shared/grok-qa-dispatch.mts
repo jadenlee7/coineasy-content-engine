@@ -30,6 +30,9 @@ export const GROK_QA_DISPATCH_MAX_COST_TICKS = 5_000_000_000;
 
 const TOKEN_MINIMUM_BYTES = 32;
 const TOKEN_MAXIMUM_BYTES = 512;
+const MIN_SOURCE_AGE_SECONDS = 300;
+const MAX_SOURCE_AGE_SECONDS = 604_800;
+const MAX_SOURCE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const WORKER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const PROVIDER_RESPONSE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{7,199}$/;
@@ -108,6 +111,7 @@ type ClaimAction = {
   lease_seconds: number;
   allowed_clients: string[];
   canary_content_version_id: string | null;
+  max_source_age_seconds: number;
 };
 
 type StageFields = {
@@ -256,6 +260,21 @@ function exactOfficialSource(
   } catch {
     return false;
   }
+}
+
+function sourceWithinClaimFreshness(
+  sourcePublishedAt: string,
+  maxSourceAgeSeconds: number,
+  allowExpiredSource: boolean,
+  nowMs = Date.now(),
+): boolean {
+  const publishedMs = Date.parse(sourcePublishedAt);
+  return Number.isFinite(publishedMs)
+    && publishedMs <= nowMs + MAX_SOURCE_CLOCK_SKEW_MS
+    && (
+      allowExpiredSource
+      || publishedMs >= nowMs - (maxSourceAgeSeconds * 1_000)
+    );
 }
 
 function canonicalPostId(value: string): string | null {
@@ -464,7 +483,7 @@ export function parseGrokQaDispatchAction(value: unknown): GrokQaDispatchAction 
     if (
       !exactKeys(value, [
         "action", "worker_id", "lease_seconds", "allowed_clients",
-        "canary_content_version_id",
+        "canary_content_version_id", "max_source_age_seconds",
       ])
       || !worker(value.worker_id)
       || !Number.isSafeInteger(value.lease_seconds)
@@ -476,6 +495,9 @@ export function parseGrokQaDispatchAction(value: unknown): GrokQaDispatchAction 
       || value.allowed_clients.some((client) => !CLIENTS.has(String(client)))
       || new Set(value.allowed_clients).size !== value.allowed_clients.length
       || !(value.canary_content_version_id === null || uuid(value.canary_content_version_id))
+      || !Number.isSafeInteger(value.max_source_age_seconds)
+      || Number(value.max_source_age_seconds) < MIN_SOURCE_AGE_SECONDS
+      || Number(value.max_source_age_seconds) > MAX_SOURCE_AGE_SECONDS
     ) throw new GrokQaDispatchError("invalid_grok_qa_dispatch_request");
     return {
       action: "claim",
@@ -485,6 +507,7 @@ export function parseGrokQaDispatchAction(value: unknown): GrokQaDispatchAction 
       canary_content_version_id: value.canary_content_version_id === null
         ? null
         : value.canary_content_version_id.toLowerCase(),
+      max_source_age_seconds: Number(value.max_source_age_seconds),
     };
   }
   if (value.action === "stage") {
@@ -777,6 +800,7 @@ export async function executeGrokQaDispatchAction(
       target_worker_id: action.worker_id,
       target_lease_seconds: action.lease_seconds,
       target_allowed_clients: action.allowed_clients,
+      target_max_source_age_seconds: action.max_source_age_seconds,
       target_canary_content_version_id: action.canary_content_version_id,
     }, fetcher);
     if (
@@ -869,6 +893,13 @@ export async function executeGrokQaDispatchAction(
       || ((job.verdict === null) !== (job.provider_response_id === null))
       || job.provider_call_required !== (job.verdict === null)
     ) throw new GrokQaDispatchError("grok_qa_dispatch_invalid_response");
+    if (
+      !sourceWithinClaimFreshness(
+        String(job.source_published_at),
+        action.max_source_age_seconds,
+        action.canary_content_version_id !== null,
+      )
+    ) throw new GrokQaDispatchError("grok_qa_dispatch_source_stale");
 
     const itemId = String(job.content_item_id).toLowerCase();
     const versionId = String(job.content_version_id).toLowerCase();

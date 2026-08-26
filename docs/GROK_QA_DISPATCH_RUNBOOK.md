@@ -21,9 +21,22 @@ Tutorial remain manual Studio review in this release. The SQL claim applies the 
 inside the transaction, so the initial `squid` canary cannot lease another
 client's job.
 
+Normal FIFO additionally requires the official source timestamp to be no more
+than `GROK_QA_MAX_SOURCE_AGE_SECONDS` old (24 hours by default, bounded from 5
+minutes to 7 days). Each claim call retires at most 32 stale rows without a
+lease, attempt increment, provider call, or relay. Unattempted pending rows
+become `obsolete`. Staged or expired claimed verdicts reconcile an existing
+exact receipt to `sent`, `failed`, or `delivery_unknown`; without a receipt
+they become terminal `failed` with `grok_qa_source_expired`. An exact
+`GROK_QA_CANARY_CONTENT_VERSION_ID` may bypass only the expired-age check and
+re-open one otherwise-valid unattempted row. It never bypasses the five-minute
+future clock-skew rejection. Immutable version, current-version,
+official-source, banner-hash, and provider-attempt fences still apply.
+
 ## Components
 
-- Migration: `20260813143000_grok_qa_dispatch_outbox.sql`
+- Base migration: `20260813143000_grok_qa_dispatch_outbox.sql`
+- Freshness migration: `20260826193000_grok_qa_dispatch_freshness_fence.sql`
 - Netlify broker: `POST /api/grok-qa/dispatch`
 - Worker image: `Dockerfile.grok-qa`
 - Railway config: `railway.grok-qa.json`
@@ -87,6 +100,7 @@ flight between the two deploys.
    GROK_QA_EXPECTED_ENVIRONMENT=production
    GROK_QA_RELEASE_SHA=<exact 40-character deployed commit>
    GROK_QA_LEASE_SECONDS=300
+   GROK_QA_MAX_SOURCE_AGE_SECONDS=86400
    GROK_QA_MAX_TURNS=3
    GROK_QA_X_SEARCH_WINDOW_DAYS=1
    GROK_QA_MAX_OUTPUT_TOKENS=1600
@@ -108,6 +122,11 @@ flight between the two deploys.
 8. With outbound networking blocked, run `--validate-only`. It must report
    verified environment/release fences and zero provider, database, relay, and
    publication calls.
+
+The freshness migration replaces the claim RPC signature. Keep dispatch off,
+apply that migration, deploy the matching Netlify broker and Railway worker,
+then validate before re-enabling. Either mixed-version order fails closed at
+the RPC boundary rather than falling back to the legacy unfenced claim.
 
 ## One-item Squid canary
 
@@ -148,7 +167,12 @@ after this first run; expansion requires a separate decision.
 - A lost reservation response means zero provider calls by that worker.
 - After reservation, a timeout, crash, or missing result is terminal
   `provider_unknown`; it is never automatically retried.
-- A fully staged result may be replayed without another provider call.
+- A fully staged result may be replayed without another provider call only
+  while its official source remains within the normal-FIFO maximum age, or
+  when an operator has authorized that exact UUID as an expiry-recovery canary.
+  Stale normal-FIFO delivery-only work instead mirrors an existing durable
+  receipt, or closes as `grok_qa_source_expired` without relay when no receipt
+  exists.
 - Once private Telegram delivery may have occurred, the job becomes
   `delivery_unknown` and is not retried automatically.
 
@@ -193,6 +217,8 @@ Expand `GROK_QA_ALLOWED_CLIENTS` beyond `squid` only after the canary and failur
 injection checks pass. Keep dispatch disabled while removing
 `GROK_QA_CANARY_CONTENT_VERSION_ID` and setting `GROK_QA_CANARY_MODE=false` in
 the same configuration change; that pair is rejected if only one side changes.
-Validate again before enabling normal FIFO. Each review package contains its
-own server-owned brand contract so Yellow, OriginTrail, Babylon, and Squid
-rules remain separated.
+Set and validate `GROK_QA_MAX_SOURCE_AGE_SECONDS` before enabling normal FIFO;
+omission uses the 86,400-second default. Inspect the stale-row count before the
+first run because normal FIFO will durably mark a bounded stale pending prefix
+`obsolete`. Each review package contains its own server-owned brand contract so
+Yellow, OriginTrail, Babylon, and Squid rules remain separated.

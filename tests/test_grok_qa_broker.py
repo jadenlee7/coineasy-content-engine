@@ -157,6 +157,7 @@ async def test_claim_sends_atomic_client_allowlist_and_builds_hash_bound_input()
         lease_seconds=300,
         allowed_clients=("squid",),
         canary_content_version_id=None,
+        max_source_age_seconds=86_400,
     )
     assert item is not None
     assert item.client_id == "squid"
@@ -167,6 +168,7 @@ async def test_claim_sends_atomic_client_allowlist_and_builds_hash_bound_input()
         "lease_seconds": 300,
         "allowed_clients": ["squid"],
         "canary_content_version_id": None,
+        "max_source_age_seconds": 86_400,
     }]
 
 
@@ -187,6 +189,7 @@ async def test_canary_claim_is_bound_to_one_exact_content_version():
         lease_seconds=300,
         allowed_clients=("squid",),
         canary_content_version_id=VERSION,
+        max_source_age_seconds=86_400,
     )
     assert claimed is not None
     assert bodies[0]["canary_content_version_id"] == VERSION
@@ -213,6 +216,7 @@ async def test_canary_claim_rejects_a_different_returned_version():
             lease_seconds=300,
             allowed_clients=("squid",),
             canary_content_version_id=VERSION,
+            max_source_age_seconds=86_400,
         )
 
 
@@ -233,6 +237,7 @@ async def test_claim_rejects_provider_call_requirement_inconsistent_with_stage()
             lease_seconds=300,
             allowed_clients=("squid",),
             canary_content_version_id=None,
+            max_source_age_seconds=86_400,
         )
 
 

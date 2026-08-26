@@ -133,6 +133,7 @@ async def test_worker_claims_reviews_and_delivers_exact_hashed_verdict():
         "lease_seconds": 300,
         "allowed_clients": ("squid",),
         "canary_content_version_id": None,
+        "max_source_age_seconds": 86_400,
     }
     assert broker.mark_args == {
         "claim": item,
@@ -269,3 +270,21 @@ async def test_worker_passes_exact_canary_scope_to_claim():
     assert broker.claim_args["canary_content_version_id"] == (
         item.content_version_id
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_configured_normal_fifo_source_age_fence():
+    broker = FakeBroker(None)
+    provider = FakeProvider()
+    worker = GrokQaWorker(
+        broker=broker,
+        provider=provider,
+        max_source_age_seconds=43_200,
+        worker_id="grok-qa:freshness-worker",
+    )
+
+    run = await worker.run_once()
+
+    assert run.status == "idle"
+    assert broker.claim_args["max_source_age_seconds"] == 43_200
+    assert provider.calls == 0

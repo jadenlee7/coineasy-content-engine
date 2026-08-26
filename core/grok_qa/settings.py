@@ -172,6 +172,7 @@ class GrokQaSettings:
     canary_mode: bool = False
     canary_content_version_id: Optional[str] = None
     lease_seconds: int = 300
+    max_source_age_seconds: int = 86_400
     max_turns: int = 3
     x_search_window_days: int = 1
     max_output_tokens: int = 1_600
@@ -262,6 +263,13 @@ class GrokQaSettings:
             canary_content_version_id=canary_content_version_id,
             lease_seconds=_bounded_int(
                 env, "GROK_QA_LEASE_SECONDS", 300, 180, 600
+            ),
+            max_source_age_seconds=_bounded_int(
+                env,
+                "GROK_QA_MAX_SOURCE_AGE_SECONDS",
+                86_400,
+                300,
+                604_800,
             ),
             max_turns=_bounded_int(env, "GROK_QA_MAX_TURNS", 3, 1, 3),
             x_search_window_days=_bounded_int(

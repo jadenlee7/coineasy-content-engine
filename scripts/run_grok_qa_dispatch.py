@@ -37,6 +37,7 @@ async def _run_once(
         model=settings.model,
         allowed_clients=settings.allowed_clients,
         lease_seconds=settings.lease_seconds,
+        max_source_age_seconds=settings.max_source_age_seconds,
         timeout_seconds=settings.timeout_seconds,
         max_turns=settings.max_turns,
         x_search_window_days=settings.x_search_window_days,
@@ -97,6 +98,7 @@ def main() -> int:
                 "canary_target_configured": (
                     settings.canary_content_version_id is not None
                 ),
+                "max_source_age_seconds": settings.max_source_age_seconds,
                 "runtime_environment_verified": True,
                 "runtime_release_verified": True,
                 "provider_calls": False,
