@@ -17,6 +17,19 @@ const X_STATUS_PATTERN = /^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}\/status\/[0-9]{1
 const PACK_HASH_PATTERN = /^[a-f0-9]{32}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 
+function hasAtMostUnicodeCodePoints(value: string, limit: number): boolean {
+  // PostgreSQL `left(text, 600)` and Python `len()` both apply the style-pack
+  // limit in Unicode code points. JavaScript's `String.length` counts UTF-16
+  // code units instead, so an otherwise valid frozen reference containing an
+  // astral emoji could be rejected only at the Netlify persistence boundary.
+  let count = 0;
+  for (const _codePoint of value) {
+    count += 1;
+    if (count > limit) return false;
+  }
+  return true;
+}
+
 export class StyleReferenceInputError extends Error {
   readonly code: string;
 
@@ -79,7 +92,7 @@ export function parseStyleReferencePack(
       !UUID_PATTERN.test(sourceItemId)
       || !X_STATUS_PATTERN.test(sourceUrl)
       || !text
-      || text.length > 600
+      || !hasAtMostUnicodeCodePoints(text, 600)
       || !DATE_PATTERN.test(publishedAt)
       || !Number.isFinite(Date.parse(publishedAt))
       || sourceIds.has(sourceItemId)
