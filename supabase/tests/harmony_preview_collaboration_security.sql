@@ -159,7 +159,8 @@ begin
                 'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)'
             ]
             when 'coineasy_harmony_qa' then array[
-                'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)'
+                'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
+                'record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)'
             ]
             when 'coineasy_harmony_operator' then array[
                 'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
@@ -218,6 +219,7 @@ begin
         'public.submit_preview_harmony_signal(uuid,text,uuid,jsonb)',
         'public.create_preview_harmony_squid_plan(uuid,text,uuid,uuid,uuid,text[],text)',
         'public.append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
+        'public.record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)',
         'public.get_preview_harmony_round(uuid,text,uuid)',
         'public.get_preview_harmony_dashboard(uuid,text)'
     ] loop
@@ -268,6 +270,14 @@ begin
     ) or not pg_catalog.has_function_privilege(
         'coineasy_harmony_dashboard',
         'public.get_preview_harmony_dashboard(uuid,text)', 'execute'
+    ) or not pg_catalog.has_function_privilege(
+        'coineasy_harmony_qa',
+        'public.record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)',
+        'execute'
+    ) or pg_catalog.has_function_privilege(
+        'coineasy_harmony_content',
+        'public.record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)',
+        'execute'
     ) or pg_catalog.has_function_privilege(
         'coineasy_harmony_dashboard',
         'public.append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
@@ -299,7 +309,7 @@ select pg_catalog.set_config(
         'capability', 'harmony_submit_quiz_bot',
         'connector_id', 'quiz_bot_security',
         'jti', 'a2000000-0000-4000-8000-000000000001',
-        'iat', extract(epoch from statement_timestamp())::bigint - 1,
+        'iat', extract(epoch from statement_timestamp())::bigint,
         'exp', extract(epoch from statement_timestamp())::bigint + 3600,
         'automatic_publication', false,
         'max_cost_microusd', 0,

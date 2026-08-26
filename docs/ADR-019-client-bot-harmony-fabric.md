@@ -1,9 +1,9 @@
 # ADR-019: Federated client-bot Harmony collaboration fabric
 
-**Status:** Accepted for disposable Preview P0. The original six-migration
-slice was verified on a deleted child branch; the additive fixed-specialist
-seventh migration is locally verified only and is not applied to Production or
-a remote Preview branch.
+**Status:** Accepted for disposable Preview P0. The seven-migration
+fixed-specialist slice was verified at exact reviewed release
+`a0c60dbad30ad0c05d13dc12421ecbb7129cf94d` on disposable infrastructure,
+which was then deleted. It is not applied to Production.
 **Date:** 2026-08-25
 **Deciders:** CoinEasy representative, content, community, and engineering leads
 
@@ -250,6 +250,11 @@ responsibility, review, receipts, and the representative dashboard.
   branch ref, and maximum two-hour expiry. Stable retries may renew receipt
   UUIDs and JWT metadata but must converge on the same immutable operation key.
   No runtime AI assignment path exists.
+- ADR-020 adds an eighth Preview-only trust-hardening migration. Immutable
+  connector registrations, append-only revocations, signed request nonce
+  receipts, and append-only valid QA denials compose with the existing
+  connector and stage receipts. The migration remains empty by default and
+  is not a Production rollout.
 - The Squid slice derives private Korean headline/summary only from an existing
   current `needs_review` Daily News version whose natural
   `official_x_review_draft_completed` outbox and canonical `@SquidRouter`
@@ -274,6 +279,12 @@ responsibility, review, receipts, and the representative dashboard.
   receipts, 5 distinct operation keys, and 1 pending inbox. Wrong-principal
   preemption wrote zero rows; stage 4 added the inbox and Recap added none.
   Approval, publication, Buzz, provider, and cost baselines were unchanged.
+- The exact reviewed seven-migration release
+  `a0c60dbad30ad0c05d13dc12421ecbb7129cf94d` was also verified on a later
+  disposable Preview run. The 64-way signal/plan/stage races converged at one
+  new result and 63 stable reuses per operation, and the real signed
+  PostgREST connector matrix rejected nine invalid cases without domain-row
+  drift. Its scoped credentials and child branch were removed afterward.
 - The earlier approved disposable Supabase child `ynelpztctwonnadrlpfq`
   applied only the original six migrations and both transactional security suites. Real scoped
   HS256-JWT/PostgREST traffic produced 64 calls as one new receipt and 63 exact
@@ -293,14 +304,15 @@ responsibility, review, receipts, and the representative dashboard.
   deterministic structural verifier. `codex` is an actor label in its receipt;
   no Codex, Grok, or other model was called and no semantic/factual judgment is
   implied by `verdict=passed`.
-- P0 persists only the successful five-stage rehearsal. A malformed or failed
-  QA request aborts with zero new rows. Before any Production workflow, a
-  separate append-only negative-verdict ledger must preserve denial reasons
-  without opening the operator inbox.
-- Connector receipts expire with their short-lived Preview JWT. Expired inputs
-  disappear from the current dashboard by design, and the same immutable
-  signal cannot presently be renewed with a new attestation. A 24-hour runtime
-  therefore requires a separately reviewed attestation-renewal model.
+- The original seven-migration P0 persists only the successful five-stage
+  rehearsal. ADR-020 adds a separate RPC that durably records only an
+  authenticated, structurally valid failed-QA verdict. Malformed or
+  unauthorized traffic still writes nothing, and a denial cannot open the
+  operator inbox or create Recap, approval, or publication state.
+- Connector receipts still expire. ADR-020 adds immediate append-only
+  registration revocation and forbids silent renewal of one logical signed
+  request under a new nonce. A 24-hour runtime therefore still needs an
+  explicitly reviewed new-registration and key-rotation protocol.
 - External Quiz services remain `contract_only`. Their real service identity,
   aggregate event receipt, owner, and capability must be inventoried and
   verified one customer at a time.
@@ -312,10 +324,9 @@ responsibility, review, receipts, and the representative dashboard.
 
 ## Next rollout gates
 
-1. Stage, commit, and push the fixed-specialist corrections only after a
-   separate gate. Regenerate an exact-SHA Deploy Preview and verify that the
-   dashboard remains default OFF before any scoped read test; Draft removal
-   and merge are separate approvals.
+1. Land ADR-020 trust hardening only through a Draft PR, exact-head CI, and an
+   exact-SHA Deploy Preview whose dashboard remains default OFF. Draft removal,
+   merge, Production migration, and flag activation are separate approvals.
 2. If a second live dashboard read is desired, obtain a fresh explicit
    cost/organization/TTL approval for exactly one disposable child branch;
    bind only the exact new Preview SHA and delete its secrets and branch in the
@@ -324,8 +335,9 @@ responsibility, review, receipts, and the representative dashboard.
    destination, and capability. Replace only the synthetic connector lane with
    one actual aggregate-only connector at a time; raw user/chat data remains
    forbidden.
-4. Add a revocable attestation registry, signed request digest/nonce, and an
-   append-only negative-QA ledger before any long-running or Production use.
+4. After the local/CI hardening gate passes, obtain a fresh cost, organization,
+   TTL, and exact-SHA approval before proving revocation, replay conflict, and
+   valid failed-QA convergence on another disposable child branch.
 5. After 20 clean Squid Preview or staging rounds, add clients one at a time and prove
    isolated typed rounds. Keep every provider, messaging, approval-decision,
    and publication adapter separately gated and default OFF.
