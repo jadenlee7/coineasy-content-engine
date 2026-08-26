@@ -24,7 +24,8 @@ reference pack keyed by the deterministic generation request UUID.
 - The primary source remains the one selected official X `source_item`.
 - The pack contains at most three earlier posts from the same active official
   client feed.
-- Reference text is bounded to 600 characters per post.
+- Reference text is bounded to 600 Unicode code points per post, matching the
+  PostgreSQL pack snapshot and Python automation boundary.
 - The pack is append-only and private. Only service-role RPCs can create or
   read it.
 - A retry with the same request UUID reuses the exact committed pack.
