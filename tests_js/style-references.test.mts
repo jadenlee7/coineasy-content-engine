@@ -42,6 +42,31 @@ test("style reference parser rejects injected fields and untrusted URLs", () => 
 });
 
 
+test("style reference length matches the upstream Unicode code-point contract", () => {
+  const exactlySixHundredCodePoints = `${"x".repeat(599)}\u{1F9E0}`;
+  assert.equal(exactlySixHundredCodePoints.length, 601);
+  assert.equal(
+    parseStyleReferencePack(
+      [{
+        ...REFERENCE,
+        source_url: "https://x.com/origin_trail/status/2089718411051839649",
+        text: exactlySixHundredCodePoints,
+      }],
+      "a".repeat(32),
+    ).references[0].text,
+    exactlySixHundredCodePoints,
+  );
+
+  assert.throws(
+    () => parseStyleReferencePack(
+      [{ ...REFERENCE, text: `${"x".repeat(600)}\u{1F9E0}` }],
+      "a".repeat(32),
+    ),
+    (error: unknown) => error instanceof StyleReferenceInputError,
+  );
+});
+
+
 test("manual generation has no implicit runtime reference pack", () => {
   assert.deepEqual(
     parseStyleReferencePack(undefined, undefined),
