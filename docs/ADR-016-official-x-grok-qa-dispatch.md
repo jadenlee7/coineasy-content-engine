@@ -40,6 +40,13 @@ Use an event-triggered, durable QA outbox plus a separate Railway cron worker.
    evidence are staged before any Telegram relay attempt. A lost response after
    the reservation or an uncertain provider outcome therefore closes as
    `provider_unknown`; it never authorizes a second paid model call.
+   Normal FIFO also applies a bounded source-age parameter (24 hours by
+   default) in the claim transaction. It retires at most 32 stale rows per tick
+   without claiming them. Delivery-only rows reconcile existing durable
+   receipts exactly and otherwise close as source-expired failures without a
+   relay attempt. An operator-selected exact UUID canary bypasses only expiry,
+   never a future-dated source, and remains subject to every immutable identity
+   and provider fence.
 3. The isolated worker holds only `XAI_API_KEY` and a dedicated
    `GROK_QA_DISPATCH_TOKEN`. It receives a sanitized review package and a
    hash-verified inline PNG from a server-only Netlify broker. It never receives
@@ -106,11 +113,18 @@ pending -> claimed -> staged -> sent
 
 An expired pre-provider lease may retry within the attempt cap. Once a model
 call is reserved, it is never called again for that version; an interruption
-before a validated result is staged becomes terminal `provider_unknown`. Once
-a model result is staged, a later worker must reuse that exact result. Once
-private delivery may have happened, no automatic retry is permitted. A version
-that is no longer the current non-mock `needs_review` version becomes
-`obsolete` without a model or relay call.
+before a validated result is staged becomes terminal `provider_unknown`. A
+later normal-FIFO worker may reuse a staged result only while the official
+source remains within the configured maximum age. An operator-authorized exact
+UUID expiry-recovery canary may reuse that result after the age limit, but not
+when the source is future-dated. Once private delivery may have happened, no
+automatic retry is permitted. A version that is no longer the current non-mock
+`needs_review` version becomes `obsolete` without a model or relay call.
+An unattempted pending normal-FIFO row whose official source exceeds the
+configured maximum age also becomes `obsolete` without a lease or attempt.
+A stale staged or expired claimed verdict is never relayed: an existing receipt
+is mirrored exactly, while no-receipt work becomes terminal `failed` without a
+second provider call.
 
 The first production activation additionally requires an exact immutable
 content-version canary fence. Normal FIFO claiming is unavailable while canary

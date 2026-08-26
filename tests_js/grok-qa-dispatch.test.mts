@@ -26,6 +26,9 @@ const VERSION_ID = "33333333-3333-4333-8333-333333333333";
 const OTHER_VERSION_ID = "66666666-6666-4666-8666-666666666666";
 const ASSET_ID = "44444444-4444-4444-8444-444444444444";
 const CREATED_AT = "2026-08-13T08:00:00.000Z";
+const FRESH_SOURCE_PUBLISHED_AT = new Date(Date.now() - (60 * 60 * 1_000)).toISOString();
+const STALE_SOURCE_PUBLISHED_AT = new Date(Date.now() - (25 * 60 * 60 * 1_000)).toISOString();
+const FUTURE_SOURCE_PUBLISHED_AT = new Date(Date.now() + (10 * 60 * 1_000)).toISOString();
 const SOURCE_URL = "https://x.com/squidrouter/status/2083266484789514640";
 const DISPATCH_TOKEN = "dispatch-token-that-is-dedicated-and-long-enough";
 const RELAY_TOKEN = "relay-token-that-is-dedicated-and-long-enough";
@@ -196,7 +199,7 @@ function claimResult(overrides: Record<string, unknown> = {}) {
       source_event_type: "official_x_review_draft_completed",
       source_url: SOURCE_URL,
       source_author_handle: "@SquidRouter",
-      source_published_at: "2026-08-13T07:55:00.000Z",
+      source_published_at: FRESH_SOURCE_PUBLISHED_AT,
       status: "claimed",
       attempts: 1,
       max_attempts: 3,
@@ -373,6 +376,7 @@ test("dispatch parser is exact and cannot smuggle publication or arbitrary retry
       lease_seconds: 300,
       allowed_clients: ["squid"],
       canary_content_version_id: "not-a-uuid",
+      max_source_age_seconds: 86_400,
     }),
     (error: unknown) => error instanceof GrokQaDispatchError,
   );
@@ -383,6 +387,7 @@ test("dispatch parser is exact and cannot smuggle publication or arbitrary retry
       lease_seconds: 300,
       allowed_clients: ["squid"],
       canary_content_version_id: null,
+      max_source_age_seconds: 86_400,
       publish: true,
     }),
     (error: unknown) => error instanceof GrokQaDispatchError,
@@ -394,6 +399,18 @@ test("dispatch parser is exact and cannot smuggle publication or arbitrary retry
       lease_seconds: 300,
       allowed_clients: ["squid", "squid"],
       canary_content_version_id: null,
+      max_source_age_seconds: 86_400,
+    }),
+    (error: unknown) => error instanceof GrokQaDispatchError,
+  );
+  assert.throws(
+    () => parseGrokQaDispatchAction({
+      action: "claim",
+      worker_id: WORKER_ID,
+      lease_seconds: 300,
+      allowed_clients: ["squid"],
+      canary_content_version_id: null,
+      max_source_age_seconds: 60,
     }),
     (error: unknown) => error instanceof GrokQaDispatchError,
   );
@@ -440,6 +457,7 @@ test("claim returns only a sanitized review package and a hash-verified inline P
         target_worker_id: WORKER_ID,
         target_lease_seconds: 300,
         target_allowed_clients: ["squid"],
+        target_max_source_age_seconds: 86_400,
         target_canary_content_version_id: null,
       });
       return Response.json(claimResult());
@@ -454,6 +472,7 @@ test("claim returns only a sanitized review package and a hash-verified inline P
     lease_seconds: 300,
     allowed_clients: ["squid"],
     canary_content_version_id: null,
+    max_source_age_seconds: 86_400,
   }), environment(), fetcher);
   assert.equal((result.review_package as Record<string, unknown>).content_item_id, ITEM_ID);
   assert.deepEqual(result.banner_image, {
@@ -469,6 +488,39 @@ test("claim returns only a sanitized review package and a hash-verified inline P
   assert.ok(calls.some((request) => request.method === "GET" && request.url.includes("token=short-lived")));
 });
 
+test("normal FIFO rejects a stale source before loading its review package", async () => {
+  let catalogCalls = 0;
+  const action = parseGrokQaDispatchAction({
+    action: "claim",
+    worker_id: WORKER_ID,
+    lease_seconds: 300,
+    allowed_clients: ["squid"],
+    canary_content_version_id: null,
+    max_source_age_seconds: 86_400,
+  });
+
+  await assert.rejects(
+    () => executeGrokQaDispatchAction(
+      catalogConfig,
+      action,
+      environment(),
+      async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/rpc/claim_grok_qa_dispatch_job")) {
+          return Response.json(claimResult({
+            source_published_at: STALE_SOURCE_PUBLISHED_AT,
+          }));
+        }
+        catalogCalls += 1;
+        throw new Error(`unexpected request ${request.url}`);
+      },
+    ),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "grok_qa_dispatch_source_stale",
+  );
+  assert.equal(catalogCalls, 0);
+});
+
 test("claim binds an optional canary to one exact content version and rejects a mismatched job", async () => {
   const action = parseGrokQaDispatchAction({
     action: "claim",
@@ -476,6 +528,7 @@ test("claim binds an optional canary to one exact content version and rejects a 
     lease_seconds: 300,
     allowed_clients: ["squid"],
     canary_content_version_id: VERSION_ID,
+    max_source_age_seconds: 86_400,
   });
   const result = await executeGrokQaDispatchAction(
     catalogConfig,
@@ -489,9 +542,10 @@ test("claim binds an optional canary to one exact content version and rejects a 
           target_worker_id: WORKER_ID,
           target_lease_seconds: 300,
           target_allowed_clients: ["squid"],
+          target_max_source_age_seconds: 86_400,
           target_canary_content_version_id: VERSION_ID,
         });
-        return Response.json(claimResult());
+        return Response.json(claimResult({ source_published_at: STALE_SOURCE_PUBLISHED_AT }));
       }
       const catalog = await catalogResponse(request);
       if (catalog) return catalog;
@@ -506,6 +560,7 @@ test("claim binds an optional canary to one exact content version and rejects a 
     lease_seconds: 300,
     allowed_clients: ["squid"],
     canary_content_version_id: OTHER_VERSION_ID,
+    max_source_age_seconds: 86_400,
   });
   await assert.rejects(
     () => executeGrokQaDispatchAction(
@@ -517,6 +572,39 @@ test("claim binds an optional canary to one exact content version and rejects a 
     (error: unknown) => (error as { code?: unknown }).code
       === "grok_qa_dispatch_invalid_response",
   );
+});
+
+test("exact canary permits an expired source but rejects future clock skew", async () => {
+  let catalogCalls = 0;
+  const action = parseGrokQaDispatchAction({
+    action: "claim",
+    worker_id: WORKER_ID,
+    lease_seconds: 300,
+    allowed_clients: ["squid"],
+    canary_content_version_id: VERSION_ID,
+    max_source_age_seconds: 86_400,
+  });
+
+  await assert.rejects(
+    () => executeGrokQaDispatchAction(
+      catalogConfig,
+      action,
+      environment(),
+      async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/rpc/claim_grok_qa_dispatch_job")) {
+          return Response.json(claimResult({
+            source_published_at: FUTURE_SOURCE_PUBLISHED_AT,
+          }));
+        }
+        catalogCalls += 1;
+        throw new Error(`unexpected request ${request.url}`);
+      },
+    ),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "grok_qa_dispatch_source_stale",
+  );
+  assert.equal(catalogCalls, 0);
 });
 
 test("stage accepts only verdict source URLs from the stored review package", async () => {

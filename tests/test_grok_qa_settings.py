@@ -35,15 +35,24 @@ def test_settings_pin_model_and_bound_tools_cost_and_clients():
         GROK_QA_MAX_TURNS="2",
         GROK_QA_X_SEARCH_WINDOW_DAYS="1",
         GROK_QA_MAX_COST_IN_USD_TICKS="250000000",
+        GROK_QA_MAX_SOURCE_AGE_SECONDS="43200",
     ))
     assert settings.model == "grok-4.5"
     assert settings.allowed_clients == ("squid", "yellow")
     assert settings.max_turns == 2
     assert settings.max_cost_in_usd_ticks == 250_000_000
+    assert settings.max_source_age_seconds == 43_200
     with pytest.raises(ValueError, match="must be grok-4.5"):
         GrokQaSettings.from_env(env(GROK_QA_MODEL="grok-beta"))
     with pytest.raises(ValueError, match="between 1 and 3"):
         GrokQaSettings.from_env(env(GROK_QA_MAX_TURNS="20"))
+    with pytest.raises(ValueError, match="between 300 and 604800"):
+        GrokQaSettings.from_env(env(GROK_QA_MAX_SOURCE_AGE_SECONDS="60"))
+
+
+def test_normal_fifo_source_freshness_defaults_to_twenty_four_hours():
+    settings = GrokQaSettings.from_env(env())
+    assert settings.max_source_age_seconds == 86_400
 
 
 @pytest.mark.parametrize("name", [

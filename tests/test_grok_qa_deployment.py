@@ -96,6 +96,7 @@ def test_validate_only_reports_canary_state_without_disclosing_target():
     assert payload["ok"] is True
     assert payload["canary_mode"] is True
     assert payload["canary_target_configured"] is True
+    assert payload["max_source_age_seconds"] == 86_400
     assert CANARY_VERSION not in completed.stdout
     assert payload["provider_calls"] is False
     assert payload["publication_calls"] is False

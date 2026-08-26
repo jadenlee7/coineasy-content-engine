@@ -205,6 +205,7 @@ class HttpGrokQaBroker:
         lease_seconds: int,
         allowed_clients: tuple[str, ...],
         canary_content_version_id: Optional[str],
+        max_source_age_seconds: int,
     ) -> Optional[GrokQaWorkClaim]:
         if canary_content_version_id is not None:
             try:
@@ -218,12 +219,15 @@ class HttpGrokQaBroker:
                 or str(parsed_canary_id) != canary_content_version_id
             ):
                 raise ValueError("invalid Grok QA canary content version")
+        if not 300 <= max_source_age_seconds <= 604_800:
+            raise ValueError("invalid Grok QA max source age")
         raw = await self._request({
             "action": "claim",
             "worker_id": worker_id,
             "lease_seconds": lease_seconds,
             "allowed_clients": list(allowed_clients),
             "canary_content_version_id": canary_content_version_id,
+            "max_source_age_seconds": max_source_age_seconds,
         })
         if (
             raw.get("schema_version") != "1.0"

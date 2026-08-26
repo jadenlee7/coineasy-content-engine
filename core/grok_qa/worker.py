@@ -34,6 +34,7 @@ class GrokQaBroker(Protocol):
         lease_seconds: int,
         allowed_clients: tuple[str, ...],
         canary_content_version_id: Optional[str],
+        max_source_age_seconds: int,
     ) -> Optional[GrokQaWorkClaim]: ...
 
     async def mark_provider_attempt(
@@ -115,6 +116,7 @@ class GrokQaWorker:
         provider: GrokQaProvider,
         allowed_clients: tuple[str, ...] = ("squid",),
         lease_seconds: int = 300,
+        max_source_age_seconds: int = 86_400,
         canary_content_version_id: Optional[str] = None,
         worker_id: Optional[str] = None,
     ):
@@ -126,6 +128,7 @@ class GrokQaWorker:
                 for value in allowed_clients
             )
             or not 180 <= lease_seconds <= 600
+            or not 300 <= max_source_age_seconds <= 604_800
         ):
             raise ValueError("invalid Grok QA worker configuration")
         if canary_content_version_id is not None:
@@ -142,6 +145,7 @@ class GrokQaWorker:
         self.provider = provider
         self.allowed_clients = allowed_clients
         self.lease_seconds = lease_seconds
+        self.max_source_age_seconds = max_source_age_seconds
         self.canary_content_version_id = canary_content_version_id
         self.worker_id = worker_id or f"grok-qa:{uuid.uuid4()}"
 
@@ -189,6 +193,7 @@ class GrokQaWorker:
                 lease_seconds=self.lease_seconds,
                 allowed_clients=self.allowed_clients,
                 canary_content_version_id=self.canary_content_version_id,
+                max_source_age_seconds=self.max_source_age_seconds,
             )
         except Exception:
             return GrokQaRunResult(
@@ -329,6 +334,7 @@ def build_grok_qa_worker(
     model: str = "grok-4.5",
     allowed_clients: tuple[str, ...] = ("squid",),
     lease_seconds: int = 300,
+    max_source_age_seconds: int = 86_400,
     timeout_seconds: float = 180.0,
     max_turns: int = 3,
     x_search_window_days: int = 1,
@@ -350,6 +356,7 @@ def build_grok_qa_worker(
         provider=provider,
         allowed_clients=allowed_clients,
         lease_seconds=lease_seconds,
+        max_source_age_seconds=max_source_age_seconds,
         canary_content_version_id=canary_content_version_id,
     )
 
