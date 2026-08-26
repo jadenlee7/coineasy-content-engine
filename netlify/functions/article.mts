@@ -4,6 +4,11 @@ import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
 } from "./_shared/studio-session.mts";
+import {
+  requireExpectedStudioRelease,
+  STUDIO_EXPECTED_RELEASE_HEADER,
+} from "./_shared/studio-release.mts";
+import { STUDIO_BUILD_RELEASE_SHA } from "./_shared/studio-release.generated.mts";
 import { evaluateBrandQuality } from "./_shared/brand-quality.mts";
 import {
   evaluateFactCheck,
@@ -114,7 +119,7 @@ export function articleRequestHash(input: {
   }), "utf8").digest("hex");
 }
 
-function catalogRequestHash(existing: ContentCatalogLookup): string | null {
+export function catalogRequestHash(existing: ContentCatalogLookup): string | null {
   const contentHash = existing.content.request_hash;
   const generationHash = existing.generationMeta.request_hash;
   return typeof contentHash === "string"
@@ -122,6 +127,76 @@ function catalogRequestHash(existing: ContentCatalogLookup): string | null {
     && contentHash === generationHash
     ? contentHash
     : null;
+}
+
+export class ArticleRequestInputError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, status: number) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+export function validatedArticleRequest(
+  value: unknown,
+  clientId: ContentCatalogClient,
+  allowStyleReferences: boolean,
+): {
+  sourceContent: string;
+  sourceType: string;
+  sourceUrl: string;
+  styleReferencePack: StyleReferencePack;
+  requestHash: string;
+} {
+  const body = value && typeof value === "object"
+    ? value as ArticleRequest
+    : {};
+  const sourceContent = typeof body.source_content === "string" ? body.source_content.trim() : "";
+  const sourceType = typeof body.source_type === "string" ? body.source_type : "article";
+  const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : "";
+  if (sourceContent.length < 300 || sourceContent.length > 60_000) {
+    throw new ArticleRequestInputError("source_content_must_be_300_to_60000_chars", 422);
+  }
+  if (!ALLOWED_SOURCE_TYPES.has(sourceType)) {
+    throw new ArticleRequestInputError("invalid_source_type", 400);
+  }
+  if (!validSourceUrl(sourceUrl)) {
+    throw new ArticleRequestInputError("invalid_source_url", 400);
+  }
+  const submittedStyleReferences = body.style_references !== undefined
+    || body.style_reference_pack_hash !== undefined;
+  if (submittedStyleReferences && !allowStyleReferences) {
+    throw new ArticleRequestInputError("style_references_automation_only", 403);
+  }
+  let styleReferencePack: StyleReferencePack;
+  try {
+    styleReferencePack = parseStyleReferencePack(
+      body.style_references,
+      body.style_reference_pack_hash,
+    );
+  } catch (error) {
+    const code = error instanceof StyleReferenceInputError
+      ? error.code
+      : "invalid_style_references";
+    throw new ArticleRequestInputError(code, 422);
+  }
+  return {
+    sourceContent,
+    sourceType,
+    sourceUrl,
+    styleReferencePack,
+    requestHash: articleRequestHash({
+      clientId,
+      sourceContent,
+      sourceType,
+      sourceUrl,
+      styleReferences: styleReferencePack.references,
+      styleReferencePackHash: styleReferencePack.packHash,
+    }),
+  };
 }
 
 export function articleRetryResponse(
@@ -234,12 +309,22 @@ export function isRailwayArticleResponse(value: unknown): value is RailwayArticl
     && article.duration_ms >= 0;
 }
 
-export default async (req: Request, context: Context): Promise<Response> => {
+export async function handleArticleRequest(
+  req: Request,
+  context: Context,
+  buildReleaseSha: string | null = STUDIO_BUILD_RELEASE_SHA,
+): Promise<Response> {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   const requestDeadline = Date.now() + NETLIFY_REQUEST_BUDGET_MS;
 
   const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
+  const automationAccess = hasValidStudioAutomationAccess(req);
+  if (automationAccess && req.headers.get(STUDIO_EXPECTED_RELEASE_HEADER) === null) {
+    return json({ error: "studio_release_mismatch" }, 503);
+  }
+  const studioReleaseError = requireExpectedStudioRelease(req, buildReleaseSha);
+  if (studioReleaseError) return studioReleaseError;
 
   const clientParam = context.params.clientId;
   if (!clientParam || !ALLOWED_CLIENTS.has(clientParam as ContentCatalogClient)) {
@@ -256,50 +341,36 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const storageConfig = contentCatalogConfig((name) => Netlify.env.get(name));
   if (!storageConfig) return json({ error: "durable_storage_not_configured" }, 503);
 
-  let body: ArticleRequest;
+  let body: unknown;
   try {
     body = (await req.json()) as ArticleRequest;
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
 
-  const sourceContent = typeof body.source_content === "string" ? body.source_content.trim() : "";
-  const sourceType = typeof body.source_type === "string" ? body.source_type : "article";
-  const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : "";
-  if (sourceContent.length < 300 || sourceContent.length > 60_000) {
-    return json({ error: "source_content_must_be_300_to_60000_chars" }, 422);
-  }
-  if (!ALLOWED_SOURCE_TYPES.has(sourceType)) {
-    return json({ error: "invalid_source_type" }, 400);
-  }
-  if (!validSourceUrl(sourceUrl)) {
-    return json({ error: "invalid_source_url" }, 400);
-  }
-  const submittedStyleReferences = body.style_references !== undefined
-    || body.style_reference_pack_hash !== undefined;
-  if (submittedStyleReferences && !hasValidStudioAutomationAccess(req)) {
-    return json({ error: "style_references_automation_only" }, 403);
-  }
-  let styleReferencePack: StyleReferencePack;
+  let validatedRequest: ReturnType<typeof validatedArticleRequest>;
   try {
-    styleReferencePack = parseStyleReferencePack(
-      body.style_references,
-      body.style_reference_pack_hash,
+    validatedRequest = validatedArticleRequest(
+      body,
+      clientId,
+      automationAccess,
     );
   } catch (error) {
-    const code = error instanceof StyleReferenceInputError
+    const code = error instanceof ArticleRequestInputError
       ? error.code
-      : "invalid_style_references";
-    return json({ error: code }, 422);
+      : "invalid_article_request";
+    const status = error instanceof ArticleRequestInputError
+      ? error.status
+      : 400;
+    return json({ error: code }, status);
   }
-  const requestHash = articleRequestHash({
-    clientId,
+  const {
     sourceContent,
     sourceType,
     sourceUrl,
-    styleReferences: styleReferencePack.references,
-    styleReferencePackHash: styleReferencePack.packHash,
-  });
+    styleReferencePack,
+    requestHash,
+  } = validatedRequest;
 
   let existingGeneration: ContentCatalogLookup | null;
   try {
@@ -338,7 +409,6 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: code }, code === "fact_check_regeneration_required" ? 409 : 503);
     }
   }
-
   let brandReviewGuidance = emptyBrandReviewGuidance();
   let brandReviewGuidanceAvailable = false;
   try {
@@ -542,7 +612,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
       timedOut ? 504 : 502,
     );
   }
-};
+}
+
+export default handleArticleRequest;
 
 export const config: Config = {
   path: "/api/article/:clientId",

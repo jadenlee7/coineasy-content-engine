@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
+import core.automation.generation_client as generation_client_module
 from core.automation.generation_client import (
     GenerationRequestError,
     StudioGenerationClient,
@@ -30,6 +32,7 @@ def generation_capabilities() -> dict:
         "generation_contract": "double-fact-check@1",
         "generated_content_kinds": ["daily_news", "article", "tutorial"],
         "tutorial_claims_contract": "lessons@1",
+        "article_reconciliation_contract": "request-bound-readback@1",
         "netlify_release_sha": RELEASE_SHA,
     }
 
@@ -72,6 +75,17 @@ def fact_check(content_kind: str) -> dict:
     }
 
 
+def article_result(*, reused: bool = True) -> dict:
+    return {
+        "content_item_id": REQUEST_ID,
+        "content_version_id": VERSION_ID,
+        "asset_ids": [],
+        "storage_backend": "supabase",
+        "reused": reused,
+        "fact_check": fact_check("article"),
+    }
+
+
 @pytest.mark.asyncio
 async def test_daily_news_uses_review_generation_route_and_classic_by_default():
     captured: dict = {}
@@ -106,6 +120,7 @@ async def test_daily_news_uses_review_generation_route_and_classic_by_default():
     assert "/publish/" not in request.url.path
     assert request.headers["idempotency-key"] == REQUEST_ID
     assert request.headers["x-studio-automation-key"] == AUTOMATION_TOKEN
+    assert request.headers["x-studio-expected-release-sha"] == RELEASE_SHA
     body = json.loads(request.content)
     assert body["template_style"] == "classic"
     assert body["source_image_url"] == ""
@@ -394,6 +409,377 @@ async def test_complete_note_can_use_article_route_without_assets():
 
 
 @pytest.mark.asyncio
+async def test_article_reconciles_an_ambiguous_gateway_response_with_the_same_body():
+    posts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        if len(posts) == 1:
+            assert request.url.path == "/api/article/yellow"
+            return httpx.Response(502, text="upstream response was lost")
+        assert request.url.path == f"/api/article-result/yellow/{REQUEST_ID}"
+        assert "x-studio-reconcile-only" not in request.headers
+        assert request.headers["x-studio-expected-release-sha"] == RELEASE_SHA
+        assert request.headers["idempotency-key"] == REQUEST_ID
+        assert request.content == posts[0].content
+        timeout = request.extensions["timeout"]
+        assert max(value for value in timeout.values() if value is not None) <= 0.8
+        return httpx.Response(200, json=article_result())
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    result = await client.generate(
+        client_id="yellow",
+        content_kind="article",
+        request_id=REQUEST_ID,
+        source_content="a" * 300,
+        source_url="https://x.com/Yellow/status/123",
+        expected_studio_release_sha=RELEASE_SHA,
+    )
+
+    assert len(posts) == 2
+    assert result.reused is True
+    assert result.asset_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_article_reconciles_after_an_ambiguous_transport_failure():
+    post_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            raise httpx.ReadTimeout("response was lost", request=request)
+        assert request.url.path == f"/api/article-result/yellow/{REQUEST_ID}"
+        return httpx.Response(200, json=article_result())
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    result = await client.generate(
+        client_id="yellow",
+        content_kind="article",
+        request_id=REQUEST_ID,
+        source_content="a" * 300,
+        source_url="https://x.com/Yellow/status/123",
+    )
+
+    assert post_count == 2
+    assert result.reused is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_response",
+    [
+        httpx.Response(503, json={"error": "durable_catalog_lookup_failed"}),
+        httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [],
+            "storage_backend": "supabase",
+            "reused": False,
+        }),
+    ],
+)
+async def test_article_reconciles_every_retryable_post_response(initial_response):
+    posts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        if len(posts) == 1:
+            return initial_response
+        assert request.url.path == f"/api/article-result/yellow/{REQUEST_ID}"
+        return httpx.Response(200, json=article_result())
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    result = await client.generate(
+        client_id="yellow",
+        content_kind="article",
+        request_id=REQUEST_ID,
+        source_content="a" * 300,
+        source_url="https://x.com/Yellow/status/123",
+    )
+
+    assert len(posts) == 2
+    assert result.reused is True
+
+
+@pytest.mark.asyncio
+async def test_article_reconciliation_is_bounded_and_preserves_the_original_error(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        generation_client_module,
+        "_ARTICLE_RECONCILE_DELAYS_SECONDS",
+        (0.0, 0.0, 0.0),
+    )
+    posts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        if len(posts) == 1:
+            return httpx.Response(502, text="gateway response was lost")
+        return httpx.Response(202, json={
+            "status": "generating",
+            "content_item_id": REQUEST_ID,
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_invalid_response",
+    ) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+
+    assert error.value.retryable is True
+    assert len(posts) == 4
+    assert (
+        len(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
+        == len(generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS)
+        == 3
+    )
+    assert (
+        sum(generation_client_module._ARTICLE_RECONCILE_DELAYS_SECONDS)
+        + sum(generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS)
+        <= 8.0
+    )
+    assert generation_client_module._ARTICLE_RECONCILE_TIMEOUTS_SECONDS[-1] == 5.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [404, 405])
+async def test_article_reconciliation_treats_an_old_readback_route_as_unavailable(
+    monkeypatch,
+    status_code,
+):
+    monkeypatch.setattr(
+        generation_client_module,
+        "_ARTICLE_RECONCILE_DELAYS_SECONDS",
+        (0.0, 0.0, 0.0),
+    )
+    posts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        if len(posts) == 1:
+            return httpx.Response(502, text="gateway response was lost")
+        assert request.url.path == f"/api/article-result/yellow/{REQUEST_ID}"
+        return httpx.Response(status_code, json={"error": "method_not_allowed"})
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_invalid_response",
+    ) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+
+    assert error.value.retryable is True
+    assert len(posts) == 4
+
+
+@pytest.mark.asyncio
+async def test_article_reconciliation_has_a_strict_wall_clock_timeout(monkeypatch):
+    monkeypatch.setattr(
+        generation_client_module,
+        "_ARTICLE_RECONCILE_DELAYS_SECONDS",
+        (0.0, 0.0, 0.0),
+    )
+    monkeypatch.setattr(
+        generation_client_module,
+        "_ARTICLE_RECONCILE_TIMEOUTS_SECONDS",
+        (0.01, 0.01, 0.01),
+    )
+
+    class SlowReadbackTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.post_count = 0
+
+        async def handle_async_request(
+            self,
+            request: httpx.Request,
+        ) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json=generation_capabilities())
+            self.post_count += 1
+            if self.post_count == 1:
+                return httpx.Response(502, text="gateway response was lost")
+            await asyncio.sleep(1)
+            return httpx.Response(200, json=article_result())
+
+    transport = SlowReadbackTransport()
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=transport,
+    )
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_invalid_response",
+    ) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert error.value.retryable is True
+    assert transport.post_count == 4
+    assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_article_reconciliation_recovers_after_observed_cold_readback_latency():
+    class ColdReadbackTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.post_count = 0
+
+        async def handle_async_request(
+            self,
+            request: httpx.Request,
+        ) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json=generation_capabilities())
+            self.post_count += 1
+            if self.post_count == 1:
+                return httpx.Response(502, text="gateway response was lost")
+            if self.post_count in {2, 3}:
+                await asyncio.sleep(10)
+            else:
+                # The incident readback took 3.421 seconds. The final bounded
+                # attempt must be long enough to recover that durable result.
+                await asyncio.sleep(3.421)
+            return httpx.Response(200, json=article_result())
+
+    transport = ColdReadbackTransport()
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=transport,
+    )
+
+    result = await client.generate(
+        client_id="yellow",
+        content_kind="article",
+        request_id=REQUEST_ID,
+        source_content="a" * 300,
+        source_url="https://x.com/Yellow/status/123",
+    )
+
+    assert transport.post_count == 4
+    assert result.reused is True
+
+
+@pytest.mark.asyncio
+async def test_article_reconciliation_rejects_a_malformed_pending_envelope():
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(503, json={"error": "durable_catalog_lookup_failed"})
+        return httpx.Response(202, json={
+            "status": "generating",
+            "content_item_id": "44444444-4444-4444-8444-444444444444",
+        })
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_invalid_response",
+    ) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+
+    assert error.value.retryable is False
+    assert post_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reconcile_status", "reconcile_body", "expected_code"),
+    [
+        (200, article_result(reused=False), "studio_generation_invalid_response"),
+        (409, {"error": "article_idempotency_conflict"}, "article_idempotency_conflict"),
+    ],
+)
+async def test_article_reconciliation_fails_closed_on_mutation_or_hash_conflict(
+    reconcile_status,
+    reconcile_body,
+    expected_code,
+):
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(502, text="gateway response was lost")
+        return httpx.Response(reconcile_status, json=reconcile_body)
+
+    client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=capable_transport(handler),
+    )
+    with pytest.raises(GenerationRequestError, match=expected_code) as error:
+        await client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+
+    assert error.value.retryable is False
+    assert post_count == 2
+
+
+@pytest.mark.asyncio
 async def test_automation_forwards_bounded_style_pack_separately_from_source():
     captured: dict = {}
 
@@ -483,6 +869,66 @@ async def test_generation_preflight_blocks_mutation_until_the_current_contract_e
         )
     assert error.value.retryable is True
     assert methods == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_article_readback_contract_is_required_only_for_article_mutation():
+    article_methods: list[str] = []
+
+    def article_handler(request: httpx.Request) -> httpx.Response:
+        article_methods.append(request.method)
+        capabilities = generation_capabilities()
+        capabilities.pop("article_reconciliation_contract")
+        return httpx.Response(200, json=capabilities)
+
+    article_client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(article_handler),
+    )
+    with pytest.raises(
+        GenerationRequestError,
+        match="studio_generation_contract_unavailable",
+    ):
+        await article_client.generate(
+            client_id="yellow",
+            content_kind="article",
+            request_id=REQUEST_ID,
+            source_content="a" * 300,
+            source_url="https://x.com/Yellow/status/123",
+        )
+    assert article_methods == ["GET"]
+
+    daily_methods: list[str] = []
+
+    def daily_handler(request: httpx.Request) -> httpx.Response:
+        daily_methods.append(request.method)
+        if request.method == "GET":
+            capabilities = generation_capabilities()
+            capabilities.pop("article_reconciliation_contract")
+            return httpx.Response(200, json=capabilities)
+        return httpx.Response(200, json={
+            "content_item_id": REQUEST_ID,
+            "content_version_id": VERSION_ID,
+            "asset_ids": [ASSET_ID],
+            "storage_backend": "supabase",
+            "reused": False,
+            "fact_check": fact_check("daily_news"),
+        })
+
+    daily_client = StudioGenerationClient(
+        base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN,
+        transport=httpx.MockTransport(daily_handler),
+    )
+    await daily_client.generate(
+        client_id="yellow",
+        content_kind="daily_news",
+        request_id=REQUEST_ID,
+        source_content="A sufficiently long official update.",
+        source_url="https://x.com/Yellow/status/123",
+    )
+    assert daily_methods == ["GET", "POST"]
 
 
 @pytest.mark.asyncio
