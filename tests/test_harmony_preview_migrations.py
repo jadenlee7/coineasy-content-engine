@@ -15,12 +15,14 @@ MIGRATIONS = tuple(
         "20260825134000_harmony_preview_stage_chain.sql",
         "20260825135000_harmony_preview_dashboard_roles.sql",
         "20260825140000_harmony_preview_fixed_specialist_chain.sql",
+        "20260826210000_harmony_preview_trust_hardening.sql",
     )
 )
 SECURITY = (
     ROOT / "supabase" / "tests" / "harmony_preview_collaboration_security.sql"
 )
 PROBE = ROOT / "scripts" / "probe_harmony_preview_concurrency.py"
+TRUST_MIGRATION = MIGRATIONS[5]
 
 
 def _sql(path: Path) -> str:
@@ -280,6 +282,181 @@ def test_preview_slice_has_no_external_or_publication_write_path() -> None:
         "update private.grok_qa_dispatch_outbox",
     ):
         assert forbidden not in sql
+
+
+def test_trust_hardening_is_empty_append_only_force_rls() -> None:
+    sql = _sql(TRUST_MIGRATION).lower()
+    assert "harmony_preview_trust_hardening_requires_empty_ledger" in sql
+    for table in (
+        "private.harmony_preview_connector_registrations",
+        "private.harmony_preview_connector_registration_revocations",
+        "private.harmony_preview_connector_request_receipts",
+        "private.harmony_preview_qa_denial_receipts",
+    ):
+        assert f"create table {table}" in sql
+        assert f"alter table {table}\n    enable row level security" in sql
+        assert f"alter table {table}\n    force row level security" in sql
+    for trigger in (
+        "harmony_preview_connector_registrations_immutable",
+        "harmony_preview_connector_revocations_immutable",
+        "harmony_preview_connector_requests_immutable",
+        "harmony_preview_qa_denials_immutable",
+    ):
+        assert f"create trigger {trigger}" in sql
+    assert "from public, anon, authenticated, service_role" in sql
+
+
+def test_connector_registrations_are_one_shot_unique_and_iat_bound() -> None:
+    sql = _sql(TRUST_MIGRATION).lower()
+    assert "pg_catalog.date_trunc('second', statement_timestamp())" in sql
+    assert "check (created_at = pg_catalog.date_trunc('second', created_at))" in sql
+    for constraint in (
+        "harmony_connector_registration_lane_once",
+        "harmony_connector_registration_connector_once",
+        "harmony_connector_registration_principal_once",
+        "harmony_connector_registration_key_once",
+    ):
+        assert f"constraint {constraint} unique" in sql
+    claims_start = sql.index(
+        "create or replace function private.harmony_preview_connector_claims_match"
+    )
+    claims_end = sql.index("create or replace function", claims_start + 1)
+    claims = sql[claims_start:claims_end]
+    assert "return coalesce((" in claims
+    assert "pg_catalog.coalesce" not in claims
+    assert "issued_epoch := (claims ->> 'iat')::bigint" in claims
+    assert "pg_catalog.to_timestamp(issued_epoch)" in claims
+    assert "pg_catalog.date_trunc(\n                        'second', registration.created_at" in claims
+    assert "issued_epoch < 0" in claims
+    assert "issued_epoch > 4102444800" in claims
+    assert "expires_epoch > 4102444800" in claims
+
+
+def test_shared_preview_scope_rejects_extreme_epochs_without_sqlstate_leak() -> None:
+    sql = _sql(TRUST_MIGRATION).lower()
+    start = sql.index(
+        "create or replace function private.harmony_preview_scope_matches"
+    )
+    end = sql.index("create or replace function", start + 1)
+    scope = sql[start:end]
+    assert "issued_epoch is null" in scope
+    assert "expires_epoch is null" in scope
+    assert "return coalesce((" in scope
+    assert "pg_catalog.coalesce" not in scope
+    assert "issued_epoch < 0" in scope
+    assert "expires_epoch > 4102444800" in scope
+    assert scope.count("exception when others then") >= 2
+
+
+def test_fixed_specialist_claims_are_fail_closed_for_missing_subject() -> None:
+    sql = _sql(TRUST_MIGRATION).lower()
+    start = sql.index(
+        "create or replace function private.harmony_preview_stage_claims_match"
+    )
+    end = sql.index("do $fresh_preview$", start)
+    claims = sql[start:end]
+    assert "return coalesce((" in claims
+    assert "pg_catalog.coalesce" not in claims
+    assert "coalesce(claims ->> 'sub', '')" in claims
+    assert "= claims ->> 'producer_principal_id'" in claims
+    assert claims.count("exception when others then") >= 2
+
+
+def test_connector_request_receipt_enforces_durable_chronology() -> None:
+    sql = _sql(TRUST_MIGRATION).lower()
+    assert "create trigger harmony_preview_connector_request_chronology" in sql
+    assert "registration_created_at > connector_verified_at" in sql
+    assert "connector_verified_at > new.accepted_at" in sql
+    assert "harmony_preview_connector_request_chronology_invalid" in sql
+    assert (
+        "revoke all on function private.harmony_preview_validate_request_chronology()"
+        in sql
+    )
+
+
+def test_connector_request_digest_binds_rpc_registration_and_payload() -> None:
+    sql = _sql(TRUST_MIGRATION)
+    start = sql.index(
+        "create or replace function private.harmony_preview_connector_request_sha256"
+    )
+    end = sql.index("create or replace function", start + 1)
+    digest = sql[start:end]
+    for field in (
+        "'domain', 'coineasy:harmony:preview:connector-request:v1'",
+        "'rpc', 'public.submit_preview_harmony_signal(uuid,text,uuid,jsonb)'",
+        "'workspace_id'",
+        "'client_id'",
+        "'registration_id'",
+        "'connector_receipt_id'",
+        "'signal_id'",
+        "'source_event_id'",
+        "'producer_principal_id'",
+        "'signal_kind'",
+        "'lane'",
+        "'signal_payload_sha256'",
+        "target_signal - 'payload_sha256'",
+    ):
+        assert field in digest
+    assert "claims ->> 'request_nonce' is distinct from claims ->> 'jti'" in sql
+    assert "harmony_preview_connector_request_idempotency_conflict" in sql
+    assert "harmony_preview_connector_request_replay_conflict" in sql
+
+
+def test_revocation_and_request_admission_share_one_registration_lock() -> None:
+    sql = _sql(TRUST_MIGRATION)
+    lock_start = sql.index(
+        "create or replace function private.harmony_preview_lock_connector_registration"
+    )
+    lock_end = sql.index("create or replace function", lock_start + 1)
+    assert "for update" in sql[lock_start:lock_end]
+    assert sql.count("private.harmony_preview_lock_connector_registration(") >= 3
+    assert "harmony_preview_connector_registration_revoked" in sql
+    assert "harmony_preview_connector_registration_not_current" in sql
+
+
+def test_signal_wrapper_keeps_public_signature_and_adds_request_receipt() -> None:
+    source = _sql(TRUST_MIGRATION)
+    sql = re.sub(r"\s+", "", source)
+    signature = "public.submit_preview_harmony_signal(uuid,text,uuid,jsonb)"
+    assert f"alterfunction{signature}setschemaprivate" in sql
+    assert "create or replace function public.submit_preview_harmony_signal(" in source
+    assert f"grantexecuteonfunction{signature}" in sql
+    assert "'connector_request_receipt',request_payload" in sql
+    assert "harmony-connector-request-receipt@1" in sql
+
+
+def test_valid_failed_qa_is_separate_and_cannot_open_inbox() -> None:
+    sql = _sql(TRUST_MIGRATION)
+    signature = (
+        "record_preview_harmony_squid_qa_denial("
+        "uuid,text,uuid,uuid,uuid,jsonb)"
+    )
+    compact = re.sub(r"\s+", "", sql)
+    assert f"public.{signature}" in compact
+    assert "harmony-qa-denial-receipt@1" in sql
+    assert "harmony_preview_qa_denial_idempotency_conflict" in sql
+    denial_start = compact.index(
+        "createorreplacefunctionpublic."
+        "record_preview_harmony_squid_qa_denial("
+    )
+    denial = compact[denial_start:]
+    assert "'ok',false" in denial
+    assert "'denied',true" in denial
+    assert "'external_calls',false" in denial
+    assert "'provider_calls',false" in denial
+    assert "'publication_calls',false" in denial
+    assert "'automatic_publication',false" in denial
+    assert "insertintoagent_runtime.harmony_stage_receipts" not in denial
+    assert "insertintoagent_runtime.harmony_operator_inbox" not in denial
+
+
+def test_denied_or_revoked_work_is_not_current_or_passable() -> None:
+    sql = _sql(TRUST_MIGRATION)
+    assert "create or replace function private.harmony_preview_round_inputs_current" in sql
+    assert "harmony_preview_connector_request_receipts" in sql
+    assert "harmony_preview_connector_registration_revocations" in sql
+    assert "harmony_stage_receipts_guard_positive_qa" in sql
+    assert "harmony_preview_qa_output_already_denied" in sql
 
 
 def test_concurrency_probe_uses_64_connections_and_closed_topic() -> None:
