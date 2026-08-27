@@ -77,6 +77,21 @@ def test_key_partitions_every_semantic_input(override):
     assert _key(**override) != _key()
 
 
+def test_translation_contract_v7_invalidates_older_cache_keys(monkeypatch):
+    assert cache_module.VISUAL_LOCALIZATION_CACHE_VERSION == (
+        "squid-authoritative-visual-v7"
+    )
+    current_key = _key()
+
+    monkeypatch.setattr(
+        cache_module,
+        "VISUAL_LOCALIZATION_CACHE_VERSION",
+        "squid-authoritative-visual-v6",
+    )
+
+    assert _key() != current_key
+
+
 def test_empty_or_failed_regions_are_not_cached():
     key = _key()
     put_visual_localization(key, [])
