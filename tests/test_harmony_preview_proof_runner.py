@@ -841,6 +841,422 @@ def test_mutation_before_spawn_signal_is_deferred_until_child_is_owned(
         signal.signal(signal.SIGTERM, previous_handler)
 
 
+def test_mutation_handoff_defers_without_thread_signal_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Python handoff guard must not rely on pthread_sigmask alone."""
+
+    runner = RUNNER.ProcessRunner()
+    mutation_invoked = False
+    child_spawned = False
+    observed: list[tuple[bool, bool]] = []
+    real_popen = RUNNER.subprocess.Popen
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def no_signal_mask(*, code: str) -> set[signal.Signals]:
+        assert code == "mutation_handoff_no_mask"
+        return set()
+
+    def no_signal_restore(
+        previous: set[signal.Signals],
+        *,
+        code: str,
+    ) -> None:
+        assert previous == set()
+        assert code == "mutation_handoff_no_mask"
+
+    def tracking_popen(*args: object, **kwargs: object) -> object:
+        nonlocal child_spawned
+        child = real_popen(*args, **kwargs)
+        child_spawned = True
+        return child
+
+    def before_spawn() -> None:
+        nonlocal mutation_invoked
+        mutation_invoked = True
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def interrupted(_signum: int, _frame: object) -> None:
+        observed.append((mutation_invoked, child_spawned))
+        raise RUNNER.ProofError("synthetic_no_mask_handoff_interrupt")
+
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner,
+        "_block_interrupt_signals",
+        staticmethod(no_signal_mask),
+    )
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner,
+        "_restore_signal_mask",
+        staticmethod(no_signal_restore),
+    )
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", tracking_popen)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="synthetic_no_mask_handoff_interrupt",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                timeout=5,
+                code="mutation_handoff_no_mask",
+                before_spawn=before_spawn,
+            )
+        assert observed == [(True, True)]
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def test_spawn_failure_restores_handoff_signal_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def synthetic_sigint(_signum: int, _frame: object) -> None:
+        return None
+
+    def synthetic_sigterm(_signum: int, _frame: object) -> None:
+        return None
+
+    def fail_spawn(*_args: object, **_kwargs: object) -> object:
+        raise OSError("synthetic")
+
+    signal.signal(signal.SIGINT, synthetic_sigint)
+    signal.signal(signal.SIGTERM, synthetic_sigterm)
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", fail_spawn)
+    try:
+        with pytest.raises(
+            RUNNER.CommandError,
+            match="synthetic_spawn_failed",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "pass"],
+                timeout=5,
+                code="synthetic",
+            )
+        assert signal.getsignal(signal.SIGINT) is synthetic_sigint
+        assert signal.getsignal(signal.SIGTERM) is synthetic_sigterm
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def test_deferred_signal_replays_after_spawn_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    mutation_invoked = False
+    replayed: list[bool] = []
+
+    def synthetic_sigint(_signum: int, _frame: object) -> None:
+        return None
+
+    def synthetic_sigterm(_signum: int, _frame: object) -> None:
+        replayed.append(mutation_invoked)
+        raise RUNNER.ProofError("synthetic_spawn_replay_interrupt")
+
+    def no_signal_mask(*, code: str) -> set[signal.Signals]:
+        assert code == "spawn_replay"
+        return set()
+
+    def no_signal_restore(
+        previous: set[signal.Signals],
+        *,
+        code: str,
+    ) -> None:
+        assert previous == set()
+        assert code == "spawn_replay"
+
+    def before_spawn() -> None:
+        nonlocal mutation_invoked
+        mutation_invoked = True
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def fail_spawn(*_args: object, **_kwargs: object) -> object:
+        raise OSError("synthetic")
+
+    signal.signal(signal.SIGINT, synthetic_sigint)
+    signal.signal(signal.SIGTERM, synthetic_sigterm)
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner,
+        "_block_interrupt_signals",
+        staticmethod(no_signal_mask),
+    )
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner,
+        "_restore_signal_mask",
+        staticmethod(no_signal_restore),
+    )
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", fail_spawn)
+    try:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="synthetic_spawn_replay_interrupt",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "pass"],
+                timeout=5,
+                code="spawn_replay",
+                before_spawn=before_spawn,
+            )
+        assert replayed == [True]
+        assert signal.getsignal(signal.SIGINT) is synthetic_sigint
+        assert signal.getsignal(signal.SIGTERM) is synthetic_sigterm
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def test_repeated_signal_during_fence_is_coalesced_until_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    real_terminate = runner.terminate_process_group
+    events: list[str] = []
+
+    def interrupted(_signum: int, _frame: object) -> None:
+        events.append("prior")
+        raise RUNNER.ProofError("synthetic_fence_interrupt")
+
+    def noisy_fence(
+        process: subprocess.Popen[bytes],
+        *,
+        code: str,
+        term_grace_seconds: float = RUNNER.PROCESS_GROUP_TERM_GRACE_SECONDS,
+    ) -> None:
+        events.append("fence_start")
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGTERM)
+        real_terminate(
+            process,
+            code=code,
+            term_grace_seconds=term_grace_seconds,
+        )
+        events.append("fence_done")
+
+    monkeypatch.setattr(runner, "terminate_process_group", noisy_fence)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="synthetic_fence_interrupt",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "pass"],
+                timeout=5,
+                code="repeated_fence",
+            )
+        assert events == ["fence_start", "fence_done", "prior"]
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def test_signal_at_first_cleanup_line_still_fences_child_and_replays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first outer-finally line may still run while phase is OWNED."""
+
+    runner = RUNNER.ProcessRunner()
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    real_popen = RUNNER.subprocess.Popen
+    target_line = next(
+        line_number
+        for line_number, source_line in enumerate(
+            SCRIPT.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        )
+        if source_line.strip() == 'interrupt_phase = "fencing"'
+    )
+    spawned: subprocess.Popen[bytes] | None = None
+    injected = False
+    events: list[str] = []
+
+    def tracking_popen(*args: object, **kwargs: object) -> object:
+        nonlocal spawned
+        child = real_popen(*args, **kwargs)
+        spawned = child
+        return child
+
+    def interrupted(_signum: int, _frame: object) -> None:
+        events.append("prior")
+        raise RUNNER.ProofError("synthetic_cleanup_entry_interrupt")
+
+    def inject_at_cleanup_entry(
+        frame: object,
+        event: str,
+        _arg: object,
+    ) -> object:
+        nonlocal injected
+        if (
+            not injected
+            and event == "line"
+            and getattr(frame, "f_code", None)
+            is RUNNER.ProcessRunner.run_bytes.__code__
+            and getattr(frame, "f_lineno", None) == target_line
+        ):
+            injected = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        return inject_at_cleanup_entry
+
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", tracking_popen)
+    signal.signal(signal.SIGTERM, interrupted)
+    sys.settrace(inject_at_cleanup_entry)
+    try:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="synthetic_cleanup_entry_interrupt",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                timeout=0.05,
+                code="cleanup_entry",
+            )
+        assert injected is True
+        assert events == ["prior"]
+        assert spawned is not None
+        _assert_no_live_group_members(spawned.pid)
+    finally:
+        sys.settrace(None)
+        signal.signal(signal.SIGTERM, previous_handler)
+        if spawned is not None:
+            state = RUNNER.ProcessRunner._process_group_state(spawned.pid)
+            if state not in {
+                RUNNER.PROCESS_GROUP_ABSENT,
+                RUNNER.PROCESS_GROUP_DEAD_ONLY,
+            }:
+                try:
+                    os.killpg(spawned.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                spawned.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+def test_partial_handoff_guard_failure_prevents_mutation_and_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    real_signal = signal.signal
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    callback_calls = 0
+    popen_calls = 0
+
+    def synthetic_sigint(_signum: int, _frame: object) -> None:
+        return None
+
+    def synthetic_sigterm(_signum: int, _frame: object) -> None:
+        return None
+
+    def flaky_signal(signum: int, handler: object) -> object:
+        if (
+            signum == signal.SIGTERM
+            and callable(handler)
+            and getattr(handler, "__name__", "")
+            == "defer_handoff_interrupt"
+        ):
+            raise ValueError("synthetic second install failure")
+        return real_signal(signum, handler)
+
+    def before_spawn() -> None:
+        nonlocal callback_calls
+        callback_calls += 1
+
+    def forbidden_popen(*_args: object, **_kwargs: object) -> object:
+        nonlocal popen_calls
+        popen_calls += 1
+        raise AssertionError("Popen must not run")
+
+    real_signal(signal.SIGINT, synthetic_sigint)
+    real_signal(signal.SIGTERM, synthetic_sigterm)
+    monkeypatch.setattr(RUNNER.signal, "signal", flaky_signal)
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", forbidden_popen)
+    try:
+        with pytest.raises(
+            RUNNER.CommandError,
+            match="partial_guard_signal_handoff_guard_failed",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "pass"],
+                timeout=5,
+                code="partial_guard",
+                before_spawn=before_spawn,
+            )
+        assert callback_calls == 0
+        assert popen_calls == 0
+        assert signal.getsignal(signal.SIGINT) is synthetic_sigint
+        assert signal.getsignal(signal.SIGTERM) is synthetic_sigterm
+    finally:
+        real_signal(signal.SIGINT, previous_sigint)
+        real_signal(signal.SIGTERM, previous_sigterm)
+
+
+def test_first_handler_restore_failure_still_restores_second_and_fences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    real_signal = signal.signal
+    real_popen = RUNNER.subprocess.Popen
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    restore_attempts: list[signal.Signals] = []
+    spawned_pid: int | None = None
+    fail_sigint_restore = True
+
+    def synthetic_sigint(_signum: int, _frame: object) -> None:
+        return None
+
+    def synthetic_sigterm(_signum: int, _frame: object) -> None:
+        return None
+
+    def tracking_popen(*args: object, **kwargs: object) -> object:
+        nonlocal spawned_pid
+        child = real_popen(*args, **kwargs)
+        spawned_pid = child.pid
+        return child
+
+    def flaky_signal(signum: int, handler: object) -> object:
+        nonlocal fail_sigint_restore
+        if handler is synthetic_sigint and signum == signal.SIGINT:
+            restore_attempts.append(signal.SIGINT)
+            if fail_sigint_restore:
+                fail_sigint_restore = False
+                raise ValueError("synthetic first restore failure")
+        if handler is synthetic_sigterm and signum == signal.SIGTERM:
+            restore_attempts.append(signal.SIGTERM)
+        return real_signal(signum, handler)
+
+    real_signal(signal.SIGINT, synthetic_sigint)
+    real_signal(signal.SIGTERM, synthetic_sigterm)
+    monkeypatch.setattr(RUNNER.signal, "signal", flaky_signal)
+    monkeypatch.setattr(RUNNER.subprocess, "Popen", tracking_popen)
+    try:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="restore_pair_signal_guard_restore_failed",
+        ):
+            runner.run_bytes(
+                [sys.executable, "-c", "pass"],
+                timeout=5,
+                code="restore_pair",
+            )
+        assert restore_attempts == [signal.SIGINT, signal.SIGTERM]
+        assert signal.getsignal(signal.SIGTERM) is synthetic_sigterm
+        assert spawned_pid is not None
+        _assert_no_live_group_members(spawned_pid)
+    finally:
+        real_signal(signal.SIGINT, previous_sigint)
+        real_signal(signal.SIGTERM, previous_sigterm)
+
+
 def test_run_interrupt_after_watchdog_arm_before_create_cancels_and_reaps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

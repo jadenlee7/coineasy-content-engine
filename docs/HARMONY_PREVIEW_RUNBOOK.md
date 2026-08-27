@@ -204,7 +204,12 @@ process group으로 실행합니다. Timeout, runner SIGINT/SIGTERM, nonzero 종
 뒤, bounded read-only process snapshot으로 live member가 없음을 확인하기 전에는
 cleanup 성공으로 기록하지 않습니다. PGID가 사라졌거나 zombie-only인 경우만
 quiescent로 인정하며, live/unknown은 fail-closed합니다. 확인 단계에서는 재사용될
-수 있는 PGID에 신호를 다시 보내지 않습니다. Watchdog의 Supabase CLI도
+수 있는 PGID에 신호를 다시 보내지 않습니다. `pthread_sigmask`는 호출 thread만
+막으므로 foreground command는 callback 전부터 `HANDOFF`, `OWNED`, `FENCING`,
+`RESTORING` phase-aware Python handler도 함께 설치합니다. HANDOFF의 첫 interrupt는
+bounded slot에만 기록하고, OWNED에서 cleanup으로 이동하며, FENCING/RESTORING의
+추가 interrupt는 coalesce합니다. 그룹 fence와 두 handler 복구가 끝난 뒤에만
+원래 caller handler를 replay합니다. Watchdog의 Supabase CLI도
 별도 session과 signal guard를 가지며, foreground management HOME과 분리된 mode
 `0700` control root 및 임시 HOME을 사용합니다.
 

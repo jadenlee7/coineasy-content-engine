@@ -410,6 +410,10 @@ class ProcessRunner:
     ) -> bytes:
         process: subprocess.Popen[bytes] | None = None
         previous_handlers: dict[signal.Signals, object] = {}
+        installed_handlers: set[signal.Signals] = set()
+        pending_interrupt: tuple[int, object | None] | None = None
+        interrupt_phase = "before_guard"
+        interrupt_unwind_started = False
         cleanup_context = "exit"
         communicate_completed = False
         process_group_fence_attempted = False
@@ -417,11 +421,55 @@ class ProcessRunner:
         try:
             previous_mask = self._block_interrupt_signals(code=code)
             try:
+                for interrupt_signal in (signal.SIGINT, signal.SIGTERM):
+                    previous_handlers[interrupt_signal] = signal.getsignal(
+                        interrupt_signal
+                    )
+
+                def defer_handoff_interrupt(
+                    signum: int,
+                    frame: object,
+                ) -> None:
+                    nonlocal cleanup_context
+                    nonlocal interrupt_unwind_started
+                    nonlocal pending_interrupt
+                    # pthread_sigmask is thread-local.  On Linux a
+                    # process-directed signal can be accepted by another
+                    # unblocked thread and schedule Python's main-thread
+                    # handler while Popen is still returning.  Coalesce one
+                    # interrupt without retaining the signal frame (which can
+                    # reference secret-bearing locals).  Only the OWNED phase
+                    # may unwind; FENCING/RESTORING must finish atomically.
+                    if pending_interrupt is None:
+                        pending_interrupt = (signum, None)
+                    if (
+                        interrupt_phase == "owned"
+                        and not interrupt_unwind_started
+                    ):
+                        interrupt_unwind_started = True
+                        cleanup_context = "interrupted"
+                        raise ProofError(f"{code}_interrupted")
+
                 try:
+                    for interrupt_signal in (signal.SIGINT, signal.SIGTERM):
+                        signal.signal(
+                            interrupt_signal,
+                            defer_handoff_interrupt,
+                        )
+                        installed_handlers.add(interrupt_signal)
+                except (OSError, RuntimeError, ValueError):
+                    raise CommandError(
+                        f"{code}_signal_handoff_guard_failed",
+                        ambiguous=False,
+                    ) from None
+
+                try:
+                    interrupt_phase = "handoff"
                     # Publish a mutation's sticky commit-state fence inside
-                    # the same signal-masked ownership handoff as Popen.  No
-                    # Python signal can land between this callback and child
-                    # assignment/guard installation.
+                    # the same ownership handoff as Popen.  The process-wide
+                    # Python handler above complements the thread-local mask,
+                    # so no interrupt can unwind this callback-to-assignment
+                    # interval before the child group is owned.
                     if before_spawn is not None:
                         before_spawn()
                     process = subprocess.Popen(
@@ -440,44 +488,18 @@ class ProcessRunner:
                     )
                 except OSError:
                     raise CommandError(f"{code}_spawn_failed") from None
-                for interrupt_signal in (signal.SIGINT, signal.SIGTERM):
-                    previous_handlers[interrupt_signal] = signal.getsignal(
-                        interrupt_signal
-                    )
-
-                def guarded_interrupt(
-                    signum: int,
-                    frame: object,
-                ) -> None:
-                    # This handler remains installed from child assignment
-                    # through the final group fence.  It closes the bytecode
-                    # race before terminate_process_group can mask signals.
-                    assert process is not None
-                    nonlocal process_group_fence_attempted
-                    try:
-                        if not process_group_fence_attempted:
-                            process_group_fence_attempted = True
-                            self.terminate_process_group(process, code=code)
-                    except ProofError:
-                        raise CommandError(
-                            f"{code}_interrupted_process_group_unconfirmed",
-                            ambiguous=True,
-                        ) from None
-                    previous = previous_handlers.get(signal.Signals(signum))
-                    if callable(previous):
-                        previous(signum, frame)
+                interrupt_phase = "owned"
+                # A signal accepted by another thread while Popen returned
+                # may already have run the coalescing handler.  Unwind only
+                # now, after process assignment; outer finally owns fencing.
+                if pending_interrupt is not None:
+                    interrupt_unwind_started = True
+                    cleanup_context = "interrupted"
                     raise ProofError(f"{code}_interrupted")
-
-                try:
-                    for interrupt_signal in (signal.SIGINT, signal.SIGTERM):
-                        signal.signal(interrupt_signal, guarded_interrupt)
-                except (OSError, RuntimeError, ValueError):
-                    raise CommandError(
-                        f"{code}_signal_guard_failed", ambiguous=True
-                    ) from None
             finally:
-                # If a signal arrived during Popen, assignment has completed
-                # and the guard is installed before it can be delivered.
+                # The phase-aware handler is installed before mutation and
+                # remains active through final group fencing, so restoring the
+                # caller thread's mask cannot expose an unowned child.
                 self._restore_signal_mask(previous_mask, code=code)
 
             try:
@@ -506,28 +528,48 @@ class ProcessRunner:
                 raise CommandError(f"{code}_failed", ambiguous=True)
             return stdout
         finally:
-            if process is not None:
+            try:
+                # A signal can be scheduled at the first line event of this
+                # finally while the prior phase is still OWNED.  If that first
+                # assignment raises, the unconditional inner finally still
+                # enters FENCING and owns the entire cleanup sequence.
+                interrupt_phase = "fencing"
+            finally:
+                interrupt_phase = "fencing"
                 cleanup_failure: BaseException | None = None
-                try:
-                    # The finally spans Popen assignment, communicate, result
-                    # handling, and the return edge.  Together with the signal
-                    # mask inside terminate_process_group this closes both the
-                    # pre-communicate and post-communicate SIGTERM races.
-                    if not process_group_fence_attempted:
-                        process_group_fence_attempted = True
-                        self.terminate_process_group(process, code=code)
-                    if not communicate_completed:
-                        drained_stdout, drained_stderr = process.communicate(
-                            timeout=PROCESS_GROUP_KILL_WAIT_SECONDS
-                        )
-                        drained_stdout = b""
-                        drained_stderr = b""
-                except ProofError as exc:
-                    if not exc.code.startswith(f"{code}_process_group_"):
-                        # A deferred caller signal is delivered only after the
-                        # group has been fenced; retain that original signal.
-                        cleanup_failure = exc
-                    else:
+                if process is not None:
+                    try:
+                        # The finally spans Popen assignment, communicate, result
+                        # handling, and the return edge.  Together with the signal
+                        # mask inside terminate_process_group this closes both the
+                        # pre-communicate and post-communicate SIGTERM races.
+                        if not process_group_fence_attempted:
+                            process_group_fence_attempted = True
+                            self.terminate_process_group(process, code=code)
+                        if not communicate_completed:
+                            drained_stdout, drained_stderr = process.communicate(
+                                timeout=PROCESS_GROUP_KILL_WAIT_SECONDS
+                            )
+                            drained_stdout = b""
+                            drained_stderr = b""
+                    except ProofError as exc:
+                        if not exc.code.startswith(f"{code}_process_group_"):
+                            # A deferred caller signal is delivered only after the
+                            # group has been fenced; retain that original signal.
+                            cleanup_failure = exc
+                        else:
+                            stdout = b""
+                            suffix = {
+                                "timeout": "timeout_process_group_unconfirmed",
+                                "interrupted": (
+                                    "interrupted_process_group_unconfirmed"
+                                ),
+                                "exit": "exit_process_group_unconfirmed",
+                            }[cleanup_context]
+                            cleanup_failure = CommandError(
+                                f"{code}_{suffix}", ambiguous=True
+                            )
+                    except (OSError, subprocess.TimeoutExpired, ValueError):
                         stdout = b""
                         suffix = {
                             "timeout": "timeout_process_group_unconfirmed",
@@ -539,38 +581,24 @@ class ProcessRunner:
                         cleanup_failure = CommandError(
                             f"{code}_{suffix}", ambiguous=True
                         )
-                except (OSError, subprocess.TimeoutExpired, ValueError):
-                    stdout = b""
-                    suffix = {
-                        "timeout": "timeout_process_group_unconfirmed",
-                        "interrupted": "interrupted_process_group_unconfirmed",
-                        "exit": "exit_process_group_unconfirmed",
-                    }[cleanup_context]
-                    cleanup_failure = CommandError(
-                        f"{code}_{suffix}", ambiguous=True
-                    )
 
+                interrupt_phase = "restoring"
                 handler_restore_failure: BaseException | None = None
                 restore_guard_mask: set[signal.Signals] | None = None
                 guard_mask_failure: BaseException | None = None
                 guard_unmask_failure: BaseException | None = None
-                if previous_handlers:
+                if installed_handlers:
                     try:
                         restore_guard_mask = self._block_interrupt_signals(
                             code=code
                         )
                     except BaseException as exc:
                         guard_mask_failure = exc
-                    try:
-                        for (
-                            interrupt_signal,
-                            previous,
-                        ) in previous_handlers.items():
-                            signal.signal(interrupt_signal, previous)
-                    except BaseException as exc:
-                        handler_restore_failure = exc
                     if restore_guard_mask is not None:
                         try:
+                            # Unmask while the coalescing handler still owns both
+                            # signals.  Any pending caller interrupt is therefore
+                            # recorded, not delivered into a half-restored pair.
                             self._restore_signal_mask(
                                 restore_guard_mask,
                                 code=code,
@@ -578,8 +606,38 @@ class ProcessRunner:
                         except BaseException as exc:
                             guard_unmask_failure = exc
 
+                    handler_items = [
+                        (interrupt_signal, previous_handlers[interrupt_signal])
+                        for interrupt_signal in (signal.SIGINT, signal.SIGTERM)
+                        if interrupt_signal in installed_handlers
+                    ]
+
+                    def restore_remaining_handlers(index: int) -> None:
+                        nonlocal handler_restore_failure
+                        if index >= len(handler_items):
+                            return
+                        interrupt_signal, previous = handler_items[index]
+                        try:
+                            try:
+                                signal.signal(interrupt_signal, previous)
+                            except BaseException as exc:
+                                if handler_restore_failure is None:
+                                    handler_restore_failure = exc
+                        finally:
+                            # A signal restored earlier can run its caller handler
+                            # between bytecodes.  Nested finally guarantees every
+                            # later handler still receives a restoration attempt.
+                            restore_remaining_handlers(index + 1)
+
+                    try:
+                        restore_remaining_handlers(0)
+                    except BaseException as exc:
+                        if handler_restore_failure is None:
+                            handler_restore_failure = exc
+
                 # Preserve the strongest ownership failure.  Handler/mask
                 # restoration is best-effort even when its own mask step fails.
+                # Only after both succeed may a coalesced caller interrupt replay.
                 if cleanup_failure is not None:
                     raise cleanup_failure
                 if handler_restore_failure is not None:
@@ -588,6 +646,13 @@ class ProcessRunner:
                     raise guard_unmask_failure
                 if guard_mask_failure is not None:
                     raise guard_mask_failure
+                if pending_interrupt is not None:
+                    signum, frame = pending_interrupt
+                    pending_interrupt = None
+                    previous = previous_handlers.get(signal.Signals(signum))
+                    if callable(previous):
+                        previous(signum, frame)
+                    raise ProofError(f"{code}_interrupted")
 
     @staticmethod
     def confirm_external_process_group_absent(
