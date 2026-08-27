@@ -117,9 +117,15 @@ NEGATIVE_EXPECTATIONS = {
 
 
 def _load_concurrency_probe():
+    module_name = "harmony_preview_concurrency_probe_for_postgrest"
+    bound = sys.modules.get(module_name)
+    if bound is not None:
+        return bound
+    if str(__file__).startswith("<exact-sha-") or __file__ == "<stdin>":
+        raise RuntimeError("harmony_preview_concurrency_probe_not_bound")
     path = Path(__file__).with_name("probe_harmony_preview_concurrency.py")
     spec = importlib.util.spec_from_file_location(
-        "harmony_preview_concurrency_probe_for_postgrest", path
+        module_name, path
     )
     if spec is None or spec.loader is None:
         raise RuntimeError("harmony_preview_concurrency_probe_import_failed")

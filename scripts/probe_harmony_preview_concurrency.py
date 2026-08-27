@@ -4,11 +4,11 @@
 The probe is deliberately local/disposable only.  It seeds one immutable Squid
 official-X review fixture, four revocable connector registrations, and a
 five-role fixed-specialist roster.  It races signed request receipts, the plan,
-each successful downstream stage, and a separate failed-QA denial through 64
-independent ``psql`` processes, then proves revocation removes currentness
-without deleting history.  It never calls a provider, Buzz, approval, or
-publication routine.  The target database is expected to be discarded after
-the run.
+private content, every durable Codex QA gate transition, the representative
+inbox, Recap, and a separate failed-QA denial through 64 independent ``psql``
+processes.  It then proves revocation removes currentness without deleting
+history.  It never calls a provider, Buzz, approval, or publication routine.
+The target database is expected to be discarded after the run.
 """
 
 from __future__ import annotations
@@ -367,6 +367,50 @@ def _json_sha256(value: object) -> str:
     return hashlib.sha256(_compact(value).encode("utf-8")).hexdigest()
 
 
+def _codex_work_key_from_lineage(lineage: dict[str, object]) -> str:
+    """Mirror ``squid_codex_gate_work_key`` without assignment/time fields."""
+
+    return _json_sha256({
+        "client_id": lineage["client_id"],
+        "content_snapshot_sha256": lineage["content_snapshot_sha256"],
+        "official_content_version_id": lineage["official_content_version_id"],
+        "official_source_binding_sha256": (
+            lineage["official_source_binding_sha256"]
+        ),
+        "official_source_item_id": lineage["official_source_item_id"],
+        "plan_id": lineage["plan_id"],
+        "plan_receipt_sha256": lineage["plan_receipt_sha256"],
+        "private_content_output_sha256": (
+            lineage["private_content_output_sha256"]
+        ),
+        "private_content_receipt_sha256": (
+            lineage["private_content_receipt_sha256"]
+        ),
+        "round_id": lineage["round_id"],
+        "schema_version": "squid-codex-gate-work@1",
+        "signal_input_set_sha256": lineage["signal_input_set_sha256"],
+        "signal_manifest_sha256": lineage["signal_manifest_sha256"],
+        "signal_producer_principal_ids": (
+            lineage["signal_producer_principal_ids"]
+        ),
+        "stage": "independent_qa",
+        "workspace_id": lineage["workspace_id"],
+    })
+
+
+def _codex_assignment_key(
+    work_key: str,
+    reviewer_binding_sha256: str,
+) -> str:
+    """Mirror ``squid_codex_gate_assignment_key`` exactly."""
+
+    return _json_sha256({
+        "reviewer_binding_sha256": reviewer_binding_sha256,
+        "schema_version": "squid-codex-gate-assignment@1",
+        "work_key": work_key,
+    })
+
+
 def _connector_request_payload(
     *,
     workspace_id: str,
@@ -514,6 +558,17 @@ select pg_catalog.jsonb_build_object(
   'plans', (select pg_catalog.count(*) from agent_runtime.harmony_plans),
   'stage_receipts', (select pg_catalog.count(*) from agent_runtime.harmony_stage_receipts),
   'operator_inbox', (select pg_catalog.count(*) from agent_runtime.harmony_operator_inbox),
+  'codex_lineages', (select pg_catalog.count(*) from private.harmony_preview_codex_source_lineage_receipts),
+  'codex_requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests),
+  'codex_runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs),
+  'codex_transitions', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_transitions),
+  'codex_claims', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_claim_receipts),
+  'codex_attempts', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_attempt_receipts),
+  'codex_evidence', (select pg_catalog.count(*) from private.harmony_preview_codex_semantic_qa_evidence),
+  'codex_results', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_result_receipts),
+  'codex_verifications', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_verification_receipts),
+  'codex_reconciliations', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_reconciliation_receipts),
+  'codex_stage_links', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_stage_links),
   'max_connections', pg_catalog.current_setting('max_connections')::integer,
   'current_connections', (select pg_catalog.count(*) from pg_catalog.pg_stat_activity)
 )::text;
@@ -579,9 +634,36 @@ insert into public.content_versions(
 );
 update public.content_items set current_version_id = '{ids['version']}'::uuid
 where workspace_id = '{ids['workspace']}'::uuid and id = '{ids['item']}'::uuid;
+insert into public.content_items(
+  id, workspace_id, client_id, content_kind, title, status
+) values (
+  '{ids['stale_item']}', '{ids['workspace']}', 'squid', 'daily_news',
+  'Squid stale-result 격리 검증', 'needs_review'
+);
+insert into public.content_versions(
+  id, workspace_id, content_item_id, version_number, prompt_version,
+  locale, title, content, channel_copy, deliverables, qa, generation_meta
+) values (
+  '{ids['stale_version']}', '{ids['workspace']}', '{ids['stale_item']}', 1,
+  'harmony-preview-stale-probe@1', 'ko-KR',
+  'Squid stale-result 격리 검증',
+  '{{"summary_ko":"stale-result reconciliation 격리 검증 전용 프라이빗 콘텐츠입니다."}}'::jsonb,
+  '{{"telegram":"프라이빗 검토 전용"}}'::jsonb,
+  '{{}}'::jsonb, '{{"fact_check":"pending_human_review"}}'::jsonb,
+  '{{"mock_mode":false}}'::jsonb
+);
+update public.content_items
+set current_version_id = '{ids['stale_version']}'::uuid
+where workspace_id = '{ids['workspace']}'::uuid
+  and id = '{ids['stale_item']}'::uuid;
 insert into public.content_source_links(
   workspace_id, client_id, content_item_id, source_item_id, position
 ) values ('{ids['workspace']}', 'squid', '{ids['item']}', '{ids['source']}', 0);
+insert into public.content_source_links(
+  workspace_id, client_id, content_item_id, source_item_id, position
+) values (
+  '{ids['workspace']}', 'squid', '{ids['stale_item']}', '{ids['source']}', 0
+);
 insert into public.jobs(
   id, workspace_id, client_id, content_item_id, job_kind, status,
   input, output, idempotency_key
@@ -603,6 +685,32 @@ insert into public.event_log(
   'official_x_review_draft_completed',
   pg_catalog.jsonb_build_object(
     'job_id', '{ids['job']}', 'content_version_id', '{ids['version']}',
+    'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
+  )
+);
+insert into public.jobs(
+  id, workspace_id, client_id, content_item_id, job_kind, status,
+  input, output, idempotency_key
+) values (
+  '{ids['stale_job']}', '{ids['workspace']}', 'squid',
+  '{ids['stale_item']}', 'generate', 'succeeded',
+  pg_catalog.jsonb_build_object(
+    'workflow', 'official_x_review_draft_v1',
+    'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
+  ),
+  pg_catalog.jsonb_build_object(
+    'content_item_id', '{ids['stale_item']}',
+    'content_version_id', '{ids['stale_version']}'
+  ), 'harmony:{ids['slug']}:stale-official-x'
+);
+insert into public.event_log(
+  workspace_id, entity_type, entity_id, event_type, data
+) values (
+  '{ids['workspace']}', 'content_item', '{ids['stale_item']}',
+  'official_x_review_draft_completed',
+  pg_catalog.jsonb_build_object(
+    'job_id', '{ids['stale_job']}',
+    'content_version_id', '{ids['stale_version']}',
     'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
   )
 );
@@ -909,10 +1017,9 @@ def _assert_no_forbidden_side_effects(
         raise RuntimeError(f"{operation} race reported a forbidden side effect")
 
 
-def _race_exactly_once(
-    operation: str,
+def _race_rows(
     invoke: Callable[[int], dict[str, object]],
-) -> tuple[dict[str, object], dict[str, int]]:
+) -> list[dict[str, object]]:
     barrier = threading.Barrier(CONCURRENCY)
 
     def race(index: int) -> dict[str, object]:
@@ -920,7 +1027,14 @@ def _race_exactly_once(
         return invoke(index)
 
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        rows = list(pool.map(race, range(CONCURRENCY)))
+        return list(pool.map(race, range(CONCURRENCY)))
+
+
+def _race_exactly_once(
+    operation: str,
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -942,6 +1056,91 @@ def _race_exactly_once(
     if not HEX_SHA256_PATTERN.fullmatch(str(receipt.get("operation_key_sha256", ""))):
         raise RuntimeError(f"{operation} race returned no stable operation key")
     return canonical, {"new": new_count, "reused": reused_count}
+
+
+def _race_codex_idempotent(
+    operation: str,
+    invoke: Callable[[int], dict[str, object]],
+    identity_keys: tuple[str, ...],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(invoke)
+    new_count = sum(row.get("reused") is False for row in rows)
+    reused_count = sum(row.get("reused") is True for row in rows)
+    if (new_count, reused_count) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            f"{operation} durable exactly-once race failed: "
+            f"new={new_count}, reused={reused_count}"
+        )
+    identities = {
+        tuple(str(row.get(key, "")) for key in identity_keys)
+        for row in rows
+    }
+    if len(identities) != 1 or any(not value for value in next(iter(identities))):
+        raise RuntimeError(f"{operation} durable race returned divergent identity")
+    return rows[0], {"new": new_count, "reused": reused_count}
+
+
+def _race_codex_claim(
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(invoke)
+    claimed = [row for row in rows if row.get("claimed") is True]
+    not_claimed = [row for row in rows if row.get("claimed") is False]
+    if (len(claimed), len(not_claimed)) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex QA claim race failed: "
+            f"claimed={len(claimed)}, not_claimed={len(not_claimed)}"
+        )
+    winner = claimed[0]
+    for key in ("work_key", "request_key", "claim_fence_sha256"):
+        if not HEX_SHA256_PATTERN.fullmatch(str(winner.get(key, ""))):
+            raise RuntimeError(f"Codex QA claim winner omitted {key}")
+    return winner, {
+        "claimed": len(claimed),
+        "not_claimed": len(not_claimed),
+    }
+
+
+def _race_codex_start(
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(invoke)
+    authorized = [row for row in rows if row.get("execute_authorized") is True]
+    non_authorizing = [
+        row for row in rows if row.get("execute_authorized") is False
+    ]
+    new_count = sum(row.get("reused") is False for row in rows)
+    reused_count = sum(row.get("reused") is True for row in rows)
+    if (
+        len(authorized),
+        len(non_authorizing),
+        new_count,
+        reused_count,
+    ) != (1, CONCURRENCY - 1, 1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex QA start race failed: "
+            f"authorized={len(authorized)}, "
+            f"non_authorizing={len(non_authorizing)}, "
+            f"new={new_count}, reused={reused_count}"
+        )
+    if authorized[0].get("reused") is not False:
+        raise RuntimeError("Codex QA replay incorrectly authorized execution")
+    identities = {
+        (
+            str(row.get("work_key", "")),
+            str(row.get("attempt_fence_sha256", "")),
+        )
+        for row in rows
+    }
+    if (
+        len(identities) != 1
+        or not all(HEX_SHA256_PATTERN.fullmatch(value) for value in next(iter(identities)))
+    ):
+        raise RuntimeError("Codex QA start race returned divergent identity")
+    return authorized[0], {
+        "authorized": len(authorized),
+        "replay_non_authorizing": len(non_authorizing),
+    }
 
 
 def _submit_expression(
@@ -972,6 +1171,86 @@ def _stage_expression(
         "public.append_preview_harmony_squid_stage("
         f"'{ids['workspace']}'::uuid, 'squid', '{ids['round']}'::uuid, "
         f"'{ids['plan']}'::uuid, '{stage}', '{receipt_id}'::uuid, {inbox}, {evidence})"
+    )
+
+
+def _codex_prepare_expression(
+    ids: dict[str, str],
+    approved_cost_cap_microusd: int = 0,
+) -> str:
+    return (
+        "public.prepare_preview_harmony_squid_codex_qa("
+        f"'{ids['workspace']}'::uuid, 'squid', '{ids['round']}'::uuid, "
+        f"'{ids['plan']}'::uuid, {approved_cost_cap_microusd}::bigint)"
+    )
+
+
+def _codex_claim_expression(
+    ids: dict[str, str],
+    lease_seconds: int = 900,
+) -> str:
+    return (
+        "public.claim_preview_harmony_squid_codex_qa("
+        f"'{ids['workspace']}'::uuid, 'squid', {lease_seconds})"
+    )
+
+
+def _codex_start_expression(
+    ids: dict[str, str],
+    work_key: str,
+    claim_fence_sha256: str,
+) -> str:
+    return (
+        "public.start_preview_harmony_squid_codex_qa_attempt("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)}, "
+        f"{_sql_literal(claim_fence_sha256)})"
+    )
+
+
+def _codex_submit_result_expression(
+    ids: dict[str, str],
+    work_key: str,
+    attempt_fence_sha256: str,
+    criteria: dict[str, object],
+    *,
+    qa_output_sha256: str,
+    verdict: str,
+    finding_codes: list[str],
+) -> str:
+    findings = (
+        "array[]::text[]"
+        if not finding_codes
+        else "array["
+        + ",".join(_sql_literal(value) for value in finding_codes)
+        + "]::text[]"
+    )
+    return (
+        "public.submit_preview_harmony_squid_codex_qa_result("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)}, "
+        f"{_sql_literal(attempt_fence_sha256)}, "
+        f"{_sql_literal(_compact(criteria))}::jsonb, "
+        f"{_sql_literal(qa_output_sha256)}, {findings}, "
+        f"{_sql_literal(verdict)})"
+    )
+
+
+def _codex_verify_expression(
+    ids: dict[str, str],
+    work_key: str,
+) -> str:
+    return (
+        "public.verify_preview_harmony_squid_codex_qa_result("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)})"
+    )
+
+
+def _codex_reconcile_expression(
+    ids: dict[str, str],
+    batch_limit: int = 64,
+) -> str:
+    return (
+        "public.reconcile_preview_harmony_squid_codex_qa_lease("
+        f"'{ids['workspace']}'::uuid, 'squid', {batch_limit})"
     )
 
 
@@ -1025,6 +1304,56 @@ def _race_qa_denial(
     if len(identities) != 1:
         raise RuntimeError("independent QA denial race returned divergent receipts")
     return rows[0], {"new": new_count, "reused": reused_count}
+
+
+def _race_codex_reconciliation(
+    invoke: Callable[[int], dict[str, object]],
+    *,
+    expected_work_key: str,
+) -> tuple[dict[str, object], dict[str, int]]:
+    barrier = threading.Barrier(CONCURRENCY)
+
+    def race(index: int) -> dict[str, object]:
+        barrier.wait(timeout=30)
+        return invoke(index)
+
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        rows = list(pool.map(race, range(CONCURRENCY)))
+    winners = [row for row in rows if row.get("reconciled") is True]
+    no_ops = [row for row in rows if row.get("reconciled") is False]
+    if (len(winners), len(no_ops)) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex stale-result reconciliation exactly-once race failed: "
+            f"reconciled={len(winners)}, no_op={len(no_ops)}"
+        )
+    winner = winners[0]
+    if winner != {
+        "blocked": True,
+        "outcome_unknown": False,
+        "pending": False,
+        "reconciled": True,
+        "status": "blocked",
+        "work_key": expected_work_key,
+    }:
+        raise RuntimeError(
+            "Codex stale-result reconciliation returned an invalid winner: "
+            f"{winner}"
+        )
+    expected_no_op = {
+        "blocked": False,
+        "outcome_unknown": False,
+        "pending": False,
+        "reconciled": False,
+        "work_key": None,
+    }
+    if any(row != expected_no_op for row in no_ops):
+        raise RuntimeError(
+            "Codex stale-result reconciliation returned a divergent no-op"
+        )
+    return winner, {
+        "reconciled": len(winners),
+        "no_op": len(no_ops),
+    }
 
 
 def run_probe(args: argparse.Namespace) -> dict[str, object]:
@@ -1082,6 +1411,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         "plans": 0,
         "stage_receipts": 0,
         "operator_inbox": 0,
+        "codex_lineages": 0,
+        "codex_requests": 0,
+        "codex_runs": 0,
+        "codex_transitions": 0,
+        "codex_claims": 0,
+        "codex_attempts": 0,
+        "codex_evidence": 0,
+        "codex_results": 0,
+        "codex_verifications": 0,
+        "codex_reconciliations": 0,
+        "codex_stage_links": 0,
     }
     if any(preflight.get(key) != value for key, value in expected_empty.items()):
         raise RuntimeError(f"Preview ledger preflight was not empty: {preflight}")
@@ -1095,7 +1435,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     ids = {
         "workspace": uid(), "feed": uid(), "source": uid(), "item": uid(),
         "version": uid(), "job": uid(), "round": uid(), "plan": uid(),
-        "inbox": uid(), "slug": uuid.uuid4().hex[:12],
+        "inbox": uid(), "stale_item": uid(), "stale_version": uid(),
+        "stale_job": uid(), "slug": uuid.uuid4().hex[:12],
     }
     specialist_principals = {
         stage: uid()
@@ -1119,7 +1460,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     }:
         raise RuntimeError(f"Preview fence activation failed closed: {fence}")
     seed = psql.json(_seed_sql(ids))
-    if seed != {"ok": True, "grok_rows": 1, "publication_rows": 0}:
+    if seed != {"ok": True, "grok_rows": 2, "publication_rows": 0}:
         raise RuntimeError(f"fixture seed failed closed: {seed}")
     specialist_seed = psql.json(_seed_specialists_sql(
         ids,
@@ -1601,37 +1942,19 @@ select pg_catalog.jsonb_build_object(
             "harmony_prepare_private_content",
         ),
         (
-            "independent_qa",
-            "coineasy_harmony_qa",
-            "harmony_independent_qa",
-        ),
-        (
             "operator_inbox",
             "coineasy_harmony_operator",
             "harmony_operator_inbox",
         ),
         ("recap", "coineasy_harmony_recap", "harmony_recap"),
     ]
-    stage_results: list[dict[str, object]] = []
+    codex_qa_races: dict[str, dict[str, int]] = {}
+    codex_work_key = ""
     wrong_principal_preemption_rows = 0
     operator_inbox_stage4_delta = 0
     recap_operator_inbox_delta = 0
     for stage, role, capability in stage_specs:
-        qa_evidence: dict[str, object] | None = None
         inbox_id = ids["inbox"] if stage in {"operator_inbox", "recap"} else None
-        if stage == "independent_qa":
-            previous_receipt = stage_results[-1].get("stage_receipt")
-            if not isinstance(previous_receipt, dict):
-                raise RuntimeError("private-content race returned no receipt")
-            reviewed = str(previous_receipt["output_sha256"])
-            qa_evidence = {
-                "schema_version": "harmony-independent-qa-evidence@1",
-                "reviewed_output_sha256": reviewed,
-                "criteria": {"automatic_publication": False, "factual_binding": True,
-                             "no_external_calls": True, "private_only": True},
-                "findings": [], "verdict": "passed",
-                "verifier_version": "harmony-deterministic-qa@1",
-            }
         before_stage = psql.json(f"""
 select pg_catalog.jsonb_build_object(
   'stage_rows', (select pg_catalog.count(*)
@@ -1654,7 +1977,7 @@ select pg_catalog.jsonb_build_object(
         psql.expect_error(
             _rpc_sql(
                 wrong_claims,
-                _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
+                _stage_expression(ids, stage, uid(), inbox_id),
             ),
             "harmony_preview_stage_claim_invalid",
         )
@@ -1689,7 +2012,7 @@ select pg_catalog.jsonb_build_object(
             )
             return psql.json(_rpc_sql(
                 claims,
-                _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
+                _stage_expression(ids, stage, uid(), inbox_id),
             ))
 
         result, stage_race = _race_exactly_once(stage, invoke_stage)
@@ -1729,7 +2052,230 @@ select pg_catalog.jsonb_build_object(
             raise RuntimeError(
                 f"{stage} changed the representative inbox early: {after_stage}"
             )
-        stage_results.append(result)
+        if stage == "private_content":
+            private_receipt = result.get("stage_receipt")
+            if not isinstance(private_receipt, dict):
+                raise RuntimeError("private-content race returned no receipt")
+            private_output_sha256 = str(private_receipt["output_sha256"])
+
+            def qa_claims(principal_id: str) -> dict[str, object]:
+                return _claims(
+                    workspace_id=ids["workspace"], branch_ref=branch_ref,
+                    role="coineasy_harmony_qa",
+                    capability="harmony_independent_qa",
+                    principal_id=principal_id,
+                    release_sha=args.release_sha,
+                    config_sha256=args.config_sha256,
+                )
+
+            codex_before_wrong = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid')
+)::text;
+""")
+            for missing_claim in ("capability", "jti", "max_cost_microusd"):
+                incomplete_claims = qa_claims(
+                    specialist_principals["independent_qa"]
+                )
+                incomplete_claims.pop(missing_claim)
+                psql.expect_error(
+                    _rpc_sql(
+                        incomplete_claims,
+                        _codex_prepare_expression(ids),
+                    ),
+                    "harmony_preview_codex_qa_scope_invalid",
+                )
+            psql.expect_error(
+                _rpc_sql(qa_claims(uid()), _codex_prepare_expression(ids)),
+                "harmony_preview_codex_qa_scope_invalid",
+            )
+            if psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid')
+)::text;
+""") != codex_before_wrong:
+                raise RuntimeError("wrong QA principal preempted the Codex gate")
+
+            def invoke_prepare(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_prepare_expression(ids),
+                ))
+
+            prepared, codex_qa_races["prepare"] = _race_codex_idempotent(
+                "Codex QA prepare", invoke_prepare, ("work_key", "request_key")
+            )
+            codex_work_key = str(prepared["work_key"])
+            request_key = str(prepared["request_key"])
+            if not all(HEX_SHA256_PATTERN.fullmatch(value) for value in (
+                codex_work_key, request_key
+            )):
+                raise RuntimeError("Codex QA prepare returned invalid identity")
+            canonical_identity = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'assignment_key', request.assignment_key,
+  'reviewer_binding_sha256', request.reviewer_specialist_binding_sha256,
+  'source_lineage', lineage.payload,
+  'work_key', request.work_key
+)::text
+from private.harmony_preview_codex_gate_requests request
+join private.harmony_preview_codex_source_lineage_receipts lineage
+  on lineage.workspace_id = request.workspace_id
+ and lineage.client_id = request.client_id
+ and lineage.lineage_receipt_id = request.lineage_receipt_id
+where request.workspace_id = '{ids['workspace']}'::uuid
+  and request.client_id = 'squid'
+  and request.plan_id = '{ids['plan']}'::uuid;
+""")
+            source_lineage = canonical_identity.get("source_lineage")
+            if not isinstance(source_lineage, dict):
+                raise RuntimeError("Codex QA request omitted source lineage")
+            expected_work_key = _codex_work_key_from_lineage(source_lineage)
+            reviewer_binding_sha256 = str(
+                canonical_identity.get("reviewer_binding_sha256", "")
+            )
+            expected_assignment_key = _codex_assignment_key(
+                expected_work_key, reviewer_binding_sha256
+            )
+            if (
+                canonical_identity.get("work_key") != expected_work_key
+                or canonical_identity.get("assignment_key")
+                    != expected_assignment_key
+            ):
+                raise RuntimeError(
+                    "Codex QA DB identity drifted from the offline runner"
+                )
+
+            def invoke_claim(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_claim_expression(ids),
+                ))
+
+            claimed, codex_qa_races["claim"] = _race_codex_claim(invoke_claim)
+            if (claimed["work_key"], claimed["request_key"]) != (
+                codex_work_key, request_key
+            ):
+                raise RuntimeError("Codex QA claim selected another request")
+            claim_fence = str(claimed["claim_fence_sha256"])
+
+            # Exercise the frozen-actor prefilter against an actually eligible
+            # reconciliation candidate.  A claimed run is candidate-eligible;
+            # a pending/current run would produce the same no-op before the
+            # reviewer binding predicates are reached.
+            reconciliation_before_wrong_actor = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'reconciliations', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'status', (select pg_catalog.min(status)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and work_key = '{codex_work_key}')
+)::text;
+""")
+            wrong_actor_reconciliation = psql.json(_rpc_sql(
+                qa_claims(uid()), _codex_reconcile_expression(ids)
+            ))
+            if wrong_actor_reconciliation != {
+                "blocked": False,
+                "outcome_unknown": False,
+                "pending": False,
+                "reconciled": False,
+                "work_key": None,
+            }:
+                raise RuntimeError(
+                    "wrong QA actor observed or locked a frozen reconciliation"
+                )
+            reconciliation_after_wrong_actor = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'reconciliations', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'status', (select pg_catalog.min(status)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and work_key = '{codex_work_key}')
+)::text;
+""")
+            if reconciliation_after_wrong_actor != reconciliation_before_wrong_actor:
+                raise RuntimeError(
+                    "wrong QA actor changed the frozen reconciliation ledger"
+                )
+
+            def invoke_start(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_start_expression(ids, codex_work_key, claim_fence),
+                ))
+
+            started, codex_qa_races["start"] = _race_codex_start(invoke_start)
+            attempt_fence = str(started["attempt_fence_sha256"])
+            criteria = {
+                "automatic_publication_off": True,
+                "factual_binding": True,
+                "no_external_calls": True,
+                "output_contract_valid": True,
+                "private_boundary_preserved": True,
+                "source_lineage_complete": True,
+            }
+            qa_output_sha256 = hashlib.sha256(
+                f"durable-codex-qa:{private_output_sha256}".encode()
+            ).hexdigest()
+
+            def invoke_submit(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_submit_result_expression(
+                        ids, codex_work_key, attempt_fence, criteria,
+                        qa_output_sha256=qa_output_sha256,
+                        verdict="pass", finding_codes=[],
+                    ),
+                ))
+
+            _, codex_qa_races["submit"] = _race_codex_idempotent(
+                "Codex QA submit", invoke_submit, ("work_key", "result_sha256")
+            )
+
+            def invoke_verify(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_verify_expression(ids, codex_work_key),
+                ))
+
+            verified, codex_qa_races["verify"] = _race_codex_idempotent(
+                "Codex QA verify", invoke_verify,
+                ("work_key", "verification_receipt_sha256"),
+            )
+            verified_stage = verified.get("stage_receipt")
+            if (
+                verified.get("status") != "operator_review_pending"
+                or not isinstance(verified_stage, dict)
+                or verified_stage.get("stage") != "independent_qa"
+                or verified_stage.get("plan_id") != ids["plan"]
+            ):
+                raise RuntimeError(
+                    "Codex QA verify did not atomically create the QA stage"
+                )
+            operation_races["independent_qa"] = codex_qa_races["verify"]
 
     denial_ids = {
         **ids,
@@ -1963,19 +2509,6 @@ select pg_catalog.jsonb_build_object(
             "failed QA changed downstream rows or duplicated denials: "
             f"{denial_downstream_before} -> {denial_downstream_after}"
         )
-    passed_qa_evidence = {
-        "schema_version": "harmony-independent-qa-evidence@1",
-        "reviewed_output_sha256": denied_output_sha256,
-        "criteria": {
-            "automatic_publication": False,
-            "factual_binding": True,
-            "no_external_calls": True,
-            "private_only": True,
-        },
-        "findings": [],
-        "verdict": "passed",
-        "verifier_version": "harmony-deterministic-qa@1",
-    }
     denial_qa_claims = _claims(
         workspace_id=ids["workspace"],
         branch_ref=branch_ref,
@@ -1988,17 +2521,487 @@ select pg_catalog.jsonb_build_object(
     psql.expect_error(
         _rpc_sql(
             denial_qa_claims,
-            _stage_expression(
-                denial_ids,
-                "independent_qa",
-                uid(),
-                qa_evidence=passed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
         "harmony_preview_qa_output_already_denied",
     )
     if psql.json(denial_downstream_sql) != denial_downstream_after:
         raise RuntimeError("denied output created a passed or downstream row")
+
+    # Build a second passing Codex result, then supersede its bound content
+    # version before verification.  Sixty-four reconcilers must converge on a
+    # single immutable ``result_not_current`` receipt, leaving no QA stage,
+    # representative inbox, or recap for the stale plan.
+    stale_ids = {
+        **ids,
+        "item": ids["stale_item"],
+        "version": ids["stale_version"],
+        "job": ids["stale_job"],
+        "round": uid(),
+        "plan": uid(),
+        "inbox": uid(),
+    }
+    stale_source_body = _signal_body(
+        workspace_id=ids["workspace"],
+        signal_id=uid(),
+        source_event_id=stale_ids["version"],
+        principal_id=source_principal,
+        signal_kind="official_source",
+        lane="content_source",
+        topic_codes=[topic],
+        observed_at=observed_at,
+        expires_at=expires_at,
+        upstream_receipt_sha256="0" * 64,
+        evidence_sha256=source_body_sha,
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        extra={
+            "data_classification": "public_official",
+            "source_item_id": ids["source"],
+            "source_body_sha256": source_body_sha,
+            "source_kind": "x_post_text",
+            "source_verified": True,
+            "eligible_content_kinds": ["daily_news"],
+        },
+    )
+    stale_source_binding = psql.run(
+        "select private.harmony_preview_squid_official_source_binding("
+        + _sql_literal(_compact(stale_source_body))
+        + "::jsonb);"
+    )
+    if len(stale_source_binding) != 64:
+        raise RuntimeError(
+            "stale-result official source binding was not derived from ledger"
+        )
+    stale_source_body["upstream_receipt_sha256"] = stale_source_binding
+    stale_source_signal = _with_db_hash(psql, stale_source_body)
+    stale_source_receipt_id = uid()
+    stale_source_request_sha256 = _connector_request_sha256(
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=source_registration["registration_id"],
+        connector_receipt_id=stale_source_receipt_id,
+        signal=stale_source_signal,
+    )
+    _assert_connector_request_sha256_matches_database(
+        psql,
+        expected_sha256=stale_source_request_sha256,
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=source_registration["registration_id"],
+        connector_receipt_id=stale_source_receipt_id,
+        signal=stale_source_signal,
+    )
+    stale_source_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_connector",
+        capability="harmony_submit_content_source",
+        principal_id=source_principal,
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        connector_id=source_registration["connector_id"],
+        attestation_registration_id=source_registration["registration_id"],
+        attestation_key_id=source_registration["attestation_key_id"],
+        request_sha256=stale_source_request_sha256,
+    )
+    stale_source_claims["exp"] = min(
+        int(stale_source_claims["exp"]), int(expires.timestamp())
+    )
+    stale_source_result = psql.json(_rpc_sql(
+        stale_source_claims,
+        _submit_expression(
+            stale_ids,
+            stale_source_receipt_id,
+            stale_source_signal,
+        ),
+    ))
+    if (
+        stale_source_result.get("ok") is not True
+        or stale_source_result.get("reused") is not False
+        or not isinstance(
+            stale_source_result.get("connector_request_receipt"), dict
+        )
+    ):
+        raise RuntimeError(
+            f"stale-result official source submission failed: "
+            f"{stale_source_result}"
+        )
+    stale_quiz_registration = connector_registrations["quiz_bot"]
+    stale_quiz_body = _signal_body(
+        workspace_id=ids["workspace"],
+        signal_id=uid(),
+        source_event_id=uid(),
+        principal_id=stale_quiz_registration["principal_id"],
+        signal_kind="quiz_learning",
+        lane="quiz_bot",
+        topic_codes=[topic],
+        observed_at=observed_at,
+        expires_at=expires_at,
+        upstream_receipt_sha256=hashlib.sha256(
+            ("stale-result-quiz:" + ids["slug"]).encode()
+        ).hexdigest(),
+        evidence_sha256=hashlib.sha256(
+            ("stale-result-evidence:" + ids["slug"]).encode()
+        ).hexdigest(),
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        extra={
+            "data_classification": "aggregate_anonymous",
+            "attempts": 48,
+            "participants": 12,
+            "accuracy_basis_points": 6900,
+            "tutorial_priority_basis_points": 8500,
+        },
+    )
+    stale_quiz_signal = _with_db_hash(psql, stale_quiz_body)
+    stale_quiz_receipt_id = uid()
+    stale_quiz_request_sha256 = _connector_request_sha256(
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=stale_quiz_registration["registration_id"],
+        connector_receipt_id=stale_quiz_receipt_id,
+        signal=stale_quiz_signal,
+    )
+    _assert_connector_request_sha256_matches_database(
+        psql,
+        expected_sha256=stale_quiz_request_sha256,
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=stale_quiz_registration["registration_id"],
+        connector_receipt_id=stale_quiz_receipt_id,
+        signal=stale_quiz_signal,
+    )
+    stale_quiz_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_connector",
+        capability="harmony_submit_quiz_bot",
+        principal_id=stale_quiz_registration["principal_id"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        connector_id=stale_quiz_registration["connector_id"],
+        attestation_registration_id=stale_quiz_registration["registration_id"],
+        attestation_key_id=stale_quiz_registration["attestation_key_id"],
+        request_sha256=stale_quiz_request_sha256,
+    )
+    stale_quiz_claims["exp"] = min(
+        int(stale_quiz_claims["exp"]), int(expires.timestamp())
+    )
+    stale_signal_result = psql.json(_rpc_sql(
+        stale_quiz_claims,
+        _submit_expression(
+            ids,
+            stale_quiz_receipt_id,
+            stale_quiz_signal,
+        ),
+    ))
+    if (
+        stale_signal_result.get("ok") is not True
+        or stale_signal_result.get("reused") is not False
+        or not isinstance(
+            stale_signal_result.get("connector_request_receipt"), dict
+        )
+    ):
+        raise RuntimeError(
+            f"stale-result quiz signal failed: {stale_signal_result}"
+        )
+
+    stale_signal_hashes = sorted(
+        [stale_quiz_signal["payload_sha256"]]
+        + [row[2]["payload_sha256"] for row in signals[1:]]
+        + [stale_source_signal["payload_sha256"]]
+    )
+    stale_array_sql = (
+        "array["
+        + ",".join(_sql_literal(value) for value in stale_signal_hashes)
+        + "]::text[]"
+    )
+    stale_plan_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_orchestrator",
+        capability="harmony_plan",
+        principal_id=specialist_principals["plan"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_plan = psql.json(_rpc_sql(
+        stale_plan_claims,
+        "public.create_preview_harmony_squid_plan("
+        f"'{ids['workspace']}'::uuid, 'squid', "
+        f"'{stale_ids['round']}'::uuid, '{stale_ids['plan']}'::uuid, "
+        f"'{uid()}'::uuid, {stale_array_sql}, '{topic}')",
+    ))
+    if stale_plan.get("ok") is not True or stale_plan.get("reused") is not False:
+        raise RuntimeError(f"stale-result plan failed: {stale_plan}")
+
+    stale_content_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_content",
+        capability="harmony_prepare_private_content",
+        principal_id=specialist_principals["private_content"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_content = psql.json(_rpc_sql(
+        stale_content_claims,
+        _stage_expression(stale_ids, "private_content", uid()),
+    ))
+    stale_content_receipt = stale_content.get("stage_receipt")
+    if (
+        stale_content.get("ok") is not True
+        or stale_content.get("reused") is not False
+        or not isinstance(stale_content_receipt, dict)
+    ):
+        raise RuntimeError(
+            f"stale-result private content failed: {stale_content}"
+        )
+    stale_private_output_sha256 = str(
+        stale_content_receipt["output_sha256"]
+    )
+    stale_qa_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_qa",
+        capability="harmony_independent_qa",
+        principal_id=specialist_principals["independent_qa"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_prepared = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_prepare_expression(stale_ids),
+    ))
+    stale_work_key = str(stale_prepared.get("work_key", ""))
+    if (
+        stale_prepared.get("reused") is not False
+        or not HEX_SHA256_PATTERN.fullmatch(stale_work_key)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex prepare failed: {stale_prepared}"
+        )
+    stale_claimed = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_claim_expression(stale_ids),
+    ))
+    stale_claim_fence = str(stale_claimed.get("claim_fence_sha256", ""))
+    if (
+        stale_claimed.get("claimed") is not True
+        or stale_claimed.get("work_key") != stale_work_key
+        or not HEX_SHA256_PATTERN.fullmatch(stale_claim_fence)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex claim failed: {stale_claimed}"
+        )
+    stale_started = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_start_expression(stale_ids, stale_work_key, stale_claim_fence),
+    ))
+    stale_attempt_fence = str(
+        stale_started.get("attempt_fence_sha256", "")
+    )
+    if (
+        stale_started.get("reused") is not False
+        or stale_started.get("work_key") != stale_work_key
+        or not HEX_SHA256_PATTERN.fullmatch(stale_attempt_fence)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex start failed: {stale_started}"
+        )
+    stale_criteria = {
+        "automatic_publication_off": True,
+        "factual_binding": True,
+        "no_external_calls": True,
+        "output_contract_valid": True,
+        "private_boundary_preserved": True,
+        "source_lineage_complete": True,
+    }
+    stale_qa_output_sha256 = hashlib.sha256(
+        f"stale-durable-codex-qa:{stale_private_output_sha256}".encode()
+    ).hexdigest()
+    stale_submitted = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_submit_result_expression(
+            stale_ids,
+            stale_work_key,
+            stale_attempt_fence,
+            stale_criteria,
+            qa_output_sha256=stale_qa_output_sha256,
+            verdict="pass",
+            finding_codes=[],
+        ),
+    ))
+    if (
+        stale_submitted.get("reused") is not False
+        or stale_submitted.get("status") != "result_submitted"
+        or stale_submitted.get("work_key") != stale_work_key
+    ):
+        raise RuntimeError(
+            f"stale-result Codex submit failed: {stale_submitted}"
+        )
+
+    stale_round_current_sql = f"""
+select private.harmony_preview_round_inputs_current(
+  round.workspace_id, round.client_id, round.signal_manifest
+)::text
+from agent_runtime.harmony_rounds round
+where round.workspace_id = '{ids['workspace']}'::uuid
+  and round.client_id = 'squid'
+  and round.round_id = '{stale_ids['round']}'::uuid;
+"""
+    if psql.run(stale_round_current_sql) != "true":
+        raise RuntimeError(
+            "stale-result round was not current before content supersession"
+        )
+
+    superseding_version_id = uid()
+    superseded = psql.json(f"""
+insert into public.content_versions(
+  id, workspace_id, content_item_id, version_number, prompt_version,
+  locale, title, content, channel_copy, deliverables, qa, generation_meta
+)
+select
+  '{superseding_version_id}'::uuid, workspace_id, content_item_id, 2,
+  'harmony-preview-probe@2', locale, title, content, channel_copy,
+  deliverables, qa, generation_meta
+from public.content_versions
+where workspace_id = '{ids['workspace']}'::uuid
+  and content_item_id = '{stale_ids['item']}'::uuid
+  and id = '{stale_ids['version']}'::uuid;
+update public.content_items
+set current_version_id = '{superseding_version_id}'::uuid
+where workspace_id = '{ids['workspace']}'::uuid
+  and client_id = 'squid'
+  and id = '{stale_ids['item']}'::uuid;
+select pg_catalog.jsonb_build_object(
+  'current_version_id', current_version_id,
+  'versions', (select pg_catalog.count(*) from public.content_versions version
+    where version.workspace_id = item.workspace_id
+      and version.content_item_id = item.id)
+)::text
+from public.content_items item
+where workspace_id = '{ids['workspace']}'::uuid
+  and client_id = 'squid'
+  and id = '{stale_ids['item']}'::uuid;
+""")
+    if superseded != {
+        "current_version_id": superseding_version_id,
+        "versions": 2,
+    }:
+        raise RuntimeError(
+            f"stale-result content supersession failed: {superseded}"
+        )
+
+    def invoke_stale_reconciliation(_: int) -> dict[str, object]:
+        return psql.json(_rpc_sql(
+            stale_qa_claims,
+            _codex_reconcile_expression(stale_ids),
+        ))
+
+    _, stale_reconciliation_race = _race_codex_reconciliation(
+        invoke_stale_reconciliation,
+        expected_work_key=stale_work_key,
+    )
+    stale_reconciliation_receipt = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'run_status', run.status,
+  'reconciliations', pg_catalog.count(distinct reconciliation.reconciliation_receipt_id),
+  'action', pg_catalog.min(reconciliation.reconciliation_action),
+  'attempt_bound', pg_catalog.bool_and(
+    reconciliation.attempt_receipt_id = result.attempt_receipt_id
+  ),
+  'result_bound', pg_catalog.bool_and(
+    reconciliation.result_receipt_id = result.result_receipt_id
+  ),
+  'transition_kind', pg_catalog.min(transition.transition_kind),
+  'transition_from', pg_catalog.min(transition.from_state),
+  'transition_to', pg_catalog.min(transition.to_state),
+  'terminal_reason', pg_catalog.min(transition.terminal_reason),
+  'reconciler_principal_id', pg_catalog.min(
+    reconciliation.payload ->> 'reconciler_principal_id'
+  ),
+  'qa_stages', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts stage
+    where stage.workspace_id = request.workspace_id
+      and stage.client_id = request.client_id
+      and stage.plan_id = request.plan_id
+      and stage.stage = 'independent_qa'),
+  'verifications', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_verification_receipts verification
+    where verification.workspace_id = request.workspace_id
+      and verification.client_id = request.client_id
+      and verification.request_id = request.request_id),
+  'stage_links', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_stage_links link
+    where link.workspace_id = request.workspace_id
+      and link.client_id = request.client_id
+      and link.request_id = request.request_id),
+  'operator_inbox', (select pg_catalog.count(*)
+    from agent_runtime.harmony_operator_inbox inbox
+    where inbox.workspace_id = request.workspace_id
+      and inbox.client_id = request.client_id
+      and inbox.plan_id = request.plan_id),
+  'recap_stages', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts stage
+    where stage.workspace_id = request.workspace_id
+      and stage.client_id = request.client_id
+      and stage.plan_id = request.plan_id
+      and stage.stage = 'recap')
+)::text
+from private.harmony_preview_codex_gate_requests request
+join private.harmony_preview_codex_gate_runs run
+  on run.workspace_id = request.workspace_id
+ and run.client_id = request.client_id
+ and run.request_id = request.request_id
+join private.harmony_preview_codex_gate_result_receipts result
+  on result.workspace_id = request.workspace_id
+ and result.client_id = request.client_id
+ and result.request_id = request.request_id
+join private.harmony_preview_codex_gate_reconciliation_receipts reconciliation
+  on reconciliation.workspace_id = request.workspace_id
+ and reconciliation.client_id = request.client_id
+ and reconciliation.request_id = request.request_id
+join private.harmony_preview_codex_gate_transitions transition
+  on transition.workspace_id = reconciliation.workspace_id
+ and transition.client_id = reconciliation.client_id
+ and transition.request_id = reconciliation.request_id
+ and transition.transition_id = reconciliation.transition_id
+where request.workspace_id = '{ids['workspace']}'::uuid
+  and request.client_id = 'squid'
+  and request.plan_id = '{stale_ids['plan']}'::uuid
+group by request.workspace_id, request.client_id, request.request_id,
+  request.plan_id, run.status;
+""")
+    if stale_reconciliation_receipt != {
+        "run_status": "blocked",
+        "reconciliations": 1,
+        "action": "result_not_current",
+        "attempt_bound": True,
+        "result_bound": True,
+        "transition_kind": "reconcile",
+        "transition_from": "result_submitted",
+        "transition_to": "blocked",
+        "terminal_reason": "request_not_current",
+        "reconciler_principal_id": specialist_principals["independent_qa"],
+        "qa_stages": 0,
+        "verifications": 0,
+        "stage_links": 0,
+        "operator_inbox": 0,
+        "recap_stages": 0,
+    }:
+        raise RuntimeError(
+            "stale-result reconciliation receipt binding mismatch: "
+            f"{stale_reconciliation_receipt}"
+        )
+    psql.expect_error(
+        _rpc_sql(
+            stale_qa_claims,
+            _codex_verify_expression(stale_ids, stale_work_key),
+        ),
+        "harmony_preview_codex_gate_not_current",
+    )
 
     round_current_sql = f"""
 select private.harmony_preview_round_inputs_current(
@@ -2022,6 +3025,10 @@ where round.workspace_id = '{ids['workspace']}'::uuid
         raise RuntimeError("completed round was not current before revocation")
     if psql.run(denial_round_current_sql) != "true":
         raise RuntimeError("denial round was not current before revocation")
+    if psql.run(stale_round_current_sql) != "false":
+        raise RuntimeError(
+            "superseded stale-result round remained current before revocation"
+        )
     quiz_registration = connector_registrations["quiz_bot"]
     revocation_id = uid()
     revocation_race = _revocation_lock_winner_race(
@@ -2033,11 +3040,7 @@ where round.workspace_id = '{ids['workspace']}'::uuid
         ),
         loser_sql=_rpc_sql(
             denial_qa_claims,
-            _qa_denial_expression(
-                denial_ids,
-                uid(),
-                failed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
         expected_loser_error="harmony_preview_plan_input_not_current",
     )
@@ -2062,19 +3065,23 @@ where revocation.workspace_id = '{ids['workspace']}'::uuid
         raise RuntimeError("revoked connector left the completed round current")
     if psql.run(denial_round_current_sql) != "false":
         raise RuntimeError("revoked connector left the denial round current")
+    if psql.run(stale_round_current_sql) != "false":
+        raise RuntimeError("revoked connector left the stale-result round current")
 
     revoked_negative_before = psql.json(denial_downstream_sql)
     psql.expect_error(
         _rpc_sql(
             denial_qa_claims,
-            _stage_expression(
-                denial_ids,
-                "independent_qa",
-                uid(),
-                qa_evidence=passed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
-        "harmony_preview_stage_input_expired_or_tampered",
+        "harmony_preview_plan_input_not_current",
+    )
+    psql.expect_error(
+        _rpc_sql(
+            denial_qa_claims,
+            _codex_verify_expression(ids, codex_work_key),
+        ),
+        "harmony_preview_codex_gate_not_current",
     )
     psql.expect_error(
         _rpc_sql(
@@ -2126,6 +3133,28 @@ select pg_catalog.jsonb_build_object(
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'operator_inbox', (select pg_catalog.count(*) from agent_runtime.harmony_operator_inbox
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_lineages', (select pg_catalog.count(*) from private.harmony_preview_codex_source_lineage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_transitions', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_transitions
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_claims', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_claim_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_attempts', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_attempt_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_evidence', (select pg_catalog.count(*) from private.harmony_preview_codex_semantic_qa_evidence
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_results', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_result_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_verifications', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_verification_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_reconciliations', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_stage_links', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_stage_links
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'qa_principal_independent', (
     select qa.principal_id <> plan.principal_id and qa.principal_id <> content.principal_id
     from agent_runtime.harmony_stage_receipts qa
@@ -2141,14 +3170,19 @@ select pg_catalog.jsonb_build_object(
 )::text;
 """)
     expected = {
-        "signals": 5, "connector_receipts": 5,
-        "connector_registrations": 4, "request_receipts": 5,
+        "signals": 7, "connector_receipts": 7,
+        "connector_registrations": 4, "request_receipts": 7,
         "connector_revocations": 1,
         "qa_denial_receipts": 1,
-        "rounds": 2, "plans": 2,
+        "rounds": 3, "plans": 3,
         "specialists": 5, "distinct_specialist_principals": 5,
-        "stage_receipts": 7, "distinct_operation_keys": 7,
+        "stage_receipts": 9, "distinct_operation_keys": 9,
         "operator_inbox": 1,
+        "codex_lineages": 2, "codex_requests": 2, "codex_runs": 2,
+        "codex_transitions": 11, "codex_claims": 2, "codex_attempts": 2,
+        "codex_evidence": 2, "codex_results": 2,
+        "codex_verifications": 1, "codex_reconciliations": 1,
+        "codex_stage_links": 1,
         "qa_principal_independent": True, "automatic_publication": False,
         "recap_cost_microusd": 0,
     }
@@ -2156,7 +3190,7 @@ select pg_catalog.jsonb_build_object(
         raise RuntimeError(f"vertical slice ledger mismatch: {counts}")
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@2",
+        "schema_version": "harmony-preview-concurrency-proof@3",
         "connections": CONCURRENCY,
         "release_sha": args.release_sha,
         "config_sha256": args.config_sha256,
@@ -2179,12 +3213,17 @@ select pg_catalog.jsonb_build_object(
             "history_preserved": True,
             "denial_round_before": True,
             "denial_round_after": False,
+            "stale_result_round_before_supersession": True,
+            "stale_result_round_before_revocation": False,
+            "stale_result_round_after": False,
             "stage_after_revocation_rejected": True,
             "denial_after_revocation_rejected": True,
             "typed_negative_row_delta": 0,
         },
         "revocation_lock_winner_race": revocation_race,
         "qa_denial_race": qa_denial_race,
+        "codex_result_not_current_race": stale_reconciliation_race,
+        "codex_result_not_current_receipt": stale_reconciliation_receipt,
         "qa_denial_downstream_delta": {
             "qa_denial_receipts": 1,
             "passed_qa_stages": 0,
@@ -2194,6 +3233,10 @@ select pg_catalog.jsonb_build_object(
             "publication_rows": 0,
         },
         "operation_races": operation_races,
+        "codex_qa_races": codex_qa_races,
+        "codex_qa_execute_authorization": codex_qa_races["start"],
+        "codex_qa_stage_atomic": True,
+        "codex_qa_work_key": codex_work_key,
         "plan_exact_replay": plan_race == {
             "new": 1,
             "reused": CONCURRENCY - 1,
