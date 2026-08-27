@@ -76,6 +76,10 @@ _RECOVERY_INSPECTION_KEYS = frozenset({
     "expires_at",
     "release_sha",
 })
+_RECOVERY_FAILURE_CODES = frozenset({
+    "squid_visual_localization_incomplete",
+    "squid_copy_discovery_unavailable",
+})
 _CONTENT_SIGNAL_RANKING_VERSIONS = frozenset({
     "official-x-demand-v1",
     "official-x-demand-v2",
@@ -175,6 +179,7 @@ def _validated_recovery_subject(
         "recovery_source_item_id",
     )
     safe_failure = value.get("failed_output_snapshot")
+    failure_code = value.get("failure_code")
     if (
         value.get("contract") != "squid-failed-draft-recovery@1"
         or _uuid(value.get("workspace_id"), "recovery_workspace_id")
@@ -191,8 +196,8 @@ def _validated_recovery_subject(
         or _date(value.get("kst_date"), "recovery_kst_date") is None
         or type(value.get("claims_allowed")) is not int
         or value.get("claims_allowed") != 1
-        or value.get("failure_code")
-            != "squid_visual_localization_incomplete"
+        or not isinstance(failure_code, str)
+        or failure_code not in _RECOVERY_FAILURE_CODES
         or type(value.get("failed_attempts")) is not int
         or value.get("failed_attempts") != 3
         or type(value.get("failed_max_attempts")) is not int
@@ -212,10 +217,8 @@ def _validated_recovery_subject(
             "finished_at",
         }
         or safe_failure.get("execution_plane") != "studio_sync"
-        or safe_failure.get("last_error_code")
-            != "squid_visual_localization_incomplete"
-        or safe_failure.get("last_failure_error_code")
-            != "squid_visual_localization_incomplete"
+        or safe_failure.get("last_error_code") != failure_code
+        or safe_failure.get("last_failure_error_code") != failure_code
         or safe_failure.get("last_failure_retryable") is not False
     ):
         raise ValueError("recovery subject binding is invalid")

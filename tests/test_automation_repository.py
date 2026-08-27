@@ -762,7 +762,9 @@ async def test_recover_batch_handoff_allows_an_exact_receipt_miss():
     assert recovered is False
 
 
-def _recovery_subject() -> dict[str, object]:
+def _recovery_subject(
+    failure_code: str = "squid_visual_localization_incomplete",
+) -> dict[str, object]:
     return {
         "contract": "squid-failed-draft-recovery@1",
         "workspace_id": WORKSPACE_ID,
@@ -775,7 +777,7 @@ def _recovery_subject() -> dict[str, object]:
         "source_snapshot_sha256": "2" * 64,
         "style_pack_sha256": "3" * 64,
         "failed_output_sha256": "4" * 64,
-        "failure_code": "squid_visual_localization_incomplete",
+        "failure_code": failure_code,
         "failed_attempts": 3,
         "failed_max_attempts": 3,
         "approval_id": APPROVAL_ID,
@@ -792,15 +794,19 @@ def _recovery_subject() -> dict[str, object]:
         "legacy_failure_requires_explicit_review": True,
         "failed_output_snapshot": {
             "execution_plane": "studio_sync",
-            "last_error_code": "squid_visual_localization_incomplete",
-            "last_failure_error_code": "squid_visual_localization_incomplete",
+            "last_error_code": failure_code,
+            "last_failure_error_code": failure_code,
             "last_failure_retryable": False,
             "finished_at": "2026-08-25T07:47:42+00:00",
         },
     }
 
 
-def _recovery_inspection(*, authorized: bool = False) -> dict[str, object]:
+def _recovery_inspection(
+    *,
+    authorized: bool = False,
+    failure_code: str = "squid_visual_localization_incomplete",
+) -> dict[str, object]:
     return {
         "eligible": True,
         "authorized": authorized,
@@ -808,7 +814,7 @@ def _recovery_inspection(*, authorized: bool = False) -> dict[str, object]:
         "job_id": JOB_ID,
         "request_id": REQUEST_ID,
         "source_item_id": SOURCE_ID,
-        "approval_subject": _recovery_subject(),
+        "approval_subject": _recovery_subject(failure_code),
         "approval_subject_sha256": "5" * 64,
         "claims_allowed": 1,
         "claims_consumed": 0,
@@ -818,7 +824,16 @@ def _recovery_inspection(*, authorized: bool = False) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_inspect_failed_draft_recovery_uses_exact_safe_rpc_contract():
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "squid_visual_localization_incomplete",
+        "squid_copy_discovery_unavailable",
+    ],
+)
+async def test_inspect_failed_draft_recovery_uses_exact_safe_rpc_contract(
+    failure_code: str,
+):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -826,7 +841,10 @@ async def test_inspect_failed_draft_recovery_uses_exact_safe_rpc_contract():
             "/rpc/inspect_squid_failed_draft_recovery"
         )
         captured.update(json.loads(request.content))
-        return httpx.Response(200, json=_recovery_inspection())
+        return httpx.Response(
+            200,
+            json=_recovery_inspection(failure_code=failure_code),
+        )
 
     inspected = await _repo(handler).inspect_failed_draft_recovery(
         workspace_id=WORKSPACE_ID,
@@ -873,6 +891,16 @@ async def test_inspect_failed_draft_recovery_uses_exact_safe_rpc_contract():
             lambda response: response.update(
                 {"request_id": "99999999-9999-4999-8999-999999999999"}
             ),
+        ),
+        (
+            lambda response: response["approval_subject"].update(
+                {"failure_code": "squid_placement_audit_unavailable"}
+            ),
+        ),
+        (
+            lambda response: response["approval_subject"][
+                "failed_output_snapshot"
+            ].update({"last_failure_error_code": "different_failure"}),
         ),
     ],
 )

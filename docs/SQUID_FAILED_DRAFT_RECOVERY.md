@@ -1,9 +1,12 @@
 # Squid failed draft recovery
 
-This runbook covers one narrow case: a current-day Squid official-X Daily News
-job exhausted all three attempts with
-`squid_visual_localization_incomplete`, but failed before Content Studio stored
-any content item, version, asset, or Grok QA outbox row.
+This runbook covers two narrowly allowlisted cases: a current-day Squid
+official-X Daily News job exhausted all three attempts with either
+`squid_visual_localization_incomplete` or
+`squid_copy_discovery_unavailable`, but failed before Content Studio stored any
+content item, version, asset, or Grok QA outbox row. Copy-discovery failures are
+eligible only after the normal bounded retry budget is fully exhausted at 3/3;
+the recovery still permits at most one additional exact-job generation call.
 
 It is not a retry button and it is not a backfill mechanism.
 

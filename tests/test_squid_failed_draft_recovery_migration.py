@@ -11,16 +11,96 @@ MIGRATION = (
     / "migrations"
     / "20260825120000_squid_failed_draft_recovery.sql"
 ).read_text(encoding="utf-8")
+ADDITIVE_MIGRATION = (
+    ROOT
+    / "supabase"
+    / "migrations"
+    / "20260827150000_squid_copy_discovery_failed_draft_recovery.sql"
+).read_text(encoding="utf-8")
 
 
-def _function(name: str, *, schema: str = "public") -> str:
+def _function(
+    name: str,
+    *,
+    schema: str = "public",
+    migration: str = MIGRATION,
+) -> str:
     match = re.search(
         rf"create or replace function {schema}\.{name}\(.*?\n\$\$;",
-        MIGRATION,
+        migration,
         re.DOTALL,
     )
     assert match is not None, f"missing {schema}.{name}"
     return match.group(0)
+
+
+def test_copy_discovery_extension_is_additive_exact_and_fail_closed() -> None:
+    assert ADDITIVE_MIGRATION.lstrip().startswith("-- Add one bounded transient")
+    assert ADDITIVE_MIGRATION.rstrip().endswith("commit;")
+    assert (
+        "drop constraint "
+        "official_x_failed_draft_recovery_grants_failure_code_check"
+    ) in ADDITIVE_MIGRATION
+    constraint = re.search(
+        r"add constraint "
+        r"official_x_failed_draft_recovery_grants_failure_code_check\s+"
+        r"check \(\s*failure_code in \(\s*"
+        r"'squid_visual_localization_incomplete',\s*"
+        r"'squid_copy_discovery_unavailable'\s*\)\s*\)",
+        ADDITIVE_MIGRATION,
+        re.DOTALL,
+    )
+    assert constraint is not None
+    assert "squid_placement_audit_unavailable" not in ADDITIVE_MIGRATION
+
+
+def test_copy_discovery_subject_changes_only_the_exact_failure_allowlist() -> None:
+    old_subject = _function(
+        "squid_failed_draft_recovery_subject",
+        schema="private",
+    )
+    new_subject = _function(
+        "squid_failed_draft_recovery_subject",
+        schema="private",
+        migration=ADDITIVE_MIGRATION,
+    )
+    old_predicate = (
+        "or failed_job.last_error_code\n"
+        "            is distinct from 'squid_visual_localization_incomplete'"
+    )
+    new_predicate = (
+        "or failed_job.last_error_code is null\n"
+        "       or failed_job.last_error_code not in (\n"
+        "            'squid_visual_localization_incomplete',\n"
+        "            'squid_copy_discovery_unavailable'\n"
+        "       )"
+    )
+    assert old_predicate in old_subject
+    assert new_predicate in new_subject
+    assert old_subject.replace(old_predicate, "<failure-allowlist>") == (
+        new_subject.replace(new_predicate, "<failure-allowlist>")
+    )
+    assert "security definer" in new_subject.lower()
+    assert "set search_path = ''" in new_subject.lower()
+    assert re.search(
+        r"revoke all on function "
+        r"private\.squid_failed_draft_recovery_subject\(\s*"
+        r"uuid, uuid, uuid, uuid, text, timestamptz, timestamptz, text\s*\)\s*"
+        r"from public, anon, authenticated, service_role;",
+        ADDITIVE_MIGRATION,
+        re.DOTALL,
+    )
+
+
+def test_copy_discovery_extension_does_not_replace_public_control_rpcs() -> None:
+    for name in (
+        "inspect_squid_failed_draft_recovery",
+        "authorize_squid_failed_draft_recovery",
+        "claim_squid_failed_draft_recovery",
+    ):
+        assert f"create or replace function public.{name}(" not in (
+            ADDITIVE_MIGRATION
+        )
 
 
 def test_private_grant_is_exact_one_shot_and_directly_inaccessible() -> None:
