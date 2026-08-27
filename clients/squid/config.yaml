@@ -124,6 +124,8 @@ llm:
       - "ITS"
       - "GMP"
       - "Coral"
+      - "Celo"
+      - "Ethereum"
     glossary:
       "cross-chain": "크로스체인(cross-chain)"
       "swap": "스왑(swap)"
