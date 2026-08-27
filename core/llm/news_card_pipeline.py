@@ -682,15 +682,16 @@ preserved Latin row must form one complete, natural message.
     no_text_observation: Optional[tuple[tuple[str, str], ...]] = None
     calls_used = 0
     retry_stacked_layout = False
+    retry_missing_hangul = False
     last_failure_reason: Optional[str] = None
     protected_identities = {
         _normalized_source_identity(term)
         for term in preserve_terms
         if _normalized_source_identity(term)
     }
-    # The first provider call receives the whole viable discovery window. A
-    # second call is opportunistic only when the first one failed early; it can
-    # never multiply the phase beyond eight seconds or borrow from placement QA.
+    # The base discovery phase has one shared eight-second budget. Only a
+    # missing-Hangul validation failure may reclaim unused main-call time for
+    # its targeted retry; every other retry keeps the historical phase cap.
     discovery_deadline = (
         time.monotonic() + _SQUID_VISUAL_DISCOVERY_BUDGET_SECONDS
     )
@@ -712,6 +713,17 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
 - The Korean texts plus any intentionally preserved Latin row must read as one complete natural message without repeating or omitting meaning.
 - Every source_text must still transcribe only the exact visible words inside that region.
 - Never return a region wider than 96%, taller than 45%, or covering more than 40% of the image area.
+
+{prompt}"""
+            elif retry_missing_hangul:
+                attempt_prompt = f"""Reinspect the same creative from scratch.
+
+The previous pass copied source-language text into a translation field. Correct only that validation failure without changing the source transcription or geometry rules.
+- Every returned `text` for a translatable non-metric, non-protected region MUST contain natural Korean Hangul.
+- Never return the unchanged English or Latin sentence as `text`.
+- Keep `source_text` as the exact visible source-language words; do not translate or paraphrase `source_text`.
+- Numeric-only metrics and protected product/platform identities still follow the original omission rules below.
+- If no meaningful translatable copy is visibly present, return found=false with an empty regions array instead of inventing Korean copy.
 
 {prompt}"""
             response = create_message(
@@ -863,6 +875,18 @@ The previous pass merged a stacked, multi-row slogan into one scene-wide phrase 
             return result, calls_used
         except Exception as exc:
             failure_category = _visual_copy_discovery_failure_reason(exc)
+            retry_missing_hangul = failure_category == "missing_hangul"
+            if (
+                retry_missing_hangul
+                and deadline is not None
+                and attempt + 1 < _MAX_SQUID_VISUAL_DISCOVERY_CALLS
+            ):
+                discovery_deadline = max(
+                    discovery_deadline,
+                    deadline
+                    - _SQUID_VISUAL_AUDIT_CALL_MAX_SECONDS
+                    - _SQUID_VISUAL_SCHEDULING_MARGIN_SECONDS,
+                )
             last_failure_reason = (
                 "squid_copy_discovery_unavailable"
                 if failure_category in {

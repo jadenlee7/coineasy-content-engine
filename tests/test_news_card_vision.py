@@ -335,6 +335,254 @@ def test_squid_cold_path_reserves_full_audit_after_discovery_retry(
     assert "sensitive discovery timeout detail" not in capsys.readouterr().out
 
 
+def test_squid_missing_hangul_retry_uses_unused_main_budget_and_preserves_full_audit(
+    monkeypatch,
+):
+    clock = [0.0]
+    calls = []
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        call_index = len(calls)
+        if call_index == 1:
+            clock[0] += 6.0
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.27",
+                "headline": "Ethereum을 오간 Squid 거래 규모",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+        elif call_index == 2:
+            clock[0] += kwargs["timeout"]
+            payload = {
+                "found": True,
+                "regions": [{
+                    "source_text": "Volume on Ethereum",
+                    "text": "Volume on Ethereum",
+                    "coordinate_space": "percent_0_100",
+                    "x": 30,
+                    "y": 82,
+                    "width": 40,
+                    "height": 8,
+                    "align": "center",
+                    "font_role": "body",
+                    "font_size": 5,
+                    "text_color": "#FFFFFF",
+                }],
+            }
+        elif call_index == 3:
+            clock[0] += kwargs["timeout"]
+            payload = {
+                "found": True,
+                "regions": [{
+                    "source_text": "Volume on Ethereum",
+                    "text": "Ethereum 누적 거래량",
+                    "coordinate_space": "percent_0_100",
+                    "x": 30,
+                    "y": 82,
+                    "width": 40,
+                    "height": 8,
+                    "align": "center",
+                    "font_role": "body",
+                    "font_size": 5,
+                    "text_color": "#FFFFFF",
+                }],
+            }
+        else:
+            payload = {
+                "safe": True,
+                "verified_source_texts": [{
+                    "source_index": 0,
+                    "text": "Volume on Ethereum",
+                }],
+                "protected_regions": [{
+                    "kind": "source_text",
+                    "source_index": 0,
+                    "x": 30,
+                    "y": 82,
+                    "width": 40,
+                    "height": 8,
+                }],
+            }
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda _image, _regions: SimpleNamespace(masked_pixels=48),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid volume on Ethereum.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=2775,
+            height=1800,
+        ),
+    )
+
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 8.0, 6.0, 8.0])
+    assert "MUST contain natural Korean Hangul" in (
+        calls[2]["messages"][0]["content"][1]["text"]
+    )
+    assert calls[-1]["system"].startswith("You are the final visual replacement QA")
+    assert result["visual_localization_status"] == "translated"
+    assert result["translation_regions"][0]["text"] == "Ethereum 누적 거래량"
+
+
+def test_squid_missing_hangul_with_exhausted_budget_fails_closed_without_audit(
+    monkeypatch,
+    capsys,
+):
+    clock = [0.0]
+    calls = []
+    probe_calls = []
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        clock[0] += kwargs["timeout"]
+        if len(calls) == 1:
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.27",
+                "headline": "Ethereum을 오간 Squid 거래 규모",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+        else:
+            payload = {
+                "found": True,
+                "regions": [{
+                    "source_text": "Volume on Ethereum",
+                    "text": "Volume on Ethereum",
+                    "coordinate_space": "percent_0_100",
+                    "x": 30,
+                    "y": 82,
+                    "width": 40,
+                    "height": 8,
+                    "align": "center",
+                    "font_role": "body",
+                    "font_size": 5,
+                    "text_color": "#FFFFFF",
+                }],
+            }
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *args, **kwargs: probe_calls.append((args, kwargs)),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid volume on Ethereum.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=2775,
+            height=1800,
+        ),
+    )
+
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 8.0])
+    assert not any(
+        call["system"].startswith("You are the final visual replacement QA")
+        for call in calls
+    )
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+    logs = capsys.readouterr().out
+    assert "attempt 1 failed safely: reason=missing_hangul" in logs
+    assert "attempt 2 failed safely: reason=deadline_exhausted" in logs
+
+
+def test_squid_non_hangul_failure_cannot_reclaim_unused_main_budget(
+    monkeypatch,
+    capsys,
+):
+    clock = [0.0]
+    calls = []
+    probe_calls = []
+
+    class APITimeoutError(RuntimeError):
+        pass
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            clock[0] += 6.0
+            payload = {
+                "label": "파트너십",
+                "date": "2026.08.27",
+                "headline": "Ethereum을 오간 Squid 거래 규모",
+                "body_lines": ["공식 배너 문구를 한국어로 현지화합니다"],
+                "source_url": "ignored",
+                "theme": "dark",
+                "source_logo_visible": True,
+                "source_text_visible": False,
+                "translation_regions": [],
+            }
+            return SimpleNamespace(content=[SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+            )])
+        clock[0] += kwargs["timeout"]
+        raise APITimeoutError("sensitive discovery timeout detail")
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr("core.llm.news_card_pipeline.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    monkeypatch.setattr(
+        "core.llm.news_card_pipeline.probe_source_text",
+        lambda *args, **kwargs: probe_calls.append((args, kwargs)),
+    )
+
+    result = generate_news_card_spec(
+        client_id="squid",
+        source_content="Squid volume on Ethereum.",
+        source_url="https://x.com/squidrouter/status/123",
+        source_image=PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=2775,
+            height=1800,
+        ),
+    )
+
+    assert [call["timeout"] for call in calls] == pytest.approx([12.0, 8.0])
+    assert probe_calls == []
+    assert result["source_text_visible"] is False
+    assert result["translation_regions"] == []
+    assert result["visual_localization_status"] == "cleanup_failed"
+    logs = capsys.readouterr().out
+    assert "attempt 1 failed safely: reason=provider_timeout" in logs
+    assert "attempt 2 failed safely: reason=deadline_exhausted" in logs
+    assert "sensitive discovery timeout detail" not in logs
+
+
 def test_squid_full_discovery_phase_timeout_never_retries_provider_or_audit(
     monkeypatch,
     capsys,
@@ -1623,7 +1871,7 @@ def test_squid_discovery_does_not_skip_changed_metrics_or_unchanged_english(
     text,
     reason,
 ):
-    calls = 0
+    calls = []
     payload = {
         "found": True,
         "regions": [{
@@ -1641,8 +1889,7 @@ def test_squid_discovery_does_not_skip_changed_metrics_or_unchanged_english(
     }
 
     def fake_create_message(client, **kwargs):
-        nonlocal calls
-        calls += 1
+        calls.append(kwargs)
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(payload))])
 
     monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
@@ -1661,13 +1908,101 @@ def test_squid_discovery_does_not_skip_changed_metrics_or_unchanged_english(
 
     logs = capsys.readouterr().out
     assert calls_used == 2
-    assert calls == 2
+    assert len(calls) == 2
     assert logs.count(f"reason={reason}") == 2
     assert source_text not in logs
     assert text not in logs
     assert result["source_text_visible"] is False
     assert result["translation_regions"] == []
     assert result["_visual_localization_failure"] == "cleanup_failed"
+    retry_prompt = calls[1]["messages"][0]["content"][1]["text"]
+    if reason == "missing_hangul":
+        assert "MUST contain natural Korean Hangul" in retry_prompt
+    else:
+        assert "MUST contain natural Korean Hangul" not in retry_prompt
+
+
+def test_squid_discovery_missing_hangul_retry_recovers_with_korean_copy(
+    monkeypatch,
+    capsys,
+):
+    calls = []
+    payloads = [
+        {
+            "found": True,
+            "regions": [{
+                "source_text": "Volume on Ethereum",
+                "text": "Volume on Ethereum",
+                "x": 30,
+                "y": 82,
+                "width": 40,
+                "height": 8,
+                "align": "center",
+                "font_role": "body",
+                "font_size": 5,
+                "text_color": "#FFFFFF",
+            }],
+        },
+        {
+            "found": True,
+            "regions": [{
+                "source_text": "Volume on Ethereum",
+                "text": "Ethereum 누적 거래량",
+                "x": 30,
+                "y": 82,
+                "width": 40,
+                "height": 8,
+                "align": "center",
+                "font_role": "body",
+                "font_size": 5,
+                "text_color": "#FFFFFF",
+            }],
+        },
+    ]
+
+    def fake_create_message(client, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(
+            text=json.dumps(payloads[len(calls) - 1], ensure_ascii=False),
+        )])
+
+    monkeypatch.setattr("core.llm.news_card_pipeline.create_message", fake_create_message)
+    result, calls_used = _discover_visual_copy(
+        object(),
+        "test-model",
+        {"source_text_visible": False, "translation_regions": []},
+        PreparedSourceImage(
+            media_type="image/jpeg",
+            base64_data="aW1hZ2U=",
+            width=2775,
+            height=1800,
+        ),
+        ["Squid", "Ethereum"],
+    )
+
+    first_prompt = calls[0]["messages"][0]["content"][1]["text"]
+    retry_prompt = calls[1]["messages"][0]["content"][1]["text"]
+    logs = capsys.readouterr().out
+    assert calls_used == 2
+    assert len(calls) == 2
+    assert "MUST contain natural Korean Hangul" not in first_prompt
+    assert "MUST contain natural Korean Hangul" in retry_prompt
+    assert "Volume on Ethereum" not in retry_prompt
+    assert logs.count("reason=missing_hangul") == 1
+    assert "Volume on Ethereum" not in logs
+    assert result["source_text_visible"] is True
+    assert result["translation_regions"] == [{
+        "source_text": "Volume on Ethereum",
+        "text": "Ethereum 누적 거래량",
+        "x": 30.0,
+        "y": 82.0,
+        "width": 40.0,
+        "height": 8.0,
+        "align": "center",
+        "font_role": "body",
+        "font_size": 5.0,
+        "text_color": "#FFFFFF",
+    }]
 
 
 @pytest.mark.parametrize("metric", ["$800,000,000", "99.9%"])
