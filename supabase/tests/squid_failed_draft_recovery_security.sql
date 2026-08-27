@@ -137,8 +137,8 @@ insert into public.jobs (
         'execution_plane', 'studio_sync',
         'last_failure', jsonb_build_object(
             'worker_id', 'official-x:failed-worker',
-            'error_code', 'squid_visual_localization_incomplete',
-            'error_message', 'squid_visual_localization_incomplete',
+            'error_code', 'squid_copy_discovery_unavailable',
+            'error_message', 'squid_copy_discovery_unavailable',
             'retryable', false,
             'failed_at', statement_timestamp() - interval '5 minutes',
             'retry_at', 'null'::jsonb
@@ -148,8 +148,8 @@ insert into public.jobs (
     3,
     3,
     statement_timestamp(),
-    'squid_visual_localization_incomplete',
-    'squid_visual_localization_incomplete',
+    'squid_copy_discovery_unavailable',
+    'squid_copy_discovery_unavailable',
     statement_timestamp() - interval '20 minutes',
     statement_timestamp() - interval '5 minutes'
 );
@@ -187,6 +187,56 @@ insert into private.official_x_style_reference_packs (
     '[]'::jsonb,
     md5('[]'::jsonb::text)
 );
+
+-- A broader or unrelated failure code must not enter the one-shot path.  The
+-- fixture is restored before the positive inspect/authorize/claim flow.
+do $test$
+declare
+    rejected boolean := false;
+begin
+    update public.jobs
+    set last_error_code = 'squid_placement_audit_unavailable',
+        last_error_message = 'squid_placement_audit_unavailable',
+        output = jsonb_set(
+            output,
+            '{last_failure,error_code}',
+            to_jsonb('squid_placement_audit_unavailable'::text)
+        )
+    where id = 'f3000000-0000-4000-8000-000000000001';
+
+    begin
+        perform public.inspect_squid_failed_draft_recovery(
+            'f0000000-0000-4000-8000-000000000001',
+            'f3000000-0000-4000-8000-000000000001',
+            'f7000000-0000-4000-8000-000000000001',
+            'f8000000-0000-4000-8000-000000000001',
+            'sql-test',
+            statement_timestamp(),
+            statement_timestamp() + interval '1 hour',
+            repeat('b', 40)
+        );
+    exception
+        when check_violation then
+            if sqlerrm <> 'Squid failed draft is not recovery eligible' then
+                raise;
+            end if;
+            rejected := true;
+    end;
+    if not rejected then
+        raise exception 'Unallowlisted Squid failure entered recovery';
+    end if;
+
+    update public.jobs
+    set last_error_code = 'squid_copy_discovery_unavailable',
+        last_error_message = 'squid_copy_discovery_unavailable',
+        output = jsonb_set(
+            output,
+            '{last_failure,error_code}',
+            to_jsonb('squid_copy_discovery_unavailable'::text)
+        )
+    where id = 'f3000000-0000-4000-8000-000000000001';
+end
+$test$;
 
 do $test$
 declare

@@ -88,7 +88,7 @@ insert into public.jobs (
     jsonb_build_object(
         'execution_plane', 'studio_sync',
         'last_failure', jsonb_build_object(
-            'error_code', 'squid_visual_localization_incomplete',
+            'error_code', 'squid_copy_discovery_unavailable',
             'retryable', false
         )
     ),
@@ -96,8 +96,8 @@ insert into public.jobs (
     3,
     3,
     statement_timestamp(),
-    'squid_visual_localization_incomplete',
-    'squid_visual_localization_incomplete',
+    'squid_copy_discovery_unavailable',
+    'squid_copy_discovery_unavailable',
     statement_timestamp() - interval '20 minutes',
     statement_timestamp() - interval '5 minutes'
 );
