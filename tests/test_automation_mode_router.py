@@ -200,6 +200,161 @@ def test_freshness_bucket_still_uses_relevance_signals(client_id):
     assert selected is relevant
 
 
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+def test_next_kst_slot_expiry_rescue_prefers_latest_eligible_source(client_id):
+    """Do not let an older relevance-heavy post starve the latest daily source.
+
+    Both posts were published before the current KST day began, so neither will
+    remain inside the inclusive 24-hour window when the next KST slot opens.
+    Yellow and Babylon therefore use publication recency inside this bounded
+    expiry-risk bucket; the normal eligibility filters still run first.
+    """
+    older_relevance_heavy = post(
+        "200",
+        "Our major mainnet integration launch is live with a release update. "
+        * 4,
+        created_at="2026-08-27T09:00:06Z",
+        metrics={"like_count": 500},
+    )
+    latest_eligible = post(
+        "201",
+        "A product update is available.",
+        created_at="2026-08-27T11:00:12Z",
+    )
+
+    selected = select_official_candidate(
+        [older_relevance_heavy, latest_eligible],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is latest_eligible
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+def test_next_kst_slot_expiry_rescue_runs_after_eligibility_guards(client_id):
+    eligible = post(
+        "205",
+        "A product update is available.",
+        created_at="2026-08-27T11:00:12Z",
+    )
+    newer_low_signal = post(
+        "206",
+        "gm",
+        created_at="2026-08-27T14:00:00Z",
+    )
+    newer_reply = post(
+        "207",
+        "Our major mainnet integration launch is live with a release update.",
+        created_at="2026-08-27T14:05:10Z",
+        is_reply=True,
+    )
+
+    selected = select_official_candidate(
+        [eligible, newer_low_signal, newer_reply],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is eligible
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+def test_mixed_expiry_bucket_keeps_relevance_ranking(client_id):
+    expiring_relevance_heavy = post(
+        "208",
+        "Our major mainnet integration launch is live with a release update. "
+        * 4,
+        created_at="2026-08-27T14:05:10Z",
+        metrics={"like_count": 500},
+    )
+    safe_latest = post(
+        "209",
+        "A product update is available.",
+        created_at="2026-08-27T18:00:00Z",
+    )
+
+    selected = select_official_candidate(
+        [expiring_relevance_heavy, safe_latest],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is expiring_relevance_heavy
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+def test_expiry_rescue_includes_next_slot_cron_interval_boundary(client_id):
+    expiring_relevance_heavy = post(
+        "214",
+        "Our major mainnet integration launch is live with a release update. "
+        * 4,
+        created_at="2026-08-27T15:14:00Z",
+        metrics={"like_count": 500},
+    )
+    latest = post(
+        "215",
+        "A product update is available.",
+        created_at="2026-08-27T15:15:00Z",
+    )
+
+    selected = select_official_candidate(
+        [expiring_relevance_heavy, latest],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is latest
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+def test_sources_safe_for_next_kst_slot_keep_relevance_ranking(client_id):
+    older_relevance_heavy = post(
+        "212",
+        "Our major mainnet integration launch is live with a release update. "
+        * 4,
+        created_at="2026-08-27T18:00:00Z",
+        metrics={"like_count": 500},
+    )
+    latest = post(
+        "213",
+        "A product update is available.",
+        created_at="2026-08-27T20:00:00Z",
+    )
+
+    selected = select_official_candidate(
+        [older_relevance_heavy, latest],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is older_relevance_heavy
+
+
+@pytest.mark.parametrize("client_id", ["origintrail", "squid"])
+def test_next_kst_slot_expiry_rescue_does_not_change_other_clients(client_id):
+    older_relevance_heavy = post(
+        "210",
+        "Our major mainnet integration launch is live with a release update. "
+        * 4,
+        created_at="2026-08-27T09:00:06Z",
+        metrics={"like_count": 500},
+    )
+    latest_eligible = post(
+        "211",
+        "A product update is available.",
+        created_at="2026-08-27T11:00:12Z",
+    )
+
+    selected = select_official_candidate(
+        [older_relevance_heavy, latest_eligible],
+        client_id=client_id,
+        now=datetime(2026, 8, 27, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert selected is older_relevance_heavy
+
+
 @pytest.mark.parametrize(
     "client_id",
     ["yellow", "origintrail", "squid", "babylon"],
