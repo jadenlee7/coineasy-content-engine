@@ -523,6 +523,16 @@
     .library-source-body details { border-top: 1px solid var(--line); padding-top: 11px; }
     .library-source-body summary { color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 800; }
     .library-source-body p { max-height: 360px; margin: 9px 0 0; overflow: auto; color: #4f5661; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .library-readiness { margin-top: 22px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #f2f8ff; box-shadow: 3px 3px 0 rgba(35,35,35,.1); }
+    .library-readiness.warning { border-color: #c66b00; background: #fff4dc; }
+    .library-readiness h3 { margin: 0; font-size: 13px; }
+    .library-readiness > p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .library-readiness-state { display: inline-flex; margin-top: 11px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 999px; color: var(--ink); background: #fff; font-size: 9px; font-weight: 850; }
+    .library-readiness-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0 0; }
+    .library-readiness-facts div { min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .library-readiness-facts dt { color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+    .library-readiness-facts dd { margin: 4px 0 0; color: var(--ink); font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; }
+    .library-readiness-facts code { font: inherit; font-variant-numeric: tabular-nums; }
     .batch-review-readonly { margin-top: 22px; padding: 16px; border: 1.5px solid var(--outline); border-radius: 10px; background: #f7f3ff; box-shadow: 3px 3px 0 rgba(35,35,35,.1); }
     .batch-review-readonly h3 { margin: 0; font-size: 13px; }
     .batch-review-readonly p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
@@ -2040,6 +2050,139 @@
         return `<section class="library-review resolved${approved && !legacyApproval ? "" : " rejected"}"><h3>${escapeHtml(heading)}</h3><div class="library-review-summary"><span><strong>결정</strong> · ${escapeHtml(approved ? "브랜드 기준 승인" : "수정 요청")}</span><span><strong>이중 사실 확인 정책</strong> · ${escapeHtml(factCheckPolicy)}</span><span><strong>원문 사실 확인</strong> · ${escapeHtml(sourceFactsVerified)}</span><span><strong>결과 주장 확인</strong> · ${escapeHtml(outputClaimsVerified)}</span>${reasonLabels.length ? `<span><strong>사유</strong> · ${escapeHtml(reasonLabels.join(", "))}</span>` : ""}${latestReview.comment ? `<span><strong>팀 메모</strong> · ${escapeHtml(latestReview.comment)}</span>` : ""}<span>${escapeHtml(nextStep)}</span></div></section>`;
       }
 
+      function normalizedContentReviewReadiness(rawReadiness, expectedContentId, expectedVersionId) {
+        const readiness = plainObject(rawReadiness);
+        const readinessKeys = [
+          "approval_count", "banner_sha256", "content_item_id", "content_version_id",
+          "feed_active", "feed_last_polled_at", "feed_poll_interval_minutes",
+          "feed_poll_recent", "generate_job_id", "grok_banner_sha256", "grok_decision",
+          "grok_next_action", "grok_outbox_count", "grok_status", "grok_verdict_sha256",
+          "publication_count", "source_is_latest", "source_item_id", "source_published_at",
+          "source_within_24h"
+        ];
+        const actualKeys = Object.keys(readiness).sort();
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        const sha256Pattern = /^[a-f0-9]{64}$/;
+        const nullableUuid = value => value === null || uuidPattern.test(value);
+        const nullableHash = value => value === null || sha256Pattern.test(value);
+        const nullableDate = value => value === null || (
+          typeof value === "string" && value.length >= 20 && value.length <= 40 && !Number.isNaN(Date.parse(value))
+        );
+        const boundedCount = (value, maximum = 1_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+        if (
+          actualKeys.length !== readinessKeys.length
+          || actualKeys.some((key, index) => key !== readinessKeys[index])
+          || readiness.content_item_id !== expectedContentId
+          || readiness.content_version_id !== expectedVersionId
+          || !nullableUuid(readiness.generate_job_id)
+          || !nullableUuid(readiness.source_item_id)
+          || !nullableDate(readiness.source_published_at)
+          || typeof readiness.source_is_latest !== "boolean"
+          || typeof readiness.source_within_24h !== "boolean"
+          || typeof readiness.feed_active !== "boolean"
+          || !(readiness.feed_poll_interval_minutes === null || (
+            Number.isSafeInteger(readiness.feed_poll_interval_minutes)
+            && readiness.feed_poll_interval_minutes >= 5
+            && readiness.feed_poll_interval_minutes <= 10_080
+          ))
+          || !nullableDate(readiness.feed_last_polled_at)
+          || typeof readiness.feed_poll_recent !== "boolean"
+          || !nullableHash(readiness.banner_sha256)
+          || !boundedCount(readiness.grok_outbox_count, 1)
+          || !(readiness.grok_status === null || ["pending", "claimed", "staged", "sent", "obsolete", "failed", "provider_unknown", "delivery_unknown"].includes(readiness.grok_status))
+          || !(readiness.grok_decision === null || ["PASS", "WARN", "BLOCK"].includes(readiness.grok_decision))
+          || !(readiness.grok_next_action === null || ["ready_for_human_approval", "human_review", "verify_source", "revise_copy", "revise_banner"].includes(readiness.grok_next_action))
+          || !nullableHash(readiness.grok_verdict_sha256)
+          || !nullableHash(readiness.grok_banner_sha256)
+          || !boundedCount(readiness.approval_count)
+          || !boundedCount(readiness.publication_count)
+          || (readiness.grok_outbox_count === 0 && (
+            readiness.grok_status !== null
+            || readiness.grok_decision !== null
+            || readiness.grok_next_action !== null
+            || readiness.grok_verdict_sha256 !== null
+            || readiness.grok_banner_sha256 !== null
+          ))
+          || (readiness.source_within_24h && (
+            readiness.source_item_id === null || readiness.source_published_at === null
+          ))
+          || (readiness.source_is_latest && readiness.source_item_id === null)
+          || (readiness.feed_poll_recent && (
+            readiness.feed_last_polled_at === null
+            || readiness.feed_poll_interval_minutes === null
+          ))
+          || (readiness.grok_outbox_count === 1 && (
+            readiness.grok_status === null || readiness.source_item_id === null
+          ))
+          || ((readiness.grok_decision === null) !== (readiness.grok_next_action === null))
+          || ((readiness.grok_decision === null) !== (readiness.grok_verdict_sha256 === null))
+          || (
+            readiness.banner_sha256 !== null
+            && readiness.grok_banner_sha256 !== null
+            && readiness.banner_sha256 !== readiness.grok_banner_sha256
+          )
+        ) return null;
+        return readiness;
+      }
+
+      function renderContentReviewReadiness(rawDetail) {
+        const detail = plainObject(rawDetail);
+        if (detail.content_kind !== "daily_news" || detail.status !== "needs_review") return "";
+        const currentVersion = plainObject(detail.current_version);
+        const contentVersionId = detail.current_version_id || currentVersion.content_version_id;
+        if (detail.review_readiness_available !== true) {
+          return `<section class="library-readiness warning"><h3>자동 검수 영수증 · 미관측</h3><p>exact-version 운영 원장을 지금 읽지 못했습니다. 이 상태를 안전 또는 0건으로 간주하지 말고, 승인 전에 다시 확인해주세요.</p></section>`;
+        }
+        const readiness = normalizedContentReviewReadiness(
+          detail.review_readiness,
+          detail.content_item_id,
+          contentVersionId
+        );
+        if (!readiness) {
+          return `<section class="library-readiness warning"><h3>자동 검수 영수증 · 불완전</h3><p>현재 immutable version과 일치하는 bounded 운영 증거가 없습니다. 승인·발행 전에 원장을 다시 확인해주세요.</p></section>`;
+        }
+        const baseEvidenceComplete = Boolean(readiness.generate_job_id)
+          && Boolean(readiness.source_item_id)
+          && readiness.source_is_latest
+          && readiness.source_within_24h
+          && readiness.feed_active
+          && readiness.feed_poll_interval_minutes === 15
+          && readiness.feed_poll_recent
+          && Boolean(readiness.banner_sha256)
+          && readiness.grok_outbox_count === 1
+          && readiness.approval_count === 0
+          && readiness.publication_count === 0;
+        const completedGrokEvidenceBound = Boolean(readiness.grok_verdict_sha256)
+          && Boolean(readiness.grok_banner_sha256)
+          && readiness.grok_banner_sha256 === readiness.banner_sha256;
+        let stateLabel = "검수 증거 미완성";
+        let warning = true;
+        if (readiness.publication_count > 0) stateLabel = "기존 공개 발행 기록 있음";
+        else if (readiness.approval_count > 0) stateLabel = "기존 검토 기록 있음";
+        else if (baseEvidenceComplete && ["pending", "claimed", "staged"].includes(readiness.grok_status)) {
+          stateLabel = "비공개 Grok QA 대기·진행";
+          warning = false;
+        } else if (baseEvidenceComplete && completedGrokEvidenceBound && readiness.grok_status === "sent" && readiness.grok_decision === "PASS") {
+          stateLabel = "사람의 이중 사실 확인 준비";
+          warning = false;
+        } else if (baseEvidenceComplete && completedGrokEvidenceBound && readiness.grok_status === "sent" && readiness.grok_decision === "WARN") {
+          stateLabel = "Grok 경고 · 사람 확인 필요";
+        } else if (baseEvidenceComplete && completedGrokEvidenceBound && readiness.grok_status === "sent" && readiness.grok_decision === "BLOCK") {
+          stateLabel = "Grok 차단 · 수정 필요";
+        } else if (baseEvidenceComplete && ["failed", "provider_unknown", "delivery_unknown", "obsolete"].includes(readiness.grok_status)) {
+          stateLabel = "Grok QA 상태 확인 필요";
+        }
+        const sourceTime = readiness.source_published_at
+          ? `${formatLibraryDate(readiness.source_published_at)} · 24시간 이내 ${readiness.source_within_24h ? "예" : "아니요"}`
+          : "미관측";
+        const feedState = `${readiness.feed_active ? "active" : "inactive"} · ${readiness.feed_poll_interval_minutes ?? "?"}분 · 최근 poll ${readiness.feed_poll_recent ? "예" : "아니요"}`;
+        const grokState = readiness.grok_status
+          ? `${readiness.grok_status}${readiness.grok_decision ? ` · ${readiness.grok_decision} · ${readiness.grok_next_action}` : ""}`
+          : "outbox 없음";
+        const row = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd><code>${escapeHtml(value || "미관측")}</code></dd></div>`;
+        return `<section class="library-readiness${warning ? " warning" : ""}"><h3>자동 검수 영수증</h3><p>원문·draft·provider 응답을 노출하지 않는 exact-version 읽기 전용 증거입니다. Approvals·Publications는 Content Engine 내부 ledger만 뜻하며, 이 상태는 사람의 사실 확인이나 공개 발행 승인을 대신하지 않습니다.</p><span class="library-readiness-state">${escapeHtml(stateLabel)}</span><dl class="library-readiness-facts">${row("Generate job UUID", readiness.generate_job_id)}${row("Content item UUID", readiness.content_item_id)}${row("Current version UUID", readiness.content_version_id)}${row("Source item UUID", readiness.source_item_id)}${row("Source freshness", sourceTime)}${row("Feed", feedState)}${row("Banner SHA-256", readiness.banner_sha256)}${row("Grok outbox", `${readiness.grok_outbox_count} · ${grokState}`)}${row("Grok verdict SHA-256", readiness.grok_verdict_sha256)}${row("Grok banner SHA-256", readiness.grok_banner_sha256)}${row("Approvals", String(readiness.approval_count))}${row("Publications", String(readiness.publication_count))}</dl></section>`;
+      }
+
       function hasAttestedDoubleFactCheckApproval(rawReview, contentVersionId) {
         const review = plainObject(rawReview);
         return review.decision === "approved"
@@ -2206,6 +2349,7 @@
         const promotionMarkup = renderPromotionMarkup(detail, isMock);
         const publicationMarkup = renderPublicationObservationMarkup(detail, isMock);
         const brandQaMarkup = renderBrandQaMarkup(generationMeta.brand_qa);
+        const readinessMarkup = renderContentReviewReadiness(detail);
         const reviewMarkup = renderContentReviewMarkup(detail, isMock);
         const telegramPublishMarkup = renderTelegramPublishMarkup(detail, isMock, assets, channelCopyValue);
         const actionStatusMarkup = actionMarkup || promotionMarkup || publicationMarkup || reviewMarkup || telegramPublishMarkup
@@ -2226,7 +2370,7 @@
           : "검토용 미리보기입니다. 공식 원문과 최종 주장을 모두 확인한 현재 버전만 복사할 수 있습니다.";
         const copyMarkup = hasChannelCopy ? `<section class="library-copy-grid"><p class="channel-copy-help">${escapeHtml(copyHelp)}</p><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>텔레그램 공지문</strong></div><button class="copy-button" type="button" data-copy-target="library-telegram-copy"${copyDisabled}>${escapeHtml(copyLabel)}</button></div><textarea class="channel-copy-text" id="library-telegram-copy" rows="7" readonly>${escapeHtml(channelCopyValue.telegram || "")}</textarea></article><article class="channel-copy-card"><div class="channel-copy-head"><div class="channel-copy-label"><strong>X 포스팅</strong></div><button class="copy-button" type="button" data-copy-target="library-x-copy"${copyDisabled}>${escapeHtml(copyLabel)}</button></div><textarea class="channel-copy-text x-copy" id="library-x-copy" rows="5" readonly>${escapeHtml(channelCopyValue.x || "")}</textarea></article></section>` : "";
         libraryState.activeDetail = detail;
-        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${brandQaMarkup}${reviewMarkup}${telegramPublishMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
+        libraryDetail.innerHTML = `<div class="library-detail-top"><div><div class="library-detail-meta"><span class="library-chip">${escapeHtml(BRAND[clientId]?.name || "클라이언트 미지정")}</span><span class="library-chip">${escapeHtml(CONTENT_KIND_LABEL[contentKind])}</span><span class="library-chip status">${escapeHtml(CONTENT_STATUS_LABEL[detail.status] || detail.status || "검토 필요")}</span>${isMock ? `<span class="library-chip mock">샘플 · 게시 금지</span>` : ""}<span class="library-chip">v${escapeHtml(currentVersion.version_number || detail.version_number || 1)}</span></div><h2>${escapeHtml(detail.title || currentVersion.title || content.title || "제목 없는 작업")}</h2></div><time class="library-detail-date" datetime="${escapeHtml(detail.created_at || "")}">${escapeHtml(formatLibraryDate(detail.created_at))}</time></div>${assetMarkup}${articleHeroMarkup}<section class="library-content">${renderStoredContent(contentKind, content, detail)}</section>${sourceMarkup}${brandQaMarkup}${readinessMarkup}${reviewMarkup}${telegramPublishMarkup}${copyMarkup}${promotionMarkup}${publicationMarkup}${actionMarkup}${actionStatusMarkup}${figmaMarkup}`;
         libraryDetailState.hidden = true;
         libraryDetail.hidden = false;
       }

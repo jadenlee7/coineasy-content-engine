@@ -283,6 +283,35 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
       result.assets[0].storage_path = `${WORKSPACE_ID}/${detailClientId}/${ASSET_ID}/news-card.png`;
       return Response.json(result);
     }
+    if (request.url.endsWith("/rest/v1/rpc/get_content_review_readiness")) {
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        target_workspace_id: WORKSPACE_ID,
+        target_content_item_id: ITEM_ID,
+        target_content_version_id: VERSION_ID,
+      });
+      return Response.json({
+        content_item_id: ITEM_ID,
+        content_version_id: VERSION_ID,
+        generate_job_id: "88888888-8888-4888-8888-888888888888",
+        source_item_id: "99999999-9999-4999-8999-999999999999",
+        source_published_at: UPDATED_AT,
+        source_is_latest: true,
+        source_within_24h: true,
+        feed_active: true,
+        feed_poll_interval_minutes: 15,
+        feed_last_polled_at: UPDATED_AT,
+        feed_poll_recent: true,
+        banner_sha256: "a".repeat(64),
+        grok_outbox_count: 1,
+        grok_status: "pending",
+        grok_decision: null,
+        grok_next_action: null,
+        grok_verdict_sha256: null,
+        grok_banner_sha256: null,
+        approval_count: 0,
+        publication_count: 0,
+      });
+    }
     if (request.url.endsWith("/rest/v1/rpc/get_studio_telegram_publication")) {
       return Response.json(null);
     }
@@ -350,6 +379,9 @@ test("library HTTP endpoints require the HttpOnly studio session and never cache
       assert.deepEqual(detailPayload.promotion_recommendations, []);
       assert.deepEqual(detailPayload.manual_publications, []);
       assert.equal(detailPayload.promotions_available, true);
+      assert.equal(detailPayload.review_readiness_available, true);
+      assert.equal(detailPayload.review_readiness.grok_status, "pending");
+      assert.equal(detailPayload.review_readiness.publication_count, 0);
       assert.deepEqual(detailPayload.publication_capabilities, {
         telegram: true,
         telegram_client_allowed: true,

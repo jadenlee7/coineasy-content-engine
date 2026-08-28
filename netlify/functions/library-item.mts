@@ -5,6 +5,7 @@ import {
   getContentLibraryItem,
   isCatalogUuid,
 } from "./_shared/content-catalog.mts";
+import { getContentReviewReadiness } from "./_shared/content-review-readiness.mts";
 import { listContentPromotionRecommendations } from "./_shared/content-promotions.mts";
 import {
   getStudioTelegramPublication,
@@ -33,6 +34,20 @@ export default async (req: Request, context: Context): Promise<Response> => {
   try {
     const item = await getContentLibraryItem(config, contentItemId);
     if (!item) return studioSessionJson({ error: "library_item_not_found" }, 404);
+    let reviewReadiness = null;
+    let reviewReadinessAvailable = false;
+    try {
+      reviewReadiness = await getContentReviewReadiness(
+        config,
+        contentItemId,
+        item.current_version_id,
+      );
+      reviewReadinessAvailable = true;
+    } catch {
+      // The bounded operator projection is an editorial aid. Keep the durable
+      // item readable during a rolling migration, but never synthesize a safe
+      // readiness state when its exact-version evidence is unavailable.
+    }
     let latestReview = null;
     try {
       latestReview = await getContentReviewSummary(config, contentItemId);
@@ -60,6 +75,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
       // migration or projection outage must fail closed for new requests.
     }
     const publicationFields = {
+      review_readiness: reviewReadiness,
+      review_readiness_available: reviewReadinessAvailable,
       publication_capabilities: {
         telegram: telegramPublishingEnabled
           && telegramClientAllowed
