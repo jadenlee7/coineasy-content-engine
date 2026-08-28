@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 
 TUTORIAL_CLIENTS = frozenset({"yellow", "squid"})
@@ -48,6 +49,9 @@ _FRESH_OFFICIAL_SOURCE_CLIENTS = frozenset({
     "babylon",
 })
 _OFFICIAL_SOURCE_FRESHNESS_WINDOW = timedelta(hours=24)
+_NEXT_KST_SLOT_EXPIRY_RESCUE_CLIENTS = frozenset({"yellow", "babylon"})
+_OFFICIAL_SOURCE_CRON_INTERVAL = timedelta(minutes=15)
+_KST = ZoneInfo("Asia/Seoul")
 _X_LINK_METADATA_MARKER = "[X-provided link metadata]"
 _ASCII_TERM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _-]*$")
 _TEMPORAL_DEMAND_PATTERN = re.compile(
@@ -280,6 +284,45 @@ def select_official_candidate(
         if _published_timestamp(candidate[0]) >= freshness_cutoff
     ]
     if fresh_candidates:
+        if client_id in _NEXT_KST_SLOT_EXPIRY_RESCUE_CLIENTS:
+            local_now = reference_now.astimezone(_KST)
+            next_kst_slot = (local_now + timedelta(days=1)).replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            next_slot_freshness_cutoff = (
+                next_kst_slot.astimezone(timezone.utc)
+                + _OFFICIAL_SOURCE_CRON_INTERVAL
+                - _OFFICIAL_SOURCE_FRESHNESS_WINDOW
+            ).timestamp()
+            expiring_candidates = [
+                candidate
+                for candidate in fresh_candidates
+                if _published_timestamp(candidate[0])
+                <= next_slot_freshness_cutoff
+            ]
+            if (
+                expiring_candidates
+                and len(expiring_candidates) == len(fresh_candidates)
+            ):
+                # Yellow and Babylon receive one draft per KST day.  When
+                # every eligible post reaches the 24-hour boundary by
+                # tomorrow's first full cron interval, use latest-first so a
+                # relevance-heavy backlog item cannot hide the newest official
+                # post.  Mixed buckets
+                # retain the existing relevance policy because their safe
+                # candidates can still be considered in the next KST slot.
+                # Eligibility, skip, reply, and retweet guards have already run.
+                return max(
+                    expiring_candidates,
+                    key=lambda candidate: (
+                        _published_timestamp(candidate[0]),
+                        relevance_key(candidate)[0],
+                        int(str(candidate[0]["id"])),
+                    ),
+                )[0]
         return max(fresh_candidates, key=relevance_key)[0]
     return None
 

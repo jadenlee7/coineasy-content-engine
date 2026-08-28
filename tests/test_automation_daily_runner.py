@@ -1200,6 +1200,160 @@ async def test_standard_client_photo_daily_news_reaches_generation_as_source_dom
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["yellow", "babylon"])
+async def test_expiring_latest_source_reaches_daily_slot_before_relevance_backlog(
+    client_id,
+):
+    official_handle = {
+        "yellow": "Yellow",
+        "babylon": "babylonlabs_io",
+    }[client_id]
+    older = PendingSource(
+        **{
+            **pending(
+                client_id,
+                text=(
+                    "Our major mainnet integration launch is live with a "
+                    "detailed developer release update. " * 4
+                ),
+                source_image_url=(
+                    f"https://pbs.twimg.com/media/{client_id}-older.jpg"
+                ),
+            ).__dict__,
+            "source_item_id": "66666666-6666-4666-8666-666666666666",
+            "post_id": "900",
+            "source_url": f"https://x.com/{official_handle}/status/900",
+            "published_at": "2026-08-27T09:00:06Z",
+            "metrics": {"like_count": 500},
+        }
+    )
+    latest = PendingSource(
+        **{
+            **pending(
+                client_id,
+                text="A product update is available.",
+                source_image_url=(
+                    f"https://pbs.twimg.com/media/{client_id}-latest.jpg"
+                ),
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "901",
+            "source_url": f"https://x.com/{official_handle}/status/901",
+            "published_at": "2026-08-27T11:00:12Z",
+        }
+    )
+    states = {
+        active_client_id: AutomationState(
+            None,
+            active_client_id != client_id,
+            (),
+        )
+        for active_client_id in AUTOMATION_CLIENTS
+    }
+    states[client_id] = AutomationState("901", False, (older, latest))
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        allowed_clients=(client_id,),
+        now_factory=lambda: datetime(
+            2026,
+            8,
+            27,
+            20,
+            22,
+            tzinfo=timezone.utc,
+        ),
+    ).run()
+
+    assert summary.generated == 1
+    assert repo.queues[0]["source_item_ids"] == [latest.source_item_id]
+    assert generation.calls[0]["source_content"] == latest.source_content
+    assert generation.calls[0]["source_url"] == latest.source_url
+    assert generation.calls[0]["source_image_url"].endswith(
+        f"/{client_id}-latest.jpg"
+    )
+
+
+@pytest.mark.asyncio
+async def test_babylon_expiring_text_only_latest_falls_back_to_image_source():
+    image_url = "https://pbs.twimg.com/media/babylon-image-backed.jpg"
+    image_backed = PendingSource(
+        **{
+            **pending(
+                "babylon",
+                text=(
+                    "Our major mainnet integration launch is live with a "
+                    "detailed developer release update. " * 4
+                ),
+                source_image_url=image_url,
+            ).__dict__,
+            "source_item_id": "66666666-6666-4666-8666-666666666666",
+            "post_id": "900",
+            "source_url": "https://x.com/babylonlabs_io/status/900",
+            "published_at": "2026-08-27T03:55:00Z",
+        }
+    )
+    text_only_latest = PendingSource(
+        **{
+            **pending(
+                "babylon",
+                text="A product update is available.",
+            ).__dict__,
+            "source_item_id": "77777777-7777-4777-8777-777777777777",
+            "post_id": "901",
+            "source_url": "https://x.com/babylonlabs_io/status/901",
+            "published_at": "2026-08-27T14:05:10Z",
+        }
+    )
+    states = {
+        client_id: AutomationState(
+            None,
+            client_id != "babylon",
+            (),
+        )
+        for client_id in AUTOMATION_CLIENTS
+    }
+    states["babylon"] = AutomationState(
+        "901",
+        False,
+        (image_backed, text_only_latest),
+    )
+    repo = FakeRepository(states)
+    generation = FakeGenerationClient()
+
+    summary = await runner(
+        repo,
+        FakeXClient(),
+        generation,
+        allowed_clients=("babylon",),
+        now_factory=lambda: datetime(
+            2026,
+            8,
+            27,
+            20,
+            22,
+            tzinfo=timezone.utc,
+        ),
+    ).run()
+
+    assert summary.generated == 1
+    assert summary.skipped == 1
+    assert repo.queues[0]["source_item_ids"] == [image_backed.source_item_id]
+    assert repo.queues[0]["source_image_url"] == image_url
+    assert generation.calls[0]["source_content"] == image_backed.source_content
+    assert generation.calls[0]["source_url"] == image_backed.source_url
+    assert generation.calls[0]["source_image_url"] == image_url
+    assert {
+        "client_id": "babylon",
+        "status": "approved_classic_template_missing",
+    } in summary.outcomes
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("client_id", ["origintrail", "babylon"])
 async def test_text_only_daily_news_requires_an_approved_classic_template(
     client_id,

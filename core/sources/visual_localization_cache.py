@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from core.sources.source_image import PreparedSourceImage
 
 
-VISUAL_LOCALIZATION_CACHE_VERSION = "squid-authoritative-visual-v6"
+VISUAL_LOCALIZATION_CACHE_VERSION = "squid-authoritative-visual-v7"
 VISUAL_LOCALIZATION_CACHE_MAX_ITEMS = 64
 VISUAL_LOCALIZATION_CACHE_TTL_SECONDS = 24 * 60 * 60
 
