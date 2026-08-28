@@ -35,6 +35,8 @@ CONFIG_SHA = hashlib.sha256(CONFIG_PAYLOAD).hexdigest()
 DB_SECRET = "db-secret-must-never-appear"
 JWT_SECRET = "legacy-jwt-secret-longer-than-thirty-two-bytes"
 PUBLISHABLE = "sb_publishable_secret_must_never_appear"
+API_KEY_ID = "22222222-2222-4222-8222-222222222222"
+SECRET_KEY_ID = "33333333-3333-4333-8333-333333333333"
 MANAGEMENT_TOKEN = "sbp_scoped_management_token_must_never_appear"
 SQL_PAYLOAD = b"-- immutable exact-head sql\n"
 SQL_SHA256 = hashlib.sha256(SQL_PAYLOAD).hexdigest()
@@ -402,7 +404,24 @@ class FakeRunner:
             RUNNER.MANAGEMENT_API_BASE_URL
             + f"/projects/{CHILD_REF}/billing/addons"
         )
-        if url in {parent_url, child_url}:
+        branch_config_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL + f"/branches/{CHILD_REF}"
+        )
+        api_keys_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{CHILD_REF}/api-keys?reveal=false"
+        )
+        publishable_key_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true"
+        )
+        if url in {
+            parent_url,
+            child_url,
+            branch_config_url,
+            api_keys_url,
+            publishable_key_url,
+        }:
             get_header = getattr(req, "get_header")
             self.management_requests.append(
                 {
@@ -424,6 +443,53 @@ class FakeRunner:
                                 "variant": {"id": "ci_micro"},
                             }
                         ]
+                    }
+                )
+            if url == branch_config_url:
+                self.events.append("branch_config_get")
+                return OpenApiResponse(
+                    {
+                        "ref": CHILD_REF,
+                        "status": "ACTIVE_HEALTHY",
+                        "db_host": f"db.{CHILD_REF}.supabase.co",
+                        "db_port": 5432,
+                        "db_user": "postgres",
+                        "db_pass": DB_SECRET,
+                        "jwt_secret": JWT_SECRET,
+                    }
+                )
+            if url == api_keys_url:
+                self.events.append("api_keys_get")
+                return OpenApiResponse(
+                    [
+                        {
+                            "id": "anon",
+                            "name": "anon",
+                            "type": "legacy",
+                            "api_key": "must-be-ignored",
+                        },
+                        {
+                            "id": API_KEY_ID,
+                            "name": "default",
+                            "type": "publishable",
+                            "api_key": None,
+                        },
+                        {
+                            "id": SECRET_KEY_ID,
+                            "name": "default",
+                            "type": "secret",
+                            "api_key": None,
+                        },
+                    ]
+                )
+            if url == publishable_key_url:
+                self.events.append("publishable_key_get")
+                return OpenApiResponse(
+                    {
+                        "id": API_KEY_ID,
+                        "name": "default",
+                        "type": "publishable",
+                        "api_key": PUBLISHABLE,
                     }
                 )
             self.events.append("billing_addons_get")
@@ -529,21 +595,6 @@ class FakeRunner:
                     },
                 ]
             return [default]
-        if "branches" in command and "get" in command:
-            self.events.append("branch_get_secrets")
-            return {
-                "envs": {
-                    "POSTGRES_URL_NON_POOLING": (
-                        "postgresql://postgres:"
-                        + DB_SECRET
-                        + f"@db.{CHILD_REF}.supabase.co:5432/postgres"
-                    ),
-                    "SUPABASE_URL": f"https://{CHILD_REF}.supabase.co",
-                    "SUPABASE_PUBLISHABLE_KEY": PUBLISHABLE,
-                    "SUPABASE_JWT_SECRET": JWT_SECRET,
-                    "SUPABASE_SERVICE_ROLE_KEY": "must-be-ignored",
-                }
-            }
         if "branches" in command and "delete" in command:
             self.events.append("branch_delete")
             if self.delete_ambiguous:
@@ -864,6 +915,106 @@ def test_management_path_is_exactly_fenced_before_open(
     assert called is False
 
 
+@pytest.mark.parametrize(
+    ("path", "body"),
+    (
+        (f"/branches/{CHILD_REF}", b"{}"),
+        (f"/projects/{CHILD_REF}/api-keys?reveal=false", b"[]"),
+        (
+            f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true",
+            b"{}",
+        ),
+    ),
+)
+def test_management_child_credential_paths_require_exact_ref_and_query(
+    path: str,
+    body: bytes,
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+
+    def opener(req: object, *, timeout: float) -> RawHttpResponse:
+        captured.append(req)
+        return RawHttpResponse(body)
+
+    _management_proof(tmp_path, opener)._management_get_json(
+        path,
+        code="test_management",
+        timeout=7,
+        expected_project_ref=CHILD_REF,
+    )
+    assert len(captured) == 1
+    assert str(getattr(captured[0], "full_url", "")) == (
+        RUNNER.MANAGEMENT_API_BASE_URL + path
+    )
+    assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        f"/branches/{PARENT_REF}",
+        f"/projects/{CHILD_REF}/api-keys",
+        f"/projects/{CHILD_REF}/api-keys?reveal=true",
+        f"/projects/{CHILD_REF}/api-keys?reveal=0",
+        f"/projects/{CHILD_REF}/api-keys?reveal=false&extra=1",
+        f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}",
+        f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=false",
+        f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true&extra=1",
+        f"/projects/{PARENT_REF}/api-keys/{API_KEY_ID}?reveal=true",
+        f"/projects/{CHILD_REF}/api-keys/../secret?reveal=true",
+        f"/projects/{CHILD_REF}/api-keys/%2e%2e%2fsecret?reveal=true",
+        f"/projects/{CHILD_REF}/api-keys?reveal=false#fragment",
+        "//attacker.invalid/branches/abcdefghijklmnopqrst",
+        "https://attacker.invalid/v1/branches/abcdefghijklmnopqrst",
+    ),
+)
+def test_management_child_credential_path_drift_is_rejected_before_open(
+    path: str,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def opener(_req: object, *, timeout: float) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("must not open")
+
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="supabase_management_path_invalid",
+    ):
+        _management_proof(tmp_path, opener)._management_get_json(
+            path,
+            code="test_management",
+            timeout=7,
+            expected_project_ref=CHILD_REF,
+        )
+    assert called is False
+
+
+def test_management_child_credential_path_requires_expected_ref(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def opener(_req: object, *, timeout: float) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("must not open")
+
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="supabase_management_path_invalid",
+    ):
+        _management_proof(tmp_path, opener)._management_get_json(
+            f"/branches/{CHILD_REF}",
+            code="test_management",
+            timeout=7,
+        )
+    assert called is False
+
+
 def _fake_exact_checkout(
     *_args: object,
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -927,7 +1078,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert receipt["completed_steps"] == receipt["planned_execution_order"]
     assert "execution_order" not in receipt
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_create")
-    assert fake.events.index("watchdog_armed") < fake.events.index("branch_get_secrets")
+    assert fake.events.index("watchdog_armed") < fake.events.index("branch_config_get")
+    assert fake.events.index("branch_config_get") < fake.events.index("api_keys_get")
+    assert fake.events.index("api_keys_get") < fake.events.index(
+        "publishable_key_get"
+    )
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_list_2")
     assert fake.events.index("direct_probe") < fake.events.index("postgrest_probe")
     assert fake.events.count("postgrest_probe") == 1
@@ -980,14 +1135,38 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
             ),
             "timeout": 7,
             "authorization_valid": True,
-        }
+        },
+        {
+            "url": RUNNER.MANAGEMENT_API_BASE_URL + f"/branches/{CHILD_REF}",
+            "timeout": 7,
+            "authorization_valid": True,
+        },
+        {
+            "url": (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{CHILD_REF}/api-keys?reveal=false"
+            ),
+            "timeout": 7,
+            "authorization_valid": True,
+        },
+        {
+            "url": (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true"
+            ),
+            "timeout": 7,
+            "authorization_valid": True,
+        },
     ]
-    branch_get = next(
-        command
+    assert not any(
+        "branches" in command and "get" in command
         for command in fake.commands
-        if "branches" in command and "get" in command
     )
-    assert branch_get[-2:] == ["--output-format", "json"]
+    assert not any(
+        "/config/database/pooler" in str(item)
+        for request_item in fake.management_requests
+        for item in request_item.values()
+    )
     probe_commands = [
         command
         for command in fake.commands
@@ -1898,7 +2077,7 @@ def test_ambiguous_create_reconciles_only_for_cleanup_and_never_proves(
         == "supabase_branch_create_timeout"
     )
     assert "watchdog_armed" in fake.events
-    assert "branch_get_secrets" not in fake.events
+    assert "branch_config_get" not in fake.events
     assert "preview_migration_apply" not in fake.events
     assert "branch_delete" in fake.events
     assert receipt["cleanup"]["absence_confirmations"] == 3
@@ -2013,7 +2192,7 @@ def test_failed_branch_lifecycle_blocks_even_when_project_health_is_ready(
     assert exit_code == 1
     assert receipt["failure_code"] == "preview_child_failed_readiness"
     assert "project_list" not in fake.events
-    assert "branch_get_secrets" not in fake.events
+    assert "branch_config_get" not in fake.events
     assert "preview_migration_apply" not in fake.events
     assert fake.events.count("branch_delete") == 1
     assert receipt["cleanup"]["absence_confirmations"] == 3
@@ -2061,7 +2240,7 @@ def test_branch_shape_is_server_read_back_and_fails_closed(
     assert receipt["branch"]["size"] is None
     assert receipt["branch"]["persistent"] is None
     assert receipt["branch"]["with_data"] is None
-    assert "branch_get_secrets" not in fake.events
+    assert "branch_config_get" not in fake.events
     assert "preview_migration_apply" not in fake.events
     assert fake.events.count("branch_delete") == 1
     assert receipt["cleanup"]["absence_confirmations"] == 3
@@ -2106,7 +2285,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
-    assert "branch_get_secrets" not in fake.events
+    assert "branch_config_get" not in fake.events
     assert "direct_probe" not in fake.events
     assert "postgrest_probe" not in fake.events
     assert fake.events.count("branch_delete") == 1
@@ -2117,6 +2296,172 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
         "management_permission_preflight",
         "branch_delete_absence_confirmed",
     ]
+
+
+@pytest.mark.parametrize(
+    ("denied_suffix", "denied_event", "expected_failure"),
+    (
+        (
+            f"/branches/{CHILD_REF}",
+            "branch_config_get",
+            "supabase_branch_config_get_authorization_failed",
+        ),
+        (
+            f"/projects/{CHILD_REF}/api-keys?reveal=false",
+            "api_keys_get",
+            "supabase_api_keys_get_authorization_failed",
+        ),
+        (
+            f"/api-keys/{API_KEY_ID}?reveal=true",
+            "publishable_key_get",
+            "supabase_publishable_key_get_authorization_failed",
+        ),
+    ),
+)
+def test_child_credential_authorization_failure_deletes_without_probe(
+    denied_suffix: str,
+    denied_event: str,
+    expected_failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class PublishableDeniedRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(denied_suffix):
+                self.events.append(denied_event)
+                raise RUNNER.error.HTTPError(
+                    url,
+                    403,
+                    "Forbidden",
+                    {},
+                    io.BytesIO(b'{"message":"denied"}'),
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = PublishableDeniedRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == expected_failure
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert "preview_migration_apply" not in fake.events
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
+    assert DB_SECRET not in json.dumps(receipt, sort_keys=True)
+
+
+def test_child_api_key_metadata_retries_transient_404_without_recreate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class TransientApiKeysRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.api_key_reads = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{CHILD_REF}/api-keys?reveal=false"):
+                self.api_key_reads += 1
+                if self.api_key_reads == 1:
+                    raise RUNNER.error.HTTPError(
+                        url,
+                        404,
+                        "Not Found",
+                        {},
+                        io.BytesIO(b'{"message":"not ready"}'),
+                    )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = TransientApiKeysRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 0
+    assert receipt["ok"] is True
+    assert fake.api_key_reads == 2
+    assert fake.events.count("branch_config_get") == 2
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+
+
+def test_child_api_key_metadata_persistent_404_fails_typed_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class MissingApiKeysRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.api_key_reads = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{CHILD_REF}/api-keys?reveal=false"):
+                self.api_key_reads += 1
+                raise RUNNER.error.HTTPError(
+                    url,
+                    404,
+                    "Not Found",
+                    {},
+                    io.BytesIO(b'{"message":"not ready"}'),
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    args = _args(tmp_path)
+    args.branch_ready_timeout_seconds = 3
+    fake = MissingApiKeysRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "supabase_api_keys_get_not_found"
+    assert fake.api_key_reads > 1
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert "preview_migration_apply" not in fake.events
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
 
 
 def test_management_permission_preflight_fails_before_paid_branch_mutation(
@@ -2161,7 +2506,7 @@ def test_management_permission_preflight_fails_before_paid_branch_mutation(
     assert receipt["cleanup"]["watchdog_armed"] is False
     assert "branch_create" not in fake.events
     assert "branch_delete" not in fake.events
-    assert "branch_get_secrets" not in fake.events
+    assert "branch_config_get" not in fake.events
     assert receipt["completed_steps"] == ["exact_sha_snapshot_bound"]
     assert "branch_ready_and_shape_verified" not in receipt["completed_steps"]
     assert "branch_delete_absence_confirmed" not in receipt["completed_steps"]
@@ -2351,72 +2696,245 @@ def test_empty_branch_list_cannot_be_misread_as_deletion_confirmation(
     assert receipt["cleanup"]["watchdog_cancelled"] is False
 
 
-def test_branch_credentials_parse_flexible_env_shape_and_fence_child() -> None:
-    value = {
-        "nested": {
-            "POSTGRES_URL_NON_POOLING": (
-                f"postgresql://postgres:{DB_SECRET}@db.{CHILD_REF}.supabase.co:5432/postgres"
-            ),
-            "SUPABASE_URL": f"https://{CHILD_REF}.supabase.co",
-            "SUPABASE_ANON_KEY": PUBLISHABLE,
-            "SUPABASE_JWT_SECRET": JWT_SECRET,
-        }
+def _branch_config() -> dict[str, object]:
+    return {
+        "ref": CHILD_REF,
+        "status": "ACTIVE_HEALTHY",
+        "db_host": f"db.{CHILD_REF}.supabase.co",
+        "db_port": 5432,
+        "db_user": "postgres",
+        "db_pass": DB_SECRET,
+        "jwt_secret": JWT_SECRET,
     }
-    credentials = RUNNER.extract_branch_credentials(value, CHILD_REF)
+
+
+def _publishable_key() -> dict[str, object]:
+    return {
+        "id": API_KEY_ID,
+        "name": "default",
+        "type": "publishable",
+        "api_key": PUBLISHABLE,
+    }
+
+
+def test_management_branch_credentials_are_strict_and_scrubbable() -> None:
+    credentials = RUNNER.extract_management_branch_credentials(
+        _branch_config(),
+        _publishable_key(),
+        CHILD_REF,
+        API_KEY_ID,
+    )
     assert credentials.host == f"db.{CHILD_REF}.supabase.co"
+    assert credentials.port == 5432
+    assert credentials.user == "postgres"
+    assert credentials.database == "postgres"
     assert credentials.password == DB_SECRET
+    assert credentials.project_url == f"https://{CHILD_REF}.supabase.co"
     assert credentials.publishable_key == PUBLISHABLE
+    assert credentials.jwt_secret == JWT_SECRET
     credentials.scrub()
     assert credentials.password == ""
     assert credentials.publishable_key == ""
     assert credentials.jwt_secret == ""
 
-    with pytest.raises(RUNNER.ProofError, match="branch_direct_database_fence_mismatch"):
-        RUNNER.extract_branch_credentials(value, "z" * 20)
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    (
+        ("ref", PARENT_REF, "branch_config_ref_mismatch"),
+        ("status", "COMING_UP", "branch_config_status_invalid"),
+        ("db_host", f"db.{PARENT_REF}.supabase.co", "branch_direct_database_fence_mismatch"),
+        ("db_port", 6543, "branch_direct_database_fence_mismatch"),
+        ("db_user", "postgres.pooler", "branch_database_principal_invalid"),
+        ("db_pass", "", "branch_credentials_incomplete"),
+        ("jwt_secret", "short", "branch_credentials_incomplete"),
+    ),
+)
+def test_management_branch_credentials_reject_config_drift(
+    field: str,
+    value: object,
+    expected: str,
+) -> None:
+    config = _branch_config()
+    config[field] = value
+    with pytest.raises(RUNNER.ProofError, match=expected):
+        RUNNER.extract_management_branch_credentials(
+            config,
+            _publishable_key(),
+            CHILD_REF,
+            API_KEY_ID,
+        )
 
 
-def test_branch_credentials_parse_labeled_cli_secret_json_without_service_key() -> None:
-    value = {
-        "secrets": [
-            {
-                "name": "POSTGRES_URL_NON_POOLING",
-                "value": (
-                    f"postgresql://postgres:{DB_SECRET}"
-                    f"@db.{CHILD_REF}.supabase.co:5432/postgres"
-                ),
-            },
-            {"name": "SUPABASE_URL", "value": f"https://{CHILD_REF}.supabase.co"},
-            {"label": "JWT Secret", "secret": JWT_SECRET},
-        ],
-        "api_keys": [
-            {"name": "service_role", "api_key": "must-be-ignored"},
-            {"type": "anon", "api_key": PUBLISHABLE},
-        ],
-    }
-    credentials = RUNNER.extract_branch_credentials(value, CHILD_REF)
-    assert credentials.password == DB_SECRET
-    assert credentials.publishable_key == PUBLISHABLE
-    assert credentials.jwt_secret == JWT_SECRET
-
-
-def test_branch_credentials_parse_structured_cli_shape() -> None:
-    value = {
-        "database": {
-            "hostname": f"db.{CHILD_REF}.supabase.co",
-            "port": "5432",
-            "username": "postgres",
-            "db_password": DB_SECRET,
+def test_publishable_key_metadata_selects_only_one_default_uuid() -> None:
+    rows = [
+        {"id": "anon", "name": "anon", "type": "legacy"},
+        {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "name": "secondary",
+            "type": "publishable",
         },
-        "credentials": [
-            {"name": "Legacy JWT Secret", "value": JWT_SECRET},
-            {"label": "Publishable Key", "value": PUBLISHABLE},
-        ],
-    }
-    credentials = RUNNER.extract_branch_credentials(value, CHILD_REF)
-    assert credentials.host == f"db.{CHILD_REF}.supabase.co"
-    assert credentials.password == DB_SECRET
-    assert credentials.project_url == f"https://{CHILD_REF}.supabase.co"
-    assert credentials.publishable_key == PUBLISHABLE
+        {"id": API_KEY_ID, "name": "default", "type": "publishable"},
+        {"id": SECRET_KEY_ID, "name": "default", "type": "secret"},
+    ]
+    assert RUNNER.extract_publishable_api_key_id(rows) == API_KEY_ID
+
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_publishable_key_unavailable",
+    ):
+        RUNNER.extract_publishable_api_key_id(rows[:2])
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_publishable_key_ambiguous",
+    ):
+        RUNNER.extract_publishable_api_key_id(
+            [
+                rows[2],
+                {
+                    "id": "55555555-5555-4555-8555-555555555555",
+                    "name": "default",
+                    "type": "publishable",
+                },
+            ]
+        )
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_publishable_key_metadata_invalid",
+    ):
+        RUNNER.extract_publishable_api_key_id(
+            [{"id": "../secret", "name": "default", "type": "publishable"}]
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("id", "55555555-5555-4555-8555-555555555555"),
+        ("name", "secondary"),
+        ("type", "secret"),
+        ("api_key", "sb_secret_must_not_be_accepted"),
+        ("api_key", None),
+    ),
+)
+def test_management_branch_credentials_reject_publishable_detail_drift(
+    field: str,
+    value: object,
+) -> None:
+    api_key = _publishable_key()
+    api_key[field] = value
+    with pytest.raises(RUNNER.ProofError, match="branch_publishable_key_invalid"):
+        RUNNER.extract_management_branch_credentials(
+            _branch_config(),
+            api_key,
+            CHILD_REF,
+            API_KEY_ID,
+        )
+
+
+@pytest.mark.parametrize("detail_is_valid", (True, False))
+def test_load_credentials_recursively_clears_every_raw_response(
+    detail_is_valid: bool,
+    tmp_path: Path,
+) -> None:
+    branch_config = _branch_config()
+    api_keys_metadata = [
+        {"id": API_KEY_ID, "name": "default", "type": "publishable"},
+        {"id": SECRET_KEY_ID, "name": "default", "type": "secret"},
+    ]
+    api_key = _publishable_key()
+    if not detail_is_valid:
+        api_key["api_key"] = "sb_secret_must_not_be_accepted"
+    responses: list[object] = [branch_config, api_keys_metadata, api_key]
+
+    proof = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        sleeper=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+    proof.branch = RUNNER.BranchIdentity(
+        branch_id="branch-id-1",
+        ref=CHILD_REF,
+        name="child",
+        status="ACTIVE_HEALTHY",
+    )
+    proof.branch_ready_deadline = 1.0
+
+    def management_get(
+        _path: str,
+        *,
+        code: str,
+        timeout: float,
+        expected_project_ref: str | None = None,
+    ) -> object:
+        assert timeout == 7
+        assert expected_project_ref == CHILD_REF
+        return responses.pop(0)
+
+    proof._management_get_json = management_get  # type: ignore[method-assign]
+    if detail_is_valid:
+        proof._load_credentials()
+        assert proof.credentials is not None
+        proof.credentials.scrub()
+    else:
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="branch_publishable_key_invalid",
+        ):
+            proof._load_credentials()
+        assert proof.credentials is None
+
+    assert responses == []
+    assert branch_config == {}
+    assert api_keys_metadata == []
+    assert api_key == {}
+
+
+def test_load_credentials_attempts_once_after_readiness_deadline(
+    tmp_path: Path,
+) -> None:
+    responses: list[object] = [
+        _branch_config(),
+        [{"id": API_KEY_ID, "name": "default", "type": "publishable"}],
+        _publishable_key(),
+    ]
+    calls: list[str] = []
+    proof = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        sleeper=lambda _seconds: None,
+        clock=lambda: 2.0,
+    )
+    proof.branch = RUNNER.BranchIdentity(
+        branch_id="branch-id-1",
+        ref=CHILD_REF,
+        name="child",
+        status="ACTIVE_HEALTHY",
+    )
+    proof.branch_ready_deadline = 1.0
+
+    def management_get(
+        path: str,
+        *,
+        code: str,
+        timeout: float,
+        expected_project_ref: str | None = None,
+    ) -> object:
+        assert timeout == 7
+        assert expected_project_ref == CHILD_REF
+        calls.append(path)
+        return responses.pop(0)
+
+    proof._management_get_json = management_get  # type: ignore[method-assign]
+    proof._load_credentials()
+
+    assert calls == [
+        f"/branches/{CHILD_REF}",
+        f"/projects/{CHILD_REF}/api-keys?reveal=false",
+        f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true",
+    ]
+    assert responses == []
+    assert proof.credentials is not None
+    proof.credentials.scrub()
 
 
 class StubPopen:
@@ -3400,21 +3918,12 @@ while True:
         proof._clear_management_home()
 
 
-@pytest.mark.parametrize(
-    ("code", "expected_failure"),
-    (
-        ("supabase_branch_list", "supabase_branch_list_timeout"),
-        ("supabase_branch_get", "supabase_branch_get_timeout"),
-    ),
-)
-def test_read_timeout_fails_closed_with_typed_receipt(
-    code: str,
-    expected_failure: str,
+def test_branch_list_timeout_fails_closed_with_typed_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
-    fake = FakeRunner(timeout_code=code)
+    fake = FakeRunner(timeout_code="supabase_branch_list")
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
@@ -3423,10 +3932,7 @@ def test_read_timeout_fails_closed_with_typed_receipt(
         clock=_clock(),
     ).run()
     assert exit_code == 1
-    assert receipt["failure_code"] == expected_failure
-    if code == "supabase_branch_get":
-        assert "branch_delete" in fake.events
-        assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["failure_code"] == "supabase_branch_list_timeout"
 
 
 class FakeGitRunner:

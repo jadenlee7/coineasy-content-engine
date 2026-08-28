@@ -195,12 +195,27 @@ create 인자 자체를 증거로 쓰지 않습니다. BranchResponse의
 exact-child `GET /v1/projects/{child_ref}/billing/addons`에서
 `selected_addons[].type=compute_instance`와 exact `variant.id=ci_small`을 실제
 확인합니다. scoped PAT은 branch lifecycle 최소 권한과
-`infra_add_ons_read`만 가지며, 비용이 발생하는 create 전에 같은 endpoint를
-parent ref로 GET해 권한과 최소 envelope shape를 preflight합니다. Redirect는 전부
-거부하고 401/403·unknown variant·중복·shape drift는 즉시 fail-closed합니다.
+`infra_add_ons_read`, `api_gateway_keys_read`만 가지며, 비용이 발생하는 create
+전에 billing add-ons endpoint를 parent ref로 GET해 compute read 권한과 최소
+envelope shape만 preflight합니다. Production API-key metadata나 값은 읽지
+않습니다. API-key read 권한은 cleanup watchdog이 보호하는 child가 생성된 뒤
+그 exact child에서 처음 확인합니다. Redirect는 전부 거부하고
+401/403·unknown variant·중복·shape drift는 즉시 fail-closed합니다.
 Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compute add-on
 미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
 branch를 수리하거나 다시 생성하지 않습니다.
+
+Child credential은 복합 `supabase branches get` 대신 Management API의 세
+read-only 요청으로만 가져옵니다. 먼저 exact
+`GET /v1/branches/{child_ref}`에서 direct DB password와 Legacy JWT secret을
+읽고 ref·ACTIVE_HEALTHY·`db.{child_ref}.supabase.co:5432`·`postgres` principal을
+고정 검증합니다. 다음으로 exact
+`GET /v1/projects/{child_ref}/api-keys?reveal=false`에서 `type=publishable`,
+`name=default`인 canonical UUID 하나만 고른 뒤, 그 ID 하나에만
+`GET /v1/projects/{child_ref}/api-keys/{id}?reveal=true`를 호출합니다.
+`secret`, `service_role`, legacy anon 값은 선택하거나 reveal하지 않습니다.
+Pooler endpoint는 호출하지 않으며 `database_pooling_config_read` 권한도 요구하지
+않습니다. 세 raw response는 성공·부분 실패 모두 재귀적으로 즉시 비웁니다.
 
 두 probe와 config는 migration과 함께 exact SHA blob을 메모리에 한 번만
 snapshot합니다. Probe는 mutable checkout이나 임시 source file을 다시 열지 않고
@@ -386,9 +401,11 @@ Receipt expiry는 후속 disposable Preview 검증 항목이며, 실제로 재�
 성공 receipt에 검증 완료로 기록하지 않고 `미관측`으로 남깁니다.
 
 DB race만으로 connector attestation 성공을 주장하지 않습니다. 실제 JWT
-runner는 child publishable key와 Legacy JWT secret을 고정된 환경변수에서 한 번
-읽은 즉시 환경에서 제거하고, secret을 파일·stdout·subprocess에 전달하지
-않습니다. 모든 connector write는 child URL의 PostgREST RPC를 통과해야 합니다.
+runner는 위 exact-child Management API 응답에서 publishable key와 Legacy JWT
+secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요한 값은 단 한 번의
+격리된 PostgREST probe process 환경에만 전달하며, 파일·stdout·다른 subprocess로
+전달하지 않습니다. 모든 connector write는 child URL의 PostgREST RPC를 통과해야
+합니다.
 
 ## 관측 가능한 성공 기준
 

@@ -40,6 +40,10 @@ import uuid
 
 SCHEMA_VERSION = "harmony-preview-one-shot-proof@2"
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
+API_KEY_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 SHA40_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 READY_STATUS = "ACTIVE_HEALTHY"
@@ -1004,54 +1008,17 @@ def _walk_dicts(value: object) -> Iterable[dict[str, object]]:
             yield from _walk_dicts(child)
 
 
-def _normalize_label(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+def _clear_mutable_json(value: object) -> None:
+    """Release every mutable container that may retain a secret response."""
 
-
-def _first_string(value: object, names: set[str]) -> str | None:
-    normalized = {_normalize_label(name) for name in names}
-    for mapping in _walk_dicts(value):
-        for key, item in mapping.items():
-            if _normalize_label(key) in normalized and isinstance(item, str) and item:
-                return item
-    return None
-
-
-def _first_labeled_string(value: object, names: set[str]) -> str | None:
-    """Read either env-style objects or named API-key objects safely."""
-
-    normalized = {_normalize_label(name) for name in names}
-    label_fields = {"name", "key", "label", "type", "variable"}
-    value_fields = {"value", "api_key", "secret", "token"}
-    for mapping in _walk_dicts(value):
-        labels = {
-            _normalize_label(item)
-            for key, item in mapping.items()
-            if _normalize_label(key) in label_fields and isinstance(item, str)
-        }
-        if not labels.intersection(normalized):
-            continue
-        for key, item in mapping.items():
-            if (
-                _normalize_label(key) in value_fields
-                and isinstance(item, str)
-                and item
-            ):
-                return item
-    return None
-
-
-def _first_int(value: object, names: set[str]) -> int | None:
-    normalized = {_normalize_label(name) for name in names}
-    for mapping in _walk_dicts(value):
-        for key, item in mapping.items():
-            if _normalize_label(key) not in normalized:
-                continue
-            if isinstance(item, int):
-                return item
-            if isinstance(item, str) and item.isdigit():
-                return int(item)
-    return None
+    if isinstance(value, MutableMapping):
+        for child in list(value.values()):
+            _clear_mutable_json(child)
+        value.clear()
+    elif isinstance(value, list):
+        for child in list(value):
+            _clear_mutable_json(child)
+        value.clear()
 
 
 def extract_branches(value: object) -> list[BranchIdentity]:
@@ -1159,113 +1126,85 @@ def extract_compute_addon_size(value: object) -> str:
     return "small"
 
 
-def _parse_postgres_url(value: str) -> dict[str, object]:
-    try:
-        parsed = parse.urlsplit(value)
-        port = parsed.port or 5432
-    except ValueError:
-        raise ProofError("branch_database_url_invalid") from None
-    if parsed.scheme not in {"postgres", "postgresql"}:
-        raise ProofError("branch_database_url_invalid")
-    if not parsed.hostname or parsed.password is None or parsed.username is None:
-        raise ProofError("branch_database_url_incomplete")
-    return {
-        "host": parsed.hostname,
-        "port": port,
-        "user": parse.unquote(parsed.username),
-        "password": parse.unquote(parsed.password),
-        "database": parsed.path.removeprefix("/") or "postgres",
-    }
+def extract_publishable_api_key_id(value: object) -> str:
+    """Select one deterministic public-key ID without revealing any key."""
+
+    if not isinstance(value, list):
+        raise ProofError("branch_api_keys_metadata_invalid")
+    candidates: list[str] = []
+    for row in value:
+        if not isinstance(row, dict):
+            raise ProofError("branch_api_keys_metadata_invalid")
+        if row.get("type") != "publishable":
+            continue
+        key_id = row.get("id")
+        name = row.get("name")
+        if (
+            not isinstance(key_id, str)
+            or API_KEY_ID_PATTERN.fullmatch(key_id) is None
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise ProofError("branch_publishable_key_metadata_invalid")
+        if name == "default":
+            candidates.append(key_id)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ProofError("branch_publishable_key_unavailable")
+    raise ProofError("branch_publishable_key_ambiguous")
 
 
-def extract_branch_credentials(value: object, branch_ref: str) -> BranchCredentials:
-    non_pooling = _first_string(
-        value, {"POSTGRES_URL_NON_POOLING", "postgres_url_non_pooling"}
-    ) or _first_labeled_string(
-        value, {"POSTGRES_URL_NON_POOLING", "postgres_url_non_pooling"}
-    ) or _first_string(
-        value, {"database_url", "db_url", "postgres_url", "connection_string"}
-    ) or _first_labeled_string(
-        value, {"database_url", "db_url", "postgres_url", "connection_string"}
-    )
-    parsed_url: dict[str, object] = {}
-    if non_pooling:
-        parsed_url = _parse_postgres_url(non_pooling)
+def extract_management_branch_credentials(
+    branch_config: object,
+    api_key: object,
+    branch_ref: str,
+    expected_api_key_id: str,
+) -> BranchCredentials:
+    """Parse only exact top-level Management API credential fields."""
 
-    host = _first_string(value, {"db_host", "host", "hostname"}) or str(
-        parsed_url.get("host", "")
-    )
-    port = _first_int(value, {"db_port", "port"}) or int(
-        parsed_url.get("port", 5432)
-    )
-    user = _first_string(value, {"db_user", "user", "username"}) or str(
-        parsed_url.get("user", "")
-    )
-    password = _first_string(
-        value, {"db_pass", "db_password", "password"}
-    ) or str(
-        parsed_url.get("password", "")
-    )
-    database = str(parsed_url.get("database", "postgres"))
-    jwt_secret = _first_string(
-        value, {"jwt_secret", "SUPABASE_JWT_SECRET"}
-    ) or _first_labeled_string(
-        value,
-        {
-            "jwt_secret",
-            "SUPABASE_JWT_SECRET",
-            "JWT Secret",
-            "legacy_jwt_secret",
-            "Legacy JWT Secret",
-        },
-    ) or ""
-    publishable_key = _first_string(
-        value,
-        {
-            "SUPABASE_PUBLISHABLE_KEY",
-            "publishable_key",
-            "SUPABASE_ANON_KEY",
-            "anon_key",
-        },
-    ) or _first_labeled_string(
-        value,
-        {
-            "SUPABASE_PUBLISHABLE_KEY",
-            "publishable_key",
-            "publishable",
-            "Publishable Key",
-            "SUPABASE_ANON_KEY",
-            "anon_key",
-            "anon",
-            "Anon Key",
-            "legacy_anon",
-        },
-    ) or ""
-    project_url = (
-        _first_string(value, {"SUPABASE_URL", "project_url"})
-        or _first_labeled_string(value, {"SUPABASE_URL", "project_url"})
-        or f"https://{branch_ref}.supabase.co"
-    )
-
-    expected_host = f"db.{branch_ref}.supabase.co"
-    expected_url = f"https://{branch_ref}.supabase.co"
-    if host != expected_host or port != 5432:
+    if not isinstance(branch_config, dict):
+        raise ProofError("branch_config_invalid")
+    if branch_config.get("ref") != branch_ref:
+        raise ProofError("branch_config_ref_mismatch")
+    if branch_config.get("status") != READY_STATUS:
+        raise ProofError("branch_config_status_invalid")
+    host = branch_config.get("db_host")
+    port = branch_config.get("db_port")
+    user = branch_config.get("db_user")
+    password = branch_config.get("db_pass")
+    jwt_secret = branch_config.get("jwt_secret")
+    if host != f"db.{branch_ref}.supabase.co" or port != 5432:
         raise ProofError("branch_direct_database_fence_mismatch")
-    if user != "postgres" or database != "postgres":
+    if user != "postgres":
         raise ProofError("branch_database_principal_invalid")
-    if project_url.rstrip("/") != expected_url:
-        raise ProofError("branch_project_url_fence_mismatch")
-    if not password or len(jwt_secret.encode()) < 32:
+    if not isinstance(password, str) or not password:
         raise ProofError("branch_credentials_incomplete")
-    if not publishable_key or publishable_key.startswith("sb_secret_"):
+    if not isinstance(jwt_secret, str) or len(jwt_secret.encode()) < 32:
+        raise ProofError("branch_credentials_incomplete")
+
+    if not isinstance(api_key, dict):
+        raise ProofError("branch_publishable_key_response_invalid")
+    key_id = api_key.get("id")
+    publishable_key = api_key.get("api_key")
+    if (
+        not isinstance(key_id, str)
+        or API_KEY_ID_PATTERN.fullmatch(key_id) is None
+        or key_id != expected_api_key_id
+        or api_key.get("type") != "publishable"
+        or api_key.get("name") != "default"
+        or not isinstance(publishable_key, str)
+        or not publishable_key.startswith("sb_publishable_")
+    ):
         raise ProofError("branch_publishable_key_invalid")
+
     return BranchCredentials(
         host=host,
         port=port,
         user=user,
-        database=database,
+        database="postgres",
         password=password,
-        project_url=expected_url,
+        project_url=f"https://{branch_ref}.supabase.co",
         publishable_key=publishable_key,
         jwt_secret=jwt_secret,
     )
@@ -1304,6 +1243,7 @@ class HarmonyPreviewProof:
         # resolve a late-visible child.
         self.branch_create_mutation_invoked = False
         self.branch_shape: dict[str, object] | None = None
+        self.branch_ready_deadline = 0.0
         self.watchdog: object | None = None
         # ``spawning`` is intentionally sticky when ownership cannot be
         # proven.  A receipt may only claim watchdog secret release from the
@@ -1487,10 +1427,62 @@ class HarmonyPreviewProof:
         *,
         code: str,
         timeout: float,
+        expected_project_ref: str | None = None,
     ) -> object:
         if not self.management_token:
             raise ProofError("supabase_management_token_unavailable")
-        if not re.fullmatch(r"/projects/[a-z0-9]{20}/billing/addons", path):
+        relative = parse.urlsplit(path)
+        route = relative.path
+        query = relative.query
+        branch_match = re.fullmatch(r"/branches/([a-z0-9]{20})", route)
+        api_keys_match = re.fullmatch(
+            r"/projects/([a-z0-9]{20})/api-keys",
+            route,
+        )
+        api_key_match = re.fullmatch(
+            r"/projects/([a-z0-9]{20})/api-keys/"
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12})",
+            route,
+        )
+        exact_child_ref = (
+            isinstance(expected_project_ref, str)
+            and PROJECT_REF_PATTERN.fullmatch(expected_project_ref) is not None
+        )
+        path_allowed = (
+            (
+                re.fullmatch(
+                    r"/projects/[a-z0-9]{20}/billing/addons",
+                    route,
+                )
+                is not None
+                and not query
+            )
+            or (
+                branch_match is not None
+                and not query
+                and exact_child_ref
+                and branch_match.group(1) == expected_project_ref
+            )
+            or (
+                api_keys_match is not None
+                and query == "reveal=false"
+                and exact_child_ref
+                and api_keys_match.group(1) == expected_project_ref
+            )
+            or (
+                api_key_match is not None
+                and query == "reveal=true"
+                and exact_child_ref
+                and api_key_match.group(1) == expected_project_ref
+            )
+        )
+        if (
+            relative.scheme
+            or relative.netloc
+            or relative.fragment
+            or not path_allowed
+        ):
             raise ProofError("supabase_management_path_invalid")
         url = MANAGEMENT_API_BASE_URL + path
         parsed_url = parse.urlsplit(url)
@@ -1500,9 +1492,9 @@ class HarmonyPreviewProof:
             or parsed_url.username is not None
             or parsed_url.password is not None
             or parsed_url.port is not None
-            or parsed_url.query
+            or parsed_url.query != query
             or parsed_url.fragment
-            or not parsed_url.path.startswith("/v1/")
+            or parsed_url.path != "/v1" + route
         ):
             raise ProofError("supabase_management_url_fence_invalid")
         authorization = f"Bearer {self.management_token}"
@@ -1574,21 +1566,22 @@ class HarmonyPreviewProof:
         return ManagementApiError(f"{code}_{suffix}", retryable=retryable)
 
     def _preflight_management_permissions(self) -> None:
-        value = self._management_get_json(
-            f"/projects/{self.args.parent_project_ref}/billing/addons",
-            code="supabase_billing_addons_preflight",
-            timeout=self.args.supabase_read_timeout_seconds,
-        )
+        billing_value: object | None = None
         try:
+            billing_value = self._management_get_json(
+                f"/projects/{self.args.parent_project_ref}/billing/addons",
+                code="supabase_billing_addons_preflight",
+                timeout=self.args.supabase_read_timeout_seconds,
+            )
             if (
-                not isinstance(value, dict)
-                or not isinstance(value.get("selected_addons"), list)
+                not isinstance(billing_value, dict)
+                or not isinstance(billing_value.get("selected_addons"), list)
             ):
                 raise ProofError("supabase_billing_addons_preflight_invalid")
         finally:
-            if isinstance(value, MutableMapping):
-                value.clear()
-            del value
+            _clear_mutable_json(billing_value)
+            billing_value = None
+            gc.collect()
 
     def _read_child_compute_size(
         self,
@@ -1617,8 +1610,7 @@ class HarmonyPreviewProof:
                     raise
                 last_retryable = exc
             finally:
-                if isinstance(value, MutableMapping):
-                    value.clear()
+                _clear_mutable_json(value)
                 value = None
             self.sleeper(self.args.poll_interval_seconds)
         if last_retryable is not None:
@@ -2437,6 +2429,7 @@ raise SystemExit(
             raise ProofError("branch_create_commit_state_unknown")
 
         deadline = self.clock() + self.args.branch_ready_timeout_seconds
+        self.branch_ready_deadline = deadline
         while self.clock() < deadline:
             rows = [
                 item
@@ -2468,27 +2461,68 @@ raise SystemExit(
 
     def _load_credentials(self) -> None:
         assert self.branch is not None
-        value = self._supabase_json(
-            [
-                "branches",
-                "get",
-                self.branch.branch_id,
-                "--project-ref",
-                self.args.parent_project_ref,
-                "--output-format",
-                "json",
-            ],
-            code="supabase_branch_get",
-            timeout=self.args.supabase_read_timeout_seconds,
-        )
+        branch_ref = self.branch.ref
+        if (
+            not PROJECT_REF_PATTERN.fullmatch(branch_ref)
+            or branch_ref == self.args.parent_project_ref
+        ):
+            raise ProofError("preview_child_ref_invalid")
+        last_retryable: ManagementApiError | None = None
+        attempted = False
         try:
-            self.credentials = extract_branch_credentials(value, self.branch.ref)
+            # A child may become ready on the final readiness poll. Preserve
+            # the same absolute deadline for retries, but always perform one
+            # exact-child credential read before failing closed.
+            while not attempted or self.clock() < self.branch_ready_deadline:
+                attempted = True
+                branch_config: object | None = None
+                api_keys_metadata: object | None = None
+                api_key: object | None = None
+                try:
+                    branch_config = self._management_get_json(
+                        f"/branches/{branch_ref}",
+                        code="supabase_branch_config_get",
+                        timeout=self.args.supabase_read_timeout_seconds,
+                        expected_project_ref=branch_ref,
+                    )
+                    api_keys_metadata = self._management_get_json(
+                        f"/projects/{branch_ref}/api-keys?reveal=false",
+                        code="supabase_api_keys_get",
+                        timeout=self.args.supabase_read_timeout_seconds,
+                        expected_project_ref=branch_ref,
+                    )
+                    key_id = extract_publishable_api_key_id(api_keys_metadata)
+                    api_key = self._management_get_json(
+                        f"/projects/{branch_ref}/api-keys/{key_id}?reveal=true",
+                        code="supabase_publishable_key_get",
+                        timeout=self.args.supabase_read_timeout_seconds,
+                        expected_project_ref=branch_ref,
+                    )
+                    self.credentials = extract_management_branch_credentials(
+                        branch_config,
+                        api_key,
+                        branch_ref,
+                        key_id,
+                    )
+                    return
+                except ManagementApiError as exc:
+                    if not exc.retryable:
+                        raise
+                    last_retryable = exc
+                finally:
+                    _clear_mutable_json(branch_config)
+                    _clear_mutable_json(api_keys_metadata)
+                    _clear_mutable_json(api_key)
+                    branch_config = None
+                    api_keys_metadata = None
+                    api_key = None
+                    gc.collect()
+                self.sleeper(self.args.poll_interval_seconds)
+            if last_retryable is not None:
+                raise last_retryable
+            raise ProofError("branch_credentials_readiness_timeout")
         finally:
-            if isinstance(value, MutableMapping):
-                value.clear()
-            del value
-            gc.collect()
-        _scrub_parent_secret_environment()
+            _scrub_parent_secret_environment()
 
     def _db_environment(self) -> dict[str, str]:
         assert self.credentials is not None
@@ -3216,7 +3250,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         epilog=(
             f"Requires a scoped token in {MANAGEMENT_TOKEN_SOURCE_ENV}; the "
             "token must grant branch lifecycle permissions plus "
-            "infra_add_ons_read. The runner removes it from the parent "
+            "infra_add_ons_read and api_gateway_keys_read (no pooler read). "
+            "The runner removes it from the parent "
             "environment and never prints it."
         ),
     )
