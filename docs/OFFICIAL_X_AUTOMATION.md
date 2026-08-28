@@ -47,6 +47,14 @@ visual that requires manual review is reported and removed from the current
 run's candidate set, allowing the next fresh eligible post to proceed without
 weakening the manual-review boundary.
 
+Yellow and Babylon have one bounded expiry-rescue exception. If every fresh,
+eligible candidate reaches the 24-hour boundary by the first complete 15-minute
+cron interval after the next KST daily slot opens, the newest source ranks first
+so a relevance-heavy backlog cannot hide it. A mixed set that contains any
+candidate safe for the next slot keeps the normal relevance-first ordering. The
+exception does not relax source eligibility, skip patterns, reply/retweet
+exclusion, media guards, or the 24-hour freshness fence.
+
 A Squid Quiz bot notification is an operations wake-up hint, not factual source
 evidence. The scheduled worker always re-fetches the canonical root post from
 the official Squid X account before storing or generating anything; replies and
