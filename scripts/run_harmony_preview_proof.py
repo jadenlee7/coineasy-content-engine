@@ -38,7 +38,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@1"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@2"
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
 SHA40_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -75,6 +75,8 @@ WATCHDOG_ACTIVE_PGID_FILENAME = "active-pgid"
 WATCHDOG_PROTOCOL_SCHEMA = 1
 WATCHDOG_MESSAGE_MAX_BYTES = 1024
 MAX_OPENAPI_BYTES = 2_097_152
+MAX_MANAGEMENT_API_BYTES = 2_097_152
+MANAGEMENT_API_BASE_URL = "https://api.supabase.com/v1"
 POSTGREST_RPC_PATH = "/rpc/submit_preview_harmony_signal"
 
 MIGRATIONS = (
@@ -160,6 +162,27 @@ class CommandError(ProofError):
     def __init__(self, code: str, *, ambiguous: bool = False) -> None:
         super().__init__(code)
         self.ambiguous = ambiguous
+
+
+class ManagementApiError(ProofError):
+    def __init__(self, code: str, *, retryable: bool) -> None:
+        super().__init__(code)
+        self.retryable = retryable
+
+
+class RejectRedirectHandler(request.HTTPRedirectHandler):
+    """Reject every redirect so a scoped PAT never crosses origins."""
+
+    def redirect_request(
+        self,
+        req: request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
 
 
 @dataclass
@@ -1100,29 +1123,40 @@ def preview_branch_readiness(branch: BranchIdentity) -> str:
     return "invalid"
 
 
-def extract_project_compute_size(value: object, branch_ref: str) -> str:
-    """Fail closed unless exactly one child project reports one primary size."""
+def extract_compute_addon_size(value: object) -> str:
+    """Fail closed unless one selected compute add-on reports one size.
 
-    matches = [
-        mapping
-        for mapping in _walk_dicts(value)
-        if mapping.get("ref") == branch_ref
-        and isinstance(mapping.get("databases"), list)
-    ]
-    if len(matches) != 1:
-        raise ProofError("preview_child_compute_project_readback_invalid")
-    databases = matches[0].get("databases")
-    assert isinstance(databases, list)
-    sizes = [
-        database.get("infra_compute_size")
-        for database in databases
-        if isinstance(database, dict)
-        and isinstance(database.get("infra_compute_size"), str)
-        and database.get("infra_compute_size")
-    ]
-    if len(databases) != 1 or len(sizes) != 1:
+    ``supabase projects list`` does not include Preview branches and its
+    response shape does not expose ``databases[].infra_compute_size``.  The
+    exact-child billing add-ons endpoint is the narrow authoritative readback
+    for the active compute selection.
+    """
+
+    if not isinstance(value, dict):
         raise ProofError("preview_child_compute_size_readback_invalid")
-    return str(sizes[0]).strip().lower()
+    selected = value.get("selected_addons")
+    if not isinstance(selected, list):
+        raise ProofError("preview_child_compute_size_readback_invalid")
+    matches = [
+        addon
+        for addon in selected
+        if isinstance(addon, dict) and addon.get("type") == "compute_instance"
+    ]
+    if not matches:
+        raise ProofError("preview_child_compute_size_unavailable")
+    if len(matches) != 1:
+        raise ProofError("preview_child_compute_size_readback_invalid")
+    variant = matches[0].get("variant")
+    if not isinstance(variant, dict):
+        raise ProofError("preview_child_compute_size_readback_invalid")
+    variant_id = variant.get("id")
+    if not isinstance(variant_id, str):
+        raise ProofError("preview_child_compute_size_readback_invalid")
+    if re.fullmatch(r"ci_[a-z0-9_]+", variant_id) is None:
+        raise ProofError("preview_child_compute_size_readback_invalid")
+    if variant_id != "ci_small":
+        raise ProofError("preview_child_compute_size_not_small")
+    return "small"
 
 
 def _parse_postgres_url(value: str) -> dict[str, object]:
@@ -1243,13 +1277,18 @@ class HarmonyPreviewProof:
         args: argparse.Namespace,
         *,
         runner: ProcessRunner | None = None,
-        opener: Callable[..., object] = request.urlopen,
+        opener: Callable[..., object] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.args = args
         self.runner = runner or ProcessRunner()
-        self.opener = opener
+        self._http_opener = (
+            request.build_opener(RejectRedirectHandler())
+            if opener is None
+            else None
+        )
+        self.opener = self._http_opener.open if self._http_opener else opener
         self.sleeper = sleeper
         self.clock = clock
         self.repo_root = Path(args.repo_root).resolve()
@@ -1278,6 +1317,7 @@ class HarmonyPreviewProof:
         self.watchdog_deadline: str | None = None
         self.credentials: BranchCredentials | None = None
         self.proof_snapshot_payloads: dict[str, bytes] = {}
+        self.completed_steps: list[str] = []
         self.cleanup_receipt: dict[str, object] = {
             "delete_requested": False,
             "absence_confirmations": 0,
@@ -1285,6 +1325,11 @@ class HarmonyPreviewProof:
             "watchdog_cancelled": False,
             "branch_create_mutation_invoked": False,
         }
+
+    def _complete_step(self, step: str) -> None:
+        if step in self.completed_steps:
+            raise ProofError("preview_proof_step_completed_twice")
+        self.completed_steps.append(step)
 
     def _supabase_json(
         self,
@@ -1436,25 +1481,164 @@ class HarmonyPreviewProof:
             raise ProofError("supabase_branch_list_parent_fence_missing")
         return branches
 
-    def _read_child_compute_size(self, branch_ref: str) -> str:
-        value = self._supabase_json(
-            ["projects", "list", "--output-format", "json"],
-            code="supabase_project_list",
+    def _management_get_json(
+        self,
+        path: str,
+        *,
+        code: str,
+        timeout: float,
+    ) -> object:
+        if not self.management_token:
+            raise ProofError("supabase_management_token_unavailable")
+        if not re.fullmatch(r"/projects/[a-z0-9]{20}/billing/addons", path):
+            raise ProofError("supabase_management_path_invalid")
+        url = MANAGEMENT_API_BASE_URL + path
+        parsed_url = parse.urlsplit(url)
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.netloc != "api.supabase.com"
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.port is not None
+            or parsed_url.query
+            or parsed_url.fragment
+            or not parsed_url.path.startswith("/v1/")
+        ):
+            raise ProofError("supabase_management_url_fence_invalid")
+        authorization = f"Bearer {self.management_token}"
+        req = request.Request(
+            url,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": authorization,
+                "User-Agent": "coineasy-harmony-preview-proof/1",
+            },
+        )
+        authorization = ""
+        raw = b""
+        try:
+            response = self.opener(req, timeout=timeout)
+            with response:  # type: ignore[attr-defined]
+                status = getattr(response, "status", None)
+                raw = response.read(  # type: ignore[attr-defined]
+                    MAX_MANAGEMENT_API_BYTES + 1
+                )
+            if status != 200:
+                raise self._management_status_error(code, status)
+            if len(raw) > MAX_MANAGEMENT_API_BYTES:
+                raise ProofError(f"{code}_response_too_large")
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise ProofError(f"{code}_invalid_json") from None
+        except ProofError:
+            raise
+        except error.HTTPError as exc:
+            try:
+                raw = exc.read(MAX_MANAGEMENT_API_BYTES + 1)
+            except (OSError, ValueError):
+                pass
+            finally:
+                exc.close()
+            raise self._management_status_error(code, exc.code) from None
+        except (error.URLError, TimeoutError, OSError, ValueError):
+            raise ManagementApiError(
+                f"{code}_transport_failed",
+                retryable=True,
+            ) from None
+        finally:
+            raw = b""
+            req.remove_header("Authorization")
+
+    @staticmethod
+    def _management_status_error(code: str, status: object) -> ManagementApiError:
+        if status in {401, 403}:
+            suffix = "authorization_failed"
+            retryable = False
+        elif status == 404:
+            suffix = "not_found"
+            retryable = True
+        elif status == 429:
+            suffix = "rate_limited"
+            retryable = True
+        elif isinstance(status, int) and 500 <= status <= 599:
+            suffix = "server_error"
+            retryable = True
+        elif isinstance(status, int) and 300 <= status <= 399:
+            suffix = "redirect_rejected"
+            retryable = False
+        else:
+            suffix = "failed"
+            retryable = False
+        return ManagementApiError(f"{code}_{suffix}", retryable=retryable)
+
+    def _preflight_management_permissions(self) -> None:
+        value = self._management_get_json(
+            f"/projects/{self.args.parent_project_ref}/billing/addons",
+            code="supabase_billing_addons_preflight",
             timeout=self.args.supabase_read_timeout_seconds,
         )
         try:
-            return extract_project_compute_size(value, branch_ref)
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("selected_addons"), list)
+            ):
+                raise ProofError("supabase_billing_addons_preflight_invalid")
         finally:
             if isinstance(value, MutableMapping):
                 value.clear()
             del value
 
-    def _validate_branch_shape(self, branch: BranchIdentity) -> None:
+    def _read_child_compute_size(
+        self,
+        branch_ref: str,
+        *,
+        deadline: float,
+    ) -> str:
+        if not PROJECT_REF_PATTERN.fullmatch(branch_ref):
+            raise ProofError("preview_child_ref_invalid")
+        last_retryable: ProofError | None = None
+        while self.clock() < deadline:
+            value: object | None = None
+            try:
+                value = self._management_get_json(
+                    f"/projects/{branch_ref}/billing/addons",
+                    code="supabase_billing_addons_get",
+                    timeout=self.args.supabase_read_timeout_seconds,
+                )
+                return extract_compute_addon_size(value)
+            except ManagementApiError as exc:
+                if not exc.retryable:
+                    raise
+                last_retryable = exc
+            except ProofError as exc:
+                if exc.code != "preview_child_compute_size_unavailable":
+                    raise
+                last_retryable = exc
+            finally:
+                if isinstance(value, MutableMapping):
+                    value.clear()
+                value = None
+            self.sleeper(self.args.poll_interval_seconds)
+        if last_retryable is not None:
+            raise last_retryable
+        raise ProofError("preview_child_compute_size_unavailable")
+
+    def _validate_branch_shape(
+        self,
+        branch: BranchIdentity,
+        *,
+        deadline: float,
+    ) -> None:
         if branch.persistent is not False:
             raise ProofError("preview_child_persistent_readback_invalid")
         if branch.with_data is not False:
             raise ProofError("preview_child_with_data_readback_invalid")
-        compute_size = self._read_child_compute_size(branch.ref)
+        compute_size = self._read_child_compute_size(
+            branch.ref,
+            deadline=deadline,
+        )
         if compute_size != "small":
             raise ProofError("preview_child_compute_size_not_small")
         self.branch_shape = {
@@ -2277,7 +2461,7 @@ raise SystemExit(
             if readiness == "invalid":
                 raise ProofError("preview_child_lifecycle_readback_invalid")
             if readiness == "ready":
-                self._validate_branch_shape(rows[0])
+                self._validate_branch_shape(rows[0], deadline=deadline)
                 return
             self.sleeper(self.args.poll_interval_seconds)
         raise ProofError("preview_child_readiness_timeout")
@@ -2772,6 +2956,7 @@ raise SystemExit(
         self.cleanup_receipt["deleted_at"] = (
             datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
+        self._complete_step("branch_delete_absence_confirmed")
         self._cancel_watchdog()
 
     def _validate_probe_receipt(
@@ -2873,12 +3058,17 @@ raise SystemExit(
                 for filename in SECURITY_SUITES
             }
             self._bind_proof_snapshot_payloads(support_payloads)
+            self._complete_step("exact_sha_snapshot_bound")
+            self._preflight_management_permissions()
+            self._complete_step("management_permission_preflight")
             self._create_branch()
+            self._complete_step("branch_ready_and_shape_verified")
             self._load_credentials()
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             self._apply_migrations_and_security(
                 migration_payloads, security_payloads
             )
+            self._complete_step("migration_and_rls_security")
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             direct_receipt = self._validate_probe_receipt(
                 self._run_direct_probe(config_sha256),
@@ -2886,7 +3076,9 @@ raise SystemExit(
                 config_sha256,
                 require_branch_ref=False,
             )
+            self._complete_step("direct_database_64_way")
             self._schema_cache_ready()
+            self._complete_step("postgrest_schema_readiness_get")
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             postgrest_receipt = self._validate_probe_receipt(
                 self._run_postgrest_probe(config_sha256),
@@ -2894,6 +3086,7 @@ raise SystemExit(
                 config_sha256,
                 require_branch_ref=True,
             )
+            self._complete_step("signed_postgrest_once")
         except ProofError as exc:
             failure_code = exc.code
         except Exception:
@@ -2975,15 +3168,17 @@ raise SystemExit(
                 if self.branch is None
                 else self.branch.ref != self.args.parent_project_ref
             ),
-            "execution_order": [
-                "exact_sha",
-                "branch_create",
+            "planned_execution_order": [
+                "exact_sha_snapshot_bound",
+                "management_permission_preflight",
+                "branch_ready_and_shape_verified",
                 "migration_and_rls_security",
                 "direct_database_64_way",
                 "postgrest_schema_readiness_get",
                 "signed_postgrest_once",
-                "branch_delete",
+                "branch_delete_absence_confirmed",
             ],
+            "completed_steps": list(self.completed_steps),
             "direct_database": direct_receipt,
             "signed_postgrest": postgrest_receipt,
             "cleanup": self.cleanup_receipt,
@@ -3020,7 +3215,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         ),
         epilog=(
             f"Requires a scoped token in {MANAGEMENT_TOKEN_SOURCE_ENV}; the "
-            "runner removes it from the parent environment and never prints it."
+            "token must grant branch lifecycle permissions plus "
+            "infra_add_ons_read. The runner removes it from the parent "
+            "environment and never prints it."
         ),
     )
     parser.add_argument("--repo-root", default=str(Path(__file__).parents[1]))

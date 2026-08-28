@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -158,6 +159,82 @@ def test_preview_branch_readiness_requires_terminal_server_workflow(
     assert RUNNER.preview_branch_readiness(branch) == expected
 
 
+def test_extract_compute_addon_size_uses_exact_selected_compute() -> None:
+    value = {
+        "selected_addons": [
+            {"type": "custom_domain", "variant": {"id": "custom_domain"}},
+            {"type": "compute_instance", "variant": {"id": "ci_small"}},
+        ],
+        "available_addons": [],
+    }
+
+    assert RUNNER.extract_compute_addon_size(value) == "small"
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        None,
+        {},
+        {
+            "selected_addons": [
+                {"type": "compute_instance", "variant": {"id": "small"}}
+            ]
+        },
+        {
+            "selected_addons": [
+                {"type": "compute_instance", "variant": {"id": "ci_small"}},
+                {"type": "compute_instance", "variant": {"id": "ci_micro"}},
+            ]
+        },
+        {
+            "selected_addons": [
+                {"type": "compute_instance", "variant": {"id": " CI_SMALL "}}
+            ]
+        },
+        {
+            "selected_addons": [
+                {"type": "compute_instance", "variant": {"id": "ci_SMALL"}}
+            ]
+        },
+    ),
+)
+def test_extract_compute_addon_size_fails_closed(value: object) -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="preview_child_compute_size_readback_invalid",
+    ):
+        RUNNER.extract_compute_addon_size(value)
+
+
+def test_extract_compute_addon_size_reports_temporary_unavailability() -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="preview_child_compute_size_unavailable",
+    ):
+        RUNNER.extract_compute_addon_size({"selected_addons": []})
+
+
+@pytest.mark.parametrize("variant_id", ("ci_medium", "ci_unknown"))
+def test_extract_compute_addon_size_rejects_every_non_small_variant(
+    variant_id: str,
+) -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="preview_child_compute_size_not_small",
+    ):
+        RUNNER.extract_compute_addon_size(
+            {
+                "selected_addons": [
+                    {
+                        "type": "compute_instance",
+                        "variant": {"id": variant_id},
+                    }
+                ]
+            }
+        )
+
+
 class FakeWatchdog:
     def __init__(
         self,
@@ -308,6 +385,60 @@ class FakeRunner:
         self.persistent = persistent
         self.with_data = with_data
         self.compute_size = compute_size
+        self.management_requests: list[dict[str, object]] = []
+
+    def open_endpoint(
+        self,
+        req: object,
+        *,
+        timeout: float,
+    ) -> OpenApiResponse:
+        url = str(getattr(req, "full_url", ""))
+        parent_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{PARENT_REF}/billing/addons"
+        )
+        child_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{CHILD_REF}/billing/addons"
+        )
+        if url in {parent_url, child_url}:
+            get_header = getattr(req, "get_header")
+            self.management_requests.append(
+                {
+                    "url": url,
+                    "timeout": timeout,
+                    "authorization_valid": (
+                        get_header("Authorization")
+                        == f"Bearer {MANAGEMENT_TOKEN}"
+                    ),
+                }
+            )
+            if url == parent_url:
+                self.events.append("billing_addons_preflight")
+                return OpenApiResponse(
+                    {
+                        "selected_addons": [
+                            {
+                                "type": "compute_instance",
+                                "variant": {"id": "ci_micro"},
+                            }
+                        ]
+                    }
+                )
+            self.events.append("billing_addons_get")
+            selected = []
+            if self.compute_size is not None:
+                selected.append(
+                    {
+                        "type": "compute_instance",
+                        "variant": {"id": f"ci_{self.compute_size}"},
+                    }
+                )
+            return OpenApiResponse({"selected_addons": selected})
+        if url == f"https://{CHILD_REF}.supabase.co/rest/v1/":
+            return OpenApiResponse()
+        raise AssertionError(f"unexpected endpoint: {url}")
 
     def run_bytes(
         self,
@@ -398,14 +529,6 @@ class FakeRunner:
                     },
                 ]
             return [default]
-        if "projects" in command and "list" in command:
-            self.events.append("project_list")
-            database = (
-                {}
-                if self.compute_size is None
-                else {"infra_compute_size": self.compute_size}
-            )
-            return [{"ref": CHILD_REF, "databases": [database]}]
         if "branches" in command and "get" in command:
             self.events.append("branch_get_secrets")
             return {
@@ -534,7 +657,13 @@ class FakeRunner:
 
 
 class OpenApiResponse:
-    status = 200
+    def __init__(self, payload: object | None = None, *, status: int = 200) -> None:
+        self.status = status
+        self.payload = (
+            {"paths": {RUNNER.POSTGREST_RPC_PATH: {}}}
+            if payload is None
+            else payload
+        )
 
     def __enter__(self):
         return self
@@ -543,7 +672,196 @@ class OpenApiResponse:
         return None
 
     def read(self, _limit: int) -> bytes:
-        return json.dumps({"paths": {RUNNER.POSTGREST_RPC_PATH: {}}}).encode()
+        return json.dumps(self.payload).encode()
+
+
+class RawHttpResponse:
+    def __init__(self, body: bytes, *, status: int = 200) -> None:
+        self.body = body
+        self.status = status
+        self.closed = False
+        self.read_limit: int | None = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def read(self, limit: int) -> bytes:
+        self.read_limit = limit
+        return self.body[:limit]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _management_proof(
+    tmp_path: Path,
+    opener: object,
+) -> RUNNER.HarmonyPreviewProof:
+    proof = RUNNER.HarmonyPreviewProof(_args(tmp_path), opener=opener)
+    proof.management_token = MANAGEMENT_TOKEN
+    return proof
+
+
+def test_default_management_opener_rejects_redirects(tmp_path: Path) -> None:
+    proof = RUNNER.HarmonyPreviewProof(_args(tmp_path))
+
+    assert proof._http_opener is not None
+    assert any(
+        isinstance(handler, RUNNER.RejectRedirectHandler)
+        for handler in proof._http_opener.handlers
+    )
+    assert RUNNER.RejectRedirectHandler().redirect_request(
+        object(), object(), 302, "Found", {}, "https://attacker.invalid/"
+    ) is None
+
+
+def test_management_get_json_scrubs_authorization_after_success(
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+    response = RawHttpResponse(b'{"selected_addons":[]}')
+
+    def opener(req: object, *, timeout: float) -> RawHttpResponse:
+        assert timeout == 7
+        captured.append(req)
+        assert getattr(req, "get_header")("Authorization") == (
+            f"Bearer {MANAGEMENT_TOKEN}"
+        )
+        return response
+
+    value = _management_proof(tmp_path, opener)._management_get_json(
+        f"/projects/{PARENT_REF}/billing/addons",
+        code="test_management",
+        timeout=7,
+    )
+
+    assert value == {"selected_addons": []}
+    assert response.closed is True
+    assert response.read_limit == RUNNER.MAX_MANAGEMENT_API_BYTES + 1
+    assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "retryable"),
+    (
+        (302, "test_management_redirect_rejected", False),
+        (403, "test_management_authorization_failed", False),
+        (404, "test_management_not_found", True),
+        (429, "test_management_rate_limited", True),
+        (503, "test_management_server_error", True),
+    ),
+)
+def test_management_http_error_is_closed_typed_and_scrubbed(
+    status: int,
+    expected: str,
+    retryable: bool,
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+    body = io.BytesIO(b'{"message":"must-not-escape"}')
+
+    def opener(req: object, *, timeout: float) -> object:
+        assert timeout == 7
+        captured.append(req)
+        raise RUNNER.error.HTTPError(
+            str(getattr(req, "full_url")),
+            status,
+            "synthetic",
+            {},
+            body,
+        )
+
+    with pytest.raises(RUNNER.ManagementApiError, match=expected) as exc_info:
+        _management_proof(tmp_path, opener)._management_get_json(
+            f"/projects/{PARENT_REF}/billing/addons",
+            code="test_management",
+            timeout=7,
+        )
+
+    assert exc_info.value.retryable is retryable
+    assert body.closed is True
+    assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+def test_management_transport_error_is_retryable_and_scrubbed(
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+
+    def opener(req: object, *, timeout: float) -> object:
+        captured.append(req)
+        raise RUNNER.error.URLError("synthetic timeout")
+
+    with pytest.raises(
+        RUNNER.ManagementApiError,
+        match="test_management_transport_failed",
+    ) as exc_info:
+        _management_proof(tmp_path, opener)._management_get_json(
+            f"/projects/{PARENT_REF}/billing/addons",
+            code="test_management",
+            timeout=7,
+        )
+
+    assert exc_info.value.retryable is True
+    assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        (b"not-json", "test_management_invalid_json"),
+        (
+            b"x" * (RUNNER.MAX_MANAGEMENT_API_BYTES + 1),
+            "test_management_response_too_large",
+        ),
+    ),
+)
+def test_management_response_failures_are_bounded_closed_and_scrubbed(
+    body: bytes,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+    response = RawHttpResponse(body)
+
+    def opener(req: object, *, timeout: float) -> RawHttpResponse:
+        captured.append(req)
+        return response
+
+    with pytest.raises(RUNNER.ProofError, match=expected):
+        _management_proof(tmp_path, opener)._management_get_json(
+            f"/projects/{PARENT_REF}/billing/addons",
+            code="test_management",
+            timeout=7,
+        )
+
+    assert response.closed is True
+    assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+def test_management_path_is_exactly_fenced_before_open(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def opener(_req: object, *, timeout: float) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("must not open")
+
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="supabase_management_path_invalid",
+    ):
+        _management_proof(tmp_path, opener)._management_get_json(
+            "/projects/../../attacker/billing/addons",
+            code="test_management",
+            timeout=7,
+        )
+    assert called is False
 
 
 def _fake_exact_checkout(
@@ -572,7 +890,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     proof = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     )
@@ -580,6 +898,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@2"
     assert receipt["parent_project_ref"] == PARENT_REF
     assert receipt["parent_child_fence"] is True
     assert receipt["migration_count"] == 9
@@ -595,6 +914,18 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert receipt["cleanup"]["branch_create_mutation_invoked"] is True
     assert proof.branch_create_mutation_invoked is True
     assert fake.watchdog.terminated and fake.watchdog.waited
+    assert receipt["planned_execution_order"] == [
+        "exact_sha_snapshot_bound",
+        "management_permission_preflight",
+        "branch_ready_and_shape_verified",
+        "migration_and_rls_security",
+        "direct_database_64_way",
+        "postgrest_schema_readiness_get",
+        "signed_postgrest_once",
+        "branch_delete_absence_confirmed",
+    ]
+    assert receipt["completed_steps"] == receipt["planned_execution_order"]
+    assert "execution_order" not in receipt
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_create")
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_get_secrets")
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_list_2")
@@ -629,12 +960,28 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     psql_commands = [command for command in fake.commands if command[0] == "psql"]
     assert len(psql_commands) == 12
     assert all(command[-2:] == ["-f", "-"] for command in psql_commands)
-    projects_list = next(
-        command
+    assert not any(
+        "projects" in command and "list" in command
         for command in fake.commands
-        if "projects" in command and "list" in command
     )
-    assert projects_list[-2:] == ["--output-format", "json"]
+    assert fake.management_requests == [
+        {
+            "url": (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{PARENT_REF}/billing/addons"
+            ),
+            "timeout": 7,
+            "authorization_valid": True,
+        },
+        {
+            "url": (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{CHILD_REF}/billing/addons"
+            ),
+            "timeout": 7,
+            "authorization_valid": True,
+        }
+    ]
     branch_get = next(
         command
         for command in fake.commands
@@ -690,7 +1037,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         if command and command[0] == "supabase":
             assert cwd == cli_envs[0]["HOME"]
 
-    watchdog_index = fake.events.index("watchdog_armed")
+    watchdog_index = next(
+        index
+        for index, command in enumerate(fake.commands)
+        if command[:3] == [sys.executable, "-I", "-c"]
+    )
     assert fake.environments[watchdog_index]["SUPABASE_ACCESS_TOKEN"] == MANAGEMENT_TOKEN
     watchdog_home = Path(fake.environments[watchdog_index]["HOME"])
     assert watchdog_home.name == "home"
@@ -738,7 +1089,6 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         if code in {
             "supabase_branch_list",
             "supabase_branch_get",
-            "supabase_project_list",
         }:
             assert timeout == 7
         if code in {"supabase_branch_create", "supabase_branch_delete"}:
@@ -1279,7 +1629,7 @@ def test_run_interrupt_after_watchdog_arm_before_create_cancels_and_reaps(
     proof = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     )
@@ -1357,7 +1707,7 @@ def test_direct_probe_failure_never_runs_postgrest_and_still_deletes(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1391,7 +1741,7 @@ def test_exact_checkout_change_after_branch_creation_fails_before_migration(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1420,7 +1770,7 @@ def test_exact_commit_sql_snapshot_digest_mismatch_fails_before_branch(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1449,7 +1799,7 @@ def test_exact_commit_probe_snapshot_digest_mismatch_fails_before_branch(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1498,7 +1848,7 @@ def test_tampered_probe_receipt_fails_exact_fence_and_never_runs_postgrest(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1518,7 +1868,7 @@ def test_missing_scoped_management_token_fails_before_any_subprocess(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1536,7 +1886,7 @@ def test_ambiguous_create_reconciles_only_for_cleanup_and_never_proves(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1577,7 +1927,7 @@ def test_ambiguous_create_with_unavailable_readback_keeps_prearmed_watchdog(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1615,7 +1965,7 @@ def test_unidentified_child_retains_absolute_watchdog_for_late_visibility(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         args,
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1655,7 +2005,7 @@ def test_failed_branch_lifecycle_blocks_even_when_project_health_is_ready(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1681,7 +2031,7 @@ def test_failed_branch_lifecycle_blocks_even_when_project_health_is_ready(
             False,
             False,
             None,
-            "preview_child_compute_size_readback_invalid",
+            "preview_child_compute_size_unavailable",
         ),
     ),
 )
@@ -1702,7 +2052,7 @@ def test_branch_shape_is_server_read_back_and_fails_closed(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1717,6 +2067,153 @@ def test_branch_shape_is_server_read_back_and_fails_closed(
     assert receipt["cleanup"]["absence_confirmations"] == 3
 
 
+def test_compute_readback_http_failure_deletes_child_without_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class BillingDeniedRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{CHILD_REF}/billing/addons"):
+                self.events.append("billing_addons_get")
+                raise RUNNER.error.HTTPError(
+                    url,
+                    403,
+                    "Forbidden",
+                    {},
+                    io.BytesIO(json.dumps({"message": DB_SECRET}).encode()),
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = BillingDeniedRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@2"
+    assert receipt["failure_code"] == (
+        "supabase_billing_addons_get_authorization_failed"
+    )
+    assert "branch_get_secrets" not in fake.events
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert DB_SECRET not in json.dumps(receipt, sort_keys=True)
+    assert receipt["completed_steps"] == [
+        "exact_sha_snapshot_bound",
+        "management_permission_preflight",
+        "branch_delete_absence_confirmed",
+    ]
+
+
+def test_management_permission_preflight_fails_before_paid_branch_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class PreflightDeniedRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{PARENT_REF}/billing/addons"):
+                raise RUNNER.error.HTTPError(
+                    url,
+                    403,
+                    "Forbidden",
+                    {},
+                    io.BytesIO(b'{"message":"denied"}'),
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = PreflightDeniedRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "supabase_billing_addons_preflight_authorization_failed"
+    )
+    assert receipt["branch"] is None
+    assert receipt["cleanup"]["branch_create_mutation_invoked"] is False
+    assert receipt["cleanup"]["watchdog_armed"] is False
+    assert "branch_create" not in fake.events
+    assert "branch_delete" not in fake.events
+    assert "branch_get_secrets" not in fake.events
+    assert receipt["completed_steps"] == ["exact_sha_snapshot_bound"]
+    assert "branch_ready_and_shape_verified" not in receipt["completed_steps"]
+    assert "branch_delete_absence_confirmed" not in receipt["completed_steps"]
+
+
+def test_child_compute_readback_retries_transient_404_without_recreate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class TransientChildReadbackRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_reads = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{CHILD_REF}/billing/addons"):
+                self.child_reads += 1
+                if self.child_reads == 1:
+                    raise RUNNER.error.HTTPError(
+                        url,
+                        404,
+                        "Not Found",
+                        {},
+                        io.BytesIO(b'{"message":"not ready"}'),
+                    )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = TransientChildReadbackRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 0
+    assert receipt["ok"] is True
+    assert fake.child_reads == 2
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["replacement_branch_attempts"] == 0
+
+
 def test_ambiguous_delete_is_resolved_by_three_read_only_absence_checks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1726,7 +2223,7 @@ def test_ambiguous_delete_is_resolved_by_three_read_only_absence_checks(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1746,7 +2243,7 @@ def test_watchdog_cancel_failure_is_a_cleanup_failure_not_success(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -1765,7 +2262,7 @@ def test_watchdog_unsafe_ack_cannot_claim_secret_release(
     proof = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     )
@@ -1799,7 +2296,7 @@ def test_management_home_cleanup_failure_makes_secret_persistence_unknown(
     proof = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     )
@@ -1841,7 +2338,7 @@ def test_empty_branch_list_cannot_be_misread_as_deletion_confirmation(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
@@ -2921,7 +3418,7 @@ def test_read_timeout_fails_closed_with_typed_receipt(
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
         runner=fake,
-        opener=lambda *_args, **_kwargs: OpenApiResponse(),
+        opener=fake.open_endpoint,
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()

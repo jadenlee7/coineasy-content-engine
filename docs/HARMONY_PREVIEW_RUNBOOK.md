@@ -191,9 +191,16 @@ absolute-deadline cleanup watchdog을 먼저 arm합니다. create 응답의 id/r
 name 부재를 연속 3회 확인하기 전에는 watchdog을 해제하지 않습니다. 또한
 create 인자 자체를 증거로 쓰지 않습니다. BranchResponse의
 `preview_project_status=ACTIVE_HEALTHY`와 terminal migration lifecycle을 함께
-확인하고, `persistent=false`, `with_data=false`를, Management projects
-readback의 exact child `databases[].infra_compute_size`에서 `small`을 실제
-확인합니다. 누락·중복·unknown lifecycle·shape drift는 fail-closed합니다.
+확인하고, `persistent=false`, `with_data=false`를 확인한 뒤 Management API의
+exact-child `GET /v1/projects/{child_ref}/billing/addons`에서
+`selected_addons[].type=compute_instance`와 exact `variant.id=ci_small`을 실제
+확인합니다. scoped PAT은 branch lifecycle 최소 권한과
+`infra_add_ons_read`만 가지며, 비용이 발생하는 create 전에 같은 endpoint를
+parent ref로 GET해 권한과 최소 envelope shape를 preflight합니다. Redirect는 전부
+거부하고 401/403·unknown variant·중복·shape drift는 즉시 fail-closed합니다.
+Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compute add-on
+미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
+branch를 수리하거나 다시 생성하지 않습니다.
 
 두 probe와 config는 migration과 함께 exact SHA blob을 메모리에 한 번만
 snapshot합니다. Probe는 mutable checkout이나 임시 source file을 다시 열지 않고
