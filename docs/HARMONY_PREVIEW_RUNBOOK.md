@@ -7,6 +7,12 @@ signal, RLS 원장, connector attestation, Squid 한 고객의 private 협업
 라운드, 그리고 Netlify Deploy Preview의 읽기 전용 운영실을 검증할 때만
 사용합니다.
 
+Durable gate의 설계 결정은
+[`ADR-024: Squid Codex Gate Runner v1`](ADR-024-squid-codex-gate-runner.md)을
+따릅니다. 해당 migration과 one-shot runner는 repository에 포함되어 있지만
+Production에는 적용되지 않았습니다. 파일 존재나 local proof를 배포 또는
+활성화로 해석하지 않습니다.
+
 ```text
 Quiz aggregate ─┐
 Community ops ──┼─> registered connector -> signed request receipt
@@ -42,8 +48,10 @@ Recap aggregate ┘                                      v
 `false`여야 합니다.
 
 아홉 번째 durable Codex gate migration과 64-way DB proof 자체는 dashboard를
-포함한 어떤 feature flag도 켜지 않습니다. 이 범위에서는 모든 flag가 OFF이며,
-아래 Gate 4의 짧은 dashboard 관측은 별도 승인·별도 실행으로만 가능합니다.
+포함한 어떤 feature flag도 켜지 않습니다. Migration과 runner는 포함되어
+있을 뿐 Production에 적용되지 않았고, clean exact-SHA Supabase Preview proof도
+아직 pending입니다. 이 범위에서는 모든 flag가 OFF이며, 아래 Gate 4의 짧은
+dashboard 관측은 별도 승인·별도 실행으로만 가능합니다.
 
 ## 현재 계약 스냅샷
 
@@ -161,17 +169,55 @@ suite와 `harmony_preview_codex_gate_security.sql`,
 즉시 제외되어야 합니다. 이 중 하나라도 확인되지 않으면 Gate 1에서
 `BLOCK`입니다.
 
-현재 문서 시점에는 새 durable gate가 fresh disposable local PostgreSQL 16에서
-아홉 migration, 24개 격리 SQL security/least-privilege suite, 기존 Squid
-recovery concurrency test, 64-way durable QA 분포, Python 1,970개, Netlify 함수
-404개를 통과했습니다. 다만 clean exact-SHA Supabase Preview 성공 receipt는
-아직 없으므로 **Preview proof pending**입니다. 로컬 증거를 live Preview 또는
-Production 증거로 대체해 주장하지 않습니다.
+현재 문서 시점에는 포함된 durable migration과 runner가 fresh disposable local
+PostgreSQL 16에서 아홉 migration, 당시의 격리 SQL
+security/least-privilege·Squid recovery concurrency·64-way durable QA 검증과
+전체 Python/Netlify 함수 suite를 통과했습니다. 고정 test count는 repository가
+변할 때 낡으므로 기록하지 않으며, 실행할 exact SHA에서 현재 suite를 다시
+검증해야 합니다. 이 migration과 runner는 Production에 적용되지 않았고 clean
+exact-SHA Supabase Preview 성공 receipt도 아직 없으므로 **Preview proof
+pending**입니다. 로컬 증거를 live Preview 또는 Production 증거로 대체해
+주장하지 않습니다.
 
 ## 승인 게이트
 
 각 gate는 별도 승인입니다. 이전 gate 승인이 다음 gate 권한을 포함하지
 않습니다.
+
+대표의 각 승인 gate는 one-shot runner 밖에서 사람이 확인하는 운영 경계입니다.
+Runner는 approver의 신원이나 승인 진위를 검증하지 않고, 승인 receipt를 한 번만
+소비했다는 사실도 증명하지 않습니다. 따라서 runner의 성공 receipt, PR 상태,
+이전 승인 또는 local proof를 다음 gate의 승인 증거로 사용하면 안 됩니다.
+
+Runner가 요구하는 `--max-small-hourly-usd`와 `--max-total-cost-usd`는 각각 소수점
+이하 여섯 자리의 양수 USD 상한입니다. Runner는 유료 child 생성 전에 parent
+project의 Management API billing 응답에서 현재 fixed/hourly `ci_small` 가격을
+읽고, 그 값이 시간당 상한을 넘거나 아래 admission estimate가 total 상한을 넘으면
+fail-closed합니다. 이 입력과 live readback은 기계적 cost guard일 뿐 승인 증거가
+아니며 terminal receipt에도 `is_approval_evidence=false`로 기록됩니다. 이는
+disposable Supabase infrastructure 비용만 다루며 모델/provider 비용 권한
+`max_cost_microusd=0`이나 다른 gate의 권한을 바꾸지 않습니다.
+
+Admission estimate의 checked-in 최대 watchdog 종료 시도 예산은 110분 sleep + 5분
+reconcile + 고정 LIST 20초 + 고정 DELETE 30초 + 두 차례 process-fence와 poll의 보수
+예산을 합친 `WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS=6983`초이며 2시간보다 짧습니다.
+Receipt의 `watchdog_max_exit_attempt_seconds`도 6983이어야 합니다. 따라서
+`billable_hours_estimate=2`이고,
+`admission_estimate_total_usd = observed_hourly_usd × 2`로 계산합니다.
+`within_estimated_total_cap=true`여야 create로 진행하지만,
+`server_side_budget_lock=false`이므로 이는 실제 과금 receipt나 절대 예산 잠금이
+아닙니다.
+
+한 invocation은 unique name의 child를 최대 한 곳만 생성하며 실패한 child를
+수리하거나 교체하지 않습니다. 실패 후 retry를 포함한 새 invocation에는 대표의
+새 명시적 승인과 새 scoped PAT이 필요합니다. Runner는 PAT을 parent process
+environment와 임시 credential HOME에서 제거하지만, PAT이 새로 발급됐거나
+server-side에서 폐기됐다는 사실을 증명하지는 않습니다. Operator가 실행 전 발급과
+종료 후 폐기를 별도로 확인해야 합니다.
+
+장기 또는 무인 자동화를 도입하려면 Production 원장과 분리된 인증 가능한
+non-Production control plane에서 만료되는 one-time grant를 원자적으로 소비하는
+별도 설계와 승인이 필요합니다. 현재 runner에는 그 기능이 없습니다.
 
 ### Gate 1 — 유료 Preview branch
 
@@ -182,8 +228,8 @@ Branch는 clean exact HEAD를 이름과 receipt에 고정한 non-persistent Smal
 disposable child 한 곳만 만들며 `with_data=false`를 사용합니다. migration과
 probe는 그 exact commit의 immutable checkout에서만 읽습니다. 실패한 child를
 수리하거나 다른 child로 자동 교체하지 않고 즉시 삭제한 뒤 별도 승인을
-받습니다. 2시간 TTL은 비상 상한이며 정상·실패 모두 검증 직후 바로
-삭제합니다.
+받습니다. 실행할 때 두 required cost-guard flag를 모두 전달하고, 정상·실패 모두
+검증 직후 바로 삭제합니다.
 
 실행기는 create mutation 전에 unique branch name과 생성 시점 기준 110분
 absolute-deadline cleanup watchdog을 먼저 arm합니다. create 응답의 id/ref가
@@ -204,6 +250,20 @@ envelope shape만 preflight합니다. Production API-key metadata나 값은 읽�
 Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compute add-on
 미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
 branch를 수리하거나 다시 생성하지 않습니다.
+
+Watchdog은 DELETE exit code를 authoritative absence로 간주하지 않습니다. DELETE가
+성공, nonzero, timeout 중 어느 결과여도 다음 authoritative LIST에서 같은 exact child
+ID가 여전히 보이는 경우에만 5분 reconcile window 안에서 bounded DELETE retry를
+수행합니다. 성공한 DELETE 뒤 eventual-consistency로 child가 잠시 보이는 경우도 같은
+규칙을 적용합니다. 이는 같은 child의 cleanup retry이며 child 수리, replacement 생성
+또는 다른 target mutation이 아닙니다.
+
+위 6,983초와 2시간 계산은 create 전 admission estimate이지 Supabase의
+server-side TTL 또는 예산 잠금이 아닙니다. Management API/CLI, process fence, 정상
+cleanup, child 삭제, branch 목록의 연속 3회 부재 확인 중 하나라도 bounded하게
+끝나지 않으면 absolute 비용 상한을 보장할 수 없습니다. 이 경우 성공으로 처리하거나
+자동 재실행하지 말고, 즉시 수동으로 exact-name/ref child를 삭제하고 scoped PAT을
+폐기한 뒤 새로운 대표 승인과 새 PAT 없이는 다음 invocation을 시작하지 않습니다.
 
 Child credential은 복합 `supabase branches get` 대신 Management API의 세
 read-only 요청으로만 가져옵니다. 먼저 exact
@@ -249,12 +309,19 @@ late visibility를 감시합니다. Signal-mask 실패 시에도 unmasked KILL�
 process-group 미확인은 mask 복구 오류보다 우선합니다. 각 SHA-256만 redacted
 receipt에 남깁니다.
 
-승인 receipt에 다음을 기록합니다.
+비밀 없는 terminal proof receipt에 다음을 기록합니다. 이 receipt는 승인
+receipt가 아닙니다.
 
 - exact Git SHA와 아홉 마이그레이션 SHA-256
 - `examples/harmony-preview-squid-config.json`의 canonical byte SHA-256
-- Supabase 조직과 parent project ref
-- branch 이름, 현재 시간당 비용, 자동 삭제 예정 UTC 시각
+- parent project ref
+- branch 이름, 현재 시간당 비용과 두 CLI 상한
+- `cost_guard.watchdog_max_exit_attempt_seconds=6983`,
+  `cost_guard.billable_hours_estimate=2`,
+  `cost_guard.admission_estimate_total_usd`, `cost_guard.within_hourly_cap`,
+  `cost_guard.within_estimated_total_cap`
+- `cost_guard.is_approval_evidence=false`,
+  `cost_guard.server_side_budget_lock=false`
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 ### Gate 2 — Preview 비밀과 scoped JWT
@@ -519,10 +586,12 @@ foreground가 watchdog을 취소하지 않고 exact-name late visibility 감시�
 deadline까지 유지합니다.
 
 Branch 삭제는 성공·실패와 관계없이 probe의 cleanup/finally 경로에서 즉시
-수행하고, branch 목록에서 승인 ref 부재를 연속 확인합니다. 같은 작업 창
-안의 2시간 TTL은 삭제 실패를 탐지하는 상한이지 유지 시간 목표가 아닙니다. 이
-Preview 성공은 Production 적용, 다른 고객 연결, 실제 승인 또는 발행 권한을
-부여하지 않습니다.
+수행하고, branch 목록에서 target ref/name 부재를 연속 확인합니다. 6,983초
+watchdog 최대 종료 시도 예산과 2시간 admission estimate는 유지 시간 목표도 절대
+비용 보장도 아닙니다. API/CLI/process-fence 오류, 삭제 또는 부재 확인 실패 시 즉시
+수동 cleanup과 PAT 폐기를 수행하고, 새 승인 없이 재실행하지 않습니다. 이 Preview
+성공은 Production 적용, 다른 고객 연결, 실제 승인 또는 발행 권한을 부여하지
+않습니다.
 
 ## 로컬 사전 검증 체크리스트
 

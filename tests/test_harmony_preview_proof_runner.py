@@ -69,6 +69,8 @@ def _args(tmp_path: Path) -> SimpleNamespace:
         repo_root=str(tmp_path),
         parent_project_ref=PARENT_REF,
         release_sha=RELEASE_SHA,
+        max_small_hourly_usd="0.020600",
+        max_total_cost_usd="0.070000",
         supabase="supabase",
         psql="psql",
         branch_ready_timeout_seconds=30,
@@ -171,6 +173,74 @@ def test_extract_compute_addon_size_uses_exact_selected_compute() -> None:
     }
 
     assert RUNNER.extract_compute_addon_size(value) == "small"
+
+
+def test_extract_small_compute_hourly_price_uses_available_addon_metadata() -> None:
+    value = {
+        "selected_addons": [],
+        "available_addons": [
+            {
+                "type": "compute_instance",
+                "variants": [
+                    {
+                        "id": "ci_micro",
+                        "price": {
+                            "type": "fixed",
+                            "interval": "hourly",
+                            "amount": 0.01344,
+                        },
+                    },
+                    {
+                        "id": "ci_small",
+                        "price": {
+                            "type": "fixed",
+                            "interval": "hourly",
+                            "amount": 0.0206,
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+    assert RUNNER.extract_small_compute_hourly_price_microusd(value) == 20_600
+
+
+def test_watchdog_fixed_exit_attempt_budget_stays_below_two_hours() -> None:
+    assert RUNNER.WATCHDOG_SECONDS == 110 * 60
+    assert RUNNER.WATCHDOG_RECONCILE_SECONDS == 5 * 60
+    assert RUNNER.WATCHDOG_READ_TIMEOUT_SECONDS == 20
+    assert RUNNER.WATCHDOG_MUTATION_TIMEOUT_SECONDS == 30
+    assert RUNNER.WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS < 2 * 60 * 60
+    assert RUNNER.WATCHDOG_BILLABLE_HOURS == 2
+
+
+@pytest.mark.parametrize(
+    "price",
+    (
+        {"type": "fixed", "interval": "monthly", "amount": 0.0206},
+        {"type": "usage", "interval": "hourly", "amount": 0.0206},
+        {"type": "fixed", "interval": "hourly", "amount": "NaN"},
+        {"type": "fixed", "interval": "hourly", "amount": 0.0000001},
+    ),
+)
+def test_extract_small_compute_hourly_price_fails_closed(
+    price: dict[str, object],
+) -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="supabase_small_hourly_price_readback_invalid",
+    ):
+        RUNNER.extract_small_compute_hourly_price_microusd(
+            {
+                "available_addons": [
+                    {
+                        "type": "compute_instance",
+                        "variants": [{"id": "ci_small", "price": price}],
+                    }
+                ]
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -366,6 +436,7 @@ class FakeRunner:
         persistent: bool | None = False,
         with_data: bool | None = False,
         compute_size: str | None = "small",
+        small_hourly_price_usd: object = 0.0206,
     ) -> None:
         self.events: list[str] = []
         self.commands: list[list[str]] = []
@@ -387,6 +458,7 @@ class FakeRunner:
         self.persistent = persistent
         self.with_data = with_data
         self.compute_size = compute_size
+        self.small_hourly_price_usd = small_hourly_price_usd
         self.management_requests: list[dict[str, object]] = []
 
     def open_endpoint(
@@ -442,7 +514,24 @@ class FakeRunner:
                                 "type": "compute_instance",
                                 "variant": {"id": "ci_micro"},
                             }
-                        ]
+                        ],
+                        "available_addons": [
+                            {
+                                "type": "compute_instance",
+                                "name": "Compute",
+                                "variants": [
+                                    {
+                                        "id": "ci_small",
+                                        "name": "Small",
+                                        "price": {
+                                            "type": "fixed",
+                                            "interval": "hourly",
+                                            "amount": self.small_hourly_price_usd,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
                     }
                 )
             if url == branch_config_url:
@@ -1032,6 +1121,50 @@ def _clock() -> callable:
     return now
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_failure"),
+    (
+        (
+            "max_small_hourly_usd",
+            "0.0206",
+            "cost_guard_max_hourly_usd_invalid",
+        ),
+        (
+            "max_total_cost_usd",
+            "0.000000",
+            "cost_guard_max_total_usd_invalid",
+        ),
+    ),
+)
+def test_invalid_cost_guard_fails_before_pat_or_any_external_command(
+    field: str,
+    value: str,
+    expected_failure: str,
+    tmp_path: Path,
+) -> None:
+    args = _args(tmp_path)
+    setattr(args, field, value)
+    fake = FakeRunner()
+
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == expected_failure
+    assert receipt["cost_guard"] is None
+    assert receipt["completed_steps"] == []
+    assert fake.commands == []
+    assert fake.events == []
+    assert receipt["cleanup"]["branch_create_mutation_invoked"] is False
+    assert receipt["cleanup"]["watchdog_armed"] is False
+    assert RUNNER.MANAGEMENT_TOKEN_SOURCE_ENV not in os.environ
+
+
 def test_one_shot_order_secret_hygiene_and_final_deletion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1049,7 +1182,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@2"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@3"
     assert receipt["parent_project_ref"] == PARENT_REF
     assert receipt["parent_child_fence"] is True
     assert receipt["migration_count"] == 9
@@ -1063,9 +1196,27 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert receipt["cleanup"]["absence_confirmations"] == 3
     assert receipt["cleanup"]["watchdog_cancelled"] is True
     assert receipt["cleanup"]["branch_create_mutation_invoked"] is True
+    assert receipt["cost_guard"] == {
+        "is_approval_evidence": False,
+        "source": "explicit_cli_limits_and_management_api_price_readback",
+        "compute_variant": "ci_small",
+        "price_type": "fixed",
+        "price_interval": "hourly",
+        "watchdog_minutes": 110,
+        "watchdog_max_exit_attempt_seconds": 6983,
+        "billable_hours_estimate": 2,
+        "server_side_budget_lock": False,
+        "max_hourly_usd": "0.020600",
+        "max_total_usd": "0.070000",
+        "observed_hourly_usd": "0.020600",
+        "admission_estimate_total_usd": "0.041200",
+        "within_hourly_cap": True,
+        "within_estimated_total_cap": True,
+    }
     assert proof.branch_create_mutation_invoked is True
     assert fake.watchdog.terminated and fake.watchdog.waited
     assert receipt["planned_execution_order"] == [
+        "cost_guard_inputs_validated",
         "exact_sha_snapshot_bound",
         "management_permission_preflight",
         "branch_ready_and_shape_verified",
@@ -1232,7 +1383,13 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert not watchdog_home.parent.exists()
     watchdog_command = " ".join(fake.commands[watchdog_index])
     assert MANAGEMENT_TOKEN not in watchdog_command
-    assert "timeout=11" in watchdog_command
+    assert f"timeout={RUNNER.WATCHDOG_READ_TIMEOUT_SECONDS}" in watchdog_command
+    assert (
+        f"timeout={RUNNER.WATCHDOG_MUTATION_TIMEOUT_SECONDS}"
+        in watchdog_command
+    )
+    assert "supabase_read_timeout_seconds" not in watchdog_command
+    assert "supabase_mutation_timeout_seconds" not in watchdog_command
     assert "while time.time() < hard_stop" in watchdog_command
     assert "target_observed" in watchdog_command
     assert "absence_confirmations >= 3" in watchdog_command
@@ -1272,6 +1429,56 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
             assert timeout == 7
         if code in {"supabase_branch_create", "supabase_branch_delete"}:
             assert timeout == 11
+
+
+@pytest.mark.parametrize(
+    ("max_hourly", "max_total", "expected_failure"),
+    (
+        (
+            "0.020000",
+            "0.070000",
+            "supabase_small_hourly_price_exceeds_cost_guard",
+        ),
+        (
+            "0.020600",
+            "0.040000",
+            "supabase_preview_total_cost_exceeds_cost_guard",
+        ),
+    ),
+)
+def test_price_readback_above_explicit_cost_guard_blocks_branch_creation(
+    max_hourly: str,
+    max_total: str,
+    expected_failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.max_small_hourly_usd = max_hourly
+    args.max_total_cost_usd = max_total
+    fake = FakeRunner(small_hourly_price_usd=0.0206)
+
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == expected_failure
+    assert receipt["branch"] is None
+    assert receipt["cleanup"]["branch_create_mutation_invoked"] is False
+    assert "branch_create" not in fake.events
+    assert "watchdog_armed" not in fake.events
+    assert receipt["cost_guard"]["within_hourly_cap"] is (
+        expected_failure != "supabase_small_hourly_price_exceeds_cost_guard"
+    )
+    assert receipt["cost_guard"]["within_estimated_total_cap"] is (
+        expected_failure != "supabase_preview_total_cost_exceeds_cost_guard"
+    )
 
 
 def test_watchdog_spawn_signal_is_deferred_until_parent_tracks_child(
@@ -2281,7 +2488,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@2"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@3"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -2292,6 +2499,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     assert receipt["cleanup"]["absence_confirmations"] == 3
     assert DB_SECRET not in json.dumps(receipt, sort_keys=True)
     assert receipt["completed_steps"] == [
+        "cost_guard_inputs_validated",
         "exact_sha_snapshot_bound",
         "management_permission_preflight",
         "branch_delete_absence_confirmed",
@@ -2507,7 +2715,10 @@ def test_management_permission_preflight_fails_before_paid_branch_mutation(
     assert "branch_create" not in fake.events
     assert "branch_delete" not in fake.events
     assert "branch_config_get" not in fake.events
-    assert receipt["completed_steps"] == ["exact_sha_snapshot_bound"]
+    assert receipt["completed_steps"] == [
+        "cost_guard_inputs_validated",
+        "exact_sha_snapshot_bound",
+    ]
     assert "branch_ready_and_shape_verified" not in receipt["completed_steps"]
     assert "branch_delete_absence_confirmed" not in receipt["completed_steps"]
 
@@ -3768,6 +3979,10 @@ raise SystemExit(2)
     fake_cli.chmod(0o700)
 
     monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setenv("HARMONY_WATCHDOG_TEST_STATE", str(state_path))
     monkeypatch.setenv("HARMONY_WATCHDOG_TEST_PIDS", str(pid_path))
     monkeypatch.setenv(
@@ -3809,6 +4024,185 @@ raise SystemExit(2)
             proof.runner.terminate_process_group(
                 watchdog,
                 code="cleanup_watchdog_test",
+            )
+        proof.watchdog = None
+        proof.management_token = ""
+        proof._close_watchdog_control_socket()
+
+
+def test_retained_watchdog_retries_nonzero_delete_after_next_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "watchdog-retry-deleted"
+    attempts_path = tmp_path / "watchdog-retry-attempts"
+    fake_cli = tmp_path / "fake-supabase-retry"
+    branch_name = f"hc-proof-{'a' * 12}-20260828000000-{'d' * 12}"
+    fake_cli.write_text(
+        f'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+state = Path(os.environ["HARMONY_WATCHDOG_RETRY_STATE"])
+attempts = Path(os.environ["HARMONY_WATCHDOG_RETRY_ATTEMPTS"])
+if "list" in sys.argv:
+    rows = [
+        {{"id": "parent", "project_ref": {PARENT_REF!r}, "is_default": True}}
+    ]
+    if not state.exists():
+        rows.append(
+            {{
+                "id": "branch-id-retry",
+                "name": {branch_name!r},
+                "project_ref": {CHILD_REF!r},
+                "is_default": False,
+            }}
+        )
+    print(json.dumps(rows))
+    raise SystemExit(0)
+if "delete" in sys.argv:
+    count = int(attempts.read_text(encoding="ascii")) if attempts.exists() else 0
+    count += 1
+    attempts.write_text(str(count), encoding="ascii")
+    if count == 1:
+        raise SystemExit(9)
+    state.write_text("deleted", encoding="ascii")
+    raise SystemExit(0)
+raise SystemExit(2)
+''',
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o700)
+
+    monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setenv("HARMONY_WATCHDOG_RETRY_STATE", str(state_path))
+    monkeypatch.setenv("HARMONY_WATCHDOG_RETRY_ATTEMPTS", str(attempts_path))
+    args = _args(tmp_path)
+    args.supabase = str(fake_cli)
+    # Deliberately larger caller values must not flow into the watchdog.
+    args.supabase_read_timeout_seconds = 900
+    args.supabase_mutation_timeout_seconds = 900
+    proof = RUNNER.HarmonyPreviewProof(args, runner=RUNNER.ProcessRunner())
+    proof.management_token = MANAGEMENT_TOKEN
+    proof.management_home = tempfile.mkdtemp(prefix="harmony-supabase-home-")
+    proof.management_home_cleanup_confirmed = False
+    proof._arm_watchdog(branch_name)
+    watchdog_root = proof.watchdog_control_dir
+    proof._detach_watchdog()
+    proof._clear_management_home()
+    watchdog = proof.watchdog
+    assert isinstance(watchdog, subprocess.Popen)
+    try:
+        watchdog.wait(timeout=15)
+        assert watchdog.returncode == 0
+        assert attempts_path.read_text(encoding="ascii") == "2"
+        assert state_path.exists()
+        assert not os.path.lexists(watchdog_root)
+    finally:
+        if watchdog.poll() is None:
+            proof.runner.terminate_process_group(
+                watchdog,
+                code="cleanup_watchdog_retry_test",
+            )
+        proof.watchdog = None
+        proof.management_token = ""
+        proof._close_watchdog_control_socket()
+
+
+def test_retained_watchdog_retries_successful_delete_after_stale_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    list_count_path = tmp_path / "watchdog-stale-list-count"
+    attempts_path = tmp_path / "watchdog-stale-delete-attempts"
+    fake_cli = tmp_path / "fake-supabase-stale-list"
+    branch_name = f"hc-proof-{'a' * 12}-20260828000000-{'e' * 12}"
+    fake_cli.write_text(
+        f'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+list_count_path = Path(os.environ["HARMONY_WATCHDOG_STALE_LIST_COUNT"])
+attempts_path = Path(os.environ["HARMONY_WATCHDOG_STALE_DELETE_ATTEMPTS"])
+if "list" in sys.argv:
+    count = (
+        int(list_count_path.read_text(encoding="ascii"))
+        if list_count_path.exists()
+        else 0
+    ) + 1
+    list_count_path.write_text(str(count), encoding="ascii")
+    rows = [
+        {{"id": "parent", "project_ref": {PARENT_REF!r}, "is_default": True}}
+    ]
+    # The first LIST discovers the child. The second simulates one stale
+    # authoritative read after DELETE returned success.
+    if count <= 2:
+        rows.append(
+            {{
+                "id": "branch-id-stale",
+                "name": {branch_name!r},
+                "project_ref": {CHILD_REF!r},
+                "is_default": False,
+            }}
+        )
+    print(json.dumps(rows))
+    raise SystemExit(0)
+if "delete" in sys.argv:
+    count = (
+        int(attempts_path.read_text(encoding="ascii"))
+        if attempts_path.exists()
+        else 0
+    ) + 1
+    attempts_path.write_text(str(count), encoding="ascii")
+    raise SystemExit(0)
+raise SystemExit(2)
+''',
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o700)
+
+    monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setenv(
+        "HARMONY_WATCHDOG_STALE_LIST_COUNT", str(list_count_path)
+    )
+    monkeypatch.setenv(
+        "HARMONY_WATCHDOG_STALE_DELETE_ATTEMPTS", str(attempts_path)
+    )
+    args = _args(tmp_path)
+    args.supabase = str(fake_cli)
+    proof = RUNNER.HarmonyPreviewProof(args, runner=RUNNER.ProcessRunner())
+    proof.management_token = MANAGEMENT_TOKEN
+    proof.management_home = tempfile.mkdtemp(prefix="harmony-supabase-home-")
+    proof.management_home_cleanup_confirmed = False
+    proof._arm_watchdog(branch_name)
+    watchdog_root = proof.watchdog_control_dir
+    proof._detach_watchdog()
+    proof._clear_management_home()
+    watchdog = proof.watchdog
+    assert isinstance(watchdog, subprocess.Popen)
+    try:
+        watchdog.wait(timeout=15)
+        assert watchdog.returncode == 0
+        assert attempts_path.read_text(encoding="ascii") == "2"
+        assert int(list_count_path.read_text(encoding="ascii")) >= 5
+        assert not os.path.lexists(watchdog_root)
+    finally:
+        if watchdog.poll() is None:
+            proof.runner.terminate_process_group(
+                watchdog,
+                code="cleanup_watchdog_stale_list_test",
             )
         proof.watchdog = None
         proof.management_token = ""

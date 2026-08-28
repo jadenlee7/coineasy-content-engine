@@ -19,6 +19,7 @@ import argparse
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 import gc
 import hashlib
 import hmac
@@ -38,7 +39,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@2"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@3"
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
 API_KEY_ID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
@@ -46,6 +47,7 @@ API_KEY_ID_PATTERN = re.compile(
 )
 SHA40_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+USD_MICRO_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,8})\.[0-9]{6}$")
 READY_STATUS = "ACTIVE_HEALTHY"
 FAILED_PROJECT_STATUSES = {
     "ACTIVE_UNHEALTHY",
@@ -58,6 +60,10 @@ PENDING_LIFECYCLE_STATUSES = {"CREATING_PROJECT", "RUNNING_MIGRATIONS"}
 SUCCESS_LIFECYCLE_STATUSES = {"", "MIGRATIONS_PASSED", "FUNCTIONS_DEPLOYED"}
 FAILED_LIFECYCLE_STATUSES = {"MIGRATIONS_FAILED", "FUNCTIONS_FAILED"}
 WATCHDOG_SECONDS = 110 * 60
+WATCHDOG_RECONCILE_SECONDS = 5 * 60
+WATCHDOG_READ_TIMEOUT_SECONDS = 20
+WATCHDOG_MUTATION_TIMEOUT_SECONDS = 30
+WATCHDOG_POLL_INTERVAL_SECONDS = 1
 PROCESS_GROUP_TERM_GRACE_SECONDS = 1.0
 PROCESS_GROUP_KILL_WAIT_SECONDS = 5.0
 PROCESS_GROUP_STATE_TIMEOUT_SECONDS = 2.0
@@ -66,6 +72,20 @@ PROCESS_GROUP_ABSENT = "ABSENT"
 PROCESS_GROUP_DEAD_ONLY = "DEAD_ONLY"
 PROCESS_GROUP_LIVE = "LIVE"
 PROCESS_GROUP_UNKNOWN = "UNKNOWN"
+WATCHDOG_PROCESS_FENCE_BUDGET_SECONDS = (
+    PROCESS_GROUP_TERM_GRACE_SECONDS + 3 * PROCESS_GROUP_KILL_WAIT_SECONDS
+)
+WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS = int(
+    WATCHDOG_SECONDS
+    + WATCHDOG_RECONCILE_SECONDS
+    + WATCHDOG_READ_TIMEOUT_SECONDS
+    + WATCHDOG_MUTATION_TIMEOUT_SECONDS
+    + 2 * WATCHDOG_PROCESS_FENCE_BUDGET_SECONDS
+    + WATCHDOG_POLL_INTERVAL_SECONDS
+)
+WATCHDOG_BILLABLE_HOURS = (
+    WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS + 60 * 60 - 1
+) // (60 * 60)
 PROCESS_STATE_PS = next(
     (
         candidate
@@ -216,6 +236,12 @@ class BranchCredentials:
         self.password = ""
         self.publishable_key = ""
         self.jwt_secret = ""
+
+
+@dataclass(frozen=True)
+class CostGuardLimits:
+    max_hourly_microusd: int
+    max_total_microusd: int
 
 
 class ProcessRunner:
@@ -805,6 +831,40 @@ def _compact(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _format_usd_microusd(value: int) -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ProofError("cost_guard_usd_invalid")
+    return f"{value // 1_000_000}.{value % 1_000_000:06d}"
+
+
+def _parse_cost_guard_usd_microusd(value: object, *, code: str) -> int:
+    if not isinstance(value, str) or USD_MICRO_PATTERN.fullmatch(value) is None:
+        raise ProofError(code)
+    whole, fraction = value.split(".", 1)
+    micros = int(whole) * 1_000_000 + int(fraction)
+    if micros <= 0:
+        raise ProofError(code)
+    return micros
+
+
+def _parse_price_microusd(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        raise ProofError("supabase_small_hourly_price_readback_invalid") from None
+    scaled = amount * Decimal(1_000_000)
+    if (
+        not amount.is_finite()
+        or amount <= 0
+        or scaled != scaled.to_integral_value()
+        or scaled > 999_999_999_999_999
+    ):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    return int(scaled)
+
+
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
@@ -1126,6 +1186,41 @@ def extract_compute_addon_size(value: object) -> str:
     return "small"
 
 
+def extract_small_compute_hourly_price_microusd(value: object) -> int:
+    """Read the available ci_small hourly price from the billing response."""
+
+    if not isinstance(value, dict):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    available = value.get("available_addons")
+    if not isinstance(available, list):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    compute_rows = [
+        addon
+        for addon in available
+        if isinstance(addon, dict) and addon.get("type") == "compute_instance"
+    ]
+    if len(compute_rows) != 1:
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    variants = compute_rows[0].get("variants")
+    if not isinstance(variants, list):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    small_variants = [
+        variant
+        for variant in variants
+        if isinstance(variant, dict) and variant.get("id") == "ci_small"
+    ]
+    if len(small_variants) != 1:
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    price = small_variants[0].get("price")
+    if (
+        not isinstance(price, dict)
+        or price.get("type") != "fixed"
+        or price.get("interval") != "hourly"
+    ):
+        raise ProofError("supabase_small_hourly_price_readback_invalid")
+    return _parse_price_microusd(price.get("amount"))
+
+
 def extract_publishable_api_key_id(value: object) -> str:
     """Select one deterministic public-key ID without revealing any key."""
 
@@ -1256,6 +1351,8 @@ class HarmonyPreviewProof:
         self.watchdog_armed_at: str | None = None
         self.watchdog_deadline: str | None = None
         self.credentials: BranchCredentials | None = None
+        self.cost_guard_limits: CostGuardLimits | None = None
+        self.cost_guard: dict[str, object] | None = None
         self.proof_snapshot_payloads: dict[str, bytes] = {}
         self.completed_steps: list[str] = []
         self.cleanup_receipt: dict[str, object] = {
@@ -1270,6 +1367,70 @@ class HarmonyPreviewProof:
         if step in self.completed_steps:
             raise ProofError("preview_proof_step_completed_twice")
         self.completed_steps.append(step)
+
+    def _load_cost_guard_limits(self) -> None:
+        limits = CostGuardLimits(
+            max_hourly_microusd=_parse_cost_guard_usd_microusd(
+                getattr(self.args, "max_small_hourly_usd", None),
+                code="cost_guard_max_hourly_usd_invalid",
+            ),
+            max_total_microusd=_parse_cost_guard_usd_microusd(
+                getattr(self.args, "max_total_cost_usd", None),
+                code="cost_guard_max_total_usd_invalid",
+            ),
+        )
+        self.cost_guard_limits = limits
+        self.cost_guard = {
+            "is_approval_evidence": False,
+            "source": "explicit_cli_limits_and_management_api_price_readback",
+            "compute_variant": "ci_small",
+            "price_type": "fixed",
+            "price_interval": "hourly",
+            "watchdog_minutes": WATCHDOG_SECONDS // 60,
+            "watchdog_max_exit_attempt_seconds": (
+                WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS
+            ),
+            "billable_hours_estimate": WATCHDOG_BILLABLE_HOURS,
+            "server_side_budget_lock": False,
+            "max_hourly_usd": _format_usd_microusd(
+                limits.max_hourly_microusd
+            ),
+            "max_total_usd": _format_usd_microusd(
+                limits.max_total_microusd
+            ),
+            "observed_hourly_usd": None,
+            "admission_estimate_total_usd": None,
+            "within_hourly_cap": None,
+            "within_estimated_total_cap": None,
+        }
+
+    def _bind_price_readback(self, hourly_price_microusd: int) -> None:
+        limits = self.cost_guard_limits
+        if limits is None or self.cost_guard is None:
+            raise ProofError("cost_guard_not_initialized")
+        admission_estimate_microusd = (
+            hourly_price_microusd * WATCHDOG_BILLABLE_HOURS
+        )
+        within_hourly_cap = hourly_price_microusd <= limits.max_hourly_microusd
+        within_estimated_total_cap = (
+            admission_estimate_microusd <= limits.max_total_microusd
+        )
+        self.cost_guard.update(
+            {
+                "observed_hourly_usd": _format_usd_microusd(
+                    hourly_price_microusd
+                ),
+                "admission_estimate_total_usd": _format_usd_microusd(
+                    admission_estimate_microusd
+                ),
+                "within_hourly_cap": within_hourly_cap,
+                "within_estimated_total_cap": within_estimated_total_cap,
+            }
+        )
+        if not within_hourly_cap:
+            raise ProofError("supabase_small_hourly_price_exceeds_cost_guard")
+        if not within_estimated_total_cap:
+            raise ProofError("supabase_preview_total_cost_exceeds_cost_guard")
 
     def _supabase_json(
         self,
@@ -1578,6 +1739,9 @@ class HarmonyPreviewProof:
                 or not isinstance(billing_value.get("selected_addons"), list)
             ):
                 raise ProofError("supabase_billing_addons_preflight_invalid")
+            self._bind_price_readback(
+                extract_small_compute_hourly_price_microusd(billing_value)
+            )
         finally:
             _clear_mutable_json(billing_value)
             billing_value = None
@@ -2095,10 +2259,9 @@ try:
     os.environ["HOME"] = home
     os.environ["XDG_CONFIG_HOME"] = os.path.join(home, ".config")
 
-    attempted_ids = set()
     target_observed = False
     absence_confirmations = 0
-    hard_stop = deadline + 9 * 60
+    hard_stop = deadline + {WATCHDOG_RECONCILE_SECONDS!r}
     while time.time() < hard_stop:
         try:
             listed = run_cli(
@@ -2111,7 +2274,7 @@ try:
                     "--output-format",
                     "json",
                 ],
-                timeout={self.args.supabase_read_timeout_seconds!r},
+                timeout={WATCHDOG_READ_TIMEOUT_SECONDS!r},
                 capture=True,
             )
             value = (
@@ -2139,25 +2302,31 @@ try:
                 if matches:
                     target_observed = True
                     absence_confirmations = 0
-                    for branch_id in dict.fromkeys(matches):
-                        if branch_id in attempted_ids:
-                            continue
-                        attempted_ids.add(branch_id)
-                        run_cli(
-                            [
-                                {self.args.supabase!r},
-                                "branches",
-                                "delete",
-                                branch_id,
-                                "--project-ref",
-                                {self.args.parent_project_ref!r},
-                                "--yes",
-                                "--output-format",
-                                "json",
-                            ],
-                            timeout={self.args.supabase_mutation_timeout_seconds!r},
-                            capture=False,
-                        )
+                    # At most one exact-name child is mutated per LIST pass.
+                    # DELETE results are never treated as authoritative
+                    # absence. If the exact child remains visible, retry it
+                    # only after the next authoritative LIST readback. This
+                    # also covers a successful DELETE followed by a stale LIST.
+                    branch_id = next(iter(dict.fromkeys(matches)))
+                    deleted = run_cli(
+                        [
+                            {self.args.supabase!r},
+                            "branches",
+                            "delete",
+                            branch_id,
+                            "--project-ref",
+                            {self.args.parent_project_ref!r},
+                            "--yes",
+                            "--output-format",
+                            "json",
+                        ],
+                        timeout={WATCHDOG_MUTATION_TIMEOUT_SECONDS!r},
+                        capture=False,
+                    )
+                    if deleted is None or deleted[0] != 0:
+                        # No local success state is retained. The next LIST
+                        # pass may retry this exact ID if it remains visible.
+                        deleted = None
                 elif target_observed:
                     absence_confirmations += 1
                     if absence_confirmations >= 3:
@@ -2173,7 +2342,7 @@ try:
         except Exception:
             if cancel_requested or not watchdog_safe:
                 break
-        time.sleep({self.args.poll_interval_seconds!r})
+        time.sleep({WATCHDOG_POLL_INTERVAL_SECONDS!r})
 except SystemExit:
     if not cancel_requested or control_protocol_invalid:
         watchdog_safe = False
@@ -3069,6 +3238,8 @@ raise SystemExit(
         started = datetime.now(UTC).replace(microsecond=0)
 
         try:
+            self._load_cost_guard_limits()
+            self._complete_step("cost_guard_inputs_validated")
             self._take_management_token()
             manifest, support_manifest = verify_exact_checkout(
                 self.runner, self.repo_root, self.args.release_sha
@@ -3150,6 +3321,9 @@ raise SystemExit(
             and cleanup_failure is None
             and direct_receipt is not None
             and postgrest_receipt is not None
+            and self.cost_guard is not None
+            and self.cost_guard.get("within_hourly_cap") is True
+            and self.cost_guard.get("within_estimated_total_cap") is True
             and self.branch_shape is not None
             and self.cleanup_receipt.get("absence_confirmations") == 3
             and self.cleanup_receipt.get("watchdog_cancelled") is True
@@ -3174,6 +3348,7 @@ raise SystemExit(
             "ok": ok,
             "release_sha": self.args.release_sha,
             "parent_project_ref": self.args.parent_project_ref,
+            "cost_guard": self.cost_guard,
             "config_sha256": config_sha256 or None,
             "migration_sha256": manifest,
             "migration_count": len(manifest),
@@ -3203,6 +3378,7 @@ raise SystemExit(
                 else self.branch.ref != self.args.parent_project_ref
             ),
             "planned_execution_order": [
+                "cost_guard_inputs_validated",
                 "exact_sha_snapshot_bound",
                 "management_permission_preflight",
                 "branch_ready_and_shape_verified",
@@ -3258,6 +3434,20 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--repo-root", default=str(Path(__file__).parents[1]))
     parser.add_argument("--parent-project-ref", required=True)
     parser.add_argument("--release-sha", required=True)
+    parser.add_argument(
+        "--max-small-hourly-usd",
+        required=True,
+        help="Explicit Small hourly USD ceiling with exactly six decimals.",
+    )
+    parser.add_argument(
+        "--max-total-cost-usd",
+        required=True,
+        help=(
+            "Explicit USD ceiling applied to the pre-create admission "
+            "estimate, with exactly six decimals. This is a mechanical cost "
+            "guard, not an actual-charge cap or approval evidence."
+        ),
+    )
     parser.add_argument("--supabase", default=shutil.which("supabase") or "supabase")
     parser.add_argument(
         "--psql",

@@ -1,8 +1,9 @@
-# ADR-021: Squid Codex Gate Runner v1
+# ADR-024: Squid Codex Gate Runner v1
 
-**Status:** Proposed; durable DB contract and disposable local PostgreSQL proof
-are complete, while the clean exact-SHA disposable Supabase Preview proof
-remains pending
+**Status:** Proposed; the durable migration and one-shot Preview runner are
+included in this branch and have local PostgreSQL evidence, but neither has
+been applied to Production. The clean exact-SHA disposable Supabase Preview
+proof remains pending.
 **Date:** 2026-08-27
 **Deciders:** CoinEasy representative, content, community, security, and
 engineering leads
@@ -16,11 +17,12 @@ synthetic stage artifacts. The `codex` value on the QA receipt is an actor
 label; it is not proof that a Codex reviewer performed semantic or factual
 review.
 
-The new durable Codex gate described here has passed its disposable local
-PostgreSQL migration, security, and 64-way convergence proof. That local proof
-does not substitute for the separately approved clean exact-SHA Supabase
-Preview proof, so this ADR still does not call the durable gate deployable or
-Production-ready.
+The new durable Codex gate described here is included as a checked-in migration
+and one-shot Preview proof runner. It has passed disposable local PostgreSQL
+migration, security, and 64-way convergence checks. Those files have not been
+applied to Production, and that local evidence does not substitute for the
+separately approved clean exact-SHA Supabase Preview proof. This ADR therefore
+does not call the durable gate deployed, deployable, or Production-ready.
 
 Moving directly from that rehearsal to a live model worker would leave a more
 important boundary unproven. The current stage operation key includes the
@@ -33,6 +35,12 @@ This is not dynamic model assignment and it is not an all-powerful
 super-agent. Each worker must have one role, one capability, and no authority
 to approve or publish.
 
+Repository inclusion is not runtime activation. The migration and runner may
+be reviewed and tested from this branch, but they do not authorize a Production
+migration, a feature-flag change, a live Codex/provider call, Grok or Buzz use,
+an approval decision, external messaging, Recap delivery, or publication.
+Automatic publication remains OFF.
+
 ## Decision
 
 Use a Codex-first, fixed-specialist `Squid Codex Gate Runner v1`. The existing
@@ -41,6 +49,63 @@ Preview DB projection adds append-only source-lineage, request, transition,
 claim, attempt, evidence, result, verification, reconciliation, and stage-link
 receipts plus one mutable run projection. This is fixed role ownership, not
 runtime model assignment and not a super-agent.
+
+### External approval boundary and mechanical cost guard
+
+Every representative approval gate remains a manual operating boundary outside
+the one-shot Preview runner. The operator must separately confirm the exact
+release SHA, Production parent ref, paid Preview creation, Preview-only
+migration and proof scope, immediate deletion, and any later Deploy Preview or
+worker step before invoking the corresponding action. An earlier gate does not
+authorize a later gate.
+
+The current runner does not authenticate an approver, validate the truth of an
+approval receipt, or atomically consume an approval once. Its terminal receipt
+therefore cannot be used as proof that representative approval was genuine,
+current, or one-time. Long-running or unattended automation would require a
+separately designed, non-Production control plane with an authenticated,
+expiring one-time grant and atomic consumption. That mechanism is not part of
+this decision or the current runner.
+
+The runner instead requires explicit `--max-small-hourly-usd` and
+`--max-total-cost-usd` values and, before paid child creation, reads the current
+fixed hourly `ci_small` price from the parent project's Management API billing
+response. It fails closed when that price exceeds the hourly ceiling or when
+the admission estimate exceeds the total ceiling. The estimate uses the
+checked-in maximum watchdog exit-attempt budget: 110 minutes of sleep, five
+minutes of reconciliation, one fixed 20-second LIST allowance, one fixed
+30-second DELETE allowance, and conservative process-fence and poll allowances,
+for `WATCHDOG_MAX_EXIT_ATTEMPT_SECONDS=6983` (less than two hours). The receipt
+records the same value as `watchdog_max_exit_attempt_seconds=6983`; its ceiling
+is therefore `billable_hours_estimate=2`, and
+`admission_estimate_total_usd = observed_hourly_usd * 2`.
+
+These values and the live readback are mechanical admission guards only. The
+receipt records `is_approval_evidence=false`, `server_side_budget_lock=false`,
+and `within_estimated_total_cap`; it does not call the estimate an actual charge
+or an absolute cap. The guard covers disposable Supabase infrastructure billing
+only and does not relax the zero model/provider-cost authority represented by
+`max_cost_microusd=0`.
+
+One invocation may create at most one uniquely named, non-persistent,
+no-data child. It never repairs or replaces that child. Any new invocation,
+including a retry after failure, requires a fresh external representative
+approval and a newly scoped PAT. The runner removes the PAT from its process
+environment and temporary credential homes, but it does not prove that the PAT
+was freshly issued or revoked server-side.
+
+The watchdog never treats a DELETE exit code as authoritative absence. Whether
+DELETE succeeds, returns nonzero, or times out, it may retry deletion of the
+same exact child only when a subsequent authoritative LIST still shows that
+child, and only inside the bounded reconciliation window. This also covers
+eventual-consistency lag after a successful DELETE. It is a cleanup retry, not
+child repair or replacement.
+
+The 6,983-second estimate is not a server-side budget lock. If the Management
+API, Supabase CLI, process fence, immediate deletion, or required absence checks
+do not complete as bounded, the runner cannot guarantee an absolute total-cost
+ceiling. The operator must immediately perform manual cleanup, revoke the
+scoped PAT, and obtain a new approval before any new invocation.
 
 The first lane is the independently scoped Squid QA specialist. A stable
 `work_key` binds the exact plan and private-content stage receipt chain plus
@@ -176,12 +241,13 @@ start receipt authorizes at most one future worker invocation; the current
 harness does not call Codex, Grok, Buzz, a provider, an approval system, Recap
 delivery, or publication.
 
-The durable contract is migration
+The durable contract is the included, unapplied-to-Production migration
 `20260827220000_harmony_preview_codex_gate_durable.sql`, applied ninth after the
 eight existing Harmony Preview migrations. It may be verified only from a
 clean exact Git SHA on one separately approved non-persistent disposable
 Preview child. Success and failure both require immediate child deletion;
-the two-hour TTL is only a safety bound. Preview proof does not authorize a
+the estimated two billing hours are only a pre-create admission calculation,
+not a TTL or server-side budget lock. Preview proof does not authorize a
 Production migration, feature-flag activation, representative approval, or
 publication.
 
@@ -256,12 +322,15 @@ separate, non-self-approving contexts.
   version was then superseded after result submission; 64 reconcilers converged
   on `1 result_not_current / 63 no-op` with zero verification, positive QA
   stage, stage link, operator inbox, or Recap rows for that stale plan.
-- The same local checkpoint passed 24 isolated SQL least-privilege/security
-  suites, the existing Squid recovery concurrency test, 1,970 Python tests,
-  and 404 Netlify function tests.
+- The same local checkpoint passed the then-current isolated SQL
+  least-privilege/security checks, Squid recovery concurrency check, and full
+  Python and Netlify function suites. Exact counts are intentionally omitted
+  because they change as the repository evolves; the current exact SHA must be
+  re-tested before any Preview execution.
 - No exact-SHA disposable Supabase Preview receipt is recorded here yet.
-- Therefore the durable gate, live Codex worker, Production migration, and all
-  feature-flag activation remain blocked.
+- The durable migration and runner are included but not applied to Production.
+  Therefore the exact-SHA Supabase Preview proof, live Codex worker, Production
+  migration, and every feature-flag activation remain blocked.
 
 ## Action Items
 
@@ -274,9 +343,11 @@ separate, non-self-approving contexts.
 4. [x] Pass local PostgreSQL migration, security, and 64-way convergence
        checks; preserve only the non-secret distribution and side-effect
        receipt in this ADR.
-5. [ ] Under the separately approved cost and TTL gate, pass the same contract
-       on one disposable Supabase Preview and immediately confirm child
-       deletion. Do not reuse or repair a failed child.
+5. [ ] After a fresh external representative approval and issuance of a fresh
+       scoped PAT, invoke the runner once with both required cost ceilings,
+       pass the same contract on one disposable Supabase Preview, and
+       immediately confirm child deletion. Do not reuse, repair, or replace a
+       failed child; a new invocation requires a new approval and scoped PAT.
 6. [ ] Under another separate approval, connect one QA-only Codex worker with
        no planning, content, operator, Recap, messaging, or publication token.
 7. [ ] Require clean Preview rounds and measured operator value before adding
