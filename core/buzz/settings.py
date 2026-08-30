@@ -15,6 +15,7 @@ _FALSE_VALUES = frozenset({"false", ""})
 _TOKEN_INVALID = re.compile(r"[^\x21-\x7e]")
 _HEX_KEY = re.compile(r"^[a-fA-F0-9]{64}$")
 _NSEC_KEY = re.compile(r"^nsec1[023456789acdefghjklmnpqrstuvwxyz]{20,120}$")
+_LOWER_HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 _LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _LOWER_HEX_128 = re.compile(r"^[0-9a-f]{128}$")
 _CANONICAL_DECIMAL = re.compile(r"^(?:0|[1-9][0-9]*)$")
@@ -206,6 +207,18 @@ class BuzzDeliverySettings:
             raise ValueError("BUZZ_DELIVERY_ENABLED must be true")
         if env.get("BUZZ_DELIVERY_ALLOWED_CLIENTS", "") != "origintrail":
             raise ValueError("BUZZ_DELIVERY_ALLOWED_CLIENTS must be origintrail")
+        railway_release_sha = env.get("RAILWAY_GIT_COMMIT_SHA", "").strip()
+        authorized_release_sha = env.get(
+            "BUZZ_DELIVERY_RELEASE_SHA", ""
+        ).strip()
+        if (
+            not _LOWER_HEX_40.fullmatch(railway_release_sha)
+            or not _LOWER_HEX_40.fullmatch(authorized_release_sha)
+            or not secrets.compare_digest(
+                railway_release_sha, authorized_release_sha
+            )
+        ):
+            raise ValueError("Buzz delivery release SHA fence does not match")
         shadow_url = _https_endpoint(
             env.get("BUZZ_SHADOW_URL", ""),
             "/api/buzz-shadow/origintrail/batch",

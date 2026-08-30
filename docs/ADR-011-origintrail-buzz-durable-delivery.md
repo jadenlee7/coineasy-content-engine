@@ -158,3 +158,21 @@ one variable and rollback is deleting it. The scoped token is sent only as the
 fails the build if the adapter's RPC set and the role's grant set drift, and
 the shadow token now enforces the same distinctness-from-reserved-secrets
 rule the delivery token always had.
+
+## Addendum — 2026-08-30: exact release authorization fence
+
+The hourly delivery cron now requires `RAILWAY_GIT_COMMIT_SHA` to be one exact
+40-character lowercase Git SHA and to equal the operator-controlled
+`BUZZ_DELIVERY_RELEASE_SHA`. Missing, malformed, or mismatched values fail
+before the worker is built, so no shadow, control, relay, or CLI call is
+reachable. Validation reports only `runtime_release_verified=true`; it never
+prints either configured value.
+
+Railway runs `--validate-only` as a pre-deploy command. A mismatched automatic
+deployment therefore stops before the new cron becomes active. The existing
+literal `BUZZ_DELIVERY_ENABLED=true` and explicit `--send-once` gates remain
+independently required for a delivery attempt. The service also watches only
+its Docker inputs, `core/buzz`, its runner, and its Railway config, preventing
+unrelated monorepo changes from rebuilding this production sender. Watch paths
+reduce accidental triggers; the exact-SHA comparison is the authorization
+fence. No database or delivery-receipt schema change is required.

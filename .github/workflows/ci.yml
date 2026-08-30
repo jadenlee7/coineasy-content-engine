@@ -248,6 +248,23 @@ jobs:
             coineasy-buzz-delivery-ci \
             python -m scripts.run_origintrail_buzz_delivery --send-once \
           | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "enabled": False, "mode": "hold", "reason": "buzz_delivery_disabled", "provider_calls": False, "database_calls": False, "shadow_calls": False}'
+      - name: Validate the delivery release fence without network calls
+        run: |
+          docker run --rm --network none \
+            --env BUZZ_DELIVERY_ENABLED=false \
+            --env BUZZ_DELIVERY_ALLOWED_CLIENTS=origintrail \
+            --env BUZZ_SHADOW_URL=https://console.example/api/buzz-shadow/origintrail/batch \
+            --env BUZZ_DELIVERY_URL=https://console.example/api/buzz-delivery/origintrail \
+            --env BUZZ_SHADOW_ACCESS_TOKEN=shadow-token-that-is-dedicated-and-long-enough \
+            --env BUZZ_DELIVERY_WORKER_TOKEN=delivery-token-that-is-dedicated-and-long-enough \
+            --env BUZZ_RELAY_URL=https://buzz.example \
+            --env BUZZ_PRIVATE_KEY=1111111111111111111111111111111111111111111111111111111111111111 \
+            --env BUZZ_CHANNEL_ID=33333333-3333-4333-8333-333333333333 \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env BUZZ_DELIVERY_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            coineasy-buzz-delivery-ci \
+            python -m scripts.run_origintrail_buzz_delivery --validate-only \
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "origintrail", "channel_id": "33333333-3333-4333-8333-333333333333", "runtime_release_verified": True, "provider_calls": False, "database_calls": False, "shadow_calls": False}'
 
   buzz-review-image:
     runs-on: ubuntu-latest

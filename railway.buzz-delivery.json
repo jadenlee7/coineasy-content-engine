@@ -2,9 +2,19 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile.buzz-delivery"
+    "dockerfilePath": "Dockerfile.buzz-delivery",
+    "watchPatterns": [
+      "/.dockerignore",
+      "/Dockerfile.buzz-delivery",
+      "/requirements-automation.txt",
+      "/core/__init__.py",
+      "/core/buzz/**",
+      "/scripts/run_origintrail_buzz_delivery.py",
+      "/railway.buzz-delivery.json"
+    ]
   },
   "deploy": {
+    "preDeployCommand": "python -m scripts.run_origintrail_buzz_delivery --validate-only",
     "startCommand": "python -m scripts.run_origintrail_buzz_delivery --send-once",
     "cronSchedule": "15 * * * *",
     "restartPolicyType": "NEVER"

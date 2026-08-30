@@ -46,6 +46,22 @@ to inspect the channel manually before any human decision to re-send. A
 nonzero `delivery_unknown_count`, or `reconcile.ok=false` on consecutive
 runs, is the page-worthy condition; zeros are the normal steady state.
 
+Every candidate delivery deployment must expose both of these non-secret
+runtime values:
+
+```text
+RAILWAY_GIT_COMMIT_SHA=<Railway-provided exact 40-character commit>
+BUZZ_DELIVERY_RELEASE_SHA=<operator-approved same exact commit>
+```
+
+Railway runs `python -m scripts.run_origintrail_buzz_delivery --validate-only`
+before deployment. Missing, malformed, or different values exit nonzero before
+the worker is constructed and make zero shadow, database, relay, or CLI calls.
+A successful validation reports `runtime_release_verified=true` without
+printing either SHA. Keep the approved release value pinned until a separate
+deployment approval names a new exact commit; unrelated repository changes are
+excluded by the service's focused watch paths.
+
 ## Cost boundary
 
 The operator confirmed on 2026-08-01 that the Supabase organization is already

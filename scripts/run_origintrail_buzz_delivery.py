@@ -20,6 +20,8 @@ _VALIDATE_REQUIRED_ENV = (
     "BUZZ_PRIVATE_KEY",
     "BUZZ_CHANNEL_ID",
     "BUZZ_CLI_PATH",
+    "RAILWAY_GIT_COMMIT_SHA",
+    "BUZZ_DELIVERY_RELEASE_SHA",
 )
 
 
@@ -40,6 +42,7 @@ def _validate_only() -> dict[str, object]:
         "enabled": enabled,
         "client_id": "origintrail",
         "channel_id": settings.channel_id,
+        "runtime_release_verified": True,
         "provider_calls": False,
         "database_calls": False,
         "shadow_calls": False,
@@ -107,7 +110,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        result = asyncio.run(_send_once(BuzzDeliverySettings.from_env()))
+        settings = BuzzDeliverySettings.from_env()
+    except (RuntimeError, ValueError):
+        result = {
+            "ok": False,
+            "mode": "send_once",
+            "error": "buzz_delivery_configuration_invalid",
+            "provider_calls": False,
+            "database_calls": False,
+            "shadow_calls": False,
+        }
+        print(json.dumps(result, separators=(",", ":")))
+        return 1
+
+    try:
+        result = asyncio.run(_send_once(settings))
     except (RuntimeError, ValueError):
         result = {
             "ok": False,
