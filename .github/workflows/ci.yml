@@ -377,6 +377,8 @@ jobs:
                        supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
+      - name: Prove Content QA concurrency fences
+        run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake
         run: >-
           bash
