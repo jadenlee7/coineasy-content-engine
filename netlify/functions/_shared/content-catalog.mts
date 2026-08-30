@@ -58,6 +58,20 @@ export type ContentCatalogConfig = {
   workspaceId: string;
 };
 
+export type ScopedContentCatalogConfig = {
+  supabaseUrl: string;
+  projectKey: string;
+  authorizationKey: string;
+  workspaceId: string;
+  rpcNames?: {
+    listLibrary: string;
+    getLibraryItem: string;
+    getReviewReadiness: string;
+  };
+};
+
+export type ContentCatalogAccessConfig = ContentCatalogConfig | ScopedContentCatalogConfig;
+
 export type ContentCatalogAsset = {
   assetId: string;
   assetKind: string;
@@ -215,10 +229,11 @@ function jsonByteLength(value: unknown): number {
   }
 }
 
-function storageHeaders(config: ContentCatalogConfig): Record<string, string> {
+function storageHeaders(config: ContentCatalogAccessConfig): Record<string, string> {
+  const scoped = "projectKey" in config;
   return {
-    apikey: config.serviceRoleKey,
-    Authorization: `Bearer ${config.serviceRoleKey}`,
+    apikey: scoped ? config.projectKey : config.serviceRoleKey,
+    Authorization: `Bearer ${scoped ? config.authorizationKey : config.serviceRoleKey}`,
   };
 }
 
@@ -488,7 +503,7 @@ function validOptionalAssetMetadata(value: {
 }
 
 function validStoredLibraryAsset(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   clientId: ContentCatalogClient,
   value: unknown,
 ): ContentCatalogAsset | null {
@@ -699,7 +714,7 @@ export async function downloadContentAsset(
 }
 
 export async function createContentAssetSignedUrl(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   clientId: ContentCatalogClient,
   asset: ContentCatalogAsset,
   expiresIn = 180,
@@ -956,7 +971,7 @@ function safePublicJson(value: unknown): Record<string, unknown> {
 }
 
 async function publicAsset(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   clientId: ContentCatalogClient,
   asset: ContentCatalogAsset,
   expiresIn: number,
@@ -1013,7 +1028,7 @@ function listItem(value: unknown): ContentLibraryListItem | null {
 }
 
 export async function listContentLibrary(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   filters: {
     clientId?: ContentCatalogClient | null;
     contentKind?: ContentCatalogKind | null;
@@ -1042,7 +1057,10 @@ export async function listContentLibrary(
   ) throw new ContentCatalogError("invalid_library_filters");
   let response: Response;
   try {
-    response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/list_content_library`, {
+    const rpc = "rpcNames" in config && config.rpcNames
+      ? config.rpcNames.listLibrary
+      : "list_content_library";
+    response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${rpc}`, {
       method: "POST",
       headers: { ...storageHeaders(config), "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1131,7 +1149,7 @@ function validFigmaLink(value: unknown): ContentLibraryDetail["figma_links"][num
 }
 
 export async function getContentLibraryItem(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   contentItemId: string,
   fetcher: typeof fetch = fetch,
   signedUrlSeconds = 180,
@@ -1145,7 +1163,10 @@ export async function getContentLibraryItem(
   ) throw new ContentCatalogError("invalid_library_item_id");
   let response: Response;
   try {
-    response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/get_content_library_item`, {
+    const rpc = "rpcNames" in config && config.rpcNames
+      ? config.rpcNames.getLibraryItem
+      : "get_content_library_item";
+    response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${rpc}`, {
       method: "POST",
       headers: { ...storageHeaders(config), "Content-Type": "application/json" },
       body: JSON.stringify({

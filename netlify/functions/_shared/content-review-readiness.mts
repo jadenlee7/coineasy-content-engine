@@ -1,6 +1,6 @@
 import {
   ContentCatalogError,
-  type ContentCatalogConfig,
+  type ContentCatalogAccessConfig,
   isCatalogUuid,
 } from "./content-catalog.mts";
 
@@ -211,7 +211,7 @@ function validateReadiness(
 }
 
 export async function getContentReviewReadiness(
-  config: ContentCatalogConfig,
+  config: ContentCatalogAccessConfig,
   contentItemId: string,
   contentVersionId: string,
   fetcher: typeof fetch = fetch,
@@ -226,12 +226,18 @@ export async function getContentReviewReadiness(
   let response: Response;
   try {
     response = await fetcher(
-      `${config.supabaseUrl}/rest/v1/rpc/get_content_review_readiness`,
+      `${config.supabaseUrl}/rest/v1/rpc/${
+        "rpcNames" in config && config.rpcNames
+          ? config.rpcNames.getReviewReadiness
+          : "get_content_review_readiness"
+      }`,
       {
         method: "POST",
         headers: {
-          apikey: config.serviceRoleKey,
-          Authorization: `Bearer ${config.serviceRoleKey}`,
+          apikey: "projectKey" in config ? config.projectKey : config.serviceRoleKey,
+          Authorization: `Bearer ${
+            "projectKey" in config ? config.authorizationKey : config.serviceRoleKey
+          }`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
