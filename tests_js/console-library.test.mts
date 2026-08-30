@@ -53,6 +53,71 @@ test("loads safe detail DTOs for news, articles, and tutorials", () => {
   assert.doesNotMatch(consoleHtml, /card\.dataset\.contentId === libraryState\.activeId/);
 });
 
+test("shows bounded exact-version automation receipts without adding an action", () => {
+  assert.match(consoleHtml, /function normalizedContentReviewReadiness\(rawReadiness, expectedContentId, expectedVersionId\)/);
+  assert.match(consoleHtml, /function renderContentReviewReadiness\(rawDetail\)/);
+  assert.match(consoleHtml, /자동 검수 영수증/);
+  assert.match(consoleHtml, /Generate job UUID/);
+  assert.match(consoleHtml, /Current version UUID/);
+  assert.match(consoleHtml, /Banner SHA-256/);
+  assert.match(consoleHtml, /Grok verdict SHA-256/);
+  assert.match(consoleHtml, /Approvals/);
+  assert.match(consoleHtml, /Publications/);
+  assert.match(consoleHtml, /review_readiness_available !== true/);
+  const readinessFunction = consoleHtml.match(
+    /function renderContentReviewReadiness\(rawDetail\) \{[\s\S]*?\n      \}(?=\n\n      function hasAttestedDoubleFactCheckApproval)/,
+  )?.[0] || "";
+  assert.doesNotMatch(readinessFunction, /fetch\(|data-library-publish|data-library-review|method:\s*"POST"|Idempotency-Key/);
+  assert.doesNotMatch(readinessFunction, /source_url|provider_response|storage_path|request_payload/);
+});
+
+test("rejects malformed or cross-version automation receipt DTOs in the browser", () => {
+  const functionSource = consoleHtml.match(
+    /function normalizedContentReviewReadiness\(rawReadiness, expectedContentId, expectedVersionId\) \{[\s\S]*?\n      \}(?=\n\n      function renderContentReviewReadiness)/,
+  )?.[0];
+  assert.ok(functionSource, "normalizedContentReviewReadiness must be present");
+  const normalize = Function(
+    "plainObject",
+    `"use strict"; ${functionSource}; return normalizedContentReviewReadiness;`,
+  )(
+    (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+  ) as (value: unknown, itemId: string, versionId: string) => Record<string, unknown> | null;
+  const itemId = "22222222-2222-4222-8222-222222222222";
+  const versionId = "33333333-3333-4333-8333-333333333333";
+  const receipt = {
+    content_item_id: itemId,
+    content_version_id: versionId,
+    generate_job_id: "44444444-4444-4444-8444-444444444444",
+    source_item_id: "55555555-5555-4555-8555-555555555555",
+    source_published_at: "2026-08-28T12:00:00.000Z",
+    source_is_latest: true,
+    source_within_24h: true,
+    feed_active: true,
+    feed_poll_interval_minutes: 15,
+    feed_last_polled_at: "2026-08-28T12:15:00.000Z",
+    feed_poll_recent: true,
+    banner_sha256: "a".repeat(64),
+    grok_outbox_count: 1,
+    grok_status: "sent",
+    grok_decision: "PASS",
+    grok_next_action: "ready_for_human_approval",
+    grok_verdict_sha256: "b".repeat(64),
+    grok_banner_sha256: "a".repeat(64),
+    approval_count: 0,
+    publication_count: 0,
+  };
+  assert.ok(normalize(receipt, itemId, versionId));
+  assert.equal(normalize({ ...receipt, content_version_id: itemId }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, grok_outbox_count: 0 }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, grok_decision: "PASS", grok_next_action: null }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, grok_banner_sha256: "c".repeat(64) }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, source_published_at: null }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, feed_last_polled_at: null }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, grok_status: null }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, provider_response: "must-not-leak" }, itemId, versionId), null);
+  assert.equal(normalize({ ...receipt, banner_sha256: "short" }, itemId, versionId), null);
+});
+
 test("records explicit approve or change-request decisions without auto publishing", () => {
   assert.match(consoleHtml, /팀 검토 · 브랜드 학습/);
   assert.match(consoleHtml, /data-library-review="approved"/);
