@@ -19,8 +19,20 @@ def test_buzz_delivery_is_a_short_lived_disabled_by_default_cron():
         "build": {
             "builder": "DOCKERFILE",
             "dockerfilePath": "Dockerfile.buzz-delivery",
+            "watchPatterns": [
+                "/.dockerignore",
+                "/Dockerfile.buzz-delivery",
+                "/requirements-automation.txt",
+                "/core/__init__.py",
+                "/core/buzz/**",
+                "/scripts/run_origintrail_buzz_delivery.py",
+                "/railway.buzz-delivery.json",
+            ],
         },
         "deploy": {
+            "preDeployCommand": (
+                "python -m scripts.run_origintrail_buzz_delivery --validate-only"
+            ),
             "startCommand": (
                 "python -m scripts.run_origintrail_buzz_delivery --send-once"
             ),
@@ -47,6 +59,8 @@ def test_buzz_image_pins_the_reviewed_official_cli_and_is_minimal():
     assert "core/publishers" not in lowered
     assert "openai_api_key" not in lowered
     assert "supabase_service_role_key" not in lowered
+    assert "buzz_delivery_release_sha=" not in lowered
+    assert "railway_git_commit_sha=" not in lowered
 
 
 def test_ci_builds_and_runs_the_real_buzz_image_in_hold_mode():
@@ -57,6 +71,16 @@ def test_ci_builds_and_runs_the_real_buzz_image_in_hold_mode():
     assert "--network none" in workflow
     assert "BUZZ_DELIVERY_ENABLED=false" in workflow
     assert "buzz_delivery_disabled" in workflow
+    assert (
+        "BUZZ_DELIVERY_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd"
+        in workflow
+    )
+    assert (
+        "RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd"
+        in workflow
+    )
+    assert "scripts.run_origintrail_buzz_delivery --validate-only" in workflow
+    assert "runtime_release_verified" in workflow
 
 
 def test_buzz_review_is_a_short_lived_fast_disabled_by_default_cron():
