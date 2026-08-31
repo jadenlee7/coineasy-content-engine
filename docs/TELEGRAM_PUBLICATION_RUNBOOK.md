@@ -28,6 +28,14 @@ and every other client remain manual.
 Apply `supabase/migrations/20260801120000_exact_telegram_publication.sql` before
 deploying any application plane.
 
+The optional audited closure procedure for a terminal `delivery_unknown` also
+requires
+`supabase/migrations/20260831120000_exact_telegram_delivery_unknown_resolution.sql`.
+Merging that migration does not authorize applying it to production, deploying
+an application, issuing any phase credential, enabling publication, approving
+a resolution, or resolving any receipt. Each of those remains a separate
+operator-approved action.
+
 | Variable | Main Railway API | Publication cron | Netlify |
 |---|:---:|:---:|:---:|
 | `SUPABASE_URL` | required | required | required |
@@ -109,7 +117,12 @@ execution plane or the official-X generation cron can claim new work.
 7. If a live non-production canary is required, create an isolated deployment
    and database migration that explicitly pins a disposable public test
    channel. Do not repoint the production Squid environment alone.
-8. Before every first activation or reactivation, run this read-only queue gate:
+8. Before every first activation or reactivation, run this read-only queue gate
+   as an administrative database reader. A terminal `delivery_unknown` blocks
+   activation until it has either one append-only non-resend resolution receipt
+   or one canonical positive manual-observation row. Neither path rewrites the
+   unknown transport state; the resolution receipt does not assert that Telegram
+   failed to deliver the message.
 
    ```sql
    select
@@ -129,17 +142,52 @@ execution plane or the official-X generation cron can claim new work.
    where publication.request_payload ->> 'workflow'
             = 'exact_telegram_publication_v1'
      and (
-         publication.status in ('queued', 'publishing', 'delivery_unknown')
+         publication.status in ('queued', 'publishing')
+         or (
+             publication.status = 'delivery_unknown'
+             and not exists (
+                 select 1
+                 from private.exact_telegram_delivery_unknown_resolutions
+                      as resolution
+                 where resolution.workspace_id = publication.workspace_id
+                   and resolution.publication_id = publication.id
+             )
+             and not exists (
+                 select 1
+                 from public.publications as observed
+                 where observed.workspace_id = publication.workspace_id
+                   and observed.id <> publication.id
+                   and observed.content_item_id = publication.content_item_id
+                   and observed.content_version_id = publication.content_version_id
+                   and observed.channel = 'telegram'
+                   and observed.status = 'published'
+                   and observed.request_payload = jsonb_build_object(
+                       'observation', 'manual_existing_publication',
+                       'external_publish_performed', false
+                   )
+                   and observed.response_payload = jsonb_build_object(
+                       'observed', true,
+                       'external_publish_performed', false
+                   )
+                   and observed.external_url ~
+                       '^https://t\.me/squid_kor_update/[1-9][0-9]{0,18}$'
+             )
+         )
          or job.status in ('queued', 'running', 'retrying')
      )
    order by publication.created_at, publication.id;
    ```
 
-   A clean first activation returns zero rows. Never enable with
-   `publishing`/`delivery_unknown`. A queued or retrying row will be sent as soon
-   as Railway is enabled, so proceed only when the operator has explicitly
-   re-approved that exact item/version for immediate public delivery. Do not
-   edit queue rows directly to make this check pass.
+   A clean first activation returns zero rows. Never enable with `publishing` or
+   a `delivery_unknown` that has neither accepted evidence path. A negatively
+   resolved row still remains `delivery_unknown`; the anti-joined append-only
+   resolution receipt removes only that operational incident. A canonical
+   positive manual-observation row independently proves that the exact public
+   message was found and also removes that incident from this gate. A queued or
+   retrying row will be sent as soon as Railway is enabled, so proceed only when
+   the operator has explicitly re-approved that exact item/version for immediate
+   public delivery. Do not edit queue, publication, job, observation, or
+   resolution rows directly to make this check pass.
 9. Enable the main Railway API and mandatory cron worker first, then enable
    Netlify. Resume official-X generation only after its authenticated capability
    preflight succeeds against the matching Netlify deployment. Keep both
@@ -175,18 +223,92 @@ path; trigger serialization is scoped to one immutable publication key.
 
 ## `delivery_unknown`
 
-`delivery_unknown` means Telegram may already have accepted the message. Never
-reset, requeue, or resend that job automatically.
+`delivery_unknown` means Telegram may already have accepted the message. It is
+a permanent transport fact for that exact attempt, not proof of either delivery
+or non-delivery. The publication stays `delivery_unknown`, its job stays
+`failed`, and neither row may be reset, requeued, resent, claimed, or rewritten.
 
 1. Open `@squid_kor_update` and compare the exact stored caption and PNG around
    `delivery_started_at`.
-2. If the message exists, paste its canonical
+2. If the message exists and the exact target version is still the content
+   item's current version, paste its canonical
    `https://t.me/squid_kor_update/<message_id>` URL into the Telegram performance
-   observation field. This records the existing post and does not publish.
-3. If it does not appear, keep the job unresolved until Telegram delivery can be
-   ruled out operationally. A new approved version and a new publication request
-   require an explicit human decision because a delayed original message could
-   otherwise become a duplicate.
+   observation field. The existing manual-observation RPC accepts only the
+   current version. It creates a separate canonical `published` evidence row,
+   performs no external publish, and satisfies the positive-evidence branch of
+   the activation gate.
+3. If the target version is no longer current, the existing manual-observation
+   RPC must refuse it. Do not change the current version, backdate a receipt, or
+   insert a publication row directly. Keep activation blocked until a separate
+   reviewed schema/RPC change explicitly supports that historical version.
+4. If no matching message is visible, keep publication disabled and prepare a
+   bounded public audit. It must identify the canonical public channel, exact
+   first and last public message IDs, checked time, bounded message count,
+   snapshot SHA-256, and zero exact caption and PNG matches. This means only
+   `not_observed_at_checked_at`; absence in that audit is not proof that the
+   provider never delivered the message.
+5. Use the dedicated `coineasy_telegram_resolution` role with a phase-specific
+   `telegram_delivery_unknown_inspect` JWT to call
+   `inspect_exact_telegram_delivery_unknown_resolution`. The token pins the
+   production workspace, inspector subject, item/version/publication/job tuple,
+   resolution and approval UUIDs, intended approver, expiry, public-audit
+   SHA-256 and exact approved release SHA, with automatic publication and resend
+   both false and zero external actions. Do not use a browser, publication
+   worker, general service-role credential, or Telegram bot credential for this
+   operation.
+6. Inspection is non-mutating. It revalidates the exact item, immutable version,
+   failed job, publication, delivery attempt, approval and PNG, refuses an
+   already recorded canonical manual observation, and returns the complete
+   bounded `approval_subject` plus `approval_subject_sha256`.
+7. Obtain a separate explicit human approval for that exact subject hash,
+   resolution UUID, approval UUID, publication/job/version tuple, audit window,
+   expiry and release SHA. Then issue a distinct
+   `telegram_delivery_unknown_approve` JWT whose `jti`, exact tuple, subject
+   hash and expiry match that approval, and call
+   `approve_exact_telegram_delivery_unknown_resolution`. The RPC appends one
+   immutable private approval receipt and one bounded approval event. The
+   approval expires within two hours. Inspection itself cannot approve, and an
+   inspect credential cannot be reused for this phase.
+8. After the approval receipt exists, issue a distinct
+   `telegram_delivery_unknown_resolve` JWT whose `jti` is the resolution UUID
+   and whose exact tuple, approval UUID, subject hash and release SHA match the
+   approved receipt. Call
+   `resolve_exact_telegram_delivery_unknown_without_resend` once. The RPC
+   requires the existing unexpired approval receipt, then inserts one immutable
+   private resolution receipt and one bounded resolution event. It makes no
+   provider call, claims no job, creates no publication or job, and changes
+   neither the publication nor job. An approve credential cannot resolve; exact
+   replays are idempotent and changed bindings fail closed.
+9. A later canonical message discovery remains valid evidence only through a
+   supported observation path. While that exact version remains current, the
+   existing manual-observation RPC creates a separate `published` evidence row
+   and never edits or hides the original `delivery_unknown` attempt or its
+   resolution receipt. After the version ceases to be current, that RPC is not
+   an allowed historical backfill path.
+10. Run the activation queue gate again. A `delivery_unknown` row blocks until it
+    has either the negative non-resend resolution receipt or the canonical
+    positive manual-observation row. Neither evidence path makes the old exact
+    version resendable or authorizes any new version, canary, claim, provider
+    call, flag change, migration apply, or deployment.
+
+The inspect, approve and resolve credentials are separate exact JWTs. They share
+only the no-login database role; their phase capabilities and exact claims are
+not interchangeable.
+
+All three RPCs require `READ COMMITTED` transactions and serialize forensic
+timestamps in UTC. Mutation of an exact Squid terminal-unknown publication or
+failed publish job also rejects other isolation levels: an old repeatable-read
+snapshot must not hide a resolution receipt committed after that snapshot.
+Unrelated rows are not subject to this isolation guard. Inspection and approval
+require a public audit checked within 30 minutes; resolution validates freshness
+at the durable approval time and still requires its unexpired, at-most-two-hour
+approval, without extending either window.
+
+Preparing or merging the resolution migration is code review only. Production
+migration application, any application deployment, credential issuance, exact
+inspection, approval, resolution, and later publication activation each require
+their own explicit approval and readback.
 
 Never put bot tokens, worker tokens, raw provider payloads, or arbitrary error
-text into publication rows or operator notes.
+text into publication rows, public-audit snapshots, approval subjects, event
+records, or operator notes.
