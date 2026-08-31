@@ -101,6 +101,18 @@ child, and only inside the bounded reconciliation window. This also covers
 eventual-consistency lag after a successful DELETE. It is a cleanup retry, not
 child repair or replacement.
 
+For Supabase CLI 2.116, an authoritative LIST is the successful exact
+`{"branches": [...], "message": ""}` response produced by
+`--output-format json`. Every row must bind to the exact
+Production parent through `parent_project_ref`, must not be the parent/default
+row, and must have a unique valid child identity. An empty validated response is
+authoritative only after the exact-parent Management API billing preflight.
+Malformed, wrong-parent, default, equal-parent, or duplicate rows cannot
+authorize a subsequent create or delete. If first observed after CREATE, the
+foreground fails closed and the scoped cleanup/watchdog remains responsible for
+the exact-name child. Neither component accepts the legacy `-o json` bare array
+or expects a fabricated main row in this child-only contract.
+
 The 6,983-second estimate is not a server-side budget lock. If the Management
 API, Supabase CLI, process fence, immediate deletion, or required absence checks
 do not complete as bounded, the runner cannot guarantee an absolute total-cost

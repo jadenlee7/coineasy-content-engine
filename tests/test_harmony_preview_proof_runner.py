@@ -106,6 +106,7 @@ def test_extract_branches_prefers_project_health_and_preserves_lifecycle() -> No
                 "id": "branch-id-1",
                 "name": "preview",
                 "project_ref": CHILD_REF,
+                "parent_project_ref": PARENT_REF,
                 "status": "RUNNING_MIGRATIONS",
                 "preview_project_status": "ACTIVE_HEALTHY",
                 "is_default": False,
@@ -125,6 +126,7 @@ def test_extract_branches_accepts_legacy_health_status_shape() -> None:
                 "id": "branch-id-1",
                 "name": "preview",
                 "project_ref": CHILD_REF,
+                "parent_project_ref": PARENT_REF,
                 "status": "ACTIVE_HEALTHY",
                 "is_default": False,
             }
@@ -134,6 +136,111 @@ def test_extract_branches_accepts_legacy_health_status_shape() -> None:
     assert len(rows) == 1
     assert rows[0].status == "ACTIVE_HEALTHY"
     assert rows[0].migration_status == ""
+
+
+def _valid_preview_branch_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": "branch-id-1",
+        "name": "preview",
+        "project_ref": CHILD_REF,
+        "parent_project_ref": PARENT_REF,
+        "status": "FUNCTIONS_DEPLOYED",
+        "preview_project_status": "ACTIVE_HEALTHY",
+        "is_default": False,
+        "persistent": False,
+        "with_data": False,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_extract_preview_branch_list_accepts_authoritative_empty_response() -> None:
+    value = {"branches": [], "message": ""}
+
+    assert RUNNER.extract_preview_branch_list(value, PARENT_REF) == []
+
+
+def test_extract_preview_branch_list_accepts_valid_child() -> None:
+    rows = RUNNER.extract_preview_branch_list(
+        {"branches": [_valid_preview_branch_row()], "message": ""},
+        PARENT_REF,
+    )
+
+    assert len(rows) == 1
+    assert rows[0] == RUNNER.BranchIdentity(
+        branch_id="branch-id-1",
+        ref=CHILD_REF,
+        parent_project_ref=PARENT_REF,
+        name="preview",
+        status="ACTIVE_HEALTHY",
+        migration_status="FUNCTIONS_DEPLOYED",
+        is_default=False,
+        persistent=False,
+        with_data=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        None,
+        [],
+        {},
+        {"branches": {}},
+        {"branches": []},
+        {"branches": [], "message": "unexpected"},
+        {"unexpected": []},
+        {"data": {"branches": []}},
+        [None],
+        [{}],
+    ),
+)
+def test_extract_preview_branch_list_rejects_malformed_container_or_row(
+    value: object,
+) -> None:
+    with pytest.raises(RUNNER.ProofError):
+        RUNNER.extract_preview_branch_list(value, PARENT_REF)
+
+
+@pytest.mark.parametrize(
+    "row",
+    (
+        {
+            key: value
+            for key, value in _valid_preview_branch_row().items()
+            if key != "parent_project_ref"
+        },
+        _valid_preview_branch_row(parent_project_ref="z" * 20),
+        {
+            key: value
+            for key, value in _valid_preview_branch_row().items()
+            if key != "is_default"
+        },
+        _valid_preview_branch_row(is_default="false"),
+        _valid_preview_branch_row(is_default=True),
+        _valid_preview_branch_row(project_ref=PARENT_REF),
+        _valid_preview_branch_row(project_ref="invalid"),
+        _valid_preview_branch_row(parent_project_ref="invalid"),
+    ),
+)
+def test_extract_preview_branch_list_rejects_invalid_child_identity(
+    row: dict[str, object],
+) -> None:
+    with pytest.raises(RUNNER.ProofError):
+        RUNNER.extract_preview_branch_list(
+            {"branches": [row], "message": ""},
+            PARENT_REF,
+        )
+
+
+def test_extract_preview_branch_list_rejects_duplicate_identity() -> None:
+    row = _valid_preview_branch_row()
+
+    with pytest.raises(RUNNER.ProofError):
+        RUNNER.extract_preview_branch_list(
+            {"branches": [row, dict(row)], "message": ""},
+            PARENT_REF,
+        )
 
 
 @pytest.mark.parametrize(
@@ -155,6 +262,7 @@ def test_preview_branch_readiness_requires_terminal_server_workflow(
     branch = RUNNER.BranchIdentity(
         branch_id="branch-id-1",
         ref=CHILD_REF,
+        parent_project_ref=PARENT_REF,
         name="preview",
         status=project_status,
         migration_status=lifecycle_status,
@@ -730,6 +838,7 @@ class FakeRunner:
                 "id": "branch-id-1",
                 "name": self.branch_name,
                 "project_ref": CHILD_REF,
+                "parent_project_ref": PARENT_REF,
                 "status": "CREATING_PROJECT",
                 "preview_project_status": "COMING_UP",
                 "is_default": False,
@@ -739,33 +848,30 @@ class FakeRunner:
         if "branches" in command and "list" in command:
             self.list_calls += 1
             self.events.append(f"branch_list_{self.list_calls}")
-            default = {
-                "id": "main-id",
-                "name": "main",
-                "project_ref": PARENT_REF,
-                "status": "FUNCTIONS_DEPLOYED",
-                "preview_project_status": "ACTIVE_HEALTHY",
-                "is_default": True,
-            }
             if self.list_calls == 1:
-                return [default]
-            if self.list_calls in {2, 3}:
-                return [
-                    default,
-                    {
-                        "id": "branch-id-1",
-                        "name": self.branch_name,
-                        "project_ref": CHILD_REF,
-                        "status": "FUNCTIONS_DEPLOYED",
-                        "preview_project_status": (
-                            "COMING_UP" if self.list_calls == 2 else "ACTIVE_HEALTHY"
-                        ),
-                        "is_default": False,
-                        "persistent": self.persistent,
-                        "with_data": self.with_data,
-                    },
-                ]
-            return [default]
+                return {"branches": [], "message": ""}
+            if self.list_calls in {2, 3} and self.branch_name:
+                return {
+                    "branches": [
+                        {
+                            "id": "branch-id-1",
+                            "name": self.branch_name,
+                            "project_ref": CHILD_REF,
+                            "parent_project_ref": PARENT_REF,
+                            "status": "FUNCTIONS_DEPLOYED",
+                            "preview_project_status": (
+                                "COMING_UP"
+                                if self.list_calls == 2
+                                else "ACTIVE_HEALTHY"
+                            ),
+                            "is_default": False,
+                            "persistent": self.persistent,
+                            "with_data": self.with_data,
+                        },
+                    ],
+                    "message": "",
+                }
+            return {"branches": [], "message": ""}
         if "branches" in command and "delete" in command:
             self.events.append("branch_delete")
             if self.delete_ambiguous:
@@ -1490,6 +1596,8 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert watchdog_command.index("signal.SIG_UNBLOCK") < watchdog_command.index(
         "time.sleep(max(0.0, deadline - time.time()))"
     )
+    assert "parent_project_ref" in watchdog_command
+    assert "parent_seen" not in watchdog_command
     assert "and matches is None" not in watchdog_command
     for command, env in zip(fake.commands, fake.environments):
         is_management = (command and command[0] == "supabase") or (
@@ -2423,8 +2531,8 @@ def test_unidentified_child_retains_absolute_watchdog_for_late_visibility(
             if "branches" in command and "create" in command:
                 return {"status": "COMING_UP"}
             if "branches" in command and "list" in command:
-                assert isinstance(value, list)
-                return [value[0]]
+                assert isinstance(value, dict)
+                return {"branches": [], "message": ""}
             return value
 
     args = _args(tmp_path)
@@ -2462,8 +2570,10 @@ def test_failed_branch_lifecycle_blocks_even_when_project_health_is_ready(
         def run_json(self, command: list[str], **kwargs: object) -> object:
             value = super().run_json(command, **kwargs)
             if "branches" in command and "list" in command:
-                assert isinstance(value, list)
-                for row in value:
+                assert isinstance(value, dict)
+                rows = value.get("branches")
+                assert isinstance(rows, list)
+                for row in rows:
                     if isinstance(row, dict) and row.get("project_ref") == CHILD_REF:
                         row["status"] = "MIGRATIONS_FAILED"
                         row["preview_project_status"] = "ACTIVE_HEALTHY"
@@ -2955,7 +3065,7 @@ def test_management_home_cleanup_failure_makes_secret_persistence_unknown(
     assert proof.management_home_cleanup_confirmed is True
 
 
-def test_empty_branch_list_cannot_be_misread_as_deletion_confirmation(
+def test_authoritative_empty_branch_lists_confirm_post_delete_absence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2969,7 +3079,7 @@ def test_empty_branch_list_cannot_be_misread_as_deletion_confirmation(
                 and "list" in command
                 and "branch_delete" in self.events
             ):
-                return []
+                return {"branches": [], "message": ""}
             return value
 
     fake = EmptyCleanupListRunner()
@@ -2980,13 +3090,10 @@ def test_empty_branch_list_cannot_be_misread_as_deletion_confirmation(
         sleeper=lambda _seconds: None,
         clock=_clock(),
     ).run()
-    assert exit_code == 1
-    assert (
-        receipt["cleanup_failure_code"]
-        == "supabase_branch_list_parent_fence_missing"
-    )
-    assert receipt["cleanup"]["absence_confirmations"] == 0
-    assert receipt["cleanup"]["watchdog_cancelled"] is False
+    assert exit_code == 0
+    assert receipt.get("cleanup_failure_code") is None
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["cleanup"]["watchdog_cancelled"] is True
 
 
 def _branch_config() -> dict[str, object]:
@@ -3148,6 +3255,7 @@ def test_load_credentials_recursively_clears_every_raw_response(
     proof.branch = RUNNER.BranchIdentity(
         branch_id="branch-id-1",
         ref=CHILD_REF,
+        parent_project_ref=PARENT_REF,
         name="child",
         status="ACTIVE_HEALTHY",
     )
@@ -3200,6 +3308,7 @@ def test_load_credentials_attempts_once_after_readiness_deadline(
     proof.branch = RUNNER.BranchIdentity(
         branch_id="branch-id-1",
         ref=CHILD_REF,
+        parent_project_ref=PARENT_REF,
         name="child",
         status="ACTIVE_HEALTHY",
     )
@@ -4018,19 +4127,18 @@ pid_path = Path(os.environ["HARMONY_WATCHDOG_TEST_PIDS"])
 heartbeat = Path(os.environ["HARMONY_WATCHDOG_TEST_HEARTBEAT"])
 mode = os.environ["HARMONY_WATCHDOG_TEST_MODE"]
 if "list" in sys.argv:
-    rows = [
-        {{"id": "parent", "project_ref": {PARENT_REF!r}, "is_default": True}}
-    ]
+    rows = []
     if not state.exists():
         rows.append(
             {{
                 "id": "branch-id-1",
                 "name": {branch_name!r},
                 "project_ref": {CHILD_REF!r},
+                "parent_project_ref": {PARENT_REF!r},
                 "is_default": False,
             }}
         )
-    print(json.dumps(rows))
+    print(json.dumps({{"branches": rows, "message": ""}}))
     raise SystemExit(0)
 if "delete" in sys.argv:
     state.write_text("deleted", encoding="ascii")
@@ -4130,19 +4238,18 @@ import sys
 state = Path(os.environ["HARMONY_WATCHDOG_RETRY_STATE"])
 attempts = Path(os.environ["HARMONY_WATCHDOG_RETRY_ATTEMPTS"])
 if "list" in sys.argv:
-    rows = [
-        {{"id": "parent", "project_ref": {PARENT_REF!r}, "is_default": True}}
-    ]
+    rows = []
     if not state.exists():
         rows.append(
             {{
                 "id": "branch-id-retry",
                 "name": {branch_name!r},
                 "project_ref": {CHILD_REF!r},
+                "parent_project_ref": {PARENT_REF!r},
                 "is_default": False,
             }}
         )
-    print(json.dumps(rows))
+    print(json.dumps({{"branches": rows, "message": ""}}))
     raise SystemExit(0)
 if "delete" in sys.argv:
     count = int(attempts.read_text(encoding="ascii")) if attempts.exists() else 0
@@ -4221,9 +4328,7 @@ if "list" in sys.argv:
         else 0
     ) + 1
     list_count_path.write_text(str(count), encoding="ascii")
-    rows = [
-        {{"id": "parent", "project_ref": {PARENT_REF!r}, "is_default": True}}
-    ]
+    rows = []
     # The first LIST discovers the child. The second simulates one stale
     # authoritative read after DELETE returned success.
     if count <= 2:
@@ -4232,10 +4337,11 @@ if "list" in sys.argv:
                 "id": "branch-id-stale",
                 "name": {branch_name!r},
                 "project_ref": {CHILD_REF!r},
+                "parent_project_ref": {PARENT_REF!r},
                 "is_default": False,
             }}
         )
-    print(json.dumps(rows))
+    print(json.dumps({{"branches": rows, "message": ""}}))
     raise SystemExit(0)
 if "delete" in sys.argv:
     count = (

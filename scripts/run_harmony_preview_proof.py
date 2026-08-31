@@ -215,6 +215,7 @@ class BranchIdentity:
     ref: str
     name: str
     status: str
+    parent_project_ref: str
     migration_status: str = ""
     is_default: bool = False
     persistent: bool | None = None
@@ -1110,6 +1111,11 @@ def extract_branches(value: object) -> list[BranchIdentity]:
                 ref=str(ref),
                 name=str(name),
                 status=preview_project_status,
+                parent_project_ref=(
+                    str(mapping.get("parent_project_ref"))
+                    if isinstance(mapping.get("parent_project_ref"), str)
+                    else ""
+                ),
                 migration_status=(
                     legacy_status
                     if isinstance(legacy_status, str)
@@ -1132,6 +1138,64 @@ def extract_branches(value: object) -> list[BranchIdentity]:
                 ),
             )
         )
+    return branches
+
+
+def extract_preview_branch_list(
+    value: object,
+    expected_parent_ref: str,
+) -> list[BranchIdentity]:
+    """Parse the CLI 2.116 LIST contract as Preview children only."""
+
+    if not PROJECT_REF_PATTERN.fullmatch(expected_parent_ref):
+        raise ProofError("supabase_branch_list_parent_ref_invalid")
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"branches", "message"}
+        or not isinstance(value.get("branches"), list)
+        or value.get("message") != ""
+    ):
+        raise ProofError("supabase_branch_list_shape_invalid")
+    raw_rows = value["branches"]
+
+    branches: list[BranchIdentity] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            raise ProofError("supabase_branch_list_row_invalid")
+        branch_id = raw_row.get("id")
+        name = raw_row.get("name")
+        ref = raw_row.get("project_ref")
+        parent_ref = raw_row.get("parent_project_ref")
+        if not all(
+            isinstance(item, str) and item
+            for item in (branch_id, name, ref, parent_ref)
+        ):
+            raise ProofError("supabase_branch_list_identity_invalid")
+        if (
+            not PROJECT_REF_PATTERN.fullmatch(str(ref))
+            or not PROJECT_REF_PATTERN.fullmatch(str(parent_ref))
+        ):
+            raise ProofError("supabase_branch_list_identity_invalid")
+        if parent_ref != expected_parent_ref:
+            raise ProofError("supabase_branch_list_parent_fence_mismatch")
+        if ref == expected_parent_ref:
+            raise ProofError("supabase_branch_list_parent_row_invalid")
+        if type(raw_row.get("is_default")) is not bool:
+            raise ProofError("supabase_branch_list_default_fence_invalid")
+        if raw_row["is_default"] is not False:
+            raise ProofError("supabase_branch_list_default_fence_invalid")
+        key = (str(branch_id), str(ref))
+        if key in seen:
+            raise ProofError("supabase_branch_list_duplicate_identity")
+        seen.add(key)
+        parsed = extract_branches([raw_row])
+        if len(parsed) != 1:
+            raise ProofError("supabase_branch_list_identity_invalid")
+        branch = parsed[0]
+        if branch.parent_project_ref != expected_parent_ref:
+            raise ProofError("supabase_branch_list_parent_fence_mismatch")
+        branches.append(branch)
     return branches
 
 
@@ -1331,6 +1395,7 @@ class HarmonyPreviewProof:
         self.management_token = ""
         self.management_home = ""
         self.management_home_cleanup_confirmed = True
+        self.parent_management_fence_ref = ""
         self.branch: BranchIdentity | None = None
         self.branch_name = ""
         # Sticky commit-ambiguity fence: this flips immediately before the
@@ -1560,6 +1625,8 @@ class HarmonyPreviewProof:
         self.proof_snapshot_payloads.clear()
 
     def _list_branches(self) -> list[BranchIdentity]:
+        if self.parent_management_fence_ref != self.args.parent_project_ref:
+            raise ProofError("supabase_branch_list_parent_preflight_missing")
         value = self._supabase_json(
             [
                 "branches",
@@ -1572,17 +1639,7 @@ class HarmonyPreviewProof:
             code="supabase_branch_list",
             timeout=self.args.supabase_read_timeout_seconds,
         )
-        branches = extract_branches(value)
-        parents = [
-            branch
-            for branch in branches
-            if branch.ref == self.args.parent_project_ref
-        ]
-        if len(parents) != 1:
-            # Prevent an empty, unauthorized, or shape-drifted list response
-            # from being misread as proof that the disposable child is absent.
-            raise ProofError("supabase_branch_list_parent_fence_missing")
-        return branches
+        return extract_preview_branch_list(value, self.args.parent_project_ref)
 
     def _management_get_json(
         self,
@@ -1744,6 +1801,7 @@ class HarmonyPreviewProof:
             self._bind_price_readback(
                 extract_small_compute_hourly_price_microusd(billing_value)
             )
+            self.parent_management_fence_ref = self.args.parent_project_ref
         finally:
             _clear_mutable_json(billing_value)
             billing_value = None
@@ -2234,14 +2292,54 @@ def run_cli(command, *, timeout, capture):
                 watchdog_safe = False
                 raise restore_failure
 
-def walk(value):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from walk(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from walk(child)
+def valid_project_ref(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 20
+        and value.isascii()
+        and value.isalnum()
+        and value.lower() == value
+    )
+
+def parse_preview_branch_list(value):
+    if (
+        not isinstance(value, dict)
+        or set(value) != {{"branches", "message"}}
+        or not isinstance(value.get("branches"), list)
+        or value.get("message") != ""
+    ):
+        raise WatchdogFenceError("branch_list_shape_invalid")
+    raw_rows = value["branches"]
+    rows = []
+    seen = set()
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            raise WatchdogFenceError("branch_list_row_invalid")
+        branch_id = row.get("id")
+        name = row.get("name")
+        ref = row.get("project_ref")
+        parent_ref = row.get("parent_project_ref")
+        if not (
+            isinstance(branch_id, str)
+            and branch_id
+            and isinstance(name, str)
+            and name
+            and valid_project_ref(ref)
+            and valid_project_ref(parent_ref)
+        ):
+            raise WatchdogFenceError("branch_list_identity_invalid")
+        if parent_ref != {self.args.parent_project_ref!r}:
+            raise WatchdogFenceError("branch_list_parent_fence_mismatch")
+        if ref == {self.args.parent_project_ref!r}:
+            raise WatchdogFenceError("branch_list_parent_row_invalid")
+        if type(row.get("is_default")) is not bool or row["is_default"]:
+            raise WatchdogFenceError("branch_list_default_fence_invalid")
+        identity = (branch_id, ref)
+        if identity in seen:
+            raise WatchdogFenceError("branch_list_duplicate_identity")
+        seen.add(identity)
+        rows.append(row)
+    return rows
 
 try:
     # The parent deliberately blocks SIGINT/SIGTERM across Popen ownership,
@@ -2279,60 +2377,51 @@ try:
                 timeout={WATCHDOG_READ_TIMEOUT_SECONDS!r},
                 capture=True,
             )
-            value = (
-                json.loads(listed[1])
-                if listed is not None and listed[0] == 0
-                else None
-            )
-            rows = list(walk(value)) if value is not None else []
-            parent_seen = any(
-                row.get("project_ref", row.get("ref"))
-                    == {self.args.parent_project_ref!r}
+            if listed is None or listed[0] != 0:
+                raise WatchdogFenceError("branch_list_failed")
+            try:
+                value = json.loads(listed[1])
+            except Exception as exc:
+                raise WatchdogFenceError("branch_list_json_invalid") from exc
+            rows = parse_preview_branch_list(value)
+            matches = [
+                str(row["id"])
                 for row in rows
-            )
-            if parent_seen:
-                matches = [
-                    str(row["id"])
-                    for row in rows
-                    if row.get("name") == {branch_name!r}
-                    and row.get("project_ref", row.get("ref"))
-                        != {self.args.parent_project_ref!r}
-                    and row.get("is_default") is not True
-                    and isinstance(row.get("id"), str)
-                    and row.get("id")
-                ]
-                if matches:
-                    target_observed = True
-                    absence_confirmations = 0
-                    # At most one exact-name child is mutated per LIST pass.
-                    # DELETE results are never treated as authoritative
-                    # absence. If the exact child remains visible, retry it
-                    # only after the next authoritative LIST readback. This
-                    # also covers a successful DELETE followed by a stale LIST.
-                    branch_id = next(iter(dict.fromkeys(matches)))
-                    deleted = run_cli(
-                        [
-                            {self.args.supabase!r},
-                            "branches",
-                            "delete",
-                            branch_id,
-                            "--project-ref",
-                            {self.args.parent_project_ref!r},
-                            "--yes",
-                            "--output-format",
-                            "json",
-                        ],
-                        timeout={WATCHDOG_MUTATION_TIMEOUT_SECONDS!r},
-                        capture=False,
-                    )
-                    if deleted is None or deleted[0] != 0:
-                        # No local success state is retained. The next LIST
-                        # pass may retry this exact ID if it remains visible.
-                        deleted = None
-                elif target_observed:
-                    absence_confirmations += 1
-                    if absence_confirmations >= 3:
-                        break
+                if row.get("name") == {branch_name!r}
+            ]
+            if len(matches) > 1:
+                raise WatchdogFenceError("multiple_exact_name_children")
+            if matches:
+                target_observed = True
+                absence_confirmations = 0
+                # DELETE results are never treated as authoritative absence.
+                # If the exact child remains visible, retry it only after the
+                # next authoritative LIST readback. This also covers a
+                # successful DELETE followed by a stale LIST.
+                branch_id = matches[0]
+                deleted = run_cli(
+                    [
+                        {self.args.supabase!r},
+                        "branches",
+                        "delete",
+                        branch_id,
+                        "--project-ref",
+                        {self.args.parent_project_ref!r},
+                        "--yes",
+                        "--output-format",
+                        "json",
+                    ],
+                    timeout={WATCHDOG_MUTATION_TIMEOUT_SECONDS!r},
+                    capture=False,
+                )
+                if deleted is None or deleted[0] != 0:
+                    # No local success state is retained. The next LIST pass
+                    # may retry this exact ID if it remains visible.
+                    deleted = None
+            elif target_observed:
+                absence_confirmations += 1
+                if absence_confirmations >= 3:
+                    break
             listed = None
         except WatchdogFenceError:
             # Never launch another credential-bearing CLI after an unconfirmed
@@ -2557,19 +2646,38 @@ raise SystemExit(
                     timeout=self.args.supabase_mutation_timeout_seconds,
                     before_spawn=self._mark_branch_create_mutation_invoked,
                 )
-                create_candidates = [
+                named_create_rows = [
                     item
                     for item in extract_branches(create_value)
                     if item.name == name
                     and (item.branch_id, item.ref) not in baseline
-                    and not item.is_default
+                ]
+                for item in named_create_rows:
+                    if (
+                        item.is_default
+                        or item.ref == self.args.parent_project_ref
+                    ):
+                        raise ProofError("preview_child_equals_production")
+                    if (
+                        item.parent_project_ref
+                        and item.parent_project_ref
+                        != self.args.parent_project_ref
+                    ):
+                        raise ProofError(
+                            "supabase_branch_create_parent_fence_mismatch"
+                        )
+                # CREATE output is not authoritative until it includes the
+                # exact parent binding. Incomplete output falls back to the
+                # strict child-only LIST contract instead of being trusted.
+                create_candidates = [
+                    item
+                    for item in named_create_rows
+                    if item.parent_project_ref == self.args.parent_project_ref
                 ]
                 if len(create_candidates) > 1:
                     raise ProofError("multiple_preview_children_created")
                 if len(create_candidates) == 1:
                     branch = create_candidates[0]
-                    if branch.ref == self.args.parent_project_ref:
-                        raise ProofError("preview_child_equals_production")
                     self.branch = branch
             finally:
                 if isinstance(create_value, MutableMapping):

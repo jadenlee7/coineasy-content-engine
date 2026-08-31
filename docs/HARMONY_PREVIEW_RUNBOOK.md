@@ -251,6 +251,19 @@ Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compu
 미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
 branch를 수리하거나 다시 생성하지 않습니다.
 
+CLI 2.116의 authoritative branch LIST는 Production/main 행이 아니라 Preview child
+행만 반환하는 계약입니다. runner와 watchdog은 exact
+`{"branches": [...], "message": ""}` wrapper만 허용하고, 모든 행의
+`parent_project_ref`가 exact parent와
+일치하며 `project_ref != parent_project_ref`, `is_default=false`, 유효하고 중복 없는
+child identity임을 확인합니다. exact-parent billing preflight 뒤 exit 0과 유효 JSON으로
+검증된 빈 배열은 “현재 Preview child 없음”의 authoritative readback입니다. malformed
+행, parent 불일치, default/Production 행, 중복 identity는 해당 LIST가 후속
+create/delete를 authorize하지 못하게 fail-closed합니다. CREATE 뒤 readiness/cleanup에서
+처음 관측되면 foreground는 중단되고 scoped cleanup/watchdog이 exact-name child를
+담당합니다. legacy `-o json` bare array나 예전 main-row heuristic으로 후퇴하지
+않습니다.
+
 Watchdog은 DELETE exit code를 authoritative absence로 간주하지 않습니다. DELETE가
 성공, nonzero, timeout 중 어느 결과여도 다음 authoritative LIST에서 같은 exact child
 ID가 여전히 보이는 경우에만 5분 reconcile window 안에서 bounded DELETE retry를
