@@ -295,6 +295,11 @@ The inspect, approve and resolve credentials are separate exact JWTs. They share
 only the no-login database role; their phase capabilities and exact claims are
 not interchangeable.
 
+The [inspect-only operator CLI](TELEGRAM_RESOLUTION_INSPECT_TOOL.md) validates
+local packets without credentials or network by default. Its future one-call
+mode requires separate exact inspection approval and an already trusted ES256
+signing key; it provides no approve/resolve command or key-provisioning path.
+
 All three RPCs require `READ COMMITTED` transactions and serialize forensic
 timestamps in UTC. Mutation of an exact Squid terminal-unknown publication or
 failed publish job also rejects other isolation levels: an old repeatable-read

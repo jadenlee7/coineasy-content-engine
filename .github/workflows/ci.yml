@@ -405,6 +405,9 @@ jobs:
       PGDATABASE: postgres
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Bootstrap disposable Supabase-compatible roles
         run: >-
           psql -X -v ON_ERROR_STOP=1
@@ -434,3 +437,9 @@ jobs:
         run: >-
           bash
           supabase/tests/exact_telegram_delivery_unknown_resolution_snapshot.sh
+      - name: Verify inspect-only JSONB digest parity against local PostgreSQL
+        env:
+          RESOLUTION_INSPECT_LOCAL_DB: "1"
+        run: >-
+          node --test
+          tests_js/telegram-resolution-inspect-postgres.test.mts
