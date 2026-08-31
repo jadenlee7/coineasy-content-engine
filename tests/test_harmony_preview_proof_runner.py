@@ -185,7 +185,7 @@ def test_extract_small_compute_hourly_price_uses_available_addon_metadata() -> N
                     {
                         "id": "ci_micro",
                         "price": {
-                            "type": "fixed",
+                            "type": "usage",
                             "interval": "hourly",
                             "amount": 0.01344,
                         },
@@ -193,7 +193,7 @@ def test_extract_small_compute_hourly_price_uses_available_addon_metadata() -> N
                     {
                         "id": "ci_small",
                         "price": {
-                            "type": "fixed",
+                            "type": "usage",
                             "interval": "hourly",
                             "amount": 0.0206,
                         },
@@ -204,6 +204,38 @@ def test_extract_small_compute_hourly_price_uses_available_addon_metadata() -> N
     }
 
     assert RUNNER.extract_small_compute_hourly_price_microusd(value) == 20_600
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    (
+        ("0.020600", 20_600),
+        (0.000001, 1),
+    ),
+)
+def test_extract_small_compute_hourly_price_accepts_exact_micro_usd_values(
+    amount: object,
+    expected: int,
+) -> None:
+    value = {
+        "available_addons": [
+            {
+                "type": "compute_instance",
+                "variants": [
+                    {
+                        "id": "ci_small",
+                        "price": {
+                            "type": "usage",
+                            "interval": "hourly",
+                            "amount": amount,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert RUNNER.extract_small_compute_hourly_price_microusd(value) == expected
 
 
 def test_watchdog_fixed_exit_attempt_budget_stays_below_two_hours() -> None:
@@ -218,10 +250,20 @@ def test_watchdog_fixed_exit_attempt_budget_stays_below_two_hours() -> None:
 @pytest.mark.parametrize(
     "price",
     (
-        {"type": "fixed", "interval": "monthly", "amount": 0.0206},
-        {"type": "usage", "interval": "hourly", "amount": 0.0206},
-        {"type": "fixed", "interval": "hourly", "amount": "NaN"},
-        {"type": "fixed", "interval": "hourly", "amount": 0.0000001},
+        {"type": "usage", "interval": "monthly", "amount": 0.0206},
+        {"type": "fixed", "interval": "hourly", "amount": 0.0206},
+        {"interval": "hourly", "amount": 0.0206},
+        {"type": "usage", "amount": 0.0206},
+        {"type": "usage", "interval": "hourly"},
+        {"type": "usage", "interval": "hourly", "amount": "NaN"},
+        {"type": "usage", "interval": "hourly", "amount": "sNaN"},
+        {"type": "usage", "interval": "hourly", "amount": "Infinity"},
+        {"type": "usage", "interval": "hourly", "amount": "-Infinity"},
+        {"type": "usage", "interval": "hourly", "amount": "0.0206001"},
+        {"type": "usage", "interval": "hourly", "amount": 0.0000001},
+        {"type": "usage", "interval": "hourly", "amount": True},
+        {"type": "usage", "interval": "hourly", "amount": 0},
+        {"type": "usage", "interval": "hourly", "amount": -0.0206},
     ),
 )
 def test_extract_small_compute_hourly_price_fails_closed(
@@ -241,6 +283,46 @@ def test_extract_small_compute_hourly_price_fails_closed(
                 ]
             }
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        None,
+        {},
+        {"available_addons": {}},
+        {
+            "available_addons": [
+                {"type": "compute_instance", "variants": []},
+                {"type": "compute_instance", "variants": []},
+            ]
+        },
+        {
+            "available_addons": [
+                {"type": "compute_instance", "variants": None}
+            ]
+        },
+        {
+            "available_addons": [
+                {
+                    "type": "compute_instance",
+                    "variants": [
+                        {"id": "ci_small", "price": {}},
+                        {"id": "ci_small", "price": {}},
+                    ],
+                }
+            ]
+        },
+    ),
+)
+def test_extract_small_compute_hourly_price_rejects_ambiguous_shape(
+    value: object,
+) -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="supabase_small_hourly_price_readback_invalid",
+    ):
+        RUNNER.extract_small_compute_hourly_price_microusd(value)
 
 
 @pytest.mark.parametrize(
@@ -524,7 +606,7 @@ class FakeRunner:
                                         "id": "ci_small",
                                         "name": "Small",
                                         "price": {
-                                            "type": "fixed",
+                                            "type": "usage",
                                             "interval": "hourly",
                                             "amount": self.small_hourly_price_usd,
                                         },
@@ -1200,7 +1282,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "is_approval_evidence": False,
         "source": "explicit_cli_limits_and_management_api_price_readback",
         "compute_variant": "ci_small",
-        "price_type": "fixed",
+        "price_type": "usage",
         "price_interval": "hourly",
         "watchdog_minutes": 110,
         "watchdog_max_exit_attempt_seconds": 6983,

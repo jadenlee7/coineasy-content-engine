@@ -852,13 +852,15 @@ def _parse_price_microusd(value: object) -> int:
         raise ProofError("supabase_small_hourly_price_readback_invalid")
     try:
         amount = Decimal(str(value))
+        if not amount.is_finite():
+            raise InvalidOperation
+        scaled = amount * Decimal(1_000_000)
+        integral = scaled.to_integral_value()
     except InvalidOperation:
         raise ProofError("supabase_small_hourly_price_readback_invalid") from None
-    scaled = amount * Decimal(1_000_000)
     if (
-        not amount.is_finite()
-        or amount <= 0
-        or scaled != scaled.to_integral_value()
+        amount <= 0
+        or scaled != integral
         or scaled > 999_999_999_999_999
     ):
         raise ProofError("supabase_small_hourly_price_readback_invalid")
@@ -1187,7 +1189,7 @@ def extract_compute_addon_size(value: object) -> str:
 
 
 def extract_small_compute_hourly_price_microusd(value: object) -> int:
-    """Read the available ci_small hourly price from the billing response."""
+    """Read the available usage-billed ci_small hourly price."""
 
     if not isinstance(value, dict):
         raise ProofError("supabase_small_hourly_price_readback_invalid")
@@ -1214,7 +1216,7 @@ def extract_small_compute_hourly_price_microusd(value: object) -> int:
     price = small_variants[0].get("price")
     if (
         not isinstance(price, dict)
-        or price.get("type") != "fixed"
+        or price.get("type") != "usage"
         or price.get("interval") != "hourly"
     ):
         raise ProofError("supabase_small_hourly_price_readback_invalid")
@@ -1384,7 +1386,7 @@ class HarmonyPreviewProof:
             "is_approval_evidence": False,
             "source": "explicit_cli_limits_and_management_api_price_readback",
             "compute_variant": "ci_small",
-            "price_type": "fixed",
+            "price_type": "usage",
             "price_interval": "hourly",
             "watchdog_minutes": WATCHDOG_SECONDS // 60,
             "watchdog_max_exit_attempt_seconds": (
