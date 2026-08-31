@@ -324,9 +324,35 @@ jobs:
             --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
             --env TELEGRAM_BOT_TOKEN_SQUID=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345 \
             --env TELEGRAM_CHANNEL_SQUID=@squid_kor_update \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env TELEGRAM_PUBLICATION_RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
             coineasy-publication-ci \
             python -m scripts.run_telegram_publications --validate-only \
-          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "squid", "public_username": "squid_kor_update", "provider_calls": False, "database_calls": False}'
+          | python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": True, "mode": "validate_only", "enabled": False, "client_id": "squid", "public_username": "squid_kor_update", "runtime_release_verified": True, "provider_calls": False, "database_calls": False}'
+      - name: Reject a mismatched publication release without network or I/O
+        run: |
+          output="$(mktemp)"
+          set +e
+          docker run --rm --network none \
+            --env TELEGRAM_PUBLICATION_ENABLED=false \
+            --env TELEGRAM_PUBLICATION_ALLOWED_CLIENTS=squid \
+            --env TELEGRAM_PUBLICATION_LEASE_SECONDS=180 \
+            --env TELEGRAM_PUBLICATION_MAX_CLAIMS=1 \
+            --env SUPABASE_URL=https://ci.supabase.co \
+            --env SUPABASE_SERVICE_ROLE_KEY=ssssssssssssssssssssssssssssssssssssssss \
+            --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
+            --env TELEGRAM_BOT_TOKEN_SQUID=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijk12345 \
+            --env TELEGRAM_CHANNEL_SQUID=@squid_kor_update \
+            --env RAILWAY_GIT_COMMIT_SHA=dddddddddddddddddddddddddddddddddddddddd \
+            --env TELEGRAM_PUBLICATION_RELEASE_SHA=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+            coineasy-publication-ci \
+            python -m scripts.run_telegram_publications --validate-only \
+            > "$output"
+          status="$?"
+          set -e
+          test "$status" -eq 1
+          python -c 'import json, sys; result = json.load(sys.stdin); assert result == {"ok": False, "mode": "validate_only", "error": "telegram_publication_validation_failed", "provider_calls": False, "database_calls": False}' \
+            < "$output"
       - name: Run the built image with publication disabled
         run: |
           docker run --rm --network none \

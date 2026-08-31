@@ -24,6 +24,8 @@ def _env(*, enabled: str = "false") -> dict[str, str]:
         "CONTENT_STUDIO_WORKSPACE_ID": "11111111-1111-4111-8111-111111111111",
         "TELEGRAM_BOT_TOKEN_SQUID": BOT_TOKEN,
         "TELEGRAM_CHANNEL_SQUID": "@squid_kor_update",
+        "RAILWAY_GIT_COMMIT_SHA": "d" * 40,
+        "TELEGRAM_PUBLICATION_RELEASE_SHA": "d" * 40,
     }
 
 
@@ -56,6 +58,7 @@ def test_validate_only_with_disabled_flag_has_structurally_zero_calls(
         "enabled": False,
         "client_id": "squid",
         "public_username": "squid_kor_update",
+        "runtime_release_verified": True,
         "provider_calls": False,
         "database_calls": False,
     }
@@ -74,6 +77,11 @@ def test_validate_only_with_disabled_flag_has_structurally_zero_calls(
         {"CONTENT_STUDIO_WORKSPACE_ID": "invalid"},
         {"TELEGRAM_CHANNEL_SQUID": "@attacker_channel"},
         {"TELEGRAM_BOT_TOKEN_SQUID": "invalid"},
+        {"RAILWAY_GIT_COMMIT_SHA": "D" * 40},
+        {"RAILWAY_GIT_COMMIT_SHA": " " + ("d" * 40)},
+        {"TELEGRAM_PUBLICATION_RELEASE_SHA": "d" * 39},
+        {"TELEGRAM_PUBLICATION_RELEASE_SHA": ("d" * 40) + " "},
+        {"TELEGRAM_PUBLICATION_RELEASE_SHA": "e" * 40},
     ],
 )
 def test_validate_only_fails_closed_with_explicit_no_call_json(
@@ -143,3 +151,53 @@ def test_normal_settings_loader_still_requires_the_execution_flag():
             _env(enabled="false"),
             clients_dir=ROOT / "clients",
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("RAILWAY_GIT_COMMIT_SHA", None),
+        ("TELEGRAM_PUBLICATION_RELEASE_SHA", None),
+        ("RAILWAY_GIT_COMMIT_SHA", "D" * 40),
+        ("RAILWAY_GIT_COMMIT_SHA", " " + ("d" * 40)),
+        ("TELEGRAM_PUBLICATION_RELEASE_SHA", "d" * 39),
+        ("TELEGRAM_PUBLICATION_RELEASE_SHA", ("d" * 40) + " "),
+        ("TELEGRAM_PUBLICATION_RELEASE_SHA", "e" * 40),
+    ],
+)
+def test_release_fence_is_exact_and_required(name, value):
+    env = _env(enabled="false")
+    if value is None:
+        del env[name]
+    else:
+        env[name] = value
+    with pytest.raises(ValueError, match="release SHA fence"):
+        PublicationSettings.from_env_for_validation(
+            env,
+            clients_dir=ROOT / "clients",
+        )
+
+
+def test_live_release_mismatch_fails_before_worker_with_no_io(
+    monkeypatch,
+    capsys,
+):
+    env = _env(enabled="true")
+    env["TELEGRAM_PUBLICATION_RELEASE_SHA"] = "e" * 40
+    _install_env(monkeypatch, env)
+    monkeypatch.chdir(ROOT)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("release mismatch constructed an I/O worker")
+
+    monkeypatch.setattr(runner, "_build_worker", forbidden)
+    monkeypatch.setattr(runner.asyncio, "run", forbidden)
+
+    assert runner.main([]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "enabled": True,
+        "error": "telegram_publication_configuration_invalid",
+        "provider_calls": False,
+        "database_calls": False,
+    }

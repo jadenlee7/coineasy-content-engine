@@ -40,6 +40,8 @@ def client(monkeypatch):
         "SUPABASE_SERVICE_ROLE_KEY": "s" * 40,
         "CONTENT_STUDIO_WORKSPACE_ID": "11111111-1111-4111-8111-111111111111",
         "TELEGRAM_PUBLICATION_ALLOWED_CLIENTS": "squid",
+        "RAILWAY_GIT_COMMIT_SHA": "d" * 40,
+        "TELEGRAM_PUBLICATION_RELEASE_SHA": "d" * 40,
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -92,6 +94,31 @@ def test_worker_endpoint_is_fail_closed_when_feature_is_disabled(client, monkeyp
 
     assert response.status_code == 503
     assert response.json()["detail"] == "telegram_publication_worker_disabled"
+
+
+def test_worker_endpoint_release_mismatch_fails_before_worker(
+    client,
+    monkeypatch,
+):
+    from api import server
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("release mismatch constructed an I/O worker")
+
+    monkeypatch.setattr(
+        server,
+        "build_exact_telegram_publication_worker",
+        forbidden,
+    )
+    monkeypatch.setenv("TELEGRAM_PUBLICATION_RELEASE_SHA", "e" * 40)
+
+    response = client.post(
+        "/internal/publications/telegram/run-once",
+        headers={"X-Publication-Worker-Key": WORKER_TOKEN},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "telegram_publication_worker_not_configured"
 
 
 @pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE", "true "])

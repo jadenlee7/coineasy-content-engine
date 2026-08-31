@@ -18,6 +18,7 @@ PUBLICATION_TELEGRAM_USERNAMES = {
     "babylon": "babylonbtc",
 }
 _FALSE_VALUES = frozenset({"false", ""})
+_LOWER_HEX_40 = re.compile(r"^[a-f0-9]{40}$")
 _WORKER_TOKEN_FORBIDDEN_SECRET_NAMES = (
     "API_SECRET",
     "STUDIO_ACCESS_TOKEN",
@@ -112,6 +113,22 @@ def _workspace_id(env: Mapping[str, str]) -> str:
         raise ValueError("CONTENT_STUDIO_WORKSPACE_ID must be a UUID") from exc
 
 
+def _require_release_sha_fence(env: Mapping[str, str]) -> None:
+    railway_release_sha = env.get("RAILWAY_GIT_COMMIT_SHA", "")
+    authorized_release_sha = env.get(
+        "TELEGRAM_PUBLICATION_RELEASE_SHA", ""
+    )
+    if (
+        not _LOWER_HEX_40.fullmatch(railway_release_sha)
+        or not _LOWER_HEX_40.fullmatch(authorized_release_sha)
+        or not secrets.compare_digest(
+            railway_release_sha,
+            authorized_release_sha,
+        )
+    ):
+        raise ValueError("Telegram publication release SHA fence does not match")
+
+
 @dataclass(frozen=True)
 class PublicationRecoverySettings:
     supabase_url: str
@@ -131,6 +148,7 @@ class PublicationRecoverySettings:
             raise ValueError(
                 "TELEGRAM_PUBLICATION_ENABLED must be literal false for recovery"
             )
+        _require_release_sha_fence(env)
         return cls(
             supabase_url=_supabase_url(env.get("SUPABASE_URL", "")),
             supabase_service_role_key=_service_role_key(env),
@@ -196,6 +214,7 @@ class PublicationSettings:
         allowed_clients = tuple(raw_clients.split(","))
         if allowed_clients != ("squid",):
             raise ValueError("TELEGRAM_PUBLICATION_ALLOWED_CLIENTS is invalid")
+        _require_release_sha_fence(env)
         return cls(
             supabase_url=_supabase_url(env.get("SUPABASE_URL", "")),
             supabase_service_role_key=service_key,
