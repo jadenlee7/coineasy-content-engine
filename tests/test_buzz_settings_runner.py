@@ -22,6 +22,8 @@ def _env(*, enabled: str = "false") -> dict[str, str]:
         "BUZZ_CHANNEL_ID": "33333333-3333-4333-8333-333333333333",
         "BUZZ_CLI_PATH": "/opt/coineasy/bin/buzz",
         "BUZZ_DELIVERY_LEASE_SECONDS": "180",
+        "RAILWAY_GIT_COMMIT_SHA": "d" * 40,
+        "BUZZ_DELIVERY_RELEASE_SHA": "d" * 40,
     }
 
 
@@ -42,6 +44,7 @@ class BuzzSettingsRunnerTests(unittest.TestCase):
             "enabled": False,
             "client_id": "origintrail",
             "channel_id": "33333333-3333-4333-8333-333333333333",
+            "runtime_release_verified": True,
             "provider_calls": False,
             "database_calls": False,
             "shadow_calls": False,
@@ -80,8 +83,71 @@ class BuzzSettingsRunnerTests(unittest.TestCase):
         ), patch("builtins.print") as output:
             self.assertEqual(runner.main(["--send-once"]), 1)
         self.assertEqual(
-            json.loads(output.call_args.args[0])["error"],
-            "buzz_delivery_worker_unavailable",
+            json.loads(output.call_args.args[0]),
+            {
+                "ok": False,
+                "mode": "send_once",
+                "error": "buzz_delivery_configuration_invalid",
+                "provider_calls": False,
+                "database_calls": False,
+                "shadow_calls": False,
+            },
+        )
+
+    def test_release_fence_is_exact_and_required_in_validation_mode(self):
+        cases = (
+            ("missing actual", "RAILWAY_GIT_COMMIT_SHA", None),
+            ("missing authorized", "BUZZ_DELIVERY_RELEASE_SHA", None),
+            ("malformed actual", "RAILWAY_GIT_COMMIT_SHA", "D" * 40),
+            ("malformed authorized", "BUZZ_DELIVERY_RELEASE_SHA", "d" * 39),
+            ("mismatched", "BUZZ_DELIVERY_RELEASE_SHA", "e" * 40),
+        )
+        for label, name, value in cases:
+            with self.subTest(label=label):
+                values = _env()
+                if value is None:
+                    values.pop(name)
+                else:
+                    values[name] = value
+                with self.assertRaisesRegex(ValueError, "release SHA fence"):
+                    BuzzDeliverySettings.from_env_for_validation(values)
+
+    def test_live_release_mismatch_fails_before_worker_with_no_io_proof(self):
+        values = _env(enabled="true")
+        values["BUZZ_DELIVERY_RELEASE_SHA"] = "e" * 40
+        with patch.dict(os.environ, values, clear=True), patch.object(
+            runner, "_build_worker", side_effect=AssertionError("must not build")
+        ), patch("builtins.print") as output:
+            self.assertEqual(runner.main(["--send-once"]), 1)
+        self.assertEqual(
+            json.loads(output.call_args.args[0]),
+            {
+                "ok": False,
+                "mode": "send_once",
+                "error": "buzz_delivery_configuration_invalid",
+                "provider_calls": False,
+                "database_calls": False,
+                "shadow_calls": False,
+            },
+        )
+
+    def test_validation_release_mismatch_is_a_no_io_failure(self):
+        values = _env()
+        values["BUZZ_DELIVERY_RELEASE_SHA"] = "e" * 40
+        with patch.dict(os.environ, values, clear=True), patch.object(
+            runner, "_build_worker", side_effect=AssertionError("must not build")
+        ), patch("builtins.print") as output:
+            self.assertEqual(runner.main(["--validate-only"]), 1)
+        self.assertEqual(
+            json.loads(output.call_args.args[0]),
+            {
+                "ok": False,
+                "mode": "validate_only",
+                "error": "buzz_delivery_validation_failed",
+                "provider_calls": False,
+                "database_calls": False,
+                "shadow_calls": False,
+            },
         )
 
     def test_settings_reject_cross_origin_control_endpoint(self):

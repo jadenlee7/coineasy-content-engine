@@ -15,6 +15,10 @@ and every other client remain manual.
   delivery fence.
 - The canonical destination is `@squid_kor_update`. An environment-only change
   cannot redirect this production workflow to another channel.
+- Both Railway execution planes compare the GitHub-origin runtime commit in
+  `RAILWAY_GIT_COMMIT_SHA` with the operator-authorized exact commit in
+  `TELEGRAM_PUBLICATION_RELEASE_SHA`. Missing, malformed, uppercase, or
+  mismatched values fail before worker or recovery repository construction.
 - `API_SECRET`, `STUDIO_ACCESS_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, Telegram bot
   tokens, and the publication worker credential are separate secrets and must
   never be reused.
@@ -35,12 +39,20 @@ deploying any application plane.
 | `RAILWAY_API_URL` | no | no | required |
 | `TELEGRAM_PUBLICATION_ENABLED=false` | required | required | no |
 | `TELEGRAM_PUBLICATION_ALLOWED_CLIENTS=squid` | required | required | no |
+| `RAILWAY_GIT_COMMIT_SHA` | Railway-provided | Railway-provided | no |
+| `TELEGRAM_PUBLICATION_RELEASE_SHA` | required | required | no |
 | `TELEGRAM_PUBLICATION_RECOVERY_LIMIT=100` | optional | optional | no |
 | `STUDIO_TELEGRAM_PUBLISH_ENABLED=false` | no | no | required |
 | `STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS=squid` | no | no | required |
 
 Use one newly generated value of at least 32 printable ASCII characters for
 `PUBLICATION_WORKER_TOKEN` on both planes. Do not expose it to the browser.
+
+`TELEGRAM_PUBLICATION_RELEASE_SHA` is not a secret. Set it only to the exact
+40-character lowercase Git commit explicitly approved by the operator. Never
+manually set or override `RAILWAY_GIT_COMMIT_SHA`; Railway must supply it from
+a GitHub-origin deployment. A CLI/image deployment without that provenance
+correctly fails the release fence.
 
 The backstop worker is built with `Dockerfile.publication`. Create it as a
 separate Railway cron service with no public domain and set its custom config
@@ -72,7 +84,11 @@ execution plane or the official-X generation cron can claim new work.
 2. Deploy the main Railway API and mandatory cron worker with
    `TELEGRAM_PUBLICATION_ENABLED=false`. Set the cron service config source to
    `/railway.telegram-publication-worker.json` and confirm it has no public
-   domain. Keep the official-X generation cron paused. For the
+   domain. Set `TELEGRAM_PUBLICATION_RELEASE_SHA` to the approved Git commit on
+   both execution planes and require a GitHub-origin exact-SHA deployment. The
+   cron pre-deploy validate-only command must report
+   `runtime_release_verified:true`, `provider_calls:false`, and
+   `database_calls:false`. Keep the official-X generation cron paused. For the
    double-fact-check upgrade, verify the Railway Tutorial response contract
    exposes bounded `lessons`; do not send a mutating generation request yet.
 3. Apply all pending migrations, including the double-fact-check approval gate,
@@ -143,6 +159,7 @@ python -m scripts.run_telegram_publications --recovery-only
 ```
 
 Recovery is accepted only while the execution flag is the literal `false`. It
+also requires the same exact deployed-release fence as the live worker, then
 calls only the service-role expired-lease reconciliation RPC: it cannot claim a
 job, construct a Telegram publisher, or call Telegram. Repeat it until
 `reconciled_count` is zero, then run the queue gate again and inspect every

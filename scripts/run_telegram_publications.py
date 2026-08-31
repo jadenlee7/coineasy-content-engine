@@ -23,6 +23,8 @@ _VALIDATE_REQUIRED_ENV = (
     "CONTENT_STUDIO_WORKSPACE_ID",
     "TELEGRAM_BOT_TOKEN_SQUID",
     "TELEGRAM_CHANNEL_SQUID",
+    "RAILWAY_GIT_COMMIT_SHA",
+    "TELEGRAM_PUBLICATION_RELEASE_SHA",
 )
 
 
@@ -114,6 +116,7 @@ def _validate_only(
         "enabled": enabled,
         "client_id": telegram.client_id,
         "public_username": telegram.public_username,
+        "runtime_release_verified": True,
         "provider_calls": False,
         "database_calls": False,
     }
@@ -164,16 +167,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if result.get("ok") is True else 1
 
     try:
-        if not telegram_publication_enabled():
-            print(json.dumps({
-                "ok": True,
-                "enabled": False,
-                "processed": 0,
-                "failures": 0,
-                "results": [],
-            }, separators=(",", ":")))
-            return 0
-        result = asyncio.run(_run(PublicationSettings.from_env()))
+        enabled = telegram_publication_enabled()
+    except ValueError:
+        enabled = None
+    if enabled is False:
+        print(json.dumps({
+            "ok": True,
+            "enabled": False,
+            "processed": 0,
+            "failures": 0,
+            "results": [],
+        }, separators=(",", ":")))
+        return 0
+
+    try:
+        settings = PublicationSettings.from_env()
+    except (RuntimeError, ValueError):
+        result = {
+            "ok": False,
+            "enabled": True,
+            "error": "telegram_publication_configuration_invalid",
+            "provider_calls": False,
+            "database_calls": False,
+        }
+        print(json.dumps(result, separators=(",", ":")))
+        return 1
+
+    try:
+        result = asyncio.run(_run(settings))
     except (RuntimeError, ValueError):
         result = {
             "ok": False,
