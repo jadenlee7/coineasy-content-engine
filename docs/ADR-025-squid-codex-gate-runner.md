@@ -1,4 +1,4 @@
-# ADR-024: Squid Codex Gate Runner v1
+# ADR-025: Squid Codex Gate Runner v1
 
 **Status:** Proposed; the durable migration and one-shot Preview runner are
 included in this branch and have local PostgreSQL evidence, but neither has
@@ -69,7 +69,7 @@ this decision or the current runner.
 
 The runner instead requires explicit `--max-small-hourly-usd` and
 `--max-total-cost-usd` values and, before paid child creation, reads the current
-fixed hourly `ci_small` price from the parent project's Management API billing
+usage/hourly `ci_small` price from the parent project's Management API billing
 response. It fails closed when that price exceeds the hourly ceiling or when
 the admission estimate exceeds the total ceiling. The estimate uses the
 checked-in maximum watchdog exit-attempt budget: 110 minutes of sleep, five

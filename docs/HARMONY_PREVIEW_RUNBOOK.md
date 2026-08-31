@@ -8,7 +8,7 @@ signal, RLS 원장, connector attestation, Squid 한 고객의 private 협업
 사용합니다.
 
 Durable gate의 설계 결정은
-[`ADR-024: Squid Codex Gate Runner v1`](ADR-024-squid-codex-gate-runner.md)을
+[`ADR-025: Squid Codex Gate Runner v1`](ADR-025-squid-codex-gate-runner.md)을
 따릅니다. 해당 migration과 one-shot runner는 repository에 포함되어 있지만
 Production에는 적용되지 않았습니다. 파일 존재나 local proof를 배포 또는
 활성화로 해석하지 않습니다.
@@ -191,7 +191,7 @@ Runner는 approver의 신원이나 승인 진위를 검증하지 않고, 승인 
 
 Runner가 요구하는 `--max-small-hourly-usd`와 `--max-total-cost-usd`는 각각 소수점
 이하 여섯 자리의 양수 USD 상한입니다. Runner는 유료 child 생성 전에 parent
-project의 Management API billing 응답에서 현재 fixed/hourly `ci_small` 가격을
+project의 Management API billing 응답에서 현재 usage/hourly `ci_small` 가격을
 읽고, 그 값이 시간당 상한을 넘거나 아래 admission estimate가 total 상한을 넘으면
 fail-closed합니다. 이 입력과 live readback은 기계적 cost guard일 뿐 승인 증거가
 아니며 terminal receipt에도 `is_approval_evidence=false`로 기록됩니다. 이는
