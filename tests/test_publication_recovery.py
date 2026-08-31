@@ -24,6 +24,8 @@ def _env(*, enabled: str = "false") -> dict[str, str]:
         "SUPABASE_SERVICE_ROLE_KEY": SERVICE_KEY,
         "CONTENT_STUDIO_WORKSPACE_ID": WORKSPACE_ID,
         "TELEGRAM_PUBLICATION_RECOVERY_LIMIT": "25",
+        "RAILWAY_GIT_COMMIT_SHA": "d" * 40,
+        "TELEGRAM_PUBLICATION_RELEASE_SHA": "d" * 40,
     }
 
 
@@ -235,6 +237,29 @@ def test_enabled_recovery_cli_fails_before_repository_construction(
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "failed"
     assert result["provider_calls"] is False
+
+
+def test_recovery_release_mismatch_fails_before_repository_construction(
+    monkeypatch,
+    capsys,
+):
+    env = _env(enabled="false")
+    env["TELEGRAM_PUBLICATION_RELEASE_SHA"] = "e" * 40
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("release mismatch constructed a recovery repository")
+
+    monkeypatch.setattr(runner, "_build_recovery_repository", forbidden)
+    assert runner.main(["--recovery-only"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "mode": "recovery_only",
+        "status": "failed",
+        "error": "telegram_publication_recovery_failed",
+        "provider_calls": False,
+    }
 
 
 def test_recovery_cli_failure_exposes_no_secret_or_row_payload(monkeypatch, capsys):

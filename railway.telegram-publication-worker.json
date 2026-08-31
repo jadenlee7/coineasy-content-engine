@@ -2,9 +2,19 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile.publication"
+    "dockerfilePath": "Dockerfile.publication",
+    "watchPatterns": [
+      "/.dockerignore",
+      "/Dockerfile.publication",
+      "/requirements-automation.txt",
+      "/core/**",
+      "/clients/**",
+      "/scripts/**",
+      "/railway.telegram-publication-worker.json"
+    ]
   },
   "deploy": {
+    "preDeployCommand": "python -m scripts.run_telegram_publications --validate-only",
     "startCommand": "python -m scripts.run_telegram_publications",
     "cronSchedule": "*/5 * * * *",
     "restartPolicyType": "NEVER"

@@ -57,6 +57,10 @@ Add a separate exact-version Telegram publication path with these boundaries:
 9. Rollback reconciliation is a separate recovery-only process. It is allowed
    only while Railway publication is disabled and can call only the bounded
    expired-lease RPC; it has no claim or Telegram publisher capability.
+10. Both the cron and API execution planes, including recovery, require the
+    Railway GitHub-origin runtime commit to exactly match the operator-approved
+    `TELEGRAM_PUBLICATION_RELEASE_SHA`. The comparison accepts only lowercase
+    40-hex values and fails before constructing a worker or repository.
 
 ## Options considered
 
@@ -118,7 +122,9 @@ instead of hiding it behind retries.
 2. Run Python and Netlify tests with all publication flags disabled by default.
 3. Deploy the worker with `squid` allowlisted and both feature flags still off.
    Validate the disabled container result and the explicit `--validate-only`
-   result. Neither mode can claim a database job or call Telegram.
+   result from a GitHub-origin deployment. The latter must report only
+   `runtime_release_verified:true` for the exact approved commit and no provider
+   or database calls. Neither mode can claim a database job or call Telegram.
 4. Deploy the Studio API/UI with publication still disabled and verify it cannot
    queue work.
 5. The production path intentionally pins `@squid_kor_update`; changing only an
