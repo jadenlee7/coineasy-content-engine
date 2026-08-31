@@ -1,0 +1,13 @@
+{
+  "schema_version": "telegram-resolution-inspect-authorization@1",
+  "authorization_id": "88888888-8888-4888-8888-888888888888",
+  "request_sha256": "21abb3f9757dd71025b0a6dcd5a1fb5b274fa6f82faae70664f0ad78c6f1de50",
+  "authorized_by": "operator:fixture-authorizer",
+  "authorized_at": "2026-01-01T00:00:10Z",
+  "expires_at": "2026-01-01T01:00:00Z",
+  "scope": "issue_inspect_jwt_and_call_once",
+  "signing_key_id": "99999999-9999-4999-8999-999999999999",
+  "max_rpc_calls": 1,
+  "resend_authorized": false,
+  "automatic_publication": false
+}
