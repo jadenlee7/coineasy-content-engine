@@ -61,6 +61,33 @@ Add a separate exact-version Telegram publication path with these boundaries:
     Railway GitHub-origin runtime commit to exactly match the operator-approved
     `TELEGRAM_PUBLICATION_RELEASE_SHA`. The comparison accepts only lowercase
     40-hex values and fails before constructing a worker or repository.
+11. Operational closure of `delivery_unknown` is orthogonal to the delivery
+    state. The publication remains `delivery_unknown`, its job remains `failed`,
+    and the original request, response, attempt and error evidence remain
+    immutable.
+12. Negative operational closure requires a bounded canonical public-channel
+    audit, a non-mutating inspect RPC, a separate approve RPC that appends an
+    immutable exact approval receipt and event, and only then a resolve RPC that
+    appends one resolution receipt. Not observing a matching public message at
+    the checked time is not proof of non-delivery.
+13. Inspect, approve and resolve are available only to a dedicated no-login
+    `coineasy_telegram_resolution` role through three separate production JWTs
+    with `telegram_delivery_unknown_inspect`,
+    `telegram_delivery_unknown_approve`, and
+    `telegram_delivery_unknown_resolve` capabilities. Their phase and exact
+    claims are not interchangeable. None has provider, claim, requeue, resend,
+    publication, or job creation authority.
+14. A canonical positive manual observation remains separate `published`
+    evidence and can also clear the operational activation blocker. The existing
+    manual-observation RPC permits this only while the exact target version is
+    still current; it is not a historical backfill path after a newer version
+    becomes current. The evidence row neither rewrites nor deletes the unknown
+    attempt or an earlier resolution receipt.
+15. Before activation, the operational queue gate blocks `delivery_unknown`
+    attempts that have neither an append-only non-resend resolution receipt nor
+    a canonical positive manual-observation row. Either accepted evidence path
+    removes that incident through an anti-join; neither authorizes resending the
+    old version or publishing a new one.
 
 ## Options considered
 
@@ -99,6 +126,32 @@ request from an accepted Telegram post.
 Accepted. It adds more state transitions but makes the unsafe ambiguity visible
 instead of hiding it behind retries.
 
+### Mutate `delivery_unknown` to a definitive terminal status
+
+| Dimension | Assessment |
+|---|---|
+| Operational simplicity | High |
+| Forensic fidelity | Unacceptable; observation absence is not delivery proof |
+| Late positive evidence | Ambiguous after the original state is overwritten |
+| Duplicate protection | Easy to misread as safe-to-resend |
+
+Rejected. `cancelled`, `not_delivered`, or another replacement status would
+claim more than the evidence establishes and weaken the irreversible delivery
+fence.
+
+### Append an operational resolution receipt
+
+| Dimension | Assessment |
+|---|---|
+| Operational simplicity | Medium; queue reads require an anti-join |
+| Forensic fidelity | Preserves the exact unknown transport state and failed job |
+| Late positive evidence | Supported as a separate canonical observation |
+| Duplicate protection | Old attempt stays permanently non-claimable and non-resendable |
+
+Accepted. The receipt records an explicitly approved operator disposition,
+bounded public audit, immutable hashes, and zero resend authority without
+rewriting delivery evidence.
+
 ## Consequences
 
 - Squid Daily News can move from `approved` to a version-specific Telegram
@@ -108,6 +161,18 @@ instead of hiding it behind retries.
   existing observation form; that records evidence and never sends another
   message. This is deliberate because strict exactly-once delivery is not
   available from the Telegram Bot API.
+- If no match is observed in a bounded public audit, a dedicated-role inspect
+  RPC can derive an exact approval subject. A separate phase JWT and approve RPC
+  append an immutable approval receipt and bounded event for that exact subject.
+  Only a third resolve JWT can consume the unexpired receipt and append an
+  immutable `operator_closed_without_resend` resolution while the publication
+  remains `delivery_unknown` and the job remains `failed`. The resolution means
+  only that the incident was operationally closed without resend.
+- Unknown attempts with a non-resend resolution receipt or a canonical positive
+  manual-observation row are excluded from the activation blocker through an
+  anti-join. They remain non-claimable and non-resendable. The existing manual
+  observation RPC can add that positive evidence only while the target version
+  remains current.
 - Article and Tutorial remain manual until their complete publishable visual
   packages are immutable assets.
 - The existing legacy route remains only for dry-run previews. All live calls,
@@ -138,3 +203,21 @@ instead of hiding it behind retries.
    official Squid post and enable both Railway execution planes before Netlify.
    Yellow is a later code and database allowlist expansion, not an
    environment-only change.
+7. Test the delivery-unknown resolution migration in a disposable database.
+   Prove the inspect phase is non-mutating; inspect, approve and resolve JWTs
+   cannot cross phase boundaries; approve writes one immutable approval receipt
+   and one bounded event; resolve requires that exact unexpired receipt and
+   writes only one append-only resolution receipt and bounded event; the
+   publication/job transport rows remain unchanged; exact replay is idempotent;
+   changed subjects fail; current-version positive manual observation clears the
+   activation blocker; non-current historical observation fails closed; and
+   anon, authenticated, service-role, worker and browser callers cannot execute
+   any of the three RPCs.
+   Prove concurrent resolves produce one receipt/event, stale repeatable-read
+   snapshots cannot mutate terminal-unknown originals or invoke a resolution
+   phase, and all three phases use timezone-independent UTC subject hashes.
+8. Merge readiness does not authorize production migration application or
+   deployment. Applying the migration, issuing each phase-specific credential,
+   inspecting one production tuple, approving its exact subject, resolving it,
+   and later activating publication are separate operator gates with independent
+   readback.

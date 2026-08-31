@@ -426,3 +426,11 @@ jobs:
         run: >-
           bash
           supabase/tests/squid_failed_draft_recovery_concurrency.sh
+      - name: Prove exact Telegram delivery-unknown resolve serialization
+        run: >-
+          bash
+          supabase/tests/exact_telegram_delivery_unknown_resolution_concurrency.sh
+      - name: Reject stale snapshots for exact Telegram resolution
+        run: >-
+          bash
+          supabase/tests/exact_telegram_delivery_unknown_resolution_snapshot.sh
