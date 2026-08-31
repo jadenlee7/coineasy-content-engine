@@ -1,0 +1,8 @@
+**
+!Dockerfile.managed-inspect
+!tools/
+!tools/managed-telegram-inspect/
+!tools/managed-telegram-inspect/*.mjs
+!scripts/
+!scripts/lib/
+!scripts/lib/telegram-resolution-inspect.mjs

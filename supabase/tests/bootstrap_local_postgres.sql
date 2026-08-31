@@ -15,7 +15,41 @@ create extension if not exists pgcrypto with schema extensions;
 
 create schema auth;
 create table auth.users (
-    id uuid primary key
+    id uuid primary key,
+    encrypted_password text,
+    recovery_sent_at timestamptz,
+    banned_until timestamptz,
+    deleted_at timestamptz,
+    is_anonymous boolean not null default false
+);
+-- Minimal supported GoTrue v2.189.0 columns for SQL-only security fixtures.
+-- These stubs do not verify JWT signatures/MFA. The separate live Auth harness
+-- lets GoTrue create its actual schema before applying application migrations.
+create table auth.mfa_factors (
+    id uuid primary key,
+    user_id uuid not null references auth.users(id),
+    factor_type text not null,
+    status text not null,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+create table auth.sessions (
+    id uuid primary key,
+    user_id uuid not null references auth.users(id),
+    factor_id uuid,
+    aal text,
+    not_after timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    refreshed_at timestamptz
+);
+create table auth.mfa_amr_claims (
+    id uuid primary key default gen_random_uuid(),
+    session_id uuid not null references auth.sessions(id) on delete cascade,
+    authentication_method text not null,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique (session_id, authentication_method)
 );
 create or replace function auth.uid()
 returns uuid

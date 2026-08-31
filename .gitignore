@@ -54,3 +54,6 @@ supabase/.temp/
 
 # Netlify Functions dependencies
 node_modules/
+
+# Dedicated inspect image build stamp; generated only during image build.
+tools/managed-telegram-inspect/build-sha.txt
