@@ -383,6 +383,60 @@ jobs:
           tests_js/studio-release-stamp.test.mts
           tests_js/studio-capabilities.test.mts
 
+  managed-inspect-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build the isolated default-OFF inspect image
+        run: >-
+          docker build --file Dockerfile.managed-inspect
+          --build-arg MANAGED_INSPECT_SOURCE_SHA=${{ github.sha }}
+          --tag coineasy-managed-inspect-ci .
+      - name: Prove disabled HTTP performs zero I/O without a network
+        run: |
+          docker run --rm --network none --entrypoint node coineasy-managed-inspect-ci --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { existsSync, readFileSync } from "node:fs";
+            import { createManagedInspectServer } from "./tools/managed-telegram-inspect/server.mjs";
+            let calls = 0;
+            const server = createManagedInspectServer({ fetchImpl: async () => { calls++; throw new Error("unexpected_io"); } });
+            await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+            try {
+              const response = await fetch(`http://127.0.0.1:${server.address().port}/`);
+              assert.equal(response.status, 503);
+              assert.match(await response.text(), /Disabled/);
+              assert.equal(calls, 0);
+              for (const path of ["core", "api", "netlify", ".env"]) assert.equal(existsSync(path), false);
+              assert.match(readFileSync("tools/managed-telegram-inspect/build-sha.txt", "utf8").trim(), /^[a-f0-9]{40}$/);
+              console.log("disabled=true auth_calls=0 database_calls=0 provider_calls=0");
+            } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+          '
+      - name: Install pinned browser-test dependencies outside the repository
+        run: |
+          npm install --prefix "$RUNNER_TEMP/managed-inspect-browser" --ignore-scripts --no-package-lock playwright@1.62.1
+          node "$RUNNER_TEMP/managed-inspect-browser/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Prove actual Chromium IndexedDB concurrency and retained attempts
+        env:
+          MANAGED_INSPECT_BROWSER_TEST: "1"
+        run: >-
+          MANAGED_INSPECT_PLAYWRIGHT_MODULE="$RUNNER_TEMP/managed-inspect-browser/node_modules/playwright/index.mjs"
+          node --test tests_js/managed-inspect-browser.test.mts
+
+  managed-auth-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test actual local GoTrue and PostgREST with ephemeral synthetic identity
+        run: node scripts/test-managed-auth-local.mjs
+
   postgres:
     runs-on: ubuntu-latest
     services:
