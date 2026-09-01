@@ -21,13 +21,13 @@ const EXPECTED_MIGRATIONS = Object.freeze([
     version: "20260831180000",
   }),
   Object.freeze({
-    byteLength: 22161,
+    byteLength: 27348,
     encoding: "UTF-8",
     finalNewline: true,
     lineEnding: "LF",
     path: "supabase/migrations/20260901120000_managed_inspector_role_boundary.sql",
     regularNonSymlink: true,
-    sha256: "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
+    sha256: "256f8ddb19a6bbfaf2fc98ea168a1da6dc1945c54856f7450b0ba90d70817a25",
     version: "20260901120000",
   }),
 ]);
@@ -59,6 +59,9 @@ const REJECTED_MIGRATION_HASHES = Object.freeze(new Set([
   // This predecessor removed the authenticated grant but did not normalize
   // arbitrary creator default-ACL grantees before the first commit.
   "aecc7af2abf58c00402c026cbf90dabe077a68379ae17bc307a2ed137759a4ed",
+  // This predecessor fixed the target-role boundary but rejected Supabase's
+  // exact platform-managed postgres -> cli_login_postgres role path.
+  "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
 ]));
 const SQL_FILES = Object.freeze(["preflight.sql", "postflight.sql"]);
 const FORBIDDEN_SQL_WORDS = Object.freeze([

@@ -22,7 +22,7 @@ coineasy-managed-inspector-migration-set@1\n
 `canonicalSetSha256` proves only that ordered migration-byte set. It is neither
 the manifest SHA nor an application release/deployment SHA.
 
-Two superseded first-migration digests are explicitly rejected:
+Superseded migration digests are explicitly rejected:
 
 - `a82b9a279b36a535ebdf771b1a183e42d239116e51398bbd6c3b6832d102daf2`
   granted the managed RPCs to `authenticated` during the gap between
@@ -30,8 +30,11 @@ Two superseded first-migration digests are explicitly rejected:
 - `aecc7af2abf58c00402c026cbf90dabe077a68379ae17bc307a2ed137759a4ed`
   removed that grant but did not normalize arbitrary creator default-ACL
   grantees before the first migration committed.
+- `ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad`
+  checked recursive membership by terminal role and path length, which did not
+  distinguish the observed hosted CLI path from a rogue intermediate path.
 
-Neither byte set may be applied.
+None of these superseded byte sets may be applied.
 
 Run the offline validator from any directory:
 
@@ -56,8 +59,14 @@ fields are `text`/`varchar`, and the three Auth state columns additionally allow
 their canonical Auth enum UDTs. A present column with any other UDT is a BLOCK.
 A production-observed PostgreSQL 17 catalog must also have exactly the canonical
 `authenticator -> postgres` and `authenticator -> supabase_storage_admin`
-administrative edges, including their grantors, membership options and relevant
-role attributes; any additional recursive path is a BLOCK.
+administrative edges, including their grantors, membership options and complete
+role capability attributes. The platform-managed `cli_login_postgres` role is
+optional. When it exists, its only accepted reachable path is exactly
+`authenticator -> postgres -> cli_login_postgres`, with the observed
+`supabase_admin` grantor, `admin=false`, `inherit=false`, `set=true`, and exact
+LOGIN-role capability booleans. Password and `VALID UNTIL` are intentionally not
+compared because the Management API rotates them. Any similar name, altered
+edge, rogue intermediate or additional recursive path is a BLOCK.
 A partially applied or already applied state is a BLOCK, not a retry signal.
 
 Run `postflight.sql` only after an independently approved migration operation.
@@ -67,11 +76,13 @@ executable functions across the observed exposed schemas (`public` and
 `graphql_public`), no executable function in `private`, no effective relation,
 column or sequence privilege reachable through schema `USAGE`, no owned object,
 and no unexpected schema privilege. Its direct members are exactly
-`authenticator` plus the PostgreSQL 17 auto-edge to `postgres`; the only four
-descendant paths are the canonical routes to `authenticator`, `postgres` and
-`supabase_storage_admin`. Grantors, membership options and platform-role
-attributes are exact. The three target RPCs remain unavailable to PUBLIC and
-ordinary application roles.
+`authenticator` plus the PostgreSQL 17 auto-edge to `postgres`. The four
+required descendant paths are the canonical routes to `authenticator`,
+`postgres` and `supabase_storage_admin`; when the optional exact
+`cli_login_postgres` platform edge exists, two additional full paths reach it.
+Every ordered path, grantor, membership option and complete platform-role
+capability tuple is compared as an exact multiset. The three target RPCs remain
+unavailable to PUBLIC and ordinary application roles.
 
 The production-observed image has raw PUBLIC `SELECT` ACLs on
 `extensions.pg_stat_statements*`, but PUBLIC and the target role have no

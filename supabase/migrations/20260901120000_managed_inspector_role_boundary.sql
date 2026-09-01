@@ -127,31 +127,129 @@ begin
           using errcode = '42501';
     end if;
     if exists (
-        with recursive descendants(member, membership_path) as (
-            select m.member, array[m.roleid, m.member]::oid[]
+        with recursive descendants(
+            parent_role, member, membership_path, role_path,
+            parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
+            select
+                m.roleid, m.member, array[m.roleid, m.member]::oid[],
+                array[parent.rolname, member.rolname]::text[],
+                parent.rolname, member.rolname, grantor.rolname,
+                m.admin_option, m.inherit_option, m.set_option,
+                member.rolsuper, member.rolinherit, member.rolcreaterole,
+                member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+                member.rolbypassrls
             from pg_catalog.pg_auth_members m
-            where m.roleid = 'coineasy_managed_inspector'::pg_catalog.regrole
+            join pg_catalog.pg_roles parent on parent.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where parent.rolname = 'coineasy_managed_inspector'
             union all
-            select m.member, d.membership_path || m.member
+            select
+                m.roleid, m.member, d.membership_path || m.member,
+                d.role_path || member.rolname,
+                parent.rolname, member.rolname, grantor.rolname,
+                m.admin_option, m.inherit_option, m.set_option,
+                member.rolsuper, member.rolinherit, member.rolcreaterole,
+                member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+                member.rolbypassrls
             from descendants d
             join pg_catalog.pg_auth_members m on m.roleid = d.member
+            join pg_catalog.pg_roles parent on parent.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
             where not m.member = any(d.membership_path)
         ),
-        actual(role_name, path_cardinality) as (
-            select member.rolname, pg_catalog.cardinality(d.membership_path)
+        actual(
+            role_path, parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
+            select
+                d.role_path, d.parent_role_name, d.member_role_name,
+                d.grantor_name, d.admin_option, d.inherit_option,
+                d.set_option, d.member_rolsuper, d.member_rolinherit,
+                d.member_rolcreaterole, d.member_rolcreatedb,
+                d.member_rolcanlogin, d.member_rolreplication,
+                d.member_rolbypassrls
             from descendants d
-            join pg_catalog.pg_roles member on member.oid = d.member
         ),
-        expected(role_name, path_cardinality) as (
+        expected(
+            role_path, parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
             select * from (values
-                ('authenticator'::text, 2),
-                ('postgres'::text, 2),
-                ('postgres'::text, 3),
-                ('supabase_storage_admin'::text, 3)
-            ) hosted(role_name, path_cardinality)
+                (
+                    array['coineasy_managed_inspector', 'authenticator']::text[],
+                    'coineasy_managed_inspector'::text, 'authenticator'::text,
+                    'postgres'::text, false, false, true,
+                    false, false, false, false, true, false, false
+                ),
+                (
+                    array['coineasy_managed_inspector', 'postgres']::text[],
+                    'coineasy_managed_inspector', 'postgres', 'supabase_admin',
+                    true, false, false,
+                    false, true, true, true, true, true, true
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'postgres']::text[],
+                    'authenticator', 'postgres', 'supabase_admin',
+                    true, true, true,
+                    false, true, true, true, true, true, true
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'supabase_storage_admin']::text[],
+                    'authenticator', 'supabase_storage_admin', 'supabase_admin',
+                    false, false, true,
+                    false, false, true, false, true, false, false
+                )
+            ) hosted(
+                role_path, parent_role_name, member_role_name, grantor_name,
+                admin_option, inherit_option, set_option,
+                member_rolsuper, member_rolinherit, member_rolcreaterole,
+                member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+                member_rolbypassrls
+            )
             where hosted_pg17
             union all
-            select 'authenticator'::text, 2 where not hosted_pg17
+            select * from (values
+                (
+                    array['coineasy_managed_inspector', 'postgres', 'cli_login_postgres']::text[],
+                    'postgres'::text, 'cli_login_postgres'::text,
+                    'supabase_admin'::text, false, false, true,
+                    false, false, false, false, true, false, false
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'postgres', 'cli_login_postgres']::text[],
+                    'postgres', 'cli_login_postgres', 'supabase_admin',
+                    false, false, true,
+                    false, false, false, false, true, false, false
+                )
+            ) cli_login(
+                role_path, parent_role_name, member_role_name, grantor_name,
+                admin_option, inherit_option, set_option,
+                member_rolsuper, member_rolinherit, member_rolcreaterole,
+                member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+                member_rolbypassrls
+            )
+            where hosted_pg17
+              and pg_catalog.to_regrole('cli_login_postgres') is not null
+            union all
+            select
+                array['coineasy_managed_inspector', 'authenticator']::text[],
+                'coineasy_managed_inspector'::text, 'authenticator'::text,
+                'postgres'::text, false, false, true,
+                false, false, false, false, true, false, false
+            where not hosted_pg17
         )
         (select * from actual except all select * from expected)
         union all

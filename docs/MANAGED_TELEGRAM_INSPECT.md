@@ -215,6 +215,12 @@ production credential. Its newly created internal Docker network has no
 external egress or published host ports. A disposable Node helper makes actual
 HTTP requests to only that stack's Auth and REST services. It does not load
 project dotenv files or accept a remote project/database URL.
+The observed-version replay also creates only inside that disposable database
+the optional hosted `cli_login_postgres` path and proves its exact grantor,
+membership options, complete capability tuple and both resulting full target
+paths. It separately proves that absence is compatible and that option drift,
+capability drift or a rogue same-depth intermediate fails closed. The rotating
+CLI password and `VALID UNTIL` are never loaded or compared.
 SQL-only claims fixtures and actual signed-token integration are separately
 labelled. The real Auth/PostgREST adapter test and Chromium guard test are
 separate harnesses, not a combined browser-to-real-Auth UI end-to-end test.

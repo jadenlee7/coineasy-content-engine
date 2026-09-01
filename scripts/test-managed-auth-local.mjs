@@ -380,6 +380,49 @@ export async function startLocalManagedAuth() {
     for (const migration of readdirSync(path.join(ROOT, 'supabase/migrations')).filter((entry) => entry.endsWith('.sql')).sort()) {
       if (migration === MANAGED_BUILD_MIGRATION) {
         if (imageProfile === PRODUCTION_OBSERVED_PROFILE) {
+          // The service image has no linked-CLI role. First prove that the
+          // optional platform path may be absent, then recreate the exact
+          // hosted contract observed through the read-only production API.
+          await assertValidateOnly('preflight.sql');
+
+          await state.sql(`create role cli_login_postgres
+            login noinherit nosuperuser nocreaterole nocreatedb
+            noreplication nobypassrls;
+            grant postgres to cli_login_postgres
+              with inherit false, set true, admin false;`);
+          await assertValidateOnly('preflight.sql');
+
+          await state.sql(`alter role cli_login_postgres inherit;`);
+          await assertValidateOnly('preflight.sql', [
+            'authenticator_platform_admin_descendants_exact',
+          ]);
+          await state.sql(`alter role cli_login_postgres noinherit;`);
+
+          await state.sql(`grant postgres to cli_login_postgres
+            with inherit true, set true, admin false;`);
+          await assertValidateOnly('preflight.sql', [
+            'authenticator_platform_admin_descendants_exact',
+          ]);
+          await state.sql(`grant postgres to cli_login_postgres
+            with inherit false, set true, admin false;`);
+
+          await state.sql(`revoke postgres from cli_login_postgres;
+            create role coineasy_cli_graph_rogue
+              nologin noinherit nosuperuser nocreaterole nocreatedb
+              noreplication nobypassrls;
+            grant authenticator to coineasy_cli_graph_rogue
+              with inherit false, set true, admin false;
+            grant coineasy_cli_graph_rogue to cli_login_postgres
+              with inherit false, set true, admin false;`);
+          await assertValidateOnly('preflight.sql', [
+            'authenticator_platform_admin_descendants_exact',
+          ]);
+          await state.sql(`revoke coineasy_cli_graph_rogue from cli_login_postgres;
+            revoke authenticator from coineasy_cli_graph_rogue;
+            drop role coineasy_cli_graph_rogue;
+            grant postgres to cli_login_postgres
+              with inherit false, set true, admin false;`);
+
           await assertValidateOnly('preflight.sql');
 
           await state.sqlAs('postgres', `grant select on table public.workspaces to public;`);
@@ -447,6 +490,37 @@ export async function startLocalManagedAuth() {
     if (imageProfile === PRODUCTION_OBSERVED_PROFILE) {
       await assertValidateOnly('postflight.sql');
 
+      await state.sql(`alter role cli_login_postgres inherit;`);
+      await assertValidateOnly('postflight.sql', [
+        'target_role_transitive_members_exact',
+      ]);
+      await state.sql(`alter role cli_login_postgres noinherit;`);
+
+      await state.sql(`grant postgres to cli_login_postgres
+        with inherit true, set true, admin false;`);
+      await assertValidateOnly('postflight.sql', [
+        'target_role_transitive_members_exact',
+      ]);
+      await state.sql(`grant postgres to cli_login_postgres
+        with inherit false, set true, admin false;`);
+
+      await state.sql(`revoke postgres from cli_login_postgres;
+        create role coineasy_cli_graph_rogue_postflight
+          nologin noinherit nosuperuser nocreaterole nocreatedb
+          noreplication nobypassrls;
+        grant postgres to coineasy_cli_graph_rogue_postflight
+          with inherit false, set true, admin false;
+        grant coineasy_cli_graph_rogue_postflight to cli_login_postgres
+          with inherit false, set true, admin false;`);
+      await assertValidateOnly('postflight.sql', [
+        'target_role_transitive_members_exact',
+      ]);
+      await state.sql(`revoke coineasy_cli_graph_rogue_postflight from cli_login_postgres;
+        revoke postgres from coineasy_cli_graph_rogue_postflight;
+        drop role coineasy_cli_graph_rogue_postflight;
+        grant postgres to cli_login_postgres
+          with inherit false, set true, admin false;`);
+
       await state.sqlAs('postgres', `grant usage on schema extensions
         to coineasy_managed_inspector;`);
       await assertValidateOnly('postflight.sql', [
@@ -504,6 +578,12 @@ export async function startLocalManagedAuth() {
           on private.managed_telegram_inspect_releases for each row
           execute function private.deny_managed_telegram_inspect_ledger_mutation();`);
 
+      await assertValidateOnly('postflight.sql');
+
+      // Absence is also compatible: the CLI role and its password are managed
+      // independently of the application migration.
+      await state.sql(`revoke postgres from cli_login_postgres;
+        drop role cli_login_postgres;`);
       await assertValidateOnly('postflight.sql');
     }
     // Configure only this newly created disposable role before REST starts.

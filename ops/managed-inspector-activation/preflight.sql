@@ -190,16 +190,70 @@ unexpected_public_schema_privileges(object_name) as (
           )
       )
 ),
-authenticator_downstream(member, membership_path) as (
-    select m.member, array[m.roleid, m.member]::oid[]
+authenticator_descendant_edges(
+    parent_role, member, membership_path, role_path,
+    parent_role_name, member_role_name, grantor_name,
+    admin_option, inherit_option, set_option,
+    member_rolsuper, member_rolinherit, member_rolcreaterole,
+    member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+    member_rolbypassrls
+) as (
+    select
+        m.roleid, m.member, array[m.roleid, m.member]::oid[],
+        array[parent.rolname, member.rolname]::text[],
+        parent.rolname, member.rolname, grantor.rolname,
+        m.admin_option, m.inherit_option, m.set_option,
+        member.rolsuper, member.rolinherit, member.rolcreaterole,
+        member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+        member.rolbypassrls
     from pg_catalog.pg_auth_members m
-    join pg_catalog.pg_roles r on r.oid = m.roleid
-    where r.rolname = 'authenticator'
+    join pg_catalog.pg_roles parent on parent.oid = m.roleid
+    join pg_catalog.pg_roles member on member.oid = m.member
+    join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+    where parent.rolname = 'authenticator'
     union all
-    select m.member, d.membership_path || m.member
-    from authenticator_downstream d
+    select
+        m.roleid, m.member, d.membership_path || m.member,
+        d.role_path || member.rolname,
+        parent.rolname, member.rolname, grantor.rolname,
+        m.admin_option, m.inherit_option, m.set_option,
+        member.rolsuper, member.rolinherit, member.rolcreaterole,
+        member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+        member.rolbypassrls
+    from authenticator_descendant_edges d
     join pg_catalog.pg_auth_members m on m.roleid = d.member
+    join pg_catalog.pg_roles parent on parent.oid = m.roleid
+    join pg_catalog.pg_roles member on member.oid = m.member
+    join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
     where not m.member = any(d.membership_path)
+),
+expected_authenticator_descendant_edges(
+    role_path, parent_role_name, member_role_name, grantor_name,
+    admin_option, inherit_option, set_option,
+    member_rolsuper, member_rolinherit, member_rolcreaterole,
+    member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+    member_rolbypassrls
+) as (
+    values
+        (
+            array['authenticator', 'postgres']::text[],
+            'authenticator'::text, 'postgres'::text, 'supabase_admin'::text,
+            true, true, true,
+            false, true, true, true, true, true, true
+        ),
+        (
+            array['authenticator', 'supabase_storage_admin']::text[],
+            'authenticator', 'supabase_storage_admin', 'supabase_admin',
+            false, false, true,
+            false, false, true, false, true, false, false
+        )
+    union all
+    select
+        array['authenticator', 'postgres', 'cli_login_postgres']::text[],
+        'postgres'::text, 'cli_login_postgres'::text, 'supabase_admin'::text,
+        false, false, true,
+        false, false, false, false, true, false, false
+    where pg_catalog.to_regrole('cli_login_postgres') is not null
 ),
 expected_authenticator_admin_members(
     role_name, admin_option, inherit_option, set_option,
@@ -382,42 +436,47 @@ checks(check_id, passed, expected, observed) as (
                and a.grantor_name = e.grantor_name
               where a.role_name is null
           )
-          and (select count(*) from authenticator_downstream d)
-              = (select count(*) from expected_authenticator_admin_members)
           and not exists (
-              select 1
-              from authenticator_downstream d
-              left join pg_catalog.pg_roles member on member.oid = d.member
-              left join expected_authenticator_admin_members e
-                on e.role_name = member.rolname
-               and e.path_cardinality = pg_catalog.cardinality(d.membership_path)
-              where e.role_name is null
-          )
-          and not exists (
-              select 1
-              from expected_authenticator_admin_members e
-              where not exists (
-                  select 1
-                  from authenticator_downstream d
-                  join pg_catalog.pg_roles member on member.oid = d.member
-                  where member.rolname = e.role_name
-                    and pg_catalog.cardinality(d.membership_path) = e.path_cardinality
+              (
+                  select
+                      a.role_path, a.parent_role_name, a.member_role_name,
+                      a.grantor_name, a.admin_option, a.inherit_option,
+                      a.set_option, a.member_rolsuper, a.member_rolinherit,
+                      a.member_rolcreaterole, a.member_rolcreatedb,
+                      a.member_rolcanlogin, a.member_rolreplication,
+                      a.member_rolbypassrls
+                  from authenticator_descendant_edges a
+                  except all
+                  select * from expected_authenticator_descendant_edges
+              )
+              union all
+              (
+                  select * from expected_authenticator_descendant_edges
+                  except all
+                  select
+                      a.role_path, a.parent_role_name, a.member_role_name,
+                      a.grantor_name, a.admin_option, a.inherit_option,
+                      a.set_option, a.member_rolsuper, a.member_rolinherit,
+                      a.member_rolcreaterole, a.member_rolcreatedb,
+                      a.member_rolcanlogin, a.member_rolreplication,
+                      a.member_rolbypassrls
+                  from authenticator_descendant_edges a
               )
           ),
-        'postgres(admin=true,inherit=true,set=true);supabase_storage_admin(admin=false,inherit=false,set=true); no other descendants',
+        'two exact platform edges plus optional exact authenticator>postgres>cli_login_postgres',
         coalesce((
             select pg_catalog.string_agg(
-                pg_catalog.concat_ws(',',
-                    a.role_name,
+                pg_catalog.concat_ws('|',
+                    pg_catalog.array_to_string(a.role_path, '>'),
                     'admin=' || a.admin_option::text,
                     'inherit=' || a.inherit_option::text,
                     'set=' || a.set_option::text,
-                    'createrole=' || a.rolcreaterole::text,
-                    'bypassrls=' || a.rolbypassrls::text,
+                    'createrole=' || a.member_rolcreaterole::text,
+                    'bypassrls=' || a.member_rolbypassrls::text,
                     'grantor=' || a.grantor_name
-                ), ';' order by a.role_name
+                ), ';' order by a.role_path::text
             )
-            from actual_authenticator_admin_members a
+            from authenticator_descendant_edges a
         ), '')
     union all
     select

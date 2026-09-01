@@ -79,9 +79,16 @@ revoke shared privileges used by other applications. [PostgreSQL privileges](htt
 
 The production-observed PostgreSQL 17 role graph is also explicit: the target's
 direct members are `authenticator` and the auto-created `postgres` edge, while
-the four canonical descendant paths include `postgres` both directly and via
-`authenticator`, plus `supabase_storage_admin` via `authenticator`. Grantors,
-membership options and relevant platform-role attributes are compared exactly.
+the four required descendant paths include `postgres` both directly and via
+`authenticator`, plus `supabase_storage_admin` via `authenticator`. Hosted
+projects can also retain Supabase's fixed `cli_login_postgres` role used by the
+CLI's Management API temporary-password flow. Its presence is optional; if it
+exists, the two additional target paths must end in the exact
+`postgres -> cli_login_postgres` edge. Full ordered role paths, grantors,
+membership options and every capability boolean are compared as exact
+multisets. Password and `VALID UNTIL` are rotating credential state and are not
+part of this authorization contract. A similar role name, different
+intermediate, altered option or extra path fails closed.
 
 PostgREST selects a role from a verified JWT, but the original login role also
 matters for PostgreSQL `SET ROLE`. The boundary is no direct database credential,
@@ -122,7 +129,8 @@ provides the integration proof. Completion requires:
    PostgREST v14.5 images, with the exact hosted-version ACL/role graph and only
    the three managed RPCs effective for the dedicated role;
 2. negative ACL fixtures for PUBLIC/null ACL, schema creation, relation/column/
-   sequence access, ownership, and indirect role membership;
+   sequence access, ownership, indirect role membership, CLI-edge option or
+   capability drift, and a same-depth rogue intermediate path;
 3. actual local Admin-created custom-role user: password login, existing TOTP,
    `/user`, database live role, three managed RPCs, refresh, recovery, factor
    reset, logout, ban, expiry, and revocation behavior;

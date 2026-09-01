@@ -53,6 +53,26 @@ class ManagedInspectorActivationMigrationTests(unittest.TestCase):
         self.assertNotIn("authenticated", {role for _, role in grants})
         self.assertNotIn("public", {role for _, role in grants})
 
+    def test_boundary_migration_fixes_full_platform_role_paths(self) -> None:
+        for path in (
+            "array['coineasy_managed_inspector', 'authenticator', 'postgres']::text[]",
+            "array['coineasy_managed_inspector', 'authenticator', "
+            "'supabase_storage_admin']::text[]",
+            "array['coineasy_managed_inspector', 'postgres', "
+            "'cli_login_postgres']::text[]",
+            "array['coineasy_managed_inspector', 'authenticator', 'postgres', "
+            "'cli_login_postgres']::text[]",
+        ):
+            self.assertIn(path, BOUNDARY_MIGRATION)
+        self.assertIn(
+            "pg_catalog.to_regrole('cli_login_postgres') is not null",
+            BOUNDARY_MIGRATION,
+        )
+        self.assertEqual(BOUNDARY_MIGRATION.lower().count("except all"), 2)
+        self.assertIn("member_rolcanlogin", BOUNDARY_MIGRATION)
+        self.assertIn("member_rolreplication", BOUNDARY_MIGRATION)
+        self.assertIn("member_rolbypassrls", BOUNDARY_MIGRATION)
+
 
 if __name__ == "__main__":
     unittest.main()

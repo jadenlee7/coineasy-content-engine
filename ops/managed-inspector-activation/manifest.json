@@ -2,7 +2,7 @@
   "canonicalLineFormat": "<version>\\t<path>\\t<byteLength>\\t<sha256>\\n",
   "canonicalPayloadDomain": "coineasy-managed-inspector-migration-set@1",
   "canonicalSetPurpose": "migration-byte-set-integrity-only-not-manifest-or-release-sha",
-  "canonicalSetSha256": "76ced1a3270a4febe76586b24c43f382c0d3f83d79f29f5fa9b2decaddc638d7",
+  "canonicalSetSha256": "1f091a909637bf6793a3708e487f5f2b517abbd58ef4f9c4ab80e211753b4de7",
   "migrations": [
     {
       "byteLength": 44307,
@@ -15,13 +15,13 @@
       "version": "20260831180000"
     },
     {
-      "byteLength": 22161,
+      "byteLength": 27348,
       "encoding": "UTF-8",
       "finalNewline": true,
       "lineEnding": "LF",
       "path": "supabase/migrations/20260901120000_managed_inspector_role_boundary.sql",
       "regularNonSymlink": true,
-      "sha256": "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
+      "sha256": "256f8ddb19a6bbfaf2fc98ea168a1da6dc1945c54856f7450b0ba90d70817a25",
       "version": "20260901120000"
     }
   ],

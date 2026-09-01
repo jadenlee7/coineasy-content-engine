@@ -64,6 +64,16 @@ test("the preflight makes the future NOINHERIT role state predictable", async ()
     sql,
     /join pg_catalog\.pg_auth_members m on m\.roleid = d\.member/u,
   );
+  assert.match(
+    sql,
+    /array\['authenticator', 'postgres', 'cli_login_postgres'\]::text\[\]/u,
+  );
+  assert.match(
+    sql,
+    /where pg_catalog\.to_regrole\('cli_login_postgres'\) is not null/u,
+  );
+  assert.match(sql, /expected_authenticator_descendant_edges/u);
+  assert.ok([...sql.matchAll(/except all/gu)].length >= 2);
   assert.deepEqual(
     checkIds.filter((checkId) => checkId.startsWith("public_")),
     [
@@ -100,12 +110,22 @@ test("the postflight measures effective object privileges through schema usage",
   );
   assert.match(sql, /target_role_transitive_members_exact/u);
   assert.match(sql, /expected_authenticator_admin_members/u);
+  assert.match(sql, /expected_target_descendant_edges/u);
   assert.match(sql, /\('authenticator'::text, false, false, true, false, false, 'postgres'::text\)/u);
   assert.match(sql, /\('postgres', true, false, false, true, true, 'supabase_admin'\)/u);
   assert.match(
     sql,
-    /\('authenticator'::text, 2\),\s*\('postgres', 2\),\s*\('postgres', 3\),\s*\('supabase_storage_admin', 3\)/u,
+    /array\['coineasy_managed_inspector', 'authenticator', 'postgres', 'cli_login_postgres'\]::text\[\]/u,
   );
+  assert.match(
+    sql,
+    /array\['coineasy_managed_inspector', 'postgres', 'cli_login_postgres'\]::text\[\]/u,
+  );
+  assert.match(
+    sql,
+    /where pg_catalog\.to_regrole\('cli_login_postgres'\) is not null/u,
+  );
+  assert.ok([...sql.matchAll(/except all/gu)].length >= 2);
   for (const cte of [
     "unexpected_relation_privileges",
     "unexpected_column_privileges",
@@ -157,10 +177,11 @@ test("canonical JSON rejects duplicate keys", () => {
   );
 });
 
-test("both superseded first-migration hashes are rejected", () => {
+test("all superseded migration hashes are rejected", () => {
   for (const digest of [
     "a82b9a279b36a535ebdf771b1a183e42d239116e51398bbd6c3b6832d102daf2",
     "aecc7af2abf58c00402c026cbf90dabe077a68379ae17bc307a2ed137759a4ed",
+    "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
   ]) assert.throws(
     () => assertAllowedMigrationSha256(digest),
     /rejected migration hash/u,
