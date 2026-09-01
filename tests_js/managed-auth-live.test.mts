@@ -3,7 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { startLocalManagedAuth } from '../scripts/test-managed-auth-local.mjs';
+import {
+  LOCAL_IMAGES,
+  LOCAL_IMAGE_PROFILES,
+  PRODUCTION_OBSERVED_REPLAY_IMAGES,
+  localImagesForProfile,
+  startLocalManagedAuth,
+} from '../scripts/test-managed-auth-local.mjs';
 import { createUpstream, MANAGED_INSPECTOR_ROLE, verifyManagedJwt } from '../tools/managed-telegram-inspect/auth.mjs';
 import { pgJsonbText, sha256, validateInspectResponse, validateRequest } from '../scripts/lib/telegram-resolution-inspect.mjs';
 
@@ -18,6 +24,26 @@ function totp(secret: string) {
   return String((hash.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0');
 }
 function claims(token: string) { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); }
+
+test('managed Auth local compatibility profiles are a closed reviewed allowlist', () => {
+  assert.deepEqual(LOCAL_IMAGES, {
+    postgres: 'postgres:16.13',
+    auth: 'supabase/gotrue:v2.189.0',
+    rest: 'postgrest/postgrest:v14.12',
+    helper: 'node:24.11.1-slim',
+  });
+  assert.deepEqual(PRODUCTION_OBSERVED_REPLAY_IMAGES, {
+    postgres: 'supabase/postgres:17.6.1.127@sha256:be60aee15997daca475b710b734bc6bfe52cd544dcd7e9fd2ff58210b6747d83',
+    auth: 'supabase/gotrue:v2.196.0@sha256:c0c25187a6b835e65a6f6e6c6b39d090e832d40e6de5186f2c038e0411944232',
+    rest: 'postgrest/postgrest:v14.5@sha256:b574528fe109c8343c1247155734d03df8c34b462f342dca0ccc20244fc36ef9',
+    helper: 'node:24.11.1-slim',
+  });
+  assert.deepEqual(Object.keys(LOCAL_IMAGE_PROFILES), ['baseline', 'production-observed-version-replay-2026-09-01']);
+  assert.equal(localImagesForProfile(), LOCAL_IMAGES);
+  assert.equal(localImagesForProfile('production-observed-version-replay-2026-09-01'), PRODUCTION_OBSERVED_REPLAY_IMAGES);
+  for (const invalid of ['', 'production', 'hosted-latest', 'postgres:latest', '__proto__'])
+    assert.throws(() => localImagesForProfile(invalid), /local_image_profile_invalid/);
+});
 
 test('real local Managed Auth and PostgREST contracts', { skip: process.env.COINEASY_MANAGED_AUTH_LIVE !== '1', timeout: 600_000 }, async (t) => {
   const stack = await startLocalManagedAuth();

@@ -553,8 +553,160 @@ revoke all on function private.managed_telegram_inspect_fresh_subject(jsonb) fro
 revoke all on function public.managed_telegram_inspect_context(uuid,text) from public, anon, authenticated, service_role, coineasy_telegram_resolution;
 revoke all on function public.register_managed_telegram_inspect_consent(uuid,jsonb,text) from public, anon, authenticated, service_role, coineasy_telegram_resolution;
 revoke all on function public.inspect_managed_telegram_delivery_unknown(uuid) from public, anon, authenticated, service_role, coineasy_telegram_resolution;
-grant execute on function public.managed_telegram_inspect_context(uuid,text) to authenticated;
-grant execute on function public.register_managed_telegram_inspect_consent(uuid,jsonb,text) to authenticated;
-grant execute on function public.inspect_managed_telegram_delivery_unknown(uuid) to authenticated;
+
+-- Default ACLs belong to the object creator and may include roles unknown to
+-- this repository. Normalize every new object to postgres-owner-only instead
+-- of assuming the platform's current default ACL or a closed role inventory.
+-- The assertions run before this migration commits, so any owner/ACL drift
+-- rolls the entire file back rather than becoming a cross-migration exposure.
+do $managed_acl$
+declare
+    target_name text;
+    target_signature text;
+    object_oid oid;
+    owner_oid oid := pg_catalog.to_regrole('postgres');
+    grantee_name text;
+    acl_difference_count integer;
+    actual_acl_count integer;
+begin
+    foreach target_name in array array[
+        'managed_telegram_inspect_releases',
+        'managed_telegram_inspect_allowlist',
+        'managed_telegram_inspect_consents',
+        'managed_telegram_inspect_revocations'
+    ] loop
+        execute pg_catalog.format('alter table private.%I owner to postgres', target_name);
+        select c.oid into object_oid
+        from pg_catalog.pg_class c
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'private' and c.relname = target_name and c.relkind = 'r';
+        if object_oid is null then
+            raise exception 'managed Telegram target table missing during ACL normalization';
+        end if;
+
+        execute pg_catalog.format('revoke all privileges on table private.%I from public', target_name);
+        for grantee_name in
+            select r.rolname
+            from pg_catalog.pg_class c
+            cross join lateral pg_catalog.aclexplode(
+                coalesce(c.relacl, pg_catalog.acldefault('r', c.relowner))
+            ) acl
+            join pg_catalog.pg_roles r on r.oid = acl.grantee
+            where c.oid = object_oid and acl.grantee <> owner_oid
+            group by r.rolname
+        loop
+            execute pg_catalog.format(
+                'revoke all privileges on table private.%I from %I',
+                target_name, grantee_name
+            );
+        end loop;
+
+        if exists (
+            select 1 from pg_catalog.pg_class c
+            where c.oid = object_oid and c.relowner <> owner_oid
+        ) then
+            raise exception 'managed Telegram target table owner normalization failed';
+        end if;
+        select count(*) into acl_difference_count
+        from (
+            (select acl.grantee, acl.privilege_type, acl.is_grantable
+             from pg_catalog.pg_class c
+             cross join lateral pg_catalog.aclexplode(
+                 coalesce(c.relacl, pg_catalog.acldefault('r', c.relowner))
+             ) acl
+             where c.oid = object_oid
+             except
+             select acl.grantee, acl.privilege_type, acl.is_grantable
+             from pg_catalog.aclexplode(pg_catalog.acldefault('r', owner_oid)) acl)
+            union all
+            (select acl.grantee, acl.privilege_type, acl.is_grantable
+             from pg_catalog.aclexplode(pg_catalog.acldefault('r', owner_oid)) acl
+             except
+             select acl.grantee, acl.privilege_type, acl.is_grantable
+             from pg_catalog.pg_class c
+             cross join lateral pg_catalog.aclexplode(
+                 coalesce(c.relacl, pg_catalog.acldefault('r', c.relowner))
+             ) acl
+             where c.oid = object_oid)
+        ) differences;
+        if acl_difference_count <> 0 then
+            raise exception 'managed Telegram target table ACL normalization failed';
+        end if;
+        if exists (
+            select 1 from pg_catalog.pg_attribute a
+            cross join lateral pg_catalog.aclexplode(a.attacl) acl
+            where a.attrelid = object_oid and a.attnum > 0 and not a.attisdropped
+        ) then
+            raise exception 'managed Telegram target column ACL normalization failed';
+        end if;
+    end loop;
+
+    foreach target_signature in array array[
+        'private.deny_managed_telegram_inspect_ledger_mutation()',
+        'private.managed_telegram_inspect_hash(jsonb)',
+        'private.require_managed_telegram_inspect_identity(uuid,text)',
+        'private.validate_managed_telegram_inspect_request(jsonb,timestamptz)',
+        'private.managed_telegram_inspect_fresh_subject(jsonb)',
+        'public.managed_telegram_inspect_context(uuid,text)',
+        'public.register_managed_telegram_inspect_consent(uuid,jsonb,text)',
+        'public.inspect_managed_telegram_delivery_unknown(uuid)'
+    ] loop
+        object_oid := pg_catalog.to_regprocedure(target_signature);
+        if object_oid is null then
+            raise exception 'managed Telegram target function missing during ACL normalization';
+        end if;
+        execute pg_catalog.format('alter function %s owner to postgres', object_oid::pg_catalog.regprocedure);
+        execute pg_catalog.format('revoke all privileges on function %s from public', object_oid::pg_catalog.regprocedure);
+        for grantee_name in
+            select r.rolname
+            from pg_catalog.pg_proc p
+            cross join lateral pg_catalog.aclexplode(
+                coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+            ) acl
+            join pg_catalog.pg_roles r on r.oid = acl.grantee
+            where p.oid = object_oid and acl.grantee <> owner_oid
+            group by r.rolname
+        loop
+            execute pg_catalog.format(
+                'revoke all privileges on function %s from %I',
+                object_oid::pg_catalog.regprocedure, grantee_name
+            );
+        end loop;
+        select count(*) into actual_acl_count
+        from pg_catalog.pg_proc p
+        cross join lateral pg_catalog.aclexplode(
+            coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+        ) acl
+        where p.oid = object_oid
+          and acl.grantee = owner_oid
+          and acl.privilege_type = 'EXECUTE'
+          and not acl.is_grantable;
+        if actual_acl_count <> 1 or exists (
+            select 1
+            from pg_catalog.pg_proc p
+            cross join lateral pg_catalog.aclexplode(
+                coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+            ) acl
+            where p.oid = object_oid
+              and not (
+                  acl.grantee = owner_oid
+                  and acl.privilege_type = 'EXECUTE'
+                  and not acl.is_grantable
+              )
+        ) or exists (
+            select 1 from pg_catalog.pg_proc p
+            where p.oid = object_oid and p.proowner <> owner_oid
+        ) then
+            raise exception 'managed Telegram target function ACL normalization failed';
+        end if;
+    end loop;
+end
+$managed_acl$;
+
+-- Deliberately leave every public entry RPC ungranted here. The immediately
+-- following managed-inspector role-boundary migration grants only the dedicated
+-- NOLOGIN role. Granting authenticated in this migration would expose a real
+-- cross-migration window because production applies migration files in separate
+-- transactions.
 
 commit;

@@ -1,0 +1,30 @@
+{
+  "canonicalLineFormat": "<version>\\t<path>\\t<byteLength>\\t<sha256>\\n",
+  "canonicalPayloadDomain": "coineasy-managed-inspector-migration-set@1",
+  "canonicalSetPurpose": "migration-byte-set-integrity-only-not-manifest-or-release-sha",
+  "canonicalSetSha256": "76ced1a3270a4febe76586b24c43f382c0d3f83d79f29f5fa9b2decaddc638d7",
+  "migrations": [
+    {
+      "byteLength": 44307,
+      "encoding": "UTF-8",
+      "finalNewline": true,
+      "lineEnding": "LF",
+      "path": "supabase/migrations/20260831180000_managed_auth_telegram_inspect.sql",
+      "regularNonSymlink": true,
+      "sha256": "61bf61ee4be6993c88d471b0d9b3e3fa2bf1063ba87d1a901cceff2fc953ab46",
+      "version": "20260831180000"
+    },
+    {
+      "byteLength": 22161,
+      "encoding": "UTF-8",
+      "finalNewline": true,
+      "lineEnding": "LF",
+      "path": "supabase/migrations/20260901120000_managed_inspector_role_boundary.sql",
+      "regularNonSymlink": true,
+      "sha256": "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
+      "version": "20260901120000"
+    }
+  ],
+  "schemaVersion": "coineasy-managed-inspector-migration-manifest@1",
+  "strictOrder": true
+}
