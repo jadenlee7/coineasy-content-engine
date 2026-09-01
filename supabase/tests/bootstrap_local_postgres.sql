@@ -20,7 +20,8 @@ create table auth.users (
     recovery_sent_at timestamptz,
     banned_until timestamptz,
     deleted_at timestamptz,
-    is_anonymous boolean not null default false
+    is_anonymous boolean not null default false,
+    role text not null default 'authenticated'
 );
 -- Minimal supported GoTrue v2.189.0 columns for SQL-only security fixtures.
 -- These stubs do not verify JWT signatures/MFA. The separate live Auth harness

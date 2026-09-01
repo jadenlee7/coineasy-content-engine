@@ -2,6 +2,7 @@ import { createPublicKey, verify } from 'node:crypto';
 import { parseStrictJson } from '../../scripts/lib/telegram-resolution-inspect.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const MANAGED_INSPECTOR_ROLE = 'coineasy_managed_inspector';
 const reject = () => { throw new Error('authentication_rejected'); };
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 function segment(text) {
@@ -37,7 +38,7 @@ export function verifyManagedJwt(token, jwks, config, now, requireMfa = true) {
       { key, dsaEncoding: 'ieee-p1363' }, segment(parts[2]))) reject();
     const seconds = Math.floor(now.getTime() / 1000);
     if (!record(claims) || claims.iss !== `${config.projectUrl}/auth/v1`
-        || claims.aud !== 'authenticated' || claims.role !== 'authenticated'
+        || claims.aud !== 'authenticated' || claims.role !== MANAGED_INSPECTOR_ROLE
         || !UUID.test(claims.sub ?? '') || !UUID.test(claims.session_id ?? '')
         || claims.sub === '00000000-0000-0000-0000-000000000000'
         || claims.session_id === '00000000-0000-0000-0000-000000000000'
@@ -90,7 +91,8 @@ export function createUpstream(config, fetchImpl = fetch) {
     const jwks = await request('/auth/v1/.well-known/jwks.json');
     const identity = verifyManagedJwt(token, jwks, config, now, requireMfa);
     const user = await request('/auth/v1/user', { token });
-    if (!record(user) || user.id !== identity.userId || user.is_anonymous !== false
+    if (!record(user) || user.id !== identity.userId || user.role !== MANAGED_INSPECTOR_ROLE
+        || user.is_anonymous !== false
         || (user.banned_until && (!Number.isFinite(Date.parse(user.banned_until))
           || Date.parse(user.banned_until) > now.getTime()))
         || user.deleted_at) reject();

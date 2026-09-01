@@ -15,7 +15,7 @@ declare result jsonb;
 begin
     perform set_config('request.jwt.claims',claims::text,true);
     perform set_config('request.jwt.claim.sub',coalesce(claims ->> 'sub',''),true);
-    perform set_config('role','authenticated',true);
+    perform set_config('role','coineasy_managed_inspector',true);
     if command ~* '^select| returning ' then execute command into result;
     else execute command; result := 'null'::jsonb; end if;
     perform set_config('role','postgres',true);
@@ -65,10 +65,7 @@ declare role_name text; relation_name text; privilege text; signature text; proc
       'public.record_agent_operator_decision(uuid,uuid,text,bigint,text,text)',
       'public.queue_content_generation(uuid,jsonb,text)',
       'public.record_approved_figma_link(uuid,uuid,text,text,text,text,jsonb)',
-      'public.request_content_publication(uuid,uuid,text,timestamptz,text)',
-      'public.managed_telegram_inspect_context(uuid,text)',
-      'public.register_managed_telegram_inspect_consent(uuid,jsonb,text)',
-      'public.inspect_managed_telegram_delivery_unknown(uuid)'
+      'public.request_content_publication(uuid,uuid,text,timestamptz,text)'
     ];
 begin
     -- JSONB schema-key contracts use ASCII order, independent of the database
@@ -93,15 +90,15 @@ begin
     foreach relation_name in array array['managed_telegram_inspect_releases','managed_telegram_inspect_allowlist','managed_telegram_inspect_consents','managed_telegram_inspect_revocations'] loop
         perform pg_temp.assert_true((select relrowsecurity and relforcerowsecurity from pg_class where oid=('private.'||relation_name)::regclass), 'force RLS '||relation_name);
         execute format('select pg_temp.assert_true(count(*)=0,%L) from private.%I','default empty '||relation_name,relation_name);
-        foreach role_name in array array['anon','authenticated','service_role','coineasy_telegram_resolution'] loop
+        foreach role_name in array array['anon','authenticated','service_role','coineasy_telegram_resolution','coineasy_managed_inspector'] loop
             foreach privilege in array array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER'] loop
                 perform pg_temp.assert_true(not has_table_privilege(role_name,'private.'||relation_name,privilege),'private ledger ACL '||role_name||privilege);
             end loop;
         end loop;
     end loop;
     foreach signature in array array['public.managed_telegram_inspect_context(uuid,text)','public.register_managed_telegram_inspect_consent(uuid,jsonb,text)','public.inspect_managed_telegram_delivery_unknown(uuid)'] loop
-        perform pg_temp.assert_true(has_function_privilege('authenticated',signature,'execute'),'new authenticated entry');
-        foreach role_name in array array['anon','service_role','coineasy_telegram_resolution'] loop
+        perform pg_temp.assert_true(has_function_privilege('coineasy_managed_inspector',signature,'execute'),'dedicated managed entry');
+        foreach role_name in array array['anon','authenticated','service_role','coineasy_telegram_resolution'] loop
             perform pg_temp.assert_true(not has_function_privilege(role_name,signature,'execute'),'new entry denied '||role_name);
         end loop;
     end loop;
@@ -111,7 +108,7 @@ begin
         perform pg_temp.assert_true(proc.proowner='postgres'::regrole,'designated owner');
         perform pg_temp.assert_true(proc.proconfig @> array['search_path=""'],'fixed search_path');
         if proc.proname not in('managed_telegram_inspect_context','register_managed_telegram_inspect_consent','inspect_managed_telegram_delivery_unknown') then
-            foreach role_name in array array['anon','authenticated','service_role','coineasy_telegram_resolution'] loop
+            foreach role_name in array array['anon','authenticated','service_role','coineasy_telegram_resolution','coineasy_managed_inspector'] loop
                 perform pg_temp.assert_true(not has_function_privilege(role_name,proc.oid,'execute'),'private helper ACL');
             end loop;
         end if;
@@ -127,10 +124,10 @@ begin
     end loop;
 end $acl$;
 
-insert into auth.users(id,encrypted_password,is_anonymous) values
-('fa900000-0000-4000-8000-000000000001','synthetic-password-state',false),
-('fa900000-0000-4000-8000-000000000002',null,false),
-('fa900000-0000-4000-8000-000000000003',null,false);
+insert into auth.users(id,encrypted_password,is_anonymous,role) values
+('fa900000-0000-4000-8000-000000000001','synthetic-password-state',false,'coineasy_managed_inspector'),
+('fa900000-0000-4000-8000-000000000002',null,false,'authenticated'),
+('fa900000-0000-4000-8000-000000000003',null,false,'authenticated');
 insert into auth.mfa_factors(id,user_id,factor_type,status) values
 ('fa910000-0000-4000-8000-000000000001','fa900000-0000-4000-8000-000000000001','totp','verified');
 insert into auth.sessions(id,user_id,factor_id,aal,not_after) values
@@ -168,7 +165,7 @@ declare
     historical_state jsonb;
     new_version_uuid uuid;
 begin
-    claims := jsonb_build_object('role','authenticated','sub',actor_uuid,'session_id',session_uuid,'aal','aal2',
+    claims := jsonb_build_object('role','coineasy_managed_inspector','sub',actor_uuid,'session_id',session_uuid,'aal','aal2',
         'iss','https://abcdefghijklmnopqrst.supabase.co/auth/v1','aud','authenticated','is_anonymous',false,
         'iat',floor(extract(epoch from clock_timestamp()))::bigint,'exp',floor(extract(epoch from clock_timestamp()+interval '1 hour'))::bigint,
         'amr',jsonb_build_array(jsonb_build_object('method','totp','timestamp',
@@ -191,7 +188,7 @@ begin
         perform pg_temp.expect_denied(context_call,claims-key_name,'missing claim '||key_name);
     end loop;
     for changed in select value from jsonb_array_elements(jsonb_build_array(
-      jsonb_build_object('role','service_role'),jsonb_build_object('role','coineasy_telegram_resolution'),
+      jsonb_build_object('role','authenticated'),jsonb_build_object('role','service_role'),jsonb_build_object('role','coineasy_telegram_resolution'),
       jsonb_build_object('sub','fa900000-0000-4000-8000-000000000003'),jsonb_build_object('aal','aal1'),
       jsonb_build_object('iss','https://wrong.invalid/auth/v1'),jsonb_build_object('aud','wrong'),jsonb_build_object('is_anonymous',true),
       jsonb_build_object('session_id','fa920000-0000-4000-8000-000000000002'),
@@ -209,6 +206,9 @@ begin
     update auth.users set deleted_at=null,is_anonymous=true where id=actor_uuid;
     perform pg_temp.expect_denied(context_call,claims,'anonymous DB user');
     update auth.users set is_anonymous=false where id=actor_uuid;
+    update auth.users set role='authenticated' where id=actor_uuid;
+    perform pg_temp.expect_denied(context_call,claims,'live DB role mismatch');
+    update auth.users set role='coineasy_managed_inspector' where id=actor_uuid;
     update auth.sessions set not_after=clock_timestamp()-interval '1 second' where id=session_uuid;
     perform pg_temp.expect_denied(context_call,claims,'expired live session');
     update auth.sessions set not_after=clock_timestamp()+interval '1 hour',aal='aal1' where id=session_uuid;
@@ -417,9 +417,9 @@ begin
     perform pg_temp.expect_denied(format('insert into private.managed_telegram_inspect_allowlist(allowlist_id,user_id,workspace_id,operation,approved_by,enabled,expires_at) values(gen_random_uuid(),%L,%L,''inspect'',''attacker'',true,now()+interval ''1 hour'')',actor_uuid,workspace_uuid),claims,'self allowlist INSERT');
     perform pg_temp.expect_denied(format('select private.require_managed_telegram_inspect_identity(%L,%L)',workspace_uuid,repeat('c',40)),claims,'private identity helper');
     -- Workspace-scoped target data remain inaccessible to the dedicated user.
-    perform pg_temp.assert_true(pg_temp.operator_call(format('select to_jsonb(count(*)) from public.content_items where workspace_id=%L',workspace_uuid),claims)='0'::jsonb,'target read denied by RLS');
-    perform pg_temp.operator_call(format('update public.content_items set title=''not permitted'' where id=%L returning to_jsonb(id)',request->>'content_item_id'),claims);
-    perform pg_temp.assert_true(before_state=pg_temp.state_snapshot(workspace_uuid),'target update no-op under RLS');
+    perform pg_temp.expect_denied(format('select to_jsonb(count(*)) from public.content_items where workspace_id=%L',workspace_uuid),claims,'target read has no table privilege','42501');
+    perform pg_temp.expect_denied(format('update public.content_items set title=''not permitted'' where id=%L returning to_jsonb(id)',request->>'content_item_id'),claims,'target update has no table privilege','42501');
+    perform pg_temp.assert_true(before_state=pg_temp.state_snapshot(workspace_uuid),'target denied calls no-op');
     perform pg_temp.expect_denied(format('select to_jsonb(public.queue_content_generation(%L,''{}''::jsonb,''local-denial-test''))',request->>'content_item_id'),claims,'target generation denied','42501');
     perform pg_temp.expect_denied(format('select to_jsonb(public.request_content_publication(%L,%L,''telegram'',null,''local-denial-test''))',request->>'content_item_id',request->>'content_version_id'),claims,'target publication denied','42501');
     perform pg_temp.expect_denied(format('select to_jsonb(public.record_approved_figma_link(%L,%L,''synthetic-file'',''1:2'',null,null,''{}''::jsonb))',request->>'content_item_id',request->>'content_version_id'),claims,'target Figma write denied','42501');
@@ -438,14 +438,11 @@ begin
     exception when check_violation then denied:=true; end;
     perform pg_temp.assert_true(denied,'owner cannot extend consent');
 
-    -- Ambient authenticated capability is explicitly NOT "inspect-only JWT".
-    -- Foundation currently permits self-workspace creation. Do not silently
-    -- change old RLS/grants: demonstrate it, then deny this now-general owner.
-    perform pg_temp.operator_call(format('insert into public.workspaces(id,name,slug,created_by) values(''fa000000-0000-4000-8000-000000000099'',''Local ambient capability'',''managed-inspect-ambient-test'',%L)',actor_uuid),claims);
-    perform pg_temp.assert_true(exists(select 1 from public.workspace_members where workspace_id='fa000000-0000-4000-8000-000000000099' and user_id=actor_uuid and role='owner'),'ambient self-workspace bootstrap observed');
-    perform pg_temp.expect_denied(context_call,claims,'general owner in OTHER workspace excluded');
-    perform pg_temp.expect_denied(inspect_call,claims,'ambient self-provision blocks managed inspect');
-    raise notice 'PASS managed inspect SQL claims/ACL/exact consent/hash/freshness/full-row no-write tests; ambient self-workspace creation OBSERVED, activation requires privilege review';
+    -- The dedicated role cannot reach the broad authenticated self-workspace
+    -- bootstrap or any general table DML.
+    perform pg_temp.expect_denied(format('insert into public.workspaces(id,name,slug,created_by) values(''fa000000-0000-4000-8000-000000000099'',''Denied ambient capability'',''managed-inspect-ambient-test'',%L)',actor_uuid),claims,'dedicated self-workspace denied','42501');
+    perform pg_temp.assert_true(not exists(select 1 from public.workspaces where id='fa000000-0000-4000-8000-000000000099'),'denied workspace absent');
+    raise notice 'PASS managed inspect dedicated-role claims/ACL/exact consent/hash/freshness/full-row no-write tests';
 end $tests$;
 
 rollback;
@@ -453,7 +450,7 @@ rollback;
 -- Stale repeatable-read/serializable snapshots must be rejected before identity
 -- lookup, not accidentally accepted as a still-live authorization snapshot.
 begin isolation level repeatable read;
-set local role authenticated;
+set local role coineasy_managed_inspector;
 do $$
 declare denied boolean:=false;
 begin
@@ -463,7 +460,7 @@ begin
 end $$;
 rollback;
 begin isolation level serializable;
-set local role authenticated;
+set local role coineasy_managed_inspector;
 do $$
 declare denied boolean:=false;
 begin
