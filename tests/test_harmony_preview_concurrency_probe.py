@@ -50,6 +50,100 @@ def test_preview_probe_requires_a_direct_child_branch_host() -> None:
             raise AssertionError("unsafe Preview target was accepted")
 
 
+def test_happy_path_identity_readback_is_canonical_distinct_and_db_bound() -> None:
+    ids = {
+        "workspace": "44444444-4444-4444-8444-444444444444",
+        "round": "11111111-1111-4111-8111-111111111111",
+        "plan": "22222222-2222-4222-8222-222222222222",
+        "inbox": "33333333-3333-4333-8333-333333333333",
+    }
+
+    class FakePsql:
+        sql = ""
+
+        def json(self, sql: str) -> dict[str, object]:
+            self.sql = sql
+            return {
+                "readback_rows": 1,
+                "round_id": ids["round"],
+                "plan_id": ids["plan"],
+                "inbox_id": ids["inbox"],
+            }
+
+    psql = FakePsql()
+    assert PROBE._verify_happy_path_identities(psql, ids) == {
+        "round_id": ids["round"],
+        "plan_id": ids["plan"],
+        "inbox_id": ids["inbox"],
+    }
+    assert "agent_runtime.harmony_rounds" in psql.sql
+    assert "agent_runtime.harmony_plans" in psql.sql
+    assert "agent_runtime.harmony_operator_inbox" in psql.sql
+    assert "agent_runtime.harmony_stage_receipts" in psql.sql
+    assert "recap.stage = 'recap'" in psql.sql
+    assert ids["round"] not in psql.sql
+    assert ids["plan"] not in psql.sql
+    assert ids["inbox"] not in psql.sql
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("round", "11111111-1111-1111-8111-111111111111"),
+        ("plan", "22222222-2222-4222-8222-22222222222A"),
+        ("inbox", "not-a-uuid"),
+    ),
+)
+def test_happy_path_identity_readback_rejects_noncanonical_generated_ids(
+    field: str,
+    value: str,
+) -> None:
+    ids = {
+        "workspace": "44444444-4444-4444-8444-444444444444",
+        "round": "11111111-1111-4111-8111-111111111111",
+        "plan": "22222222-2222-4222-8222-222222222222",
+        "inbox": "33333333-3333-4333-8333-333333333333",
+    }
+    ids[field] = value
+
+    class UnexpectedPsql:
+        def json(self, _sql: str) -> dict[str, object]:
+            raise AssertionError("invalid generated identities reached the database")
+
+    with pytest.raises(RuntimeError, match="canonical lowercase UUID4"):
+        PROBE._verify_happy_path_identities(UnexpectedPsql(), ids)
+
+
+def test_happy_path_identity_readback_rejects_duplicates_and_db_tampering() -> None:
+    ids = {
+        "workspace": "44444444-4444-4444-8444-444444444444",
+        "round": "11111111-1111-4111-8111-111111111111",
+        "plan": "22222222-2222-4222-8222-222222222222",
+        "inbox": "33333333-3333-4333-8333-333333333333",
+    }
+
+    duplicate_ids = {**ids, "plan": ids["round"]}
+
+    class UnexpectedPsql:
+        def json(self, _sql: str) -> dict[str, object]:
+            raise AssertionError("duplicate generated identities reached the database")
+
+    with pytest.raises(RuntimeError, match="were not distinct"):
+        PROBE._verify_happy_path_identities(UnexpectedPsql(), duplicate_ids)
+
+    class TamperedPsql:
+        def json(self, _sql: str) -> dict[str, object]:
+            return {
+                "readback_rows": 1,
+                "round_id": ids["round"],
+                "plan_id": "55555555-5555-4555-8555-555555555555",
+                "inbox_id": ids["inbox"],
+            }
+
+    with pytest.raises(RuntimeError, match="persisted happy-path identity"):
+        PROBE._verify_happy_path_identities(TamperedPsql(), ids)
+
+
 def test_remote_psql_requires_verify_full_and_explicit_trust(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -321,7 +415,8 @@ def test_probe_contract_is_closed_and_fail_closed() -> None:
     assert '"before": True' in source
     assert '"after": False' in source
     assert "_race_exactly_once" in source
-    assert '"harmony-preview-concurrency-proof@3"' in source
+    assert '"harmony-preview-concurrency-proof@4"' in source
+    assert '"identities": identities' in source
     assert '"plan": plan_race' in source
     for stage in ("private_content", "operator_inbox", "recap"):
         assert f'operation_races[stage] = stage_race' in source

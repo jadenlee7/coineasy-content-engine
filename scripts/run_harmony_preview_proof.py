@@ -39,7 +39,12 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@3"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@4"
+DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@4"
+POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@2"
+RECEIPT_SHA256_SCHEME = (
+    "sha256-canonical-json-utf8-sort-keys-compact-excluding-receipt_sha256"
+)
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
 API_KEY_ID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-"
@@ -47,6 +52,14 @@ API_KEY_ID_PATTERN = re.compile(
 )
 SHA40_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+CANONICAL_UUID4_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+CANONICAL_UTC_SECONDS_PATTERN = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:"
+    r"[0-9]{2}:[0-9]{2}Z$"
+)
 USD_MICRO_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,8})\.[0-9]{6}$")
 READY_STATUS = "ACTIVE_HEALTHY"
 FAILED_PROJECT_STATUSES = {
@@ -102,6 +115,193 @@ MAX_OPENAPI_BYTES = 2_097_152
 MAX_MANAGEMENT_API_BYTES = 2_097_152
 MANAGEMENT_API_BASE_URL = "https://api.supabase.com/v1"
 POSTGREST_RPC_PATH = "/rpc/submit_preview_harmony_signal"
+
+DIRECT_STATIC_PROJECTIONS: dict[str, object] = {
+    "counts": {
+        "signals": 7,
+        "connector_receipts": 7,
+        "connector_registrations": 4,
+        "request_receipts": 7,
+        "connector_revocations": 1,
+        "qa_denial_receipts": 1,
+        "rounds": 3,
+        "plans": 3,
+        "specialists": 5,
+        "distinct_specialist_principals": 5,
+        "stage_receipts": 9,
+        "distinct_operation_keys": 9,
+        "operator_inbox": 1,
+        "codex_lineages": 2,
+        "codex_requests": 2,
+        "codex_runs": 2,
+        "codex_transitions": 11,
+        "codex_claims": 2,
+        "codex_attempts": 2,
+        "codex_evidence": 2,
+        "codex_results": 2,
+        "codex_verifications": 1,
+        "codex_reconciliations": 1,
+        "codex_stage_links": 1,
+        "qa_principal_independent": True,
+        "automatic_publication": False,
+        "recap_cost_microusd": 0,
+    },
+    "connector_request_race": {"new": 1, "reused": 63},
+    "connector_trust_negative_cases": {
+        "changed_digest_rejected": True,
+        "same_nonce_changed_claims_rejected": True,
+        "new_nonce_same_digest_rejected": True,
+        "domain_row_delta": 0,
+    },
+    "revocation_currentness": {
+        "before": True,
+        "after": False,
+        "history_preserved": True,
+        "denial_round_before": True,
+        "denial_round_after": False,
+        "stale_result_round_before_supersession": True,
+        "stale_result_round_before_revocation": False,
+        "stale_result_round_after": False,
+        "stage_after_revocation_rejected": True,
+        "denial_after_revocation_rejected": True,
+        "typed_negative_row_delta": 0,
+    },
+    "revocation_lock_winner_race": {
+        "connections": 2,
+        "revocation_lock_acquired_first": True,
+        "typed_loser_waited_on_lock": True,
+        "typed_loser_rejected_after_recheck": True,
+    },
+    "qa_denial_race": {"new": 1, "reused": 63},
+    "codex_result_not_current_race": {"reconciled": 1, "no_op": 63},
+    "qa_denial_downstream_delta": {
+        "qa_denial_receipts": 1,
+        "passed_qa_stages": 0,
+        "operator_inbox": 0,
+        "recap_stages": 0,
+        "approval_decisions": 0,
+        "publication_rows": 0,
+    },
+    "operation_races": {
+        "plan": {"new": 1, "reused": 63},
+        "private_content": {"new": 1, "reused": 63},
+        "independent_qa": {"new": 1, "reused": 63},
+        "operator_inbox": {"new": 1, "reused": 63},
+        "recap": {"new": 1, "reused": 63},
+    },
+    "codex_qa_races": {
+        "prepare": {"new": 1, "reused": 63},
+        "claim": {"claimed": 1, "not_claimed": 63},
+        "start": {"authorized": 1, "replay_non_authorizing": 63},
+        "submit": {"new": 1, "reused": 63},
+        "verify": {"new": 1, "reused": 63},
+    },
+}
+
+DIRECT_STATIC_SCALARS: dict[str, object] = {
+    "codex_qa_stage_atomic": True,
+    "plan_exact_replay": True,
+    "plan_conflict_rejected": True,
+    "stage_concurrency_proofs": 4,
+    "wrong_principal_attempts": 5,
+    "wrong_principal_preemption_rows": 0,
+    "operator_inbox_stage4_delta": 1,
+    "recap_operator_inbox_delta": 0,
+}
+
+POSTGREST_STATIC_PROJECTIONS: dict[str, object] = {
+    "counts": {
+        "signals": 1,
+        "connector_receipts": 1,
+        "request_receipts": 1,
+    },
+    "negative_matrix": {
+        "wrong_client": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "wrong_workspace": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "wrong_lane": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "missing_capability": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "wrong_role": {
+            "status": 403,
+            "code": "42501",
+            "message": "permission denied for function submit_preview_harmony_signal",
+        },
+        "future_jwt": {
+            "status": 401,
+            "code": "PGRST303",
+            "message": "JWT issued at future",
+        },
+        "expired_jwt": {
+            "status": 401,
+            "code": "PGRST303",
+            "message": "JWT expired",
+        },
+        "extreme_past_iat": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "service_role": {
+            "status": 403,
+            "code": "42501",
+            "message": "permission denied for function submit_preview_harmony_signal",
+        },
+        "wrong_ref": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_invalid",
+        },
+        "tampered_payload": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_trust_claim_invalid",
+        },
+        "changed_digest": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_trust_claim_invalid",
+        },
+        "same_nonce_changed_claims": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_request_idempotency_conflict",
+        },
+        "new_nonce_same_digest": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_request_replay_conflict",
+        },
+        "revoked_registration": {
+            "status": 400,
+            "code": "P0001",
+            "message": "harmony_preview_connector_registration_revoked",
+        },
+    },
+}
+
+POSTGREST_STATIC_SCALARS: dict[str, object] = {
+    "verification_method": "jwt",
+    "connector_registration_rows": 1,
+    "connector_revocation_rows": 1,
+    "connector_request_receipt_delta": 1,
+    "connector_request_nonce_equals_jti": True,
+    "negative_row_delta": 0,
+}
 
 MIGRATIONS = (
     "20260825130000_agent_work_order_ledger.sql",
@@ -830,6 +1030,119 @@ def _sha256(path: Path) -> str:
 
 def _compact(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def canonical_receipt_sha256(receipt: Mapping[str, object]) -> str:
+    """Hash the final redacted receipt, excluding only its digest field."""
+
+    subject = {
+        key: value
+        for key, value in receipt.items()
+        if key != "receipt_sha256"
+    }
+    return hashlib.sha256(_compact(subject).encode("utf-8")).hexdigest()
+
+
+def _project_exact_value(value: object, expected: object) -> object:
+    """Rebuild a static allow-listed value while rejecting shape drift."""
+
+    if type(value) is not type(expected):
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    if isinstance(expected, dict):
+        if set(value) != set(expected):
+            raise ProofError("probe_receipt_nested_contract_invalid")
+        return {
+            key: _project_exact_value(value[key], expected_value)
+            for key, expected_value in expected.items()
+        }
+    if isinstance(expected, list):
+        if len(value) != len(expected):
+            raise ProofError("probe_receipt_nested_contract_invalid")
+        return [
+            _project_exact_value(item, expected_item)
+            for item, expected_item in zip(value, expected, strict=True)
+        ]
+    if value != expected:
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    return value
+
+
+def _project_canonical_uuid4(value: object) -> str:
+    if (
+        type(value) is not str
+        or CANONICAL_UUID4_PATTERN.fullmatch(value) is None
+    ):
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        raise ProofError("probe_receipt_nested_contract_invalid") from None
+    if parsed.version != 4 or str(parsed) != value:
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    return value
+
+
+def _project_direct_identities(value: object) -> dict[str, object]:
+    if type(value) is not dict or set(value) != {
+        "round_id",
+        "plan_id",
+        "inbox_id",
+    }:
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    projected = {
+        field: _project_canonical_uuid4(value[field])
+        for field in ("round_id", "plan_id", "inbox_id")
+    }
+    if len(set(projected.values())) != len(projected):
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    return projected
+
+
+def _project_fence_expiry(value: object) -> str:
+    if (
+        type(value) is not str
+        or CANONICAL_UTC_SECONDS_PATTERN.fullmatch(value) is None
+    ):
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ProofError("probe_receipt_nested_contract_invalid") from None
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    return value
+
+
+def _project_stale_reconciliation_receipt(value: object) -> dict[str, object]:
+    expected = {
+        "run_status": "blocked",
+        "reconciliations": 1,
+        "action": "result_not_current",
+        "attempt_bound": True,
+        "result_bound": True,
+        "transition_kind": "reconcile",
+        "transition_from": "result_submitted",
+        "transition_to": "blocked",
+        "terminal_reason": "request_not_current",
+        "qa_stages": 0,
+        "verifications": 0,
+        "stage_links": 0,
+        "operator_inbox": 0,
+        "recap_stages": 0,
+    }
+    if type(value) is not dict or set(value) != {
+        *expected,
+        "reconciler_principal_id",
+    }:
+        raise ProofError("probe_receipt_nested_contract_invalid")
+    projected = {
+        key: _project_exact_value(value[key], expected_value)
+        for key, expected_value in expected.items()
+    }
+    projected["reconciler_principal_id"] = _project_canonical_uuid4(
+        value["reconciler_principal_id"]
+    )
+    return projected
 
 
 def _format_usd_microusd(value: int) -> str:
@@ -3307,17 +3620,16 @@ raise SystemExit(
         ):
             if value.get(field) is not False:
                 raise ProofError("probe_forbidden_side_effect_flag")
-        if schema_version == "harmony-preview-postgrest-proof@2":
+        if schema_version == POSTGREST_PROBE_SCHEMA_VERSION:
             for field in ("buzz_calls", "approval_decisions"):
                 if value.get(field) is not False:
                     raise ProofError("probe_forbidden_side_effect_flag")
 
-        # Never forward arbitrary probe JSON to stdout.  Only an allow-listed,
-        # non-secret proof summary is retained in the final receipt.
-        safe_fields = (
+        # Never forward arbitrary probe JSON to stdout.  Rebuild only the
+        # allow-listed non-secret proof contract, including each nested shape.
+        base_fields = (
             "ok",
             "schema_version",
-            "branch_ref",
             "release_sha",
             "config_sha256",
             "connections",
@@ -3327,11 +3639,46 @@ raise SystemExit(
             "automatic_publication",
             "external_calls",
             "provider_calls",
-            "buzz_calls",
-            "approval_decisions",
             "publication_calls",
         )
-        return {field: value[field] for field in safe_fields if field in value}
+        projected = {field: value[field] for field in base_fields}
+
+        if schema_version == DIRECT_PROBE_SCHEMA_VERSION:
+            projected["identities"] = _project_direct_identities(
+                value.get("identities")
+            )
+            projected["fence_expires_at"] = _project_fence_expiry(
+                value.get("fence_expires_at")
+            )
+            for field, expected in DIRECT_STATIC_PROJECTIONS.items():
+                projected[field] = _project_exact_value(
+                    value.get(field), expected
+                )
+            projected["codex_result_not_current_receipt"] = (
+                _project_stale_reconciliation_receipt(
+                    value.get("codex_result_not_current_receipt")
+                )
+            )
+            for field, expected in DIRECT_STATIC_SCALARS.items():
+                projected[field] = _project_exact_value(
+                    value.get(field), expected
+                )
+        elif schema_version == POSTGREST_PROBE_SCHEMA_VERSION:
+            projected["branch_ref"] = value["branch_ref"]
+            projected["buzz_calls"] = value["buzz_calls"]
+            projected["approval_decisions"] = value["approval_decisions"]
+            for field, expected in POSTGREST_STATIC_PROJECTIONS.items():
+                projected[field] = _project_exact_value(
+                    value.get(field), expected
+                )
+            for field, expected in POSTGREST_STATIC_SCALARS.items():
+                projected[field] = _project_exact_value(
+                    value.get(field), expected
+                )
+        else:
+            raise ProofError("probe_receipt_contract_invalid")
+
+        return projected
 
     def run(self) -> tuple[dict[str, object], int]:
         manifest: dict[str, str] = {}
@@ -3387,7 +3734,7 @@ raise SystemExit(
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             direct_receipt = self._validate_probe_receipt(
                 self._run_direct_probe(config_sha256),
-                "harmony-preview-concurrency-proof@3",
+                DIRECT_PROBE_SCHEMA_VERSION,
                 config_sha256,
                 require_branch_ref=False,
             )
@@ -3397,7 +3744,7 @@ raise SystemExit(
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             postgrest_receipt = self._validate_probe_receipt(
                 self._run_postgrest_probe(config_sha256),
-                "harmony-preview-postgrest-proof@2",
+                POSTGREST_PROBE_SCHEMA_VERSION,
                 config_sha256,
                 require_branch_ref=True,
             )
@@ -3524,6 +3871,8 @@ raise SystemExit(
             receipt["failure_code"] = failure_code
         if cleanup_failure is not None:
             receipt["cleanup_failure_code"] = cleanup_failure
+        receipt["receipt_sha256_scheme"] = RECEIPT_SHA256_SCHEME
+        receipt["receipt_sha256"] = canonical_receipt_sha256(receipt)
         return receipt, 0 if ok else 1
 
 

@@ -337,6 +337,35 @@ receipt가 아닙니다.
   `cost_guard.server_side_budget_lock=false`
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
+Outer terminal receipt 계약은
+`schema_version=harmony-preview-one-shot-proof@4`입니다. Direct DB probe의
+`harmony-preview-concurrency-proof@4` 결과에서는 exact `round_id`, `plan_id`,
+`inbox_id`, fence expiry, 최종 row counts, connector/revocation/QA-denial/
+stale-result race, durable Codex QA race, negative-path delta, stage/inbox delta를
+각각 명시된 nested key set으로 다시 구성합니다. 세 ID는 canonical lowercase
+UUIDv4이고 서로 달라야 합니다. Direct probe가 내부에서 확인한 unfiltered
+persisted readback과 일치하지 않으면 probe 자체가 receipt를 만들지 않습니다.
+Outer runner도 nested key 누락, 타입/고정값 불일치, 임의 key 추가를 모두
+`probe_receipt_nested_contract_invalid`로 중단합니다.
+
+Signed PostgREST `harmony-preview-postgrest-proof@2` 결과에서는 exact signal,
+connector receipt, request receipt count와 JWT verification 방식, registration/
+revocation/request-receipt delta, nonce=`jti`, negative row delta를 다시
+구성합니다. `negative_matrix`는 코드에 고정된 15개 label 전체와 각 label의
+exact `{status, code, message}`만 허용합니다. Probe의 다른 top-level 값은
+stdout으로 전달하지 않으며, allowlist 안의 nested object를 원본 dict 그대로
+복사하지 않습니다. Nested object 안의 알 수 없는 값은 secret 여부와 관계없이
+성공 receipt에서 제외하는 대신 fail-closed합니다.
+
+성공과 실패 receipt 모두
+`receipt_sha256_scheme=sha256-canonical-json-utf8-sort-keys-compact-excluding-receipt_sha256`
+를 기록합니다. Runner는 `failure_code`와 `cleanup_failure_code`를 먼저 넣고,
+`receipt_sha256`만 제외한 최종 redacted object를 UTF-8, key-sort, compact JSON으로
+직렬화해 SHA-256을 계산한 뒤 `receipt_sha256`를 마지막에 추가합니다. 따라서
+실패 원인과 cleanup 결과도 digest에 결속됩니다. 이 digest는 redacted receipt의
+무결성 증거이며 승인, 서명, 실제 과금 또는 server-side cleanup 증거를 대신하지
+않습니다.
+
 ### Gate 2 — Preview 비밀과 scoped JWT
 
 Branch가 ready인 뒤 별도 승인으로 Preview 비밀을 설정합니다. Legacy JWT
@@ -489,7 +518,9 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 
 ## 관측 가능한 성공 기준
 
-다음 조건을 **모두** 하나의 redacted receipt에 기록해야 성공입니다.
+다음 조건을 **모두** 하나의
+`harmony-preview-one-shot-proof@4` redacted receipt에 기록하고 위 canonical
+`receipt_sha256`로 결속해야 성공입니다.
 
 1. signal, plan, private-content, operator-inbox, Recap의 각 64개 호출과
    Codex QA의 prepare/submit/verify가 같은 idempotency 결과로 수렴합니다.
@@ -587,7 +618,8 @@ message client 접근, Production SHA/config 변화, publication/approval 생성
 6. Production exact SHA/config, publication/approval/Buzz/provider delta 0을
    읽기 전용으로 재확인합니다.
 7. 비밀 없는 최종 receipt에 branch ref, 삭제 시각, 64-call 분포, row counts,
-   round/plan/inbox ID, receipt SHA-256, 비용, 모든 side-effect delta를 기록합니다.
+   round/plan/inbox ID, canonical `receipt_sha256`, 비용, 모든 side-effect
+   delta를 기록하고 digest를 독립 재계산합니다.
 
 `secrets_persisted=false`는 foreground management CLI의 token-bearing 임시 HOME
 삭제와, 위 socket handshake가 증명한 watchdog 전용 HOME/control root·활성 CLI

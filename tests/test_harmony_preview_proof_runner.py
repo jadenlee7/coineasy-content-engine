@@ -40,6 +40,246 @@ SECRET_KEY_ID = "33333333-3333-4333-8333-333333333333"
 MANAGEMENT_TOKEN = "sbp_scoped_management_token_must_never_appear"
 SQL_PAYLOAD = b"-- immutable exact-head sql\n"
 SQL_SHA256 = hashlib.sha256(SQL_PAYLOAD).hexdigest()
+ROUND_ID = "11111111-1111-4111-8111-111111111111"
+PLAN_ID = "22222222-2222-4222-8222-222222222222"
+INBOX_ID = "33333333-3333-4333-8333-333333333333"
+RECONCILER_ID = "44444444-4444-4444-8444-444444444444"
+
+
+def _direct_probe_receipt() -> dict[str, object]:
+    return {
+        "ok": True,
+        "schema_version": "harmony-preview-concurrency-proof@4",
+        "release_sha": RELEASE_SHA,
+        "config_sha256": CONFIG_SHA,
+        "connections": 64,
+        "new": 1,
+        "reused": 63,
+        "identities": {
+            "round_id": ROUND_ID,
+            "plan_id": PLAN_ID,
+            "inbox_id": INBOX_ID,
+        },
+        "fence_expires_at": "2026-08-28T02:00:00Z",
+        "counts": {
+            "signals": 7,
+            "connector_receipts": 7,
+            "connector_registrations": 4,
+            "request_receipts": 7,
+            "connector_revocations": 1,
+            "qa_denial_receipts": 1,
+            "rounds": 3,
+            "plans": 3,
+            "specialists": 5,
+            "distinct_specialist_principals": 5,
+            "stage_receipts": 9,
+            "distinct_operation_keys": 9,
+            "operator_inbox": 1,
+            "codex_lineages": 2,
+            "codex_requests": 2,
+            "codex_runs": 2,
+            "codex_transitions": 11,
+            "codex_claims": 2,
+            "codex_attempts": 2,
+            "codex_evidence": 2,
+            "codex_results": 2,
+            "codex_verifications": 1,
+            "codex_reconciliations": 1,
+            "codex_stage_links": 1,
+            "qa_principal_independent": True,
+            "automatic_publication": False,
+            "recap_cost_microusd": 0,
+        },
+        "connector_request_race": {"new": 1, "reused": 63},
+        "connector_trust_negative_cases": {
+            "changed_digest_rejected": True,
+            "same_nonce_changed_claims_rejected": True,
+            "new_nonce_same_digest_rejected": True,
+            "domain_row_delta": 0,
+        },
+        "revocation_currentness": {
+            "before": True,
+            "after": False,
+            "history_preserved": True,
+            "denial_round_before": True,
+            "denial_round_after": False,
+            "stale_result_round_before_supersession": True,
+            "stale_result_round_before_revocation": False,
+            "stale_result_round_after": False,
+            "stage_after_revocation_rejected": True,
+            "denial_after_revocation_rejected": True,
+            "typed_negative_row_delta": 0,
+        },
+        "revocation_lock_winner_race": {
+            "connections": 2,
+            "revocation_lock_acquired_first": True,
+            "typed_loser_waited_on_lock": True,
+            "typed_loser_rejected_after_recheck": True,
+        },
+        "qa_denial_race": {"new": 1, "reused": 63},
+        "codex_result_not_current_race": {"reconciled": 1, "no_op": 63},
+        "codex_result_not_current_receipt": {
+            "run_status": "blocked",
+            "reconciliations": 1,
+            "action": "result_not_current",
+            "attempt_bound": True,
+            "result_bound": True,
+            "transition_kind": "reconcile",
+            "transition_from": "result_submitted",
+            "transition_to": "blocked",
+            "terminal_reason": "request_not_current",
+            "reconciler_principal_id": RECONCILER_ID,
+            "qa_stages": 0,
+            "verifications": 0,
+            "stage_links": 0,
+            "operator_inbox": 0,
+            "recap_stages": 0,
+        },
+        "qa_denial_downstream_delta": {
+            "qa_denial_receipts": 1,
+            "passed_qa_stages": 0,
+            "operator_inbox": 0,
+            "recap_stages": 0,
+            "approval_decisions": 0,
+            "publication_rows": 0,
+        },
+        "operation_races": {
+            "plan": {"new": 1, "reused": 63},
+            "private_content": {"new": 1, "reused": 63},
+            "independent_qa": {"new": 1, "reused": 63},
+            "operator_inbox": {"new": 1, "reused": 63},
+            "recap": {"new": 1, "reused": 63},
+        },
+        "codex_qa_races": {
+            "prepare": {"new": 1, "reused": 63},
+            "claim": {"claimed": 1, "not_claimed": 63},
+            "start": {"authorized": 1, "replay_non_authorizing": 63},
+            "submit": {"new": 1, "reused": 63},
+            "verify": {"new": 1, "reused": 63},
+        },
+        "codex_qa_stage_atomic": True,
+        "plan_exact_replay": True,
+        "plan_conflict_rejected": True,
+        "stage_concurrency_proofs": 4,
+        "wrong_principal_attempts": 5,
+        "wrong_principal_preemption_rows": 0,
+        "operator_inbox_stage4_delta": 1,
+        "recap_operator_inbox_delta": 0,
+        "side_effect_baseline_unchanged": True,
+        "automatic_publication": False,
+        "external_calls": False,
+        "provider_calls": False,
+        "publication_calls": False,
+        "unexpected_secret": JWT_SECRET,
+    }
+
+
+def _postgrest_probe_receipt() -> dict[str, object]:
+    registration_invalid = {
+        "status": 400,
+        "code": "P0001",
+        "message": "harmony_preview_connector_registration_invalid",
+    }
+    permission_denied = {
+        "status": 403,
+        "code": "42501",
+        "message": "permission denied for function submit_preview_harmony_signal",
+    }
+    return {
+        "ok": True,
+        "schema_version": "harmony-preview-postgrest-proof@2",
+        "branch_ref": CHILD_REF,
+        "release_sha": RELEASE_SHA,
+        "config_sha256": CONFIG_SHA,
+        "connections": 64,
+        "new": 1,
+        "reused": 63,
+        "counts": {
+            "signals": 1,
+            "connector_receipts": 1,
+            "request_receipts": 1,
+        },
+        "negative_matrix": {
+            "wrong_client": dict(registration_invalid),
+            "wrong_workspace": dict(registration_invalid),
+            "wrong_lane": dict(registration_invalid),
+            "missing_capability": dict(registration_invalid),
+            "wrong_role": dict(permission_denied),
+            "future_jwt": {
+                "status": 401,
+                "code": "PGRST303",
+                "message": "JWT issued at future",
+            },
+            "expired_jwt": {
+                "status": 401,
+                "code": "PGRST303",
+                "message": "JWT expired",
+            },
+            "extreme_past_iat": dict(registration_invalid),
+            "service_role": dict(permission_denied),
+            "wrong_ref": dict(registration_invalid),
+            "tampered_payload": {
+                "status": 400,
+                "code": "P0001",
+                "message": "harmony_preview_connector_trust_claim_invalid",
+            },
+            "changed_digest": {
+                "status": 400,
+                "code": "P0001",
+                "message": "harmony_preview_connector_trust_claim_invalid",
+            },
+            "same_nonce_changed_claims": {
+                "status": 400,
+                "code": "P0001",
+                "message": (
+                    "harmony_preview_connector_request_idempotency_conflict"
+                ),
+            },
+            "new_nonce_same_digest": {
+                "status": 400,
+                "code": "P0001",
+                "message": "harmony_preview_connector_request_replay_conflict",
+            },
+            "revoked_registration": {
+                "status": 400,
+                "code": "P0001",
+                "message": "harmony_preview_connector_registration_revoked",
+            },
+        },
+        "verification_method": "jwt",
+        "connector_registration_rows": 1,
+        "connector_revocation_rows": 1,
+        "connector_request_receipt_delta": 1,
+        "connector_request_nonce_equals_jti": True,
+        "negative_row_delta": 0,
+        "side_effect_baseline_unchanged": True,
+        "automatic_publication": False,
+        "external_calls": False,
+        "provider_calls": False,
+        "buzz_calls": False,
+        "approval_decisions": False,
+        "publication_calls": False,
+        "unexpected_secret": JWT_SECRET,
+    }
+
+
+def _assert_valid_receipt_digest(receipt: dict[str, object]) -> None:
+    assert receipt["receipt_sha256_scheme"] == (
+        "sha256-canonical-json-utf8-sort-keys-compact-"
+        "excluding-receipt_sha256"
+    )
+    digest = receipt["receipt_sha256"]
+    assert isinstance(digest, str)
+    assert RUNNER.SHA256_PATTERN.fullmatch(digest)
+    subject = {
+        key: value
+        for key, value in receipt.items()
+        if key != "receipt_sha256"
+    }
+    assert digest == hashlib.sha256(
+        RUNNER._compact(subject).encode("utf-8")
+    ).hexdigest()
+    assert digest == RUNNER.canonical_receipt_sha256(receipt)
 
 
 def _support_payload(relative: Path) -> bytes:
@@ -883,45 +1123,14 @@ class FakeRunner:
             self.events.append("direct_probe")
             if self.direct_failure:
                 raise RUNNER.CommandError("direct_database_probe_failed", ambiguous=True)
-            return {
-                "ok": True,
-                "schema_version": "harmony-preview-concurrency-proof@3",
-                "release_sha": RELEASE_SHA,
-                "config_sha256": CONFIG_SHA,
-                "connections": 64,
-                "new": 1,
-                "reused": 63,
-                "side_effect_baseline_unchanged": True,
-                "automatic_publication": False,
-                "external_calls": False,
-                "provider_calls": False,
-                "publication_calls": False,
-                "unexpected_secret": JWT_SECRET,
-            }
+            return _direct_probe_receipt()
         if code == "signed_postgrest_probe":
             assert command[:3] == [sys.executable, "-I", "-"]
             assert input_bytes == RUNNER.build_postgrest_probe_bundle(
                 PROBE_PAYLOAD, PROBE_PAYLOAD
             )
             self.events.append("postgrest_probe")
-            return {
-                "ok": True,
-                "schema_version": "harmony-preview-postgrest-proof@2",
-                "branch_ref": CHILD_REF,
-                "release_sha": RELEASE_SHA,
-                "config_sha256": CONFIG_SHA,
-                "connections": 64,
-                "new": 1,
-                "reused": 63,
-                "side_effect_baseline_unchanged": True,
-                "automatic_publication": False,
-                "external_calls": False,
-                "provider_calls": False,
-                "buzz_calls": False,
-                "approval_decisions": False,
-                "publication_calls": False,
-                "unexpected_secret": JWT_SECRET,
-            }
+            return _postgrest_probe_receipt()
         raise AssertionError(f"unexpected JSON command: {command}")
 
     def run_quiet(
@@ -1370,7 +1579,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@3"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@4"
     assert receipt["parent_project_ref"] == PARENT_REF
     assert receipt["parent_child_fence"] is True
     assert receipt["migration_count"] == 9
@@ -1401,6 +1610,75 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "within_hourly_cap": True,
         "within_estimated_total_cap": True,
     }
+    direct_source = _direct_probe_receipt()
+    direct_fields = {
+        "ok",
+        "schema_version",
+        "release_sha",
+        "config_sha256",
+        "connections",
+        "new",
+        "reused",
+        "side_effect_baseline_unchanged",
+        "automatic_publication",
+        "external_calls",
+        "provider_calls",
+        "publication_calls",
+        "identities",
+        "fence_expires_at",
+        "counts",
+        "connector_request_race",
+        "connector_trust_negative_cases",
+        "revocation_currentness",
+        "revocation_lock_winner_race",
+        "qa_denial_race",
+        "codex_result_not_current_race",
+        "codex_result_not_current_receipt",
+        "qa_denial_downstream_delta",
+        "operation_races",
+        "codex_qa_races",
+        "codex_qa_stage_atomic",
+        "plan_exact_replay",
+        "plan_conflict_rejected",
+        "stage_concurrency_proofs",
+        "wrong_principal_attempts",
+        "wrong_principal_preemption_rows",
+        "operator_inbox_stage4_delta",
+        "recap_operator_inbox_delta",
+    }
+    assert receipt["direct_database"] == {
+        field: direct_source[field] for field in direct_fields
+    }
+    postgrest_source = _postgrest_probe_receipt()
+    postgrest_fields = {
+        "ok",
+        "schema_version",
+        "release_sha",
+        "config_sha256",
+        "connections",
+        "new",
+        "reused",
+        "side_effect_baseline_unchanged",
+        "automatic_publication",
+        "external_calls",
+        "provider_calls",
+        "publication_calls",
+        "branch_ref",
+        "buzz_calls",
+        "approval_decisions",
+        "counts",
+        "negative_matrix",
+        "verification_method",
+        "connector_registration_rows",
+        "connector_revocation_rows",
+        "connector_request_receipt_delta",
+        "connector_request_nonce_equals_jti",
+        "negative_row_delta",
+    }
+    assert receipt["signed_postgrest"] == {
+        field: postgrest_source[field] for field in postgrest_fields
+    }
+    _assert_valid_receipt_digest(receipt)
     assert proof.branch_create_mutation_invoked is True
     assert fake.watchdog.terminated and fake.watchdog.waited
     assert receipt["planned_execution_order"] == [
@@ -2434,6 +2712,93 @@ def test_tampered_probe_receipt_fails_exact_fence_and_never_runs_postgrest(
     assert receipt["cleanup"]["absence_confirmations"] == 3
 
 
+@pytest.mark.parametrize(
+    ("probe_code", "tamper_case"),
+    (
+        ("direct_database_probe", "missing_nested_key"),
+        ("direct_database_probe", "extra_nested_secret"),
+        ("direct_database_probe", "wrong_nested_scalar_type"),
+        ("direct_database_probe", "invalid_nested_identity"),
+        ("signed_postgrest_probe", "missing_nested_key"),
+        ("signed_postgrest_probe", "extra_nested_secret"),
+        ("signed_postgrest_probe", "wrong_nested_scalar_type"),
+    ),
+)
+def test_nested_probe_projection_fails_closed_on_shape_or_value_drift(
+    probe_code: str,
+    tamper_case: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class NestedTamperRunner(FakeRunner):
+        def run_json(self, command: list[str], **kwargs: object) -> object:
+            value = super().run_json(command, **kwargs)
+            if kwargs.get("code") != probe_code:
+                return value
+            assert isinstance(value, dict)
+            if probe_code == "direct_database_probe":
+                if tamper_case == "missing_nested_key":
+                    counts = value["counts"]
+                    assert isinstance(counts, dict)
+                    counts.pop("signals")
+                elif tamper_case == "extra_nested_secret":
+                    identities = value["identities"]
+                    assert isinstance(identities, dict)
+                    identities["secret"] = JWT_SECRET
+                elif tamper_case == "wrong_nested_scalar_type":
+                    races = value["operation_races"]
+                    assert isinstance(races, dict)
+                    plan = races["plan"]
+                    assert isinstance(plan, dict)
+                    plan["new"] = True
+                else:
+                    identities = value["identities"]
+                    assert isinstance(identities, dict)
+                    identities["round_id"] = "not-a-uuid"
+            else:
+                if tamper_case == "missing_nested_key":
+                    counts = value["counts"]
+                    assert isinstance(counts, dict)
+                    counts.pop("request_receipts")
+                elif tamper_case == "extra_nested_secret":
+                    matrix = value["negative_matrix"]
+                    assert isinstance(matrix, dict)
+                    wrong_client = matrix["wrong_client"]
+                    assert isinstance(wrong_client, dict)
+                    wrong_client["secret"] = JWT_SECRET
+                else:
+                    matrix = value["negative_matrix"]
+                    assert isinstance(matrix, dict)
+                    future_jwt = matrix["future_jwt"]
+                    assert isinstance(future_jwt, dict)
+                    future_jwt["status"] = True
+            return value
+
+    fake = NestedTamperRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "probe_receipt_nested_contract_invalid"
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    if probe_code == "direct_database_probe":
+        assert "postgrest_probe" not in fake.events
+        assert receipt["direct_database"] is None
+    else:
+        assert "postgrest_probe" in fake.events
+        assert receipt["direct_database"] is not None
+        assert receipt["signed_postgrest"] is None
+    assert JWT_SECRET not in json.dumps(receipt, sort_keys=True)
+    _assert_valid_receipt_digest(receipt)
+
+
 def test_missing_scoped_management_token_fails_before_any_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2680,7 +3045,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@3"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@4"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -2999,6 +3364,35 @@ def test_watchdog_cancel_failure_is_a_cleanup_failure_not_success(
     assert receipt["cleanup_failure_code"] == "cleanup_watchdog_cancel_failed"
     assert receipt["cleanup"]["absence_confirmations"] == 3
     assert receipt["cleanup"]["watchdog_cancelled"] is False
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_receipt_digest_binds_failure_and_cleanup_codes_after_redaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner(
+        direct_failure=True,
+        watchdog_cancel_failure=True,
+    )
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "direct_database_probe_failed"
+    assert receipt["cleanup_failure_code"] == "cleanup_watchdog_cancel_failed"
+    _assert_valid_receipt_digest(receipt)
+    original_digest = receipt["receipt_sha256"]
+    for field in ("failure_code", "cleanup_failure_code"):
+        tampered = json.loads(json.dumps(receipt))
+        tampered[field] = "tampered_code"
+        assert RUNNER.canonical_receipt_sha256(tampered) != original_digest
 
 
 def test_watchdog_unsafe_ack_cannot_claim_secret_release(
@@ -4267,8 +4661,8 @@ raise SystemExit(2)
 
     monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
     monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 5)
     monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setenv("HARMONY_WATCHDOG_RETRY_STATE", str(state_path))
     monkeypatch.setenv("HARMONY_WATCHDOG_RETRY_ATTEMPTS", str(attempts_path))
@@ -4359,8 +4753,8 @@ raise SystemExit(2)
 
     monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
     monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 5)
     monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setenv(
         "HARMONY_WATCHDOG_STALE_LIST_COUNT", str(list_count_path)
@@ -4470,11 +4864,12 @@ while True:
         while time.monotonic() < deadline:
             if pid_path.exists() and heartbeat_path.exists():
                 if heartbeat_path.stat().st_size > 0:
-                    pids = tuple(
-                        int(value)
-                        for value in pid_path.read_text(encoding="ascii").split()
-                    )
-                    break
+                    pid_values = pid_path.read_text(
+                        encoding="ascii"
+                    ).split()
+                    if len(pid_values) == 2:
+                        pids = tuple(int(value) for value in pid_values)
+                        break
             time.sleep(0.05)
         assert pids is not None
 

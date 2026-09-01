@@ -139,6 +139,71 @@ def _validated_disposable_preview_ref(
     return host_ref
 
 
+def _is_canonical_lowercase_uuid4(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        parsed.version == 4
+        and parsed.variant == uuid.RFC_4122
+        and str(parsed) == value
+    )
+
+
+def _verify_happy_path_identities(
+    psql: Psql,
+    ids: dict[str, str],
+) -> dict[str, str]:
+    identities = {
+        "round_id": ids["round"],
+        "plan_id": ids["plan"],
+        "inbox_id": ids["inbox"],
+    }
+    if not all(
+        _is_canonical_lowercase_uuid4(value)
+        for value in identities.values()
+    ):
+        raise RuntimeError(
+            "generated happy-path identities were not canonical lowercase UUID4 values"
+        )
+    if len(set(identities.values())) != len(identities):
+        raise RuntimeError("generated happy-path identities were not distinct")
+
+    readback = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'readback_rows', pg_catalog.count(*),
+  'round_id', pg_catalog.min(round_row.round_id::text),
+  'plan_id', pg_catalog.min(plan.plan_id::text),
+  'inbox_id', pg_catalog.min(inbox.inbox_id::text)
+)::text
+from agent_runtime.harmony_rounds round_row
+join agent_runtime.harmony_plans plan
+  on plan.workspace_id = round_row.workspace_id
+ and plan.client_id = round_row.client_id
+ and plan.round_id = round_row.round_id
+ and plan.plan_id = round_row.plan_id
+join agent_runtime.harmony_operator_inbox inbox
+  on inbox.workspace_id = round_row.workspace_id
+ and inbox.client_id = round_row.client_id
+ and inbox.round_id = round_row.round_id
+ and inbox.plan_id = plan.plan_id
+join agent_runtime.harmony_stage_receipts recap
+  on recap.workspace_id = round_row.workspace_id
+ and recap.client_id = round_row.client_id
+ and recap.round_id = round_row.round_id
+ and recap.plan_id = plan.plan_id
+where round_row.workspace_id = '{ids['workspace']}'::uuid
+  and round_row.client_id = 'squid'
+  and recap.stage = 'recap';
+""")
+    if readback != {"readback_rows": 1, **identities}:
+        raise RuntimeError("persisted happy-path identity readback mismatch")
+    return identities
+
+
 class Psql:
     def __init__(
         self,
@@ -3188,13 +3253,15 @@ select pg_catalog.jsonb_build_object(
     }
     if counts != expected:
         raise RuntimeError(f"vertical slice ledger mismatch: {counts}")
+    identities = _verify_happy_path_identities(psql, ids)
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@3",
+        "schema_version": "harmony-preview-concurrency-proof@4",
         "connections": CONCURRENCY,
         "release_sha": args.release_sha,
         "config_sha256": args.config_sha256,
         "fence_expires_at": fence_expiry,
+        "identities": identities,
         "new": new_count,
         "reused": reused_count,
         "connector_request_race": {
