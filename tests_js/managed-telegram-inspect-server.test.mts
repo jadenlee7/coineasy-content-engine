@@ -3,7 +3,7 @@ import test from 'node:test';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { loadConfig, assertRuntimeFlags } from '../tools/managed-telegram-inspect/config.mjs';
-import { createUpstream, verifyManagedJwt } from '../tools/managed-telegram-inspect/auth.mjs';
+import { createUpstream, MANAGED_INSPECTOR_ROLE, verifyManagedJwt } from '../tools/managed-telegram-inspect/auth.mjs';
 import { createManagedInspectServer, validateContext, validateConsent } from '../tools/managed-telegram-inspect/server.mjs';
 import { pgJsonbText, sha256, validateRequest } from '../scripts/lib/telegram-resolution-inspect.mjs';
 
@@ -17,7 +17,7 @@ const pair = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 const jwk = { ...pair.publicKey.export({ format: 'jwk' }), alg: 'ES256', kid: 'synthetic', use: 'sig' };
 const jwks = { keys: [jwk] };
 function claims(aal = 'aal2'): any {
-  return { iss: `${config.projectUrl}/auth/v1`, aud: 'authenticated', role: 'authenticated',
+  return { iss: `${config.projectUrl}/auth/v1`, aud: 'authenticated', role: MANAGED_INSPECTOR_ROLE,
     sub: id(20), session_id: id(21), is_anonymous: false, aal,
     iat: NOW.getTime() / 1000 - 60, exp: NOW.getTime() / 1000 + 3600,
     amr: [{ method: 'password', timestamp: NOW.getTime() / 1000 - 60 },
@@ -66,7 +66,7 @@ function result(req: any): any {
 }
 function mockUpstream() {
   const calls: { path: string; body: any; options: any }[] = [];
-  const state: any = { context: context(), user: { id: id(20), is_anonymous: false,
+  const state: any = { context: context(), user: { id: id(20), role: MANAGED_INSPECTOR_ROLE, is_anonymous: false,
     factors: [{ id: id(23), factor_type: 'totp', status: 'verified' }] }, request: null, rejectPath: null, resultExtra: false };
   const fetchImpl = async (url: string, options: any) => {
     assert.ok(url.startsWith(config.projectUrl));
@@ -162,7 +162,8 @@ test('JWT cryptographic verification pins key, algorithm, project, identity, rol
   assert.equal(verifyManagedJwt(jwt(claims('aal1')), jwks, config, NOW, false).aal, 'aal1');
   const mutations = [
     (c: any) => { c.iss = 'https://other.invalid/auth/v1'; }, (c: any) => { c.aud = 'service_role'; },
-    (c: any) => { c.role = 'service_role'; }, (c: any) => { c.is_anonymous = true; },
+    (c: any) => { c.role = 'authenticated'; }, (c: any) => { c.role = 'service_role'; },
+    (c: any) => { delete c.role; }, (c: any) => { c.is_anonymous = true; },
     (c: any) => { c.sub = 'not-uuid'; }, (c: any) => { c.session_id = ''; },
     (c: any) => { c.aal = 'aal1'; }, (c: any) => { c.exp = NOW.getTime() / 1000; },
     (c: any) => { c.iat = NOW.getTime() / 1000 + 1; }, (c: any) => { c.nbf = NOW.getTime() / 1000 + 1; },
@@ -332,8 +333,9 @@ test('fixed remote-IP request bound rejects excess traffic without trusting forw
   assert.equal(h.calls.length, 0);
 });
 
-test('GET Auth user must match signed identity and still expose the same verified factor', async () => {
-  for (const patch of [{ id: id(99) }, { is_anonymous: true }, { factors: [] },
+test('GET Auth user must match signed identity, exact live role and the same verified factor', async () => {
+  for (const patch of [{ id: id(99) }, { role: 'authenticated' }, { role: 'service_role' },
+    { role: undefined }, { is_anonymous: true }, { factors: [] },
     { banned_until: '2026-08-31T12:01:00Z' }, { banned_until: 'invalid' }, { deleted_at: '2026-08-31T11:59:00Z' }]) {
     const h = mockUpstream(); Object.assign(h.state.user, patch);
     await assert.rejects(() => createUpstream(config, h.fetchImpl).authenticate(jwt(), NOW), /authentication_rejected/);

@@ -77,6 +77,12 @@ export async function startLocalManagedAuth() {
         body:Buffer.concat(chunks).toString('utf8')}));
     } catch { process.exit(3); }
   `;
+  const localAdminToken = () => {
+    const seconds = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid, typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ iss: issuer, aud: 'authenticated', role: 'service_role', iat: seconds, exp: seconds + 60 })).toString('base64url');
+    return `${header}.${payload}.${sign('sha256', Buffer.from(`${header}.${payload}`), { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
+  };
   const state = {
     name, projectRef, issuer, publicJwk, authUrl: '', restUrl: '',
     async close() {
@@ -100,12 +106,17 @@ export async function startLocalManagedAuth() {
     async jsonSql(sql) { return JSON.parse(await this.sql(sql)); },
     async localRecoveryLink(email) {
       if (!/^local-[0-9a-f]{16}@example\.invalid$/.test(email)) throw new Error('local_synthetic_identity_required');
-      const seconds = Math.floor(Date.now() / 1000);
-      const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid, typ: 'JWT' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ iss: issuer, aud: 'authenticated', role: 'service_role', iat: seconds, exp: seconds + 60 })).toString('base64url');
-      const token = `${header}.${payload}.${sign('sha256', Buffer.from(`${header}.${payload}`), { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
       // Test-only admin fixture, not an application credential or executable path.
-      return this.request('auth', '/admin/generate_link', { method: 'POST', token, body: { type: 'recovery', email } });
+      return this.request('auth', '/admin/generate_link', { method: 'POST', token: localAdminToken(), body: { type: 'recovery', email } });
+    },
+    async localCreateInspector(email, userPassword) {
+      if (!/^local-[0-9a-f]{16}@example\.invalid$/.test(email)
+          || typeof userPassword !== 'string' || userPassword.length < 24 || userPassword.length > 128)
+        throw new Error('local_synthetic_identity_required');
+      // Atomic local Admin create proves the persisted role exists before any user token is issued.
+      return this.request('auth', '/admin/users', { method: 'POST', token: localAdminToken(), body: {
+        email, password: userPassword, email_confirm: true, role: 'coineasy_managed_inspector',
+      } });
     },
     async fetch(service, endpointPath, init = {}) {
       if (closed || !containers.includes(helper) || !['auth', 'rest'].includes(service)) throw new Error('local_helper_not_owned');

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createHmac, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { startLocalManagedAuth } from '../scripts/test-managed-auth-local.mjs';
-import { createUpstream, verifyManagedJwt } from '../tools/managed-telegram-inspect/auth.mjs';
+import { createUpstream, MANAGED_INSPECTOR_ROLE, verifyManagedJwt } from '../tools/managed-telegram-inspect/auth.mjs';
 import { pgJsonbText, sha256, validateInspectResponse, validateRequest } from '../scripts/lib/telegram-resolution-inspect.mjs';
 
 function totp(secret: string) {
@@ -42,11 +42,30 @@ test('real local Managed Auth and PostgREST contracts', { skip: process.env.COIN
     return response;
   });
   const email = `local-${randomBytes(8).toString('hex')}@example.invalid`, password = randomBytes(24).toString('base64url');
-  const signup = await stack.request('auth', '/signup', { method: 'POST', body: { email, password } });
-  assert.equal(signup.status, 200, 'local synthetic signup');
+  const created = await stack.localCreateInspector(email, password);
+  assert.equal(created.status, 200, 'local Admin atomically creates the never-logged-in inspector');
+  assert.equal(created.data.role, MANAGED_INSPECTOR_ROLE);
+  assert.equal(await stack.sql(`select role from auth.users where id='${created.data.id}'::uuid;`), MANAGED_INSPECTOR_ROLE);
   const login = await stack.request('auth', '/token?grant_type=password', { method: 'POST', body: { email, password } });
   assert.equal(login.status, 200, 'real password grant');
   let session = login.data;
+  await t.test('ordinary signup remains authenticated and cannot call any managed RPC', async () => {
+    const ordinaryEmail = `local-${randomBytes(8).toString('hex')}@example.invalid`;
+    const ordinaryPassword = randomBytes(24).toString('base64url');
+    const ordinary = await stack.request('auth', '/signup', { method: 'POST', body: { email: ordinaryEmail, password: ordinaryPassword } });
+    assert.equal(ordinary.status, 200); assert.equal(claims(ordinary.data.access_token).role, 'authenticated');
+    const denied = [
+      ['/rpc/managed_telegram_inspect_context', { target_workspace_id: randomUUID(), target_release_sha: 'a'.repeat(40) }],
+      ['/rpc/register_managed_telegram_inspect_consent', { target_consent_id: randomUUID(), target_request: {}, target_request_sha256: 'a'.repeat(64) }],
+      ['/rpc/inspect_managed_telegram_delivery_unknown', { target_consent_id: randomUUID() }],
+    ];
+    for (const [path, body] of denied) {
+      const response = await stack.request('rest', path as string, { method: 'POST', token: ordinary.data.access_token, body });
+      assert.ok(response.status >= 400, `${path} denies the ordinary authenticated role`);
+    }
+    const jwks = await stack.request('auth', '/.well-known/jwks.json');
+    assert.throws(() => verifyManagedJwt(ordinary.data.access_token, jwks.data, config, new Date(), false), /authentication_rejected/);
+  });
   await t.test('password JWT signature + live user + AAL1', async () => {
     const token = session.access_token, parts = token.split('.');
     const jwks = await stack.request('auth', '/.well-known/jwks.json');
@@ -56,10 +75,12 @@ test('real local Managed Auth and PostgREST contracts', { skip: process.env.COIN
     assert.ok(verify('sha256', Buffer.from(`${parts[0]}.${parts[1]}`), { key: createPublicKey({ key, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, Buffer.from(parts[2], 'base64url')));
     const jwt = claims(token);
     assert.equal(jwt.aal, 'aal1'); assert.equal(jwt.iss, stack.issuer); assert.equal(jwt.aud, 'authenticated');
+    assert.equal(jwt.role, MANAGED_INSPECTOR_ROLE, 'real GoTrue issues the persisted dedicated role');
     assert.ok(jwt.amr.some((entry: any) => entry.method === 'password' && Number.isInteger(entry.timestamp)));
     assert.equal(verifyManagedJwt(token, jwks.data, config, new Date(), false).aal, 'aal1');
     assert.throws(() => verifyManagedJwt(token, jwks.data, config, new Date()), /authentication_rejected/);
-    assert.equal((await stack.request('auth', '/user', { token })).status, 200);
+    const liveUser = await stack.request('auth', '/user', { token });
+    assert.equal(liveUser.status, 200); assert.equal(liveUser.data.role, MANAGED_INSPECTOR_ROLE);
     const changed = `${parts[0]}.${Buffer.from(JSON.stringify({ ...jwt, aal: 'aal2' })).toString('base64url')}.${parts[2]}`;
     assert.equal((await stack.request('rest', '/', { token: changed })).status, 401, 'PostgREST rejects forged claims');
   });
@@ -90,6 +111,14 @@ test('real local Managed Auth and PostgREST contracts', { skip: process.env.COIN
     const jwks = await upstream.request('/auth/v1/.well-known/jwks.json');
     assert.throws(() => verifyManagedJwt(session.access_token, jwks, config, new Date(claims(session.access_token).exp * 1000)), /authentication_rejected/, 'genuine issued token expires');
   });
+  await t.test('live Auth role drift denies an otherwise valid dedicated-role JWT with no fallback', async () => {
+    const jwt = claims(session.access_token);
+    assert.equal(jwt.role, MANAGED_INSPECTOR_ROLE);
+    await stack.sql(`update auth.users set role='authenticated' where id='${jwt.sub}';`);
+    await assert.rejects(() => upstream.authenticate(session.access_token, new Date()), /authentication_rejected/);
+    await stack.sql(`update auth.users set role='${MANAGED_INSPECTOR_ROLE}' where id='${jwt.sub}';`);
+    assert.equal((await upstream.authenticate(session.access_token, new Date())).identity.userId, jwt.sub);
+  });
   const fixture = await stack.jsonSql(`select managed_auth_live_test.fixture('${claims(session.access_token).sub}'::uuid);`);
   let consentId = fixture.consent_id;
   const request = fixture.request;
@@ -106,6 +135,57 @@ test('real local Managed Auth and PostgREST contracts', { skip: process.env.COIN
     'consents',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by consent_id)::text,'')) from private.managed_telegram_inspect_consents t),
     'resolution_approvals',(select count(*) from private.exact_telegram_delivery_unknown_approvals),
     'resolutions',(select count(*) from private.exact_telegram_delivery_unknown_resolutions));`);
+  await t.test('dedicated token cannot reach general tables, ordinary RPCs or old resolution phases', async () => {
+    const boundarySnapshot = () => stack.jsonSql(`select jsonb_build_object(
+      'workspaces',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.workspaces t),
+      'members',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,user_id)::text,'')) from public.workspace_members t),
+      'items',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.content_items t),
+      'versions',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.content_versions t),
+      'jobs',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.jobs t),
+      'publications',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.publications t),
+      'approvals',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by id)::text,'')) from public.approvals t),
+      'work_orders',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,work_order_id)::text,'')) from agent_runtime.agent_work_orders t),
+      'work_events',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,work_order_id,event_seq)::text,'')) from agent_runtime.agent_work_order_events t),
+      'runs',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,run_id)::text,'')) from agent_runtime.agent_runs t),
+      'dispatch',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,work_order_id)::text,'')) from agent_runtime.agent_dispatch_outbox t),
+      'receipts',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,receipt_id)::text,'')) from agent_runtime.agent_action_receipts t),
+      'incidents',(select md5(coalesce(jsonb_agg(to_jsonb(t) order by workspace_id,incident_id)::text,'')) from agent_runtime.agent_incidents t));`);
+    const target = randomUUID(), workOrder = randomUUID(), hash = 'a'.repeat(64);
+    const ordinary = [
+      ['authorize_agent_work_order', { target_workspace_id: target, target_work_order_id: workOrder, target_scope_sha256: hash, target_expected_status_version: 0 }],
+      ['complete_agent_work_order', { target_workspace_id: target, target_work_order_id: workOrder, target_scope_sha256: hash, target_expected_status_version: 0 }],
+      ['get_agent_company_dashboard', { target_workspace_id: target }],
+      ['get_agent_work_order', { target_workspace_id: target, target_work_order_id: workOrder }],
+      ['list_agent_operator_inbox', { target_workspace_id: target, target_limit: 1, target_before_updated_at: null, target_before_work_order_id: null }],
+      ['propose_agent_work_order', { target_workspace_id: target, target_scope: {}, target_scope_sha256: hash }],
+      ['record_agent_operator_decision', { target_workspace_id: target, target_work_order_id: workOrder, target_scope_sha256: hash, target_expected_status_version: 0, target_decision: 'approve', target_reason_code: 'local_test' }],
+      ['queue_content_generation', { target_content_item_id: target, generation_options: {}, request_idempotency_key: 'local-role-boundary' }],
+      ['record_approved_figma_link', { target_content_item_id: target, target_content_version_id: randomUUID(), target_file_key: 'local', target_node_id: '1:1', target_page_name: null, target_section_name: null, link_metadata: {} }],
+      ['request_content_publication', { target_content_item_id: target, target_content_version_id: randomUUID(), target_channel: 'telegram', target_scheduled_for: null, request_idempotency_key: 'local-role-boundary' }],
+    ];
+    const audit = { schema_version: 'telegram-public-channel-audit@1', scan_source: 'public_telegram_web_history',
+      public_channel: 'synthetic', first_message_id: '1', last_message_id: '1', message_count: 1,
+      checked_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), caption_match_count: 0, png_match_count: 0,
+      snapshot_sha256: hash };
+    const phaseBase = { target_workspace_id: target, target_content_item_id: randomUUID(), target_content_version_id: randomUUID(),
+      target_publication_id: randomUUID(), target_job_id: randomUUID(), target_resolution_id: randomUUID(),
+      target_operator_approval_id: randomUUID(), target_release_sha: 'a'.repeat(40),
+      target_public_audit: audit };
+    const oldPhases = [
+      ['inspect_exact_telegram_delivery_unknown_resolution', { ...phaseBase, target_inspected_by: `auth:${claims(session.access_token).sub}`, target_approved_by: 'operator:local-test', target_expires_at: new Date(Date.now() + 60_000).toISOString() }],
+      ['approve_exact_telegram_delivery_unknown_resolution', { ...phaseBase, target_approved_by: 'operator:local-test', target_expires_at: new Date(Date.now() + 60_000).toISOString(), target_approval_subject_sha256: hash }],
+      ['resolve_exact_telegram_delivery_unknown_without_resend', { ...phaseBase, target_resolved_by: `auth:${claims(session.access_token).sub}`, target_approval_subject_sha256: hash }],
+    ];
+    const before = await boundarySnapshot();
+    assert.ok((await stack.request('rest', '/workspaces?select=id&limit=1', { token: session.access_token })).status >= 400);
+    assert.ok((await stack.request('rest', '/workspaces', { method: 'POST', token: session.access_token,
+      body: { id: randomUUID(), name: 'Denied local write', slug: `denied-${randomUUID()}`, created_by: claims(session.access_token).sub } })).status >= 400);
+    for (const [name, body] of [...ordinary, ...oldPhases]) {
+      const response = await stack.request('rest', `/rpc/${name}`, { method: 'POST', token: session.access_token, body });
+      assert.ok(response.status >= 400, `${name} denies the dedicated inspector role`);
+    }
+    assert.deepEqual(await boundarySnapshot(), before, 'denial matrix leaves general tables and agent ledgers unchanged');
+  });
   await t.test('actual authenticated consent + inspect, exact hash, no ledger writes', async () => {
     assert.ok(validateRequest(request), 'synthetic fixture passes the complete request contract');
     const keyOrdering = await stack.jsonSql(`select jsonb_build_object('locale_is_c_order', (select array_agg(k order by k)=array_agg(k order by k collate "C") from jsonb_object_keys('${JSON.stringify(request)}'::jsonb) k));`);

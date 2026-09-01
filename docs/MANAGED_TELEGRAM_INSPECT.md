@@ -18,8 +18,12 @@ service-role, worker, and provider secrets. The standalone runtime is not wired
 into the current Netlify build or Railway services. Disabled mode must perform
 zero Auth, database, or external provider calls.
 
-Only a dedicated human account with no general content-write workspace role is
-eligible. Its access token remains in server memory; refresh tokens returned by
+Only a new dedicated human account whose persistent Auth and JWT role is
+`coineasy_managed_inspector`, and which has no general content-write workspace
+role, is eligible. The database role has access to exactly the three managed
+inspect RPC signatures and no ordinary Studio RPC or business-relation access.
+An ordinary `authenticated` token is rejected by both server and database.
+Its access token remains in server memory; refresh tokens returned by
 Auth are discarded, and the application does not refresh sessions. The browser
 receives only an opaque Secure, HttpOnly, SameSite session cookie. After the
 short server session expires, login and TOTP are required again. Restarting the server
@@ -30,8 +34,10 @@ part of this UI.
 
 ## Human workflow
 
-1. After a separately approved deployment/bootstrap, the human signs in with an
-   existing dedicated account and verifies an existing TOTP factor.
+1. After a separately approved deployment/bootstrap, the human signs in with a
+   newly provisioned, never-ordinary-role dedicated account and verifies its
+   already enrolled TOTP factor. Account creation and MFA enrollment are not
+   part of this application.
 2. The server verifies the JWT and live Auth identity. The database independently
    checks the live session, recent MFA, private operator allowlist, approved
    release, and absence of general content-write membership.
@@ -92,7 +98,7 @@ still checks exact identity and consent on every request; inspection deliberatel
 does not consume consent or write an execution receipt. Server-wide one-use
 semantics would require a separately approved write design.
 
-## Ambient authenticated authority — activation blocker
+## Dedicated role boundary — activation blocker until hosted proof
 
 A normal Supabase `authenticated` JWT is **not an inspect-only bearer token**.
 The accumulated foundation schema grants authenticated users workspace INSERT;
@@ -101,13 +107,35 @@ owner membership is established by the existing bootstrap trigger. This is
 different from permission to modify the target workspace, and is also different
 from the new private allowlist, which users cannot self-enroll in.
 
-The dedicated server does not expose a generic database route or return the
-bearer token. The new inspect gate rejects content-write membership. Those
-measures do not remove ambient database privileges from an extracted bearer.
-Production activation remains **BLOCKED pending explicit accumulated-grant
-review and an approved decision on this remaining authority**. This PR must not
-silently alter existing RLS/grants, substitute an administrator account, or claim
-that UI isolation alone solves token privilege scope.
+The follow-up role boundary does not give the managed account that ordinary
+role. Its persistent `auth.users.role`, signed JWT role, live `/user` role, and
+database gate must all equal `coineasy_managed_inspector`; the JWT audience
+remains `authenticated`. The role has effective execute on only the three
+managed RPC signatures. It has no business table/column/sequence rights, schema
+creation, object ownership, or membership in ordinary/worker/phase roles.
+
+`NOINHERIT` does not subtract PUBLIC grants, and a null function ACL can still
+mean PUBLIC execute. Cumulative tests therefore inspect effective schema,
+function, table, column, sequence, ownership, and membership rights. They also
+insert deliberately unsafe PUBLIC, schema, relation/column/sequence, ownership,
+and membership fixtures and assert that the same effective-privilege predicates
+observe every exposure. Shared PUBLIC drift blocks activation rather than
+triggering an automatic global revoke that might break unrelated applications.
+
+The dedicated server still does not expose a generic database route or return
+the bearer token. No Auth Admin credential exists in the runtime. The synthetic
+local harness uses its own short-lived service JWT only to atomically create a
+never-logged-in disposable custom-role user. A future real account and its TOTP
+remain a separate operator-controlled provisioning step.
+
+Changing an existing account's role does not revoke access JWTs already issued
+with `authenticated`. Existing employee accounts are therefore not converted.
+Likewise, an Auth/Hook control-plane error that issues an ordinary token can
+leave authority on other existing APIs even when this managed gate rejects it.
+Production activation remains **BLOCKED** until the hosted Auth version, existing
+Hook behavior, exposed schemas, cumulative effective ACL, exact release, and a
+new-account ceremony receive separate readback and approval. See
+[ADR-025](./ADR-025-managed-inspector-role-boundary.md).
 
 ## Release and operational gates
 
@@ -137,8 +165,8 @@ Before any production step, separately review:
 | Pure/server unit | Strict inputs, signature/issuer/audience, output bounds | Spoofed actor, ambiguous JSON, stale MFA, wrong key |
 | HTTP | Cookie/CSRF/Origin/CSP, only named routes, fail-closed transport | Shared cookie, redirect, timeout, unexpected RPC shape |
 | Browser guard | Atomic add/commit before one explicit fetch; marker retention | Two tabs, storage failure, crash, reload, browser transport replay |
-| Disposable PostgreSQL | Additive grants, exact binding, conflict/revocation, immutable rows | Other user/workspace, direct DML, old RPC, stale snapshot |
-| Real local Auth + REST | GoTrue-issued JWT, password + TOTP, session logout/refresh | AAL1, expired/tampered JWT, missing session, reset factor |
+| Disposable PostgreSQL | Additive dedicated role, effective PUBLIC/null ACL audit, exact binding, immutable rows | Indirect membership, schema/table/column/sequence rights, old/general RPC |
+| Real local Auth + REST | Admin-created persistent custom role, password + TOTP, `/user` + DB role, three managed RPCs, logout/refresh/recovery | Ordinary role, role drift, AAL1, expired/tampered JWT, general RPC/workspace/table access |
 | Packaging/CI | Disabled zero I/O; isolated files; full regressions | Inherited broad secret, missing build stamp, old path changes |
 
 Coverage results, explicit skips, and limitations belong in the PR evidence.
