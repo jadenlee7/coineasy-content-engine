@@ -1,7 +1,8 @@
 # ADR-025: Managed inspector dedicated Auth and database role
 
-**Status:** Proposed; implemented only for isolated local proof and a dependent
-Draft PR. No production activation is authorized.
+**Status:** Accepted in merged code and CI; production remains inactive and no
+production migration, deployment, account, MFA, release seed, or enablement is
+authorized.
 
 **Date:** 2026-09-01
 
@@ -46,16 +47,21 @@ observe the exact dedicated role. Missing, ordinary, altered, or Hook-rewritten
 roles fail closed on the managed path. The verifier retains the existing exact
 issuer, audience, subject, session, AAL2, recent TOTP, expiry, and bounds.
 
-An additive migration moves only the three new managed RPC grants from
-`authenticated` to the dedicated role. It does not change old phase JWT RPCs,
-workers, general Studio functions, or their grants. PR #176 remains the base;
-this decision is implemented as a dependent change rather than rewriting its
-historical migration.
+The build migration creates the three managed RPCs but deliberately leaves them
+ungranted. The immediately following role-boundary migration grants only those
+three signatures to the dedicated role. This strict pair avoids an ordinary
+`authenticated` exposure window between migration-file transactions. Neither
+migration has been applied to production, so the pre-activation correction does
+not rewrite production history. Old phase JWT RPCs, workers, general Studio
+functions, and their grants remain unchanged.
 
-The GoTrue v2.189.0 Admin API can persist a top-level user role at creation and
-the common token path derives a JWT role from that stored value. This source
-contract is a proposal input, not hosted production proof. [Admin create](https://github.com/supabase/auth/blob/v2.189.0/internal/api/admin.go#L398-L474),
-[token issuance](https://github.com/supabase/auth/blob/v2.189.0/internal/tokens/service.go#L598-L669)
+The GoTrue Admin API can persist a top-level user role at creation and the
+common token path derives a JWT role from that stored value. CI replays both the
+existing baseline stack and production-observed service versions in disposable
+local containers. That is version-compatibility evidence only, not hosted
+configuration, network, Hook, ACL, account, or activation proof.
+[Admin create](https://github.com/supabase/auth/blob/v2.196.0/internal/api/admin.go),
+[token issuance](https://github.com/supabase/auth/blob/v2.196.0/internal/tokens/service.go)
 
 ## Security qualifications
 
@@ -64,8 +70,25 @@ can still mean default PUBLIC execute. Tests therefore inspect effective
 schema, function, table, column, sequence, ownership, and membership rights and
 include negative fixtures which deliberately expose each class of right. Those
 fixtures must be observed by the same effective-privilege predicates used by
-the clean inventory. Shared PUBLIC drift blocks activation; this change does
-not silently revoke shared privileges used by other applications. [PostgreSQL privileges](https://www.postgresql.org/docs/16/ddl-priv.html)
+the clean inventory. PUBLIC object rights count as effective only when the role
+can also use the containing schema. Thus the production-observed raw PUBLIC
+`SELECT` ACLs on inaccessible `extensions.pg_stat_statements*` are compatible,
+while any `extensions` schema `USAGE` immediately blocks. Raw ACLs on target
+tables/functions are still exact hard fences. This change does not silently
+revoke shared privileges used by other applications. [PostgreSQL privileges](https://www.postgresql.org/docs/16/ddl-priv.html)
+
+The production-observed PostgreSQL 17 role graph is also explicit: the target's
+direct members are `authenticator` and the auto-created `postgres` edge, while
+the four required descendant paths include `postgres` both directly and via
+`authenticator`, plus `supabase_storage_admin` via `authenticator`. Hosted
+projects can also retain Supabase's fixed `cli_login_postgres` role used by the
+CLI's Management API temporary-password flow. Its presence is optional; if it
+exists, the two additional target paths must end in the exact
+`postgres -> cli_login_postgres` edge. Full ordered role paths, grantors,
+membership options and every capability boolean are compared as exact
+multisets. Password and `VALID UNTIL` are rotating credential state and are not
+part of this authorization contract. A similar role name, different
+intermediate, altered option or extra path fails closed.
 
 PostgREST selects a role from a verified JWT, but the original login role also
 matters for PostgreSQL `SET ROLE`. The boundary is no direct database credential,
@@ -101,10 +124,13 @@ network and must not load project environment files.
 The existing normal tests remain fast and the existing opt-in disposable stack
 provides the integration proof. Completion requires:
 
-1. clean cumulative PostgreSQL 16 migrations and an effective-ACL audit showing
-   exactly the three managed RPCs for the dedicated role;
+1. clean cumulative PostgreSQL 16 migrations plus a digest-pinned replay of the
+   production-observed Supabase PostgreSQL 17.6.1.127, GoTrue v2.196.0 and
+   PostgREST v14.5 images, with the exact hosted-version ACL/role graph and only
+   the three managed RPCs effective for the dedicated role;
 2. negative ACL fixtures for PUBLIC/null ACL, schema creation, relation/column/
-   sequence access, ownership, and indirect role membership;
+   sequence access, ownership, indirect role membership, CLI-edge option or
+   capability drift, and a same-depth rogue intermediate path;
 3. actual local Admin-created custom-role user: password login, existing TOTP,
    `/user`, database live role, three managed RPCs, refresh, recovery, factor
    reset, logout, ban, expiry, and revocation behavior;
@@ -117,9 +143,13 @@ provides the integration proof. Completion requires:
 7. zero production reads or mutations and zero Telegram, Grok, Typefully, X, or
    other provider calls.
 
-Passing local tests and CI is not production compatibility evidence. Hosted
-Auth version, Hook state, exposed schemas, cumulative ACLs, exact release SHA,
-and the new-account ceremony remain separate approval gates.
+Passing local tests and the production-observed-version replay is not hosted
+production proof. The canonical two-migration manifest and single-query,
+SELECT-only pre/post ACL probes in
+`ops/managed-inspector-activation/` prepare a fail-closed review gate; they do
+not apply either migration. Hosted Hook state, exposed schemas, cumulative
+ACLs, exact release SHA, and the new-account ceremony remain separate approval
+gates.
 
 ## Rollback
 

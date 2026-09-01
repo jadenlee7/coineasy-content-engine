@@ -391,6 +391,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Validate the offline managed-inspector activation pack
+        run: node --test ops/managed-inspector-activation/pack.test.mjs
       - name: Build the isolated default-OFF inspect image
         run: >-
           docker build --file Dockerfile.managed-inspect
@@ -427,15 +429,40 @@ jobs:
           node --test tests_js/managed-inspect-browser.test.mts
 
   managed-auth-live:
+    # Disposable local image replay only. A pass is not hosted proof or
+    # production activation evidence.
+    name: Disposable local Auth image replay (${{ matrix.image-profile }}) - not hosted proof
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image-profile:
+          - baseline
+          - production-observed-version-replay-2026-09-01
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Test actual local GoTrue and PostgREST with ephemeral synthetic identity
+      - name: Replay reviewed local image profile with ephemeral local-only identity
+        env:
+          COINEASY_MANAGED_AUTH_IMAGE_PROFILE: ${{ matrix.image-profile }}
         run: node scripts/test-managed-auth-local.mjs
+      - name: Record non-production replay boundary
+        if: always()
+        run: |
+          printf '%s\n' \
+            'hosted_requests=false' \
+            'production_credentials=false' \
+            'activation_evidence=false'
+          {
+            echo '### Managed Auth disposable local image replay'
+            echo
+            echo '- hosted_requests=false'
+            echo '- production_credentials=false'
+            echo '- activation_evidence=false'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   postgres:
     runs-on: ubuntu-latest

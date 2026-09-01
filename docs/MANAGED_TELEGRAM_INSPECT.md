@@ -7,10 +7,11 @@ and their grants are unchanged.
 
 ## Authority and isolation
 
-Implementation, synthetic local tests, CI, and a Draft PR are the current scope.
-Merge, production migration, service creation/deployment, Auth configuration,
-account/MFA enrollment, release/operator bootstrap, real consent, real inspect,
-approve/resolve, and any delivery require separate explicit approval.
+Implementation and its role-boundary changes are merged, while synthetic local
+tests and CI remain the only execution scope. Production migration, service
+creation/deployment, Auth configuration, account/MFA enrollment,
+release/operator bootstrap, real consent, real inspect, approve/resolve, and any
+delivery require separate explicit approval.
 
 The application must run on a dedicated origin and runtime. Adding a function
 to the existing Netlify site is **not** isolation: that site has unrelated
@@ -98,7 +99,7 @@ still checks exact identity and consent on every request; inspection deliberatel
 does not consume consent or write an execution receipt. Server-wide one-use
 semantics would require a separately approved write design.
 
-## Dedicated role boundary — activation blocker until hosted proof
+## Dedicated role boundary — production activation remains blocked
 
 A normal Supabase `authenticated` JWT is **not an inspect-only bearer token**.
 The accumulated foundation schema grants authenticated users workspace INSERT;
@@ -113,14 +114,24 @@ database gate must all equal `coineasy_managed_inspector`; the JWT audience
 remains `authenticated`. The role has effective execute on only the three
 managed RPC signatures. It has no business table/column/sequence rights, schema
 creation, object ownership, or membership in ordinary/worker/phase roles.
+On the production-observed PostgreSQL 17 image, the role has exactly two direct
+members: `authenticator` and the platform-created `postgres` administrative
+edge. `postgres` and `supabase_storage_admin` also reach it through the two
+pre-existing canonical `authenticator` administration edges. Grantor, option,
+attribute and path drift is rejected; no ordinary role is accepted.
 
 `NOINHERIT` does not subtract PUBLIC grants, and a null function ACL can still
 mean PUBLIC execute. Cumulative tests therefore inspect effective schema,
 function, table, column, sequence, ownership, and membership rights. They also
 insert deliberately unsafe PUBLIC, schema, relation/column/sequence, ownership,
 and membership fixtures and assert that the same effective-privilege predicates
-observe every exposure. Shared PUBLIC drift blocks activation rather than
-triggering an automatic global revoke that might break unrelated applications.
+observe every exposure. PUBLIC object ACLs block when the target can reach the
+object through schema `USAGE`; raw PUBLIC ACLs in an inaccessible schema do not.
+The known `extensions.pg_stat_statements*` ACLs are compatible only while
+`extensions` remains inaccessible, and a negative fixture proves that granting
+schema `USAGE` immediately blocks. Target table/function ACLs remain raw exact
+hard fences. The pack never performs an automatic global revoke that might
+break unrelated applications.
 
 The dedicated server still does not expose a generic database route or return
 the bearer token. No Auth Admin credential exists in the runtime. The synthetic
@@ -132,9 +143,10 @@ Changing an existing account's role does not revoke access JWTs already issued
 with `authenticated`. Existing employee accounts are therefore not converted.
 Likewise, an Auth/Hook control-plane error that issues an ordinary token can
 leave authority on other existing APIs even when this managed gate rejects it.
-Production activation remains **BLOCKED** until the hosted Auth version, existing
-Hook behavior, exposed schemas, cumulative effective ACL, exact release, and a
-new-account ceremony receive separate readback and approval. See
+Production activation remains **BLOCKED** until the hosted Auth behavior,
+existing Hook behavior, exposed schemas, cumulative effective ACL, exact
+release, and a new-account ceremony receive separate readback and approval.
+The local production-observed-version replay does not cross this gate. See
 [ADR-025](./ADR-025-managed-inspector-role-boundary.md).
 
 ## Release and operational gates
@@ -186,23 +198,56 @@ git diff --check
 
 The explicitly named integration harness starts only its own disposable Docker
 stack with synthetic accounts/keys, applies migrations only there, tests real
-Auth-issued tokens through PostgREST, and removes its own containers/network:
+Auth-issued tokens through PostgREST, and removes its own containers/network.
+CI runs both the established baseline and the production-observed-version
+replay:
 
 ```sh
 node scripts/test-managed-auth-local.mjs
 ```
 
-It requires a local Unix-socket Docker engine and version-pinned official images
-(GoTrue v2.189.0, PostgREST v14.12, PostgreSQL 16.13). Its newly created internal
-Docker network has no external egress or published host ports. A disposable
-Node helper makes actual HTTP requests to only that stack's Auth and REST
-services. It does not load project dotenv files or accept a remote
-project/database URL.
+It requires a local Unix-socket Docker engine. The baseline uses GoTrue
+v2.189.0, PostgREST v14.12, and PostgreSQL 16.13. The compatibility profile
+replays the production-observed GoTrue v2.196.0, PostgREST v14.5, and Supabase
+PostgreSQL 17.6.1.127 images locally. The harness verifies its selected image
+profile and runtime version readbacks, but makes no hosted request and loads no
+production credential. Its newly created internal Docker network has no
+external egress or published host ports. A disposable Node helper makes actual
+HTTP requests to only that stack's Auth and REST services. It does not load
+project dotenv files or accept a remote project/database URL.
+The observed-version replay also creates only inside that disposable database
+the optional hosted `cli_login_postgres` path and proves its exact grantor,
+membership options, complete capability tuple and both resulting full target
+paths. It separately proves that absence is compatible and that option drift,
+capability drift or a rogue same-depth intermediate fails closed. The rotating
+CLI password and `VALID UNTIL` are never loaded or compared.
 SQL-only claims fixtures and actual signed-token integration are separately
 labelled. The real Auth/PostgREST adapter test and Chromium guard test are
 separate harnesses, not a combined browser-to-real-Auth UI end-to-end test.
 Production Auth/gateway/schema compatibility still needs a separately
 authorized check before applying the migration or activating the runtime.
+
+### Validate-only production review pack
+
+`ops/managed-inspector-activation/manifest.json` fixes the exact order and
+SHA-256 identity of the two migrations. Its `canonicalSetSha256` is the digest
+of the documented ordered canonical-line payload; it is not a release SHA.
+`preflight.sql` and `postflight.sql` are each one catalog-only `WITH ... SELECT`
+statement and are intended for the platform read-only SQL surface. They do not
+apply migrations, grant privileges, seed a release, create an account, or
+enable the runtime.
+
+The production migration history diverges from this checkout's ordinary local
+history, so a generic `supabase db push` is not an allowed activation path.
+Any future production operation must use the reviewed canonical pair in strict
+order under separate approval, with saved preflight and postflight readbacks.
+Any query error, missing result, digest mismatch, partial state, or
+`passed=false` is a BLOCK.
+
+```sh
+node ops/managed-inspector-activation/validate-pack.mjs
+node --test ops/managed-inspector-activation/pack.test.mjs
+```
 
 The browser test uses a fresh headless Chromium profile and a loopback-only
 synthetic HTTP server. Install Playwright 1.62.1 and its Chromium outside this

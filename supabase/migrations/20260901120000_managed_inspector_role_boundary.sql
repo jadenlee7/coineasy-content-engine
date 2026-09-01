@@ -28,8 +28,238 @@ end
 $role$;
 
 grant usage on schema public to coineasy_managed_inspector;
+
+-- PostgreSQL 17/Supabase attaches the new role directly to postgres; its two
+-- canonical administrative principals also reach it through authenticator.
+-- Preserve only those exact platform paths plus the one application edge.
 grant coineasy_managed_inspector to authenticator
     with inherit false, set true, admin false;
+
+do $role_members$
+declare
+    server_version integer := pg_catalog.current_setting('server_version_num')::integer;
+    hosted_pg17 boolean :=
+        pg_catalog.current_setting('server_version_num')::integer between 170000 and 179999
+        and pg_catalog.to_regrole('supabase_admin') is not null
+        and pg_catalog.to_regrole('supabase_storage_admin') is not null;
+begin
+    if hosted_pg17 and (
+        (select count(*)
+         from pg_catalog.pg_auth_members m
+         where m.roleid = 'coineasy_managed_inspector'::pg_catalog.regrole) <> 2
+        or exists (
+            select 1
+            from pg_catalog.pg_auth_members m
+            join pg_catalog.pg_roles target on target.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where target.rolname = 'coineasy_managed_inspector'
+              and not (
+                  (member.rolname = 'authenticator'
+                   and grantor.rolname = 'postgres'
+                   and not m.admin_option and not m.inherit_option and m.set_option
+                   and not member.rolcreaterole and not member.rolbypassrls)
+                  or
+                  (member.rolname = 'postgres'
+                   and grantor.rolname = 'supabase_admin'
+                   and m.admin_option and not m.inherit_option and not m.set_option
+                   and member.rolcreaterole and member.rolbypassrls)
+              )
+        )
+    ) then
+        raise exception 'managed inspector hosted PG17 direct membership contract failed'
+          using errcode = '42501';
+    elsif not hosted_pg17 and (
+        server_version not between 160000 and 169999
+        or pg_catalog.to_regrole('supabase_admin') is not null
+        or (select count(*)
+            from pg_catalog.pg_auth_members m
+            where m.roleid = 'coineasy_managed_inspector'::pg_catalog.regrole) <> 1
+        or exists (
+            select 1
+            from pg_catalog.pg_auth_members m
+            join pg_catalog.pg_roles target on target.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where target.rolname = 'coineasy_managed_inspector'
+              and not (
+                  member.rolname = 'authenticator'
+                  and grantor.rolname = 'postgres'
+                  and not m.admin_option and not m.inherit_option and m.set_option
+                  and not member.rolcreaterole and not member.rolbypassrls
+              )
+        )
+    ) then
+        raise exception 'managed inspector local PG16 direct membership contract failed'
+          using errcode = '42501';
+    end if;
+    if hosted_pg17 and (
+        (select count(*)
+         from pg_catalog.pg_auth_members m
+         where m.roleid = 'authenticator'::pg_catalog.regrole) <> 2
+        or exists (
+            select 1
+            from pg_catalog.pg_auth_members m
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where m.roleid = 'authenticator'::pg_catalog.regrole
+              and not (
+                  (member.rolname = 'postgres'
+                   and grantor.rolname = 'supabase_admin'
+                   and m.admin_option and m.inherit_option and m.set_option
+                   and member.rolcreaterole and member.rolbypassrls)
+                  or
+                  (member.rolname = 'supabase_storage_admin'
+                   and grantor.rolname = 'supabase_admin'
+                   and not m.admin_option and not m.inherit_option and m.set_option
+                   and member.rolcreaterole and not member.rolbypassrls)
+              )
+        )
+    ) then
+        raise exception 'managed inspector hosted PG17 authenticator graph failed'
+          using errcode = '42501';
+    elsif not hosted_pg17 and exists (
+        select 1
+        from pg_catalog.pg_auth_members m
+        where m.roleid = 'authenticator'::pg_catalog.regrole
+    ) then
+        raise exception 'managed inspector local PG16 authenticator graph failed'
+          using errcode = '42501';
+    end if;
+    if exists (
+        with recursive descendants(
+            parent_role, member, membership_path, role_path,
+            parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
+            select
+                m.roleid, m.member, array[m.roleid, m.member]::oid[],
+                array[parent.rolname, member.rolname]::text[],
+                parent.rolname, member.rolname, grantor.rolname,
+                m.admin_option, m.inherit_option, m.set_option,
+                member.rolsuper, member.rolinherit, member.rolcreaterole,
+                member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+                member.rolbypassrls
+            from pg_catalog.pg_auth_members m
+            join pg_catalog.pg_roles parent on parent.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where parent.rolname = 'coineasy_managed_inspector'
+            union all
+            select
+                m.roleid, m.member, d.membership_path || m.member,
+                d.role_path || member.rolname,
+                parent.rolname, member.rolname, grantor.rolname,
+                m.admin_option, m.inherit_option, m.set_option,
+                member.rolsuper, member.rolinherit, member.rolcreaterole,
+                member.rolcreatedb, member.rolcanlogin, member.rolreplication,
+                member.rolbypassrls
+            from descendants d
+            join pg_catalog.pg_auth_members m on m.roleid = d.member
+            join pg_catalog.pg_roles parent on parent.oid = m.roleid
+            join pg_catalog.pg_roles member on member.oid = m.member
+            join pg_catalog.pg_roles grantor on grantor.oid = m.grantor
+            where not m.member = any(d.membership_path)
+        ),
+        actual(
+            role_path, parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
+            select
+                d.role_path, d.parent_role_name, d.member_role_name,
+                d.grantor_name, d.admin_option, d.inherit_option,
+                d.set_option, d.member_rolsuper, d.member_rolinherit,
+                d.member_rolcreaterole, d.member_rolcreatedb,
+                d.member_rolcanlogin, d.member_rolreplication,
+                d.member_rolbypassrls
+            from descendants d
+        ),
+        expected(
+            role_path, parent_role_name, member_role_name, grantor_name,
+            admin_option, inherit_option, set_option,
+            member_rolsuper, member_rolinherit, member_rolcreaterole,
+            member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+            member_rolbypassrls
+        ) as (
+            select * from (values
+                (
+                    array['coineasy_managed_inspector', 'authenticator']::text[],
+                    'coineasy_managed_inspector'::text, 'authenticator'::text,
+                    'postgres'::text, false, false, true,
+                    false, false, false, false, true, false, false
+                ),
+                (
+                    array['coineasy_managed_inspector', 'postgres']::text[],
+                    'coineasy_managed_inspector', 'postgres', 'supabase_admin',
+                    true, false, false,
+                    false, true, true, true, true, true, true
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'postgres']::text[],
+                    'authenticator', 'postgres', 'supabase_admin',
+                    true, true, true,
+                    false, true, true, true, true, true, true
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'supabase_storage_admin']::text[],
+                    'authenticator', 'supabase_storage_admin', 'supabase_admin',
+                    false, false, true,
+                    false, false, true, false, true, false, false
+                )
+            ) hosted(
+                role_path, parent_role_name, member_role_name, grantor_name,
+                admin_option, inherit_option, set_option,
+                member_rolsuper, member_rolinherit, member_rolcreaterole,
+                member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+                member_rolbypassrls
+            )
+            where hosted_pg17
+            union all
+            select * from (values
+                (
+                    array['coineasy_managed_inspector', 'postgres', 'cli_login_postgres']::text[],
+                    'postgres'::text, 'cli_login_postgres'::text,
+                    'supabase_admin'::text, false, false, true,
+                    false, false, false, false, true, false, false
+                ),
+                (
+                    array['coineasy_managed_inspector', 'authenticator', 'postgres', 'cli_login_postgres']::text[],
+                    'postgres', 'cli_login_postgres', 'supabase_admin',
+                    false, false, true,
+                    false, false, false, false, true, false, false
+                )
+            ) cli_login(
+                role_path, parent_role_name, member_role_name, grantor_name,
+                admin_option, inherit_option, set_option,
+                member_rolsuper, member_rolinherit, member_rolcreaterole,
+                member_rolcreatedb, member_rolcanlogin, member_rolreplication,
+                member_rolbypassrls
+            )
+            where hosted_pg17
+              and pg_catalog.to_regrole('cli_login_postgres') is not null
+            union all
+            select
+                array['coineasy_managed_inspector', 'authenticator']::text[],
+                'coineasy_managed_inspector'::text, 'authenticator'::text,
+                'postgres'::text, false, false, true,
+                false, false, false, false, true, false, false
+            where not hosted_pg17
+        )
+        (select * from actual except all select * from expected)
+        union all
+        (select * from expected except all select * from actual)
+    ) then
+        raise exception 'managed inspector descendant path contract failed'
+          using errcode = '42501';
+    end if;
+end
+$role_members$;
 
 create or replace function private.require_managed_telegram_inspect_identity(
     target_workspace_id uuid, target_release_sha text
@@ -202,5 +432,84 @@ revoke all on function public.inspect_managed_telegram_delivery_unknown(uuid)
 grant execute on function public.managed_telegram_inspect_context(uuid,text) to coineasy_managed_inspector;
 grant execute on function public.register_managed_telegram_inspect_consent(uuid,jsonb,text) to coineasy_managed_inspector;
 grant execute on function public.inspect_managed_telegram_delivery_unknown(uuid) to coineasy_managed_inspector;
+
+-- Fail before COMMIT unless the complete function ACL is exactly owner-only
+-- for private helpers and owner + the dedicated role for the three entry RPCs.
+-- This also rejects arbitrary grantees inherited from creator default ACLs.
+do $final_acl$
+declare
+    target_signature text;
+    entrypoint boolean;
+    object_oid oid;
+    owner_oid oid := pg_catalog.to_regrole('postgres');
+    inspector_oid oid := pg_catalog.to_regrole('coineasy_managed_inspector');
+    actual_acl_count integer;
+begin
+    foreach target_signature in array array[
+        'private.deny_managed_telegram_inspect_ledger_mutation()',
+        'private.managed_telegram_inspect_hash(jsonb)',
+        'private.require_managed_telegram_inspect_identity(uuid,text)',
+        'private.validate_managed_telegram_inspect_request(jsonb,timestamptz)',
+        'private.managed_telegram_inspect_fresh_subject(jsonb)',
+        'public.managed_telegram_inspect_context(uuid,text)',
+        'public.register_managed_telegram_inspect_consent(uuid,jsonb,text)',
+        'public.inspect_managed_telegram_delivery_unknown(uuid)'
+    ] loop
+        entrypoint := target_signature like 'public.%';
+        object_oid := pg_catalog.to_regprocedure(target_signature);
+        if object_oid is null then
+            raise exception 'managed inspector target function missing during final ACL assertion';
+        end if;
+        select count(*) into actual_acl_count
+        from pg_catalog.pg_proc p
+        cross join lateral pg_catalog.aclexplode(
+            coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+        ) acl
+        where p.oid = object_oid;
+        if actual_acl_count <> (case when entrypoint then 2 else 1 end)
+           or not exists (
+               select 1
+               from pg_catalog.pg_proc p
+               cross join lateral pg_catalog.aclexplode(
+                   coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+               ) acl
+               where p.oid = object_oid
+                 and acl.grantee = owner_oid
+                 and acl.privilege_type = 'EXECUTE'
+                 and not acl.is_grantable
+           )
+           or (entrypoint and not exists (
+               select 1
+               from pg_catalog.pg_proc p
+               cross join lateral pg_catalog.aclexplode(
+                   coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+               ) acl
+               where p.oid = object_oid
+                 and acl.grantee = inspector_oid
+                 and acl.privilege_type = 'EXECUTE'
+                 and not acl.is_grantable
+           ))
+           or exists (
+               select 1
+               from pg_catalog.pg_proc p
+               cross join lateral pg_catalog.aclexplode(
+                   coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))
+               ) acl
+               where p.oid = object_oid
+                 and not (
+                     (acl.grantee = owner_oid or (entrypoint and acl.grantee = inspector_oid))
+                     and acl.privilege_type = 'EXECUTE'
+                     and not acl.is_grantable
+                 )
+           )
+           or exists (
+               select 1 from pg_catalog.pg_proc p
+               where p.oid = object_oid and p.proowner <> owner_oid
+           ) then
+            raise exception 'managed inspector final function ACL assertion failed';
+        end if;
+    end loop;
+end
+$final_acl$;
 
 commit;
