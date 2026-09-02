@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -21,6 +22,52 @@ PROBE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROBE)
 
 
+def _read_only_pipe(payload: bytes) -> int:
+    reader_fd, writer_fd = os.pipe()
+    try:
+        written = 0
+        while written < len(payload):
+            written += os.write(writer_fd, payload[written:])
+    finally:
+        os.close(writer_fd)
+    return reader_fd
+
+
+class FakeServerConcurrencyPsql:
+    def __init__(self, concurrency: int) -> None:
+        self.backend_concurrency_target = concurrency
+        self.server_concurrency_evidence: dict[str, dict[str, object]] = {}
+        self.concurrency = concurrency
+
+    def json(self, sql: str) -> dict[str, object]:
+        if "create unlogged table" in sql:
+            return {
+                "participants": 0,
+                "released": False,
+                "server_peak": 0,
+            }
+        return {
+            "participants": self.concurrency,
+            "released": True,
+            "server_peak": self.concurrency,
+        }
+
+    def run_with_server_concurrency_gate(
+        self,
+        _gate: object,
+        invoke: object,
+    ) -> dict[str, object]:
+        assert callable(invoke)
+        return invoke()
+
+    def run(self, sql: str) -> str:
+        if "drop table if exists" in sql:
+            return "dropped"
+        if "set released = true" in sql:
+            return "released"
+        raise AssertionError("unexpected fake gate SQL")
+
+
 def test_probe_accepts_only_local_hosts() -> None:
     assert PROBE._is_local_host("localhost")
     assert PROBE._is_local_host("127.0.0.1")
@@ -28,26 +75,133 @@ def test_probe_accepts_only_local_hosts() -> None:
     assert not PROBE._is_local_host("db.example.supabase.co")
 
 
-def test_preview_probe_requires_a_direct_child_branch_host() -> None:
+def test_preview_probe_accepts_only_exact_child_database_transports() -> None:
     child = "vllwcbhqdojpjrssidcu"
     parent = "isuqcqwxpojgzevxfdwr"
     assert PROBE._validated_disposable_preview_ref(
-        f"db.{child}.supabase.co", 5432, child, parent
+        f"db.{child}.supabase.co",
+        5432,
+        child,
+        parent,
+        "direct",
+        "postgres",
+        "postgres",
     ) == child
-    for host, port, expected, parent_ref in (
-        (f"db.{parent}.supabase.co", 5432, parent, parent),
-        (f"db.{child}.supabase.co", 5432, parent, parent),
-        ("aws-0-us-east-1.pooler.supabase.com", 5432, child, parent),
-        (f"db.{child}.supabase.co", 6543, child, parent),
+    assert PROBE._validated_disposable_preview_ref(
+        "aws-0-us-east-1.pooler.supabase.com",
+        5432,
+        child,
+        parent,
+        "supavisor-session",
+        f"postgres.{child}",
+        "postgres",
+    ) == child
+    assert PROBE._validated_disposable_preview_ref(
+        "gcp-1-europe-west1.pooler.supabase.com",
+        5432,
+        child,
+        parent,
+        "supavisor-session",
+        f"postgres.{child}",
+        "postgres",
+    ) == child
+    for host, port, expected, parent_ref, transport, user, database in (
+        (f"db.{parent}.supabase.co", 5432, parent, parent, "direct", "postgres", "postgres"),
+        (f"db.{child}.supabase.co", 5432, parent, parent, "direct", "postgres", "postgres"),
+        ("aws-0-us-east-1.pooler.supabase.com", 5432, child, parent, "direct", "postgres", "postgres"),
+        (f"db.{child}.supabase.co", 6543, child, parent, "direct", "postgres", "postgres"),
+        (f"db.{child}.supabase.co", 5432, child, parent, "direct", f"postgres.{child}", "postgres"),
+        ("aws-0-us-east-1.pooler.supabase.com", 5432, child, parent, "supavisor-session", "postgres", "postgres"),
+        ("green.pooler.supabase.com", 5432, child, parent, "supavisor-session", f"postgres.{child}", "postgres"),
+        ("x.y.pooler.supabase.com", 5432, child, parent, "supavisor-session", f"postgres.{child}", "postgres"),
+        ("aws-0-us-east-1.pooler.supabase.com,evil.example", 5432, child, parent, "supavisor-session", f"postgres.{child}", "postgres"),
+        ("aws-0-us-east-1.pooler.supabase.com", 5432, child, parent, "supavisor-session", f"postgres.{parent}", "postgres"),
+        ("aws-0-us-east-1.pooler.supabase.com", 5432, child, parent, "supavisor-session", f"postgres.{child}", "other"),
     ):
         try:
             PROBE._validated_disposable_preview_ref(
-                host, port, expected, parent_ref
+                host,
+                port,
+                expected,
+                parent_ref,
+                transport,
+                user,
+                database,
             )
         except ValueError:
             pass
         else:
             raise AssertionError("unsafe Preview target was accepted")
+
+
+def test_concurrency_probe_cli_requires_database_transport() -> None:
+    required = [
+        "--host", "localhost",
+        "--user", "postgres",
+        "--release-sha", "a" * 40,
+        "--config-sha256", "b" * 64,
+    ]
+    with pytest.raises(SystemExit):
+        PROBE.parse_args(required)
+    assert PROBE.parse_args(
+        [
+            *required,
+            "--database-transport", "direct",
+            "--backend-concurrency-target", "64",
+        ]
+    ).database_transport == "direct"
+
+
+def test_transport_specific_backend_capacity_reserve_is_fixed() -> None:
+    assert PROBE._required_free_database_connections("direct", 64) == 72
+    assert (
+        PROBE._required_free_database_connections("supavisor-session", 2)
+        == 4
+    )
+    assert (
+        PROBE._required_free_database_connections("supavisor-session", 15)
+        == 17
+    )
+    with pytest.raises(ValueError):
+        PROBE._required_free_database_connections("direct", 63)
+
+
+def test_server_gate_setup_shape_failure_drops_attempted_table() -> None:
+    gate = PROBE._new_server_concurrency_gate("plan", 64, 15)
+
+    class SetupMismatchPsql:
+        dropped = False
+
+        def json(self, _sql: str) -> dict[str, object]:
+            return {
+                "participants": 1,
+                "released": False,
+                "server_peak": 0,
+            }
+
+        def run(self, sql: str) -> str:
+            assert gate.table_name in sql
+            assert "drop table if exists" in sql
+            self.dropped = True
+            return "dropped"
+
+    psql = SetupMismatchPsql()
+    with pytest.raises(RuntimeError, match="gate setup failed"):
+        PROBE._setup_server_concurrency_gate(psql, gate)
+    assert psql.dropped is True
+
+
+def test_server_gate_sql_records_real_backend_peak_before_rpc() -> None:
+    gate = PROBE._new_server_concurrency_gate("plan", 64, 15)
+    wrapped = gate.wrap("select rpc_result;")
+    assert "pg_advisory_lock_shared" in wrapped
+    assert "lock.mode = 'ShareLock'" in wrapped
+    assert "observed.participant_count >= 15" in wrapped
+    assert "server_peak = greatest(" in wrapped
+    assert "pg_catalog.greatest" not in wrapped
+    assert wrapped.index("pg_advisory_lock_shared") < wrapped.index(
+        "select rpc_result;"
+    )
 
 
 def test_happy_path_identity_readback_is_canonical_distinct_and_db_bound() -> None:
@@ -150,6 +304,7 @@ def test_remote_psql_requires_verify_full_and_explicit_trust(
 ) -> None:
     monkeypatch.delenv("PGSSLMODE", raising=False)
     monkeypatch.delenv("PGSSLROOTCERT", raising=False)
+    monkeypatch.delenv(PROBE.SUPABASE_CA_FD_ENV, raising=False)
     PROBE.Psql("psql", "localhost", 5432, "postgres", "postgres", 1)
     PROBE.Psql("psql", "/private/tmp/harmony-pg", 5432, "postgres", "postgres", 1)
     remote = "db.vllwcbhqdojpjrssidcu.supabase.co"
@@ -157,25 +312,77 @@ def test_remote_psql_requires_verify_full_and_explicit_trust(
         PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
 
     monkeypatch.setenv("PGSSLMODE", "verify-full")
-    with pytest.raises(ValueError, match="explicit PGSSLROOTCERT"):
+    with pytest.raises(ValueError, match="PGGSSENCMODE=disable"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    monkeypatch.setenv("PGGSSENCMODE", "disable")
+    with pytest.raises(ValueError, match="PGSSLCERTMODE=disable"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    monkeypatch.setenv("PGSSLCERTMODE", "disable")
+    with pytest.raises(ValueError, match="in-memory password"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    monkeypatch.setenv("PGPASSWORD", "preview-password")
+    with pytest.raises(ValueError, match="inherited unlinked Supabase CA fd"):
         PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
 
-    root_certificate = tmp_path / "root.crt"
-    root_certificate.write_text("unit-test-root", encoding="utf-8")
-    monkeypatch.setenv("PGSSLROOTCERT", str(root_certificate))
+    monkeypatch.setenv("PGSSLROOTCERT", "system")
+    with pytest.raises(ValueError, match="inherited unlinked Supabase CA fd"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    monkeypatch.delenv("PGSSLROOTCERT")
+
+    exact_ca = (
+        SCRIPT.parents[1] / "certs/supabase-prod-ca-2021.crt"
+    ).read_bytes()
+    linked_ca = tmp_path / "linked-root.crt"
+    linked_ca.write_bytes(exact_ca)
+    linked_ca.chmod(0o600)
+    linked_fd = os.open(linked_ca, os.O_RDONLY)
+    monkeypatch.setenv(PROBE.SUPABASE_CA_FD_ENV, str(linked_fd))
+    with pytest.raises(ValueError, match="inherited unlinked Supabase CA fd"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    with pytest.raises(OSError):
+        os.fstat(linked_fd)
+
+    wrong_digest_fd = _read_only_pipe(b"wrong digest")
+    monkeypatch.setenv(PROBE.SUPABASE_CA_FD_ENV, str(wrong_digest_fd))
+    with pytest.raises(ValueError, match="inherited unlinked Supabase CA fd"):
+        PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    with pytest.raises(OSError):
+        os.fstat(wrong_digest_fd)
+
+    exact_fd = _read_only_pipe(exact_ca)
+    monkeypatch.setenv(PROBE.SUPABASE_CA_FD_ENV, str(exact_fd))
+    monkeypatch.setenv("PGHOSTADDR", "127.0.0.1")
+    monkeypatch.setenv("PGSERVICE", "ambient-route-bypass")
+    monkeypatch.setenv("PGSSLKEY", "/tmp/ambient-client.key")
     psql = PROBE.Psql("psql", remote, 5432, "postgres", "postgres", 1)
+    with pytest.raises(OSError):
+        os.fstat(exact_fd)
+
     assert psql.environment["PGSSLMODE"] == "verify-full"
-    assert psql.environment["PGSSLROOTCERT"] == str(root_certificate)
+    assert psql.environment["PGGSSENCMODE"] == "disable"
+    assert psql.environment["PGSSLCERTMODE"] == "disable"
+    assert "PGSSLROOTCERT" not in psql.environment
+    assert "PGHOSTADDR" not in psql.environment
+    assert "PGSERVICE" not in psql.environment
+    assert "PGSSLKEY" not in psql.environment
+    assert PROBE.SUPABASE_CA_FD_ENV not in psql.environment
 
     captured: dict[str, object] = {}
 
     def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.update(kwargs)
+        inherited_fds = kwargs["pass_fds"]
+        assert isinstance(inherited_fds, tuple) and len(inherited_fds) == 1
+        certificate_fd = inherited_fds[0]
+        assert kwargs["env"]["PGSSLROOTCERT"] == f"/dev/fd/{certificate_fd}"
+        certificate_stat = os.fstat(certificate_fd)
+        assert certificate_stat.st_nlink == 0
+        assert os.read(certificate_fd, 4097) == exact_ca
         return subprocess.CompletedProcess([], 0, "", "")
 
     monkeypatch.setattr(PROBE.subprocess, "run", fake_run)
     psql._execute("select 1")
-    assert captured["env"] == psql.environment
+    assert captured["close_fds"] is True
 
 
 def test_rpc_runs_as_exact_scoped_role() -> None:
@@ -415,7 +622,7 @@ def test_probe_contract_is_closed_and_fail_closed() -> None:
     assert '"before": True' in source
     assert '"after": False' in source
     assert "_race_exactly_once" in source
-    assert '"harmony-preview-concurrency-proof@4"' in source
+    assert '"harmony-preview-concurrency-proof@5"' in source
     assert '"identities": identities' in source
     assert '"plan": plan_race' in source
     for stage in ("private_content", "operator_inbox", "recap"):
@@ -658,7 +865,8 @@ def test_exactly_once_race_accepts_fresh_transport_ids(monkeypatch) -> None:
             "automatic_publication": False,
         }
 
-    row, counts = PROBE._race_exactly_once("plan", invoke)
+    psql = FakeServerConcurrencyPsql(PROBE.CONCURRENCY)
+    row, counts = PROBE._race_exactly_once(psql, "plan", invoke)
     assert row["ok"] is True
     assert counts == {"new": 1, "reused": 3}
 
@@ -677,8 +885,9 @@ def test_codex_gate_race_helpers_prove_idempotence_and_single_execution(
             calls += 1
         return {"reused": reused, "work_key": "a" * 64, "request_key": "b" * 64}
 
+    psql = FakeServerConcurrencyPsql(PROBE.CONCURRENCY)
     row, counts = PROBE._race_codex_idempotent(
-        "prepare", idempotent, ("work_key", "request_key")
+        psql, "prepare", idempotent, ("work_key", "request_key")
     )
     assert row["work_key"] == "a" * 64
     assert counts == {"new": 1, "reused": 3}
@@ -699,7 +908,7 @@ def test_codex_gate_race_helpers_prove_idempotence_and_single_execution(
             "claim_fence_sha256": "c" * 64,
         }
 
-    winner, claim_counts = PROBE._race_codex_claim(claim)
+    winner, claim_counts = PROBE._race_codex_claim(psql, claim)
     assert winner["claim_fence_sha256"] == "c" * 64
     assert claim_counts == {"claimed": 1, "not_claimed": 3}
 
@@ -717,7 +926,7 @@ def test_codex_gate_race_helpers_prove_idempotence_and_single_execution(
             "attempt_fence_sha256": "d" * 64,
         }
 
-    attempt, start_counts = PROBE._race_codex_start(start)
+    attempt, start_counts = PROBE._race_codex_start(psql, start)
     assert attempt["execute_authorized"] is True
     assert start_counts == {"authorized": 1, "replay_non_authorizing": 3}
 
@@ -752,8 +961,9 @@ def test_stale_codex_result_reconciliation_race_is_exactly_once(
             "work_key": None,
         }
 
+    psql = FakeServerConcurrencyPsql(PROBE.CONCURRENCY)
     winner, counts = PROBE._race_codex_reconciliation(
-        reconcile,
+        psql, reconcile,
         expected_work_key=work_key,
     )
     assert winner["status"] == "blocked"
@@ -875,7 +1085,8 @@ def test_qa_denial_race_is_exactly_once_and_has_no_downstream_effects(
             "automatic_publication": False,
         }
 
-    row, counts = PROBE._race_qa_denial(invoke)
+    psql = FakeServerConcurrencyPsql(PROBE.CONCURRENCY)
+    row, counts = PROBE._race_qa_denial(psql, invoke)
     assert row["denied"] is True
     assert counts == {"new": 1, "reused": 3}
 

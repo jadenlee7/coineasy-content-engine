@@ -53,12 +53,16 @@ Recap aggregate ┘                                      v
 `a24492147b256785b71bc431e268844587591df1`의 유료 one-shot은
 `harmony-preview-one-shot-proof@4`에서 `preview_migration_apply_failed`로
 fail-closed했고, child와 해당 scoped PAT의 삭제가 확인됐습니다. 실제 청구액은
-`미관측`이며 성공 proof는 아직 없습니다. 이 범위에서는 모든 flag가 OFF이고,
-아래 Gate 4의 짧은 dashboard 관측도 별도 승인·별도 실행으로만 가능합니다.
+`미관측`입니다. Exact SHA `919d70feb0b778830d8f20f70823c20fcf049f61`의
+두 번째 유료 one-shot도 `harmony-preview-one-shot-proof@5`에서 SQL 시작 전
+`preview_database_connectivity_failed`로 fail-closed했고, child와 해당 scoped
+PAT의 삭제가 확인됐습니다. 따라서 성공 proof는 아직 없습니다. 이 범위에서는
+모든 flag가 OFF이고, 아래 Gate 4의 짧은 dashboard 관측도 별도 승인·별도
+실행으로만 가능합니다.
 
 ## 현재 계약 스냅샷
 
-아래 이름은 2026-08-27의 작업 트리에서 읽은 **미병합 계약**입니다. 실행
+아래 이름은 2026-09-03의 작업 트리에서 읽은 **미병합 계약**입니다. 실행
 직전에 exact Git SHA에서 다시 확인해야 하며, 이름이나 응답 shape가 바뀌면
 이 런북보다 코드를 우선하지 말고 검증을 중단해 문서를 함께 갱신합니다.
 
@@ -163,9 +167,11 @@ Netlify 계약은 다음과 같습니다.
 계약 구현 파일이 존재하는 것만으로 Gate 1을 통과하지 않습니다. exact Git
 SHA에서 아홉 migration의 disposable PostgreSQL 적용, 기존 Harmony security
 suite와 `harmony_preview_codex_gate_security.sql`,
-`scripts/probe_harmony_preview_concurrency.py`의 64개 실제 DB connection 결과,
-그리고 `scripts/probe_harmony_preview_postgrest.py`의 실제 서명 JWT/PostgREST
-64-way connector 결과가 모두 성공해야 합니다. dashboard 응답은
+`scripts/probe_harmony_preview_concurrency.py`의 64개 실제 DB client 결과와
+route별 server concurrency latch readback, 그리고
+`scripts/probe_harmony_preview_postgrest.py`의 실제 서명 JWT/PostgREST 64-way
+connector 결과와 registration-row blocker graph readback이 모두 성공해야 합니다.
+dashboard 응답은
 `counts.pending_operator_inbox`,
 `trust.client_scope_verified=true`, `trust.portable_trust=false`를 정확히
 사용하며, revocation으로 non-current가 된 round는 projection과 count에서
@@ -174,25 +180,44 @@ suite와 `harmony_preview_codex_gate_security.sql`,
 
 현재 local PostgreSQL 16 재현에서는 allowlist의 migration **9/9**와 Harmony
 security suite **3/3**가 통과했습니다. 따라서 일반적인 SQL 구문·로컬 계약
-오류는 재현되지 않았습니다. 그러나 위 역사적 `@4` receipt는 direct DB
-connectivity와 첫 hosted SQL 실행을 분리하지 않았고 실패 ordinal도 남기지 않아,
-direct IPv6 reachability와 hosted parent schema drift 중 무엇이 원인인지 구분할 수
-없습니다. 둘은 진단 가설일 뿐이며 원인은 `미관측`입니다. Production 적용과
-성공한 exact-SHA Supabase Preview proof는 여전히 없고, 로컬 증거를 live Preview
-또는 Production 증거로 대체해 주장하지 않습니다.
+오류는 재현되지 않았습니다. 역사적 `@4` receipt는 DB connectivity와 첫 hosted
+SQL 실행을 분리하지 않았고 실패 ordinal도 남기지 않았습니다. 후속 `@5`
+receipt는 분리된 `SELECT 1` 단계에서 실패해 SQL이 시작되지 않았음을
+확정했습니다. Migration과 security completed count는 각각 0이고
+`sql_failure=null`이었으며, exact child의 연속 3회 부재와 scoped PAT 삭제가
+확인됐습니다. Redacted receipt 자체는 transport 내부 원인을 기록하지 않습니다.
+별도의 비밀 없는
+진단에서는 exact direct host가 AAAA만 반환했고 그 IPv6 `:5432` 연결이
+`No route to host`로 실패했으며, IPv4 Shared Supavisor `:5432`는 고정한 Supabase
+CA에서 TLS hostname 검증에 성공했습니다. 운영체제 기본 CA는 같은 pooler의
+self-signed chain을 거절했습니다. 이 관측은 direct IPv6 route와 system trust라는
+두 blocker를 재현한 것이며, 아직 child 인증·migration·proof 성공을 증명하지
+않습니다. Production 적용과 성공한 exact-SHA Supabase Preview proof는 여전히
+없고, 로컬·transport 증거를 live Preview 성공 증거로 대체해 주장하지 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@5`입니다. Exact
-child credential을 읽은 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
-preflight를 실행하고, receipt에는 `database_connectivity_preflight`의 typed 상태만
-남깁니다. Migration 또는 security `psql` apply가 typed command failure 또는
-ambiguous 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@6`입니다. CLI에서
+`direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
+선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
+preflight를 실행합니다. Receipt에는 선택한 `database_transport`, 고정된
+`database_transport_selection=explicit`, typed connectivity 상태, 그리고 session
+route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`만 남깁니다.
+Migration 또는 security `psql` apply가 typed command failure 또는 ambiguous
+결과로 끝날 때 `sql_failure`는 allowlist에 고정된
 `{phase, ordinal, filename, sha256, completed_count}`만 기록합니다. 운영자
 interrupt와 별도 cleanup failure에는 이 필드를 기록하지 않습니다.
 `completed_count`는 실패 ordinal보다 정확히 하나 작아야 하며, filename은 고정
 basename, SHA-256은 실행한 exact payload의 digest여야 합니다. Raw stderr/stdout,
 SQL 본문, connection string, 비밀, 임의 exception text는 receipt에 넣지 않습니다.
-이 진단 변경은 재실행 권한이 아니며 새 invocation에는 새 대표 승인과 새 scoped
-PAT이 필요합니다.
+고정 CA와 route 변경은 재실행 권한이 아니며 새 invocation에는 새 대표 승인과 새
+scoped PAT이 필요합니다.
+
+현재 gate SQL도 PostgreSQL 16.13에서 별도로 실제 세션 검증했습니다. Direct
+advisory latch는 64개의 고유 backend PID에서 `participants=64`, `server_peak=64`,
+`released=true`를 기록했습니다. Registration-row blocker graph는 같은 행을 잠그는
+64개 함수 호출 중 첫 기준 충족 관측에서 57개, 다음 관측에서 64개 blocked backend를
+확인했고 holder 해제 뒤 64/64 완료와 latch drop을 확인했습니다. 이는 SQL latch와
+실제 migration의 `FOR UPDATE` 경로 증거입니다. 실제 PostgREST HTTP/JWT 계층과
+Supavisor multiplexing은 여전히 live Preview에서 확인해야 합니다.
 
 ## 승인 게이트
 
@@ -237,14 +262,18 @@ non-Production control plane에서 만료되는 one-time grant를 원자적으�
 ### Gate 1 — 유료 Preview branch
 
 실행 직전에 Supabase의 현재 branch 시간당 비용을 조회해 조직, Production
-project ref, 예상 TTL, 최대 예상액과 함께 대표에게 제시합니다. 대표가 해당
-금액과 branch 생성을 명시적으로 승인하기 전에는 생성하지 않습니다.
+project ref, 예상 TTL, 최대 예상액, 선택할 DB route를 함께 대표에게 제시합니다.
+대표가 해당 금액, branch 생성, `direct` 또는 `supavisor-session` 한 route를
+action-time에 새로 명시적으로 승인하기 전에는 생성하지 않습니다. 역사적 `@4`와
+`@5` 실행 승인은 다음 유료 invocation에 재사용할 수 없습니다.
 Branch는 clean exact HEAD를 이름과 receipt에 고정한 non-persistent Small
 disposable child 한 곳만 만들며 `with_data=false`를 사용합니다. migration과
 probe는 그 exact commit의 immutable checkout에서만 읽습니다. 실패한 child를
-수리하거나 다른 child로 자동 교체하지 않고 즉시 삭제한 뒤 별도 승인을
-받습니다. 실행할 때 두 required cost-guard flag를 모두 전달하고, 정상·실패 모두
-검증 직후 바로 삭제합니다.
+수리하거나 다른 child로 자동 교체하지 않습니다. 선택한 route의 연결이 실패해도
+동일 child에서 다른 route로 fallback하거나 재시도하지 않고 즉시 삭제합니다.
+새 유료 invocation에는 다시 action-time 승인과 새 scoped PAT이 필요합니다.
+실행할 때 두 required cost-guard flag를 모두 전달하고, 정상·실패 모두 검증 직후
+바로 삭제합니다.
 
 실행기는 create mutation 전에 unique branch name과 생성 시점 기준 110분
 absolute-deadline cleanup watchdog을 먼저 arm합니다. create 응답의 id/ref가
@@ -256,11 +285,15 @@ create 인자 자체를 증거로 쓰지 않습니다. BranchResponse의
 exact-child `GET /v1/projects/{child_ref}/billing/addons`에서
 `selected_addons[].type=compute_instance`와 exact `variant.id=ci_small`을 실제
 확인합니다. scoped PAT은 branch lifecycle 최소 권한과
-`infra_add_ons_read`, `api_gateway_keys_read`만 가지며, 비용이 발생하는 create
-전에 billing add-ons endpoint를 parent ref로 GET해 compute read 권한과 최소
-envelope shape만 preflight합니다. Production API-key metadata나 값은 읽지
-않습니다. API-key read 권한은 cleanup watchdog이 보호하는 child가 생성된 뒤
-그 exact child에서 처음 확인합니다. Redirect는 전부 거부하고
+`infra_add_ons_read`, `api_gateway_keys_read`만 가지며, `supavisor-session` route일
+때만 read-only `database_pooling_config_read`를 추가합니다.
+`database_pooling_config_write`는 갖지 않습니다. 비용이 발생하는 create 전에
+billing add-ons endpoint를 parent ref로 GET해 compute read 권한과 최소 envelope
+shape를 확인하고, `supavisor-session`이면 parent의 pooler-config도 read-only로
+읽어 권한과 구조화된 PRIMARY endpoint shape를 검증한 뒤 즉시 비웁니다. 이 parent
+값을 child 연결 정보나 child capacity 증거로 사용하지 않습니다. Production
+API-key metadata나 값은 읽지 않습니다. API-key read 권한은 cleanup watchdog이
+보호하는 child가 생성된 뒤 그 exact child에서 처음 확인합니다. Redirect는 전부 거부하고
 401/403·unknown variant·중복·shape drift는 즉시 fail-closed합니다.
 Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compute add-on
 미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
@@ -293,20 +326,77 @@ cleanup, child 삭제, branch 목록의 연속 3회 부재 확인 중 하나라�
 자동 재실행하지 말고, 즉시 수동으로 exact-name/ref child를 삭제하고 scoped PAT을
 폐기한 뒤 새로운 대표 승인과 새 PAT 없이는 다음 invocation을 시작하지 않습니다.
 
-Child credential은 복합 `supabase branches get` 대신 Management API의 세
-read-only 요청으로만 가져옵니다. 먼저 exact
-`GET /v1/branches/{child_ref}`에서 direct DB password와 Legacy JWT secret을
-읽고 ref·ACTIVE_HEALTHY·`db.{child_ref}.supabase.co:5432`·`postgres` principal을
-고정 검증합니다. 다음으로 exact
+DB route는 branch 생성 전에 `direct` 또는 `supavisor-session` 중 정확히 하나로
+고정하며 자동 선택이나 runtime fallback을 허용하지 않습니다. 먼저 exact
+`GET /v1/branches/{child_ref}`에서 DB password와 Legacy JWT secret을 읽고
+ref·`ACTIVE_HEALTHY`와 branch 응답의 exact
+`db.{child_ref}.supabase.co:5432`·`postgres` principal을 모든 route의 child
+credential fence로 검증합니다. `direct`는 이 endpoint를 그대로 사용합니다.
+`supavisor-session`은 추가로 exact child ref에만 read-only
+`GET /v1/projects/{child_ref}/config/database/pooler`를 호출합니다. Management
+API가 돌려주는 유일한 `database_type=PRIMARY`, `pool_mode=transaction`, port
+`6543`, database `postgres`, exact `postgres.{child_ref}` user와
+`*.pooler.supabase.com` host를 구조적으로 고정 검증한 다음, 같은 host와 user의
+공식 session port `5432`만 파생해 사용합니다. Region이나 pooler host를 추정하거나
+`connection_string`/`connectionString`을 파싱하지 않으며 transaction port
+`6543`으로 연결하지 않습니다. 이 endpoint와 permission은 Supabase의
+[Management API](https://supabase.com/docs/reference/api/v1-get-pooler-config)에
+정의되어 있습니다.
+`default_pool_size`는 exact child 응답의 2 이상 정수여야 합니다. 하나의 backend는
+PostgREST registration row-lock holder가 사용하고 별도 observer가 release를 수행해야
+하므로 1이면 자기 교착을 피하기 위해 중단합니다. `max_client_conn`은 양의 정수 또는
+JSON `null`만 허용하고, 관측된 값이 64보다 작으면 중단합니다. Direct route의 outer
+`database_pooler_capacity`는 `null`입니다. Session route에서는 비밀 없는
+`{default_pool_size,max_client_conn,max_client_at_least_64,backend_concurrency_target}`만
+기록합니다. `backend_concurrency_target=min(default_pool_size,64)`이며 parent 값을
+child capacity 증거로 대체하거나 client 수를 자동 축소하지 않습니다. DB의
+`max_connections-current_connections` preflight는 direct에서 72개, session에서
+`backend_concurrency_target+2`개의 여유를 요구합니다.
+
+성공한 DB proof는 route와 관계없이 64개의 TLS client session을 동시에 유지한
+transport ingress와 64개의 실제 인증 DB 호출을 별도로 확인합니다. 각 race의
+server latch는 direct에서 64, session에서 `backend_concurrency_target`만큼의 실제
+PostgreSQL backend가 RPC 직전에 겹쳤음을 readback합니다. 따라서 session 결과를
+64개의 backend가 동시에 mutation SQL을 실행했다는 증거로 해석하지 않습니다.
+
+그다음 exact
 `GET /v1/projects/{child_ref}/api-keys?reveal=false`에서 `type=publishable`,
 `name=default`인 canonical UUID 하나만 고른 뒤, 그 ID 하나에만
 `GET /v1/projects/{child_ref}/api-keys/{id}?reveal=true`를 호출합니다.
 `secret`, `service_role`, legacy anon 값은 선택하거나 reveal하지 않습니다.
-Pooler endpoint는 호출하지 않으며 `database_pooling_config_read` 권한도 요구하지
-않습니다. 세 raw response는 성공·부분 실패 모두 재귀적으로 즉시 비웁니다.
+모든 raw response의 `connection_string` 계열 필드를 포함한 비밀 가능 값은
+성공·부분 실패 모두 재귀적으로 즉시 비우며 stdout과 receipt에 남기지 않습니다.
 
-두 probe와 config는 migration과 함께 exact SHA blob을 메모리에 한 번만
-snapshot합니다. Probe는 mutable checkout이나 임시 source file을 다시 열지 않고
+Supabase의
+[database connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres)는
+direct endpoint를 IPv6 기본 migration 경로로, Shared Supavisor session `5432`를
+IPv4-only 환경의 대안으로 구분합니다. 공식
+[PSQL guide](https://supabase.com/docs/guides/database/psql)도 session pooler와
+`verify-full` SSL 연결을 안내합니다. Session mode는 client session 동안 같은
+backend를 유지하므로, 각 파일이 하나의 `BEGIN`/`COMMIT`인 migration과 하나의
+`BEGIN`/`ROLLBACK`인 security suite에 허용되는 유일한 pooler route입니다.
+이 선택지는 `@5`의 SQL 전 실패와 위 transport blocker를 분리해 설명하지만, 아직
+exact child의 인증·SQL 실행 결과는 `미관측`입니다.
+
+`verify-full`은 운영체제 기본 CA에 맡기지 않습니다. Supabase Dashboard와 공식
+PSQL 문서가 제공하는 `Supabase Root 2021 CA` 공개 PEM을
+`certs/supabase-prod-ca-2021.crt`로 추적합니다. 고정 SHA-256
+`700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`과 exact
+release SHA snapshot의 `proof_artifact_sha256`이 모두 일치해야 합니다. Runner는
+그 검증된 bytes만 익명 `os.pipe()`에 쓰고 writer를 닫은 뒤, 링크 수 0인 FIFO의
+read-only descriptor 하나만 `pass_fds`와 `/dev/fd/<n>`으로 자식에 넘깁니다. 각
+`psql` 실행은 새 익명 pipe를 사용하고 이름 있는 CA 파일이나 directory를 만들지
+않습니다. 자식은 전달받은 bytes의 exact digest를 다시 확인하며 host의 canonical
+DNS 이름을 유지해 certificate hostname도 검증합니다. Runtime 다운로드,
+`PGSSLROOTCERT=system`, caller-supplied CA, `sslmode=require`/`verify-ca` downgrade는
+금지합니다. 모든 소유 CA pipe descriptor는 DB process 종료 뒤 정상·실패·interrupt
+경로에서 닫고, 이름 있는 경로가 생성되지 않았으며 descriptor cleanup이 확인된
+경우에만 기존 receipt field `cleanup.ssl_root_cert_removed=true`를 기록합니다.
+descriptor cleanup 실패 시 전체 receipt도 실패입니다. 현재 인증서 만료
+`2031-04-26` 전 교체는 별도 source review와 digest 갱신으로만 수행합니다.
+
+두 probe, config, 세 security suite와 고정 CA는 migration과 함께 exact SHA blob을
+메모리에 한 번만 snapshot합니다. Probe는 mutable checkout이나 임시 source file을 다시 열지 않고
 `python -I -`의 stdin으로 해당 bytes를 실행하며, PostgREST probe가 사용하는
 concurrency module도 같은 메모리 bundle에 결속합니다. 모든 command는 독립
 process group으로 실행합니다. Timeout, runner SIGINT/SIGTERM, nonzero 종료 시
@@ -342,8 +432,17 @@ receipt가 아닙니다.
 
 - exact Git SHA와 아홉 마이그레이션 SHA-256
 - `examples/harmony-preview-squid-config.json`의 canonical byte SHA-256
+- 고정 Supabase CA artifact의 exact SHA-256과 익명 pipe descriptor cleanup을 뜻하는
+  `cleanup.ssl_root_cert_removed=true`
 - parent project ref
 - branch 이름, 현재 시간당 비용과 두 CLI 상한
+- 명시적으로 선택한 `database_transport`와 `database_transport_selection=explicit`
+- session route에서만 exact child의 비밀 없는 `database_pooler_capacity`와
+  `backend_concurrency_target`
+- `database_connectivity_preflight`, outer `database_concurrency`, 그리고
+  `database_client_race_64_way` planned/completed step
+- DB TLS client 64개 동시 ingress, 12개 race별 server latch peak, signed HTTPS TLS
+  client 64개 동시 ingress와 PostgREST blocker-graph peak
 - `cost_guard.watchdog_max_exit_attempt_seconds=6983`,
   `cost_guard.billable_hours_estimate=2`,
   `cost_guard.admission_estimate_total_usd`, `cost_guard.within_hourly_cap`,
@@ -353,18 +452,28 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@5`입니다. 역사적 exact-SHA
-one-shot은 이전 `@4` receipt로 실패했으며 성공 receipt가 아닙니다. Direct DB probe의
-`harmony-preview-concurrency-proof@4` 결과에서는 exact `round_id`, `plan_id`,
+`schema_version=harmony-preview-one-shot-proof@6`입니다. 역사적 exact-SHA
+one-shot은 `@4`와 `@5` receipt로 각각 실패했으며 둘 다 성공 receipt가 아닙니다.
+현재 Database concurrency probe의 `harmony-preview-concurrency-proof@5` 결과에서는
+64-client TLS ingress와 12개 race 각각의
+`{participants=64,released=true,server_peak}`를 먼저 검증합니다. `server_peak`는
+direct에서 64, session에서 exact child pooler readback으로 정한
+`backend_concurrency_target` 이상이어야 합니다. 그 뒤
+exact `round_id`, `plan_id`,
 `inbox_id`, fence expiry, 최종 row counts, connector/revocation/QA-denial/
 stale-result race, durable Codex QA race, negative-path delta, stage/inbox delta를
 각각 명시된 nested key set으로 다시 구성합니다. 세 ID는 canonical lowercase
-UUIDv4이고 서로 달라야 합니다. Direct probe가 내부에서 확인한 unfiltered
+UUIDv4이고 서로 달라야 합니다. Concurrency probe가 내부에서 확인한 unfiltered
 persisted readback과 일치하지 않으면 probe 자체가 receipt를 만들지 않습니다.
 Outer runner도 nested key 누락, 타입/고정값 불일치, 임의 key 추가를 모두
 `probe_receipt_nested_contract_invalid`로 중단합니다.
+이 route-neutral outer contract에는 이전 `direct_database` key가 없습니다.
 
-Signed PostgREST `harmony-preview-postgrest-proof@2` 결과에서는 exact signal,
+현재 Signed PostgREST `harmony-preview-postgrest-proof@3` 결과에서는 64-client HTTPS
+TLS ingress와 64개 signed request를 확인하고, exact registration row를 잠근
+holder를 기준으로 `pg_blocking_pids` graph에서
+`min(backend_concurrency_target,8)`개 이상의 해당 RPC backend가 동시에 대기했음을
+readback합니다. 이 peak는 64개 backend 동시 실행을 뜻하지 않습니다. 이어서 exact signal,
 connector receipt, request receipt count와 JWT verification 방식, registration/
 revocation/request-receipt delta, nonce=`jti`, negative row delta를 다시
 구성합니다. `negative_matrix`는 코드에 고정된 15개 label 전체와 각 label의
@@ -465,11 +574,14 @@ context에서 같은 route는 403, flag OFF는 503, 비인증 요청은 거절�
 
 ### Gate 5 — 64 동시성 및 Squid E2E
 
-별도 승인 후 synthetic/aggregate 입력만 사용합니다. 먼저 64개의 독립 DB
-connection/transaction이 동일한 exact signal request를 동시에 제출합니다.
+별도 승인 후 synthetic/aggregate 입력만 사용합니다. 먼저 64개의 독립 TLS client
+session을 동시에 유지해 exact route ingress를 확인합니다. 이어서 64개의 인증 DB
+client 호출이 동일한 exact signal request를 제출합니다. 각 race는 server latch로
+direct 64개 또는 session의 exact `backend_concurrency_target`만큼 backend가 RPC
+직전에 실제로 겹친 것을 확인합니다.
 그 뒤 나머지 세 typed signal을 각각 한 번 기록하고 plan과 private-content를
 각각 64-way로 race합니다. QA는 generic stage append가 아니라 다음 고정 순서를
-각 단계마다 64개 독립 connection으로 검증합니다.
+각 단계마다 64개 독립 client 호출로 검증합니다.
 
 ```text
 prepare -> claim -> start -> submit -> verify
@@ -492,11 +604,21 @@ publication client는 구성하거나 실행하지 않습니다.
 
 실행기는 Management API에서 직전에 읽기 전용 확인한 parent Production ref와
 child Preview branch ref를 각각 `--parent-project-ref`,
-`--expected-branch-ref`로 받아야 합니다. direct host는 정확히
-`db.<child-ref>.supabase.co:5432`여야 하고, host ref가 parent ref와 같거나
-승인된 child ref와 다르면 environment fence를 seed하기 전에 즉시
-중단합니다. pooler·별칭 host나 ref를 DB에서 스스로 추정하는 실행은
-허용하지 않습니다.
+`--expected-branch-ref`로 받아야 하며, 승인된 route와 실제 연결 route를 receipt에
+기록합니다.
+
+- `direct`: host는 정확히 `db.<child-ref>.supabase.co:5432`, user는
+  `postgres`여야 합니다.
+- `supavisor-session`: exact child의 pooler-config readback에서 고른 host와 port
+  `5432`만 사용하고, user의 tenant suffix는 exact child ref여야 합니다. 같은
+  readback의 `database_type`, mode, database name도 고정값과 일치해야 합니다.
+- transaction mode, port `6543`, caller-supplied alias, parent-ref user, 합성한
+  region/host는 모두 거절합니다.
+
+어느 route든 branch API의 exact child ref, 승인된 child ref, credential/pooler
+readback의 child binding 중 하나라도 parent ref와 같거나 서로 다르면 environment
+fence를 seed하기 전에 중단합니다. 연결 실패 뒤 다른 route를 같은 child에서
+시도하지 않습니다.
 
 Squid `content_source`는 Preview에 복제된 다음 자연 원장과 exact hash가
 일치해야 합니다.
@@ -514,10 +636,10 @@ QA evidence 또는 inbox identity는 conflict로 row delta 0 거절되어야 합
 이어 connector 경계의 wrong client/workspace/lane/role, future/expired JWT,
 service role, quiz signal payload/hash 변조는 실제 signed-JWT PostgREST 경로에서
 거절하는지 확인합니다. official source의 content/outbox binding과 source hash
-변조는 direct-PG security suite에서 검증하며, 아직 signed-JWT PostgREST 경로의
+변조는 DB security suite에서 검증하며, 아직 signed-JWT PostgREST 경로의
 source mutation proof로 주장하지 않습니다. plan/stage 경계의 self-review,
 specialist principal 재사용, stage 순서 위반과 logical identity conflict도 동일
-claims를 주입한 direct-PG transaction probe로 검증합니다. 이 결과는 stage RPC의
+claims를 주입한 DB transaction probe로 검증합니다. 이 결과는 stage RPC의
 실제 PostgREST 검증으로 과장하지 않습니다. 현재 harness는 registration
 revocation과 별도 content item의 current source-version drift를 모두 runtime으로
 재현합니다. 후자는 submit 완료 뒤 version을 supersede하고 64개 reconciler가
@@ -535,7 +657,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@5` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@6` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 1. signal, plan, private-content, operator-inbox, Recap의 각 64개 호출과

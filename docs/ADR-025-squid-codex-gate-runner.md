@@ -1,9 +1,11 @@
 # ADR-025: Squid Codex Gate Runner v1
 
-**Status:** Proposed; exact SHA
-`a24492147b256785b71bc431e268844587591df1` produced a fail-closed paid Preview
-receipt, not a successful proof. The child and scoped PAT cleanup were verified,
-and neither the durable migration nor runner has been applied to Production.
+**Status:** Proposed; exact SHAs
+`a24492147b256785b71bc431e268844587591df1` and
+`919d70feb0b778830d8f20f70823c20fcf049f61` each produced a fail-closed paid
+Preview receipt, not a successful proof. Both children and scoped PATs were
+verified deleted, and neither the durable migration nor runner has been applied
+to Production.
 **Date:** 2026-08-27
 **Deciders:** CoinEasy representative, content, community, security, and
 engineering leads
@@ -21,12 +23,14 @@ The new durable Codex gate described here is included as a checked-in migration
 and one-shot Preview proof runner. Local PostgreSQL 16 replay passes all nine
 allowlisted migrations and all three Harmony security suites, alongside the
 64-way convergence checks. The paid `harmony-preview-one-shot-proof@4` execution
-at the exact SHA above failed closed with `preview_migration_apply_failed`.
-Its child and scoped PAT were deleted and verified absent; actual billing is
+at the first exact SHA above failed closed with `preview_migration_apply_failed`.
+The paid `harmony-preview-one-shot-proof@5` execution at the second exact SHA
+failed closed before SQL with `preview_database_connectivity_failed`. Both
+children and scoped PATs were deleted and verified absent; actual billing is
 `unobserved`. Those files have not been applied to Production, and neither the
-local evidence nor the failed receipt substitutes for a successful, separately
-approved exact-SHA Supabase Preview proof. This ADR therefore does not call the
-durable gate deployed, deployable, or Production-ready.
+local evidence nor either failed receipt substitutes for a successful,
+separately approved exact-SHA Supabase Preview proof. This ADR therefore does
+not call the durable gate deployed, deployable, or Production-ready.
 
 Moving directly from that rehearsal to a live model worker would leave a more
 important boundary unproven. The current stage operation key includes the
@@ -91,10 +95,45 @@ or an absolute cap. The guard covers disposable Supabase infrastructure billing
 only and does not relax the zero model/provider-cost authority represented by
 `max_cost_microusd=0`.
 
-The current outer receipt is `harmony-preview-one-shot-proof@5`. After loading
-the exact child credential and before applying SQL, it runs a secret-free
-`SELECT 1` connectivity preflight. A typed or ambiguous migration/security
-`psql` apply failure may expose only the allowlisted diagnostic
+The current outer receipt is `harmony-preview-one-shot-proof@6`. The runner
+requires an explicit `direct` or `supavisor-session` route before any paid child
+creation and records that choice. It never switches routes on failure. The
+session route first validates read-only parent pooler access, then binds the
+exact child `PRIMARY` pooler row and derives only the documented session port
+5432 from its transaction-mode 6543 response. It never parses a returned
+connection string. Parent pooler values cannot serve as child endpoint or
+capacity evidence.
+
+All remote database subprocesses use `verify-full` with the checked-in
+`certs/supabase-prod-ca-2021.crt` (`Supabase Root 2021 CA`) bytes bound to the
+exact release SHA and fixed SHA-256
+`700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`.
+The runner writes those bytes to an anonymous pipe, closes the writer, validates
+the unlinked FIFO and read-only descriptor, and passes only that descriptor via
+`pass_fds` and `/dev/fd/<n>`. Each `psql` process receives a fresh anonymous
+pipe; no named CA file or directory is created. The child rechecks the exact
+digest and the runner rejects system or caller-supplied trust and weaker SSL
+modes. The receipt binds the artifact under `proof_artifact_sha256` and retains
+the existing `cleanup.ssl_root_cert_removed=true` field to mean that no named
+path was created and every owned CA descriptor was closed. Cleanup failure
+makes the outer receipt fail.
+
+The outer receipt uses the route-neutral `database_concurrency` result and
+`database_client_race_64_way` step; it has no legacy `direct_database` key.
+It accepts only `harmony-preview-concurrency-proof@5` and
+`harmony-preview-postgrest-proof@3`, rebuilding their TLS and server-overlap
+objects from exact allowlists rather than forwarding arbitrary child JSON.
+`database_pooler_capacity` is null for direct. For session it contains only
+`default_pool_size`, `max_client_conn`, `max_client_at_least_64`, and
+`backend_concurrency_target`. The exact child `default_pool_size` must be an
+integer of at least two so the row-lock holder and observer cannot self-deadlock;
+`backend_concurrency_target=min(default_pool_size,64)`. A numeric
+`max_client_conn` below 64 fails closed.
+
+After loading the exact child credential and selected route, the runner runs a
+secret-free `SELECT 1` connectivity preflight before applying SQL. A typed or
+ambiguous migration/security `psql` apply failure may expose only the
+allowlisted diagnostic
 `sql_failure={phase,ordinal,filename,sha256,completed_count}`: the filename is a
 fixed basename, the digest binds the exact payload, and `completed_count` must
 equal `ordinal - 1`. Operator interrupts and unrelated cleanup failures leave
@@ -238,7 +277,16 @@ with request key, claim time, principal, attempt count, and lease expiry, and
 are limited to a fifteen-minute lease, so a worker holding an expired fence
 cannot start after a reclaim.
 
-The approved 64-way proof contract is exact, not statistical:
+The approved 64-way proof contract is exact, not statistical. It separates 64
+simultaneously held TLS client sessions and 64 authenticated client calls from
+the PostgreSQL backend overlap readback. Direct requires a server peak of 64;
+the session route requires the exact-child `backend_concurrency_target` for all
+twelve DB races. The signed PostgREST proof separately holds 64 HTTPS TLS
+sessions, executes 64 signed requests, and observes at least
+`min(backend_concurrency_target,8)` matching RPC backends in the registration
+row-lock blocker graph. It does not claim 64 concurrent PostgREST DB backends.
+
+The logical convergence contract is:
 
 - prepare: one new request/run and 63 reuses;
 - claim: one claimed winner and 63 non-claiming responses;
@@ -353,18 +401,39 @@ separate, non-self-approving contexts.
   Python and Netlify function suites. Exact counts are intentionally omitted
   because they change as the repository evolves; the current exact SHA must be
   re-tested before any Preview execution.
+- The current gate SQL was also exercised against PostgreSQL 16.13 with real
+  sessions. The direct advisory latch observed 64 distinct backend PIDs and a
+  server peak of 64. A 64-caller registration-row lock simulation reached the
+  PostgREST blocker threshold at 57, then observed all 64 blocked callers,
+  released the holder, completed every caller, and dropped the latch. This
+  validates the PostgreSQL lock/readback mechanism and the migration's matching
+  `FOR UPDATE` path; it does not substitute for live PostgREST/JWT or Supavisor
+  evidence.
 - Exact SHA `a24492147b256785b71bc431e268844587591df1` produced one paid
   `harmony-preview-one-shot-proof@4` receipt that failed closed at
   `preview_migration_apply_failed`. The exact child and scoped PAT cleanup were
   verified; actual billing remains `unobserved`. This is not a successful proof.
 - The `@4` receipt could not distinguish direct database connectivity failure
   from failure against the hosted baseline because it had neither the separate
-  connectivity preflight nor the allowlisted ordinal SQL diagnostic. Direct
-  IPv6 reachability and hosted parent schema drift remain hypotheses; the root
-  cause is unobserved.
-- The current `@5` runner adds the pre-SQL `SELECT 1` check and safe
-  `{phase, ordinal, filename, sha256, completed_count}` diagnostic without raw
-  command output, SQL, secrets, or exception text.
+  connectivity preflight nor the allowlisted ordinal SQL diagnostic.
+- Exact SHA `919d70feb0b778830d8f20f70823c20fcf049f61` produced one paid
+  `harmony-preview-one-shot-proof@5` receipt that failed closed at
+  `preview_database_connectivity_failed`. SQL did not start, migration and
+  security completed counts were zero, and `sql_failure` was null. Three exact
+  child absence confirmations and scoped PAT deletion were verified; actual
+  billing remains `unobserved`. This is not a successful proof.
+- The `@5` receipt itself proves only the typed connectivity failure. Separate
+  secret-free diagnosis reproduced an exact direct host with AAAA but no A
+  record and `No route to host` at IPv6 port 5432. The Seoul shared pooler at
+  IPv4 port 5432 completed TLS hostname verification with the pinned Supabase
+  CA, while the system CA rejected its self-signed chain. These are transport
+  and trust blocker observations, not deleted-child authentication, SQL, or
+  proof success.
+- The current `@6` runner adds the explicit route, exact parent and child pooler
+  readbacks, pinned CA over anonymous descriptors, route-neutral concurrency
+  receipt, 64-client TLS ingress, route-bound server overlap readback, pre-SQL `SELECT 1`,
+  and safe `{phase, ordinal, filename, sha256, completed_count}` diagnostic
+  without raw command output, SQL, secrets, or exception text.
 - The durable migration and runner are included but not applied to Production.
   Therefore the exact-SHA Supabase Preview proof, live Codex worker, Production
   migration, and every feature-flag activation remain blocked.
@@ -380,11 +449,12 @@ separate, non-self-approving contexts.
 4. [x] Pass local PostgreSQL migration, security, and 64-way convergence
        checks; preserve only the non-secret distribution and side-effect
        receipt in this ADR.
-5. [ ] The historical `@4` invocation is consumed. Only after a fresh external
-       representative approval and issuance of a fresh scoped PAT, invoke the
-       current `@5` runner once with both required cost ceilings, pass the same
-       contract on one disposable Supabase Preview, and immediately confirm
-       child deletion. Do not reuse, repair, or replace the failed child.
+5. [ ] The historical `@4` and `@5` invocations are consumed. Only after a fresh
+       external representative approval and issuance of a fresh scoped PAT,
+       invoke the current `@6` runner once with both required cost ceilings and
+       one explicit route, pass the same contract on one disposable Supabase
+       Preview, and immediately confirm child deletion. Do not reuse, repair,
+       replace, or switch route on the failed child.
 6. [ ] Under another separate approval, connect one QA-only Codex worker with
        no planning, content, operator, Recap, messaging, or publication token.
 7. [ ] Require clean Preview rounds and measured operator value before adding

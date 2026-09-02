@@ -16,11 +16,16 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
+import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -68,6 +73,140 @@ CONNECTOR_REQUEST_DIGEST_VECTOR_SHA256 = (
 DIRECT_SUPABASE_DB_HOST_PATTERN = re.compile(
     r"^db\.([a-z0-9]{20})\.supabase\.co$"
 )
+SUPAVISOR_HOST_PATTERN = re.compile(
+    r"^(?=[a-z0-9-]{1,63}\.pooler\.supabase\.com$)"
+    r"(?=[^.]*-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"\.pooler\.supabase\.com$"
+)
+DATABASE_TRANSPORTS = ("direct", "supavisor-session")
+SUPABASE_CA_SHA256 = (
+    "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
+)
+SUPABASE_CA_FD_ENV = "HARMONY_PREVIEW_SUPABASE_CA_FD"
+PSQL_BLOCKED_ENV_NAMES = {
+    "PAGER",
+    "PSQLRC",
+    "PSQL_HISTORY",
+    "PSQL_PAGER",
+    "PSQL_WATCH_PAGER",
+    "PSQL_EDITOR",
+    "PSQL_EDITOR_LINENUMBER_ARG",
+}
+SERVER_CONCURRENCY_METHOD = "postgres_advisory_session_latch"
+SERVER_CONCURRENCY_RACE_LABELS = (
+    "connector_request",
+    "plan",
+    "private_content",
+    "codex_prepare",
+    "codex_claim",
+    "codex_start",
+    "codex_submit",
+    "codex_verify",
+    "operator_inbox",
+    "recap",
+    "qa_denial",
+    "codex_reconciliation",
+)
+
+
+class ServerConcurrencyGate:
+    def __init__(
+        self,
+        *,
+        label: str,
+        table_name: str,
+        advisory_class: int,
+        advisory_object: int,
+        client_sessions: int,
+        backend_target: int,
+        wait_seconds: int,
+    ) -> None:
+        self.label = label
+        self.table_name = table_name
+        self.advisory_class = advisory_class
+        self.advisory_object = advisory_object
+        self.client_sessions = client_sessions
+        self.backend_target = backend_target
+        self.wait_seconds = wait_seconds
+
+    def wrap(self, sql: str) -> str:
+        lock_count_sql = f"""
+select pg_catalog.count(*)::integer as participant_count
+from pg_catalog.pg_locks lock
+where lock.locktype = 'advisory'
+  and lock.database = (
+    select database.oid
+    from pg_catalog.pg_database database
+    where database.datname = pg_catalog.current_database()
+  )
+  and lock.classid = {self.advisory_class}::oid
+  and lock.objid = {self.advisory_object}::oid
+  and lock.objsubid = 2
+  and lock.mode = 'ShareLock'
+  and lock.granted
+""".strip()
+        return f"""
+select pg_catalog.pg_advisory_lock_shared(
+  {self.advisory_class}, {self.advisory_object}
+);
+with observed as ({lock_count_sql})
+update {self.table_name} gate
+set participants = gate.participants + 1,
+    server_peak = greatest(
+      gate.server_peak, observed.participant_count
+    ),
+    released = gate.released or (
+      observed.participant_count >= {self.backend_target}
+    )
+from observed
+where gate.singleton
+returning gate.participants;
+do $harmony_server_concurrency_gate$
+declare
+  deadline timestamptz := pg_catalog.clock_timestamp()
+    + interval '{self.wait_seconds} seconds';
+begin
+  loop
+    exit when (
+      select gate.released from {self.table_name} gate
+      where gate.singleton
+    );
+    if pg_catalog.clock_timestamp() >= deadline then
+      raise exception 'harmony_preview_server_concurrency_gate_timeout';
+    end if;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+end
+$harmony_server_concurrency_gate$;
+{sql}
+"""
+
+
+def _new_server_concurrency_gate(
+    label: str,
+    client_sessions: int,
+    backend_target: int,
+    *,
+    wait_seconds: int = 45,
+) -> ServerConcurrencyGate:
+    if not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", label):
+        raise ValueError("invalid server concurrency label")
+    if client_sessions < 2 or client_sessions > CONCURRENCY:
+        raise ValueError("invalid server concurrency participant count")
+    if backend_target < 1 or backend_target > client_sessions:
+        raise ValueError("invalid server concurrency backend target")
+    nonce = uuid.uuid4().hex
+    advisory_class = int(nonce[:8], 16) & 0x7FFFFFFF or 1
+    advisory_object = int(nonce[8:16], 16) & 0x7FFFFFFF or 1
+    return ServerConcurrencyGate(
+        label=label,
+        table_name=f"private.harmony_probe_latch_{nonce}",
+        advisory_class=advisory_class,
+        advisory_object=advisory_object,
+        client_sessions=client_sessions,
+        backend_target=backend_target,
+        wait_seconds=wait_seconds,
+    )
 
 
 def _compact(value: object) -> str:
@@ -87,29 +226,269 @@ def _is_local_host(host: str) -> bool:
 def _psql_child_environment(
     host: str,
     source: dict[str, str] | None = None,
-) -> dict[str, str]:
-    environment = dict(os.environ if source is None else source)
+) -> tuple[dict[str, str], bytes | None]:
+    source_environment = os.environ if source is None else source
+    incoming = dict(source_environment)
+    if source is None:
+        # Consume the one-shot inherited descriptor immediately.  The other
+        # libpq controls are scrubbed after validation and before any spawn.
+        os.environ.pop(SUPABASE_CA_FD_ENV, None)
+    password = incoming.get("PGPASSWORD", "")
+    environment = {
+        name: value
+        for name, value in incoming.items()
+        if not name.upper().startswith("PG")
+        and name not in PSQL_BLOCKED_ENV_NAMES
+        and name != SUPABASE_CA_FD_ENV
+    }
     if _is_local_host(host):
-        return environment
-    if environment.get("PGSSLMODE", "").strip().lower() != "verify-full":
-        raise ValueError(
-            "remote direct database requires PGSSLMODE=verify-full"
+        if password:
+            environment["PGPASSWORD"] = password
+        environment.update(
+            {
+                "PGCONNECT_TIMEOUT": "15",
+                "PGAPPNAME": "coineasy-harmony-preview-proof",
+            }
         )
-    root_certificate = environment.get("PGSSLROOTCERT", "").strip()
-    if not root_certificate:
+        if source is None:
+            for name in tuple(os.environ):
+                if (
+                    name.upper().startswith("PG")
+                    or name in PSQL_BLOCKED_ENV_NAMES
+                ):
+                    os.environ.pop(name, None)
+        return environment, None
+    if incoming.get("PGSSLMODE", "").strip().lower() != "verify-full":
         raise ValueError(
-            "remote direct database requires explicit PGSSLROOTCERT trust"
+            "remote database requires PGSSLMODE=verify-full"
         )
-    if root_certificate.lower() != "system" and not (
-        os.path.isabs(root_certificate)
-        and os.path.isfile(root_certificate)
-        and os.access(root_certificate, os.R_OK)
+    if incoming.get("PGGSSENCMODE", "").strip().lower() != "disable":
+        raise ValueError(
+            "remote database requires PGGSSENCMODE=disable"
+        )
+    if incoming.get("PGSSLCERTMODE", "").strip().lower() != "disable":
+        raise ValueError(
+            "remote database requires PGSSLCERTMODE=disable"
+        )
+    if incoming.get("PGSSLROOTCERT", "").strip():
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    if not password:
+        raise ValueError("remote database requires an in-memory password")
+    fd_text = incoming.get(SUPABASE_CA_FD_ENV, "")
+    if not fd_text.isascii() or not fd_text.isdigit():
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    certificate_fd = int(fd_text)
+    if certificate_fd < 3 or str(certificate_fd) != fd_text:
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    certificate_payload = b""
+    try:
+        certificate_stat = os.fstat(certificate_fd)
+        if (
+            not stat.S_ISFIFO(certificate_stat.st_mode)
+            or certificate_stat.st_nlink != 0
+            or (
+                fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
+                & os.O_ACCMODE
+            )
+            != os.O_RDONLY
+        ):
+            raise ValueError
+        chunks: list[bytes] = []
+        total = 0
+        while total <= 4096:
+            chunk = os.read(certificate_fd, 4097 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        certificate_payload = b"".join(chunks)
+        chunks.clear()
+        if (
+            not certificate_payload
+            or len(certificate_payload) > 4096
+            or hashlib.sha256(certificate_payload).hexdigest()
+            != SUPABASE_CA_SHA256
+        ):
+            raise ValueError
+    except (OSError, ValueError):
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        ) from None
+    finally:
+        try:
+            os.close(certificate_fd)
+        except OSError:
+            pass
+    environment.update(
+        {
+            "PGPASSWORD": password,
+            "PGSSLMODE": "verify-full",
+            "PGGSSENCMODE": "disable",
+            "PGSSLCERTMODE": "disable",
+            "PGCONNECT_TIMEOUT": "15",
+            "PGAPPNAME": "coineasy-harmony-preview-proof",
+        }
+    )
+    if source is None:
+        for name in tuple(os.environ):
+            if (
+                name.upper().startswith("PG")
+                or name in PSQL_BLOCKED_ENV_NAMES
+            ):
+                os.environ.pop(name, None)
+    return environment, certificate_payload
+
+
+def _create_unlinked_ca_reader(payload: bytes) -> int:
+    if (
+        not payload
+        or len(payload) > 4096
+        or hashlib.sha256(payload).hexdigest() != SUPABASE_CA_SHA256
+        or not hasattr(os, "pipe")
     ):
-        raise ValueError(
-            "remote direct database PGSSLROOTCERT must be system or "
-            "an absolute readable file"
-        )
-    return environment
+        raise RuntimeError("Supabase CA fd materialization failed")
+    reader_fd = -1
+    writer_fd = -1
+    try:
+        reader_fd, writer_fd = os.pipe()
+        reader_stat = os.fstat(reader_fd)
+        writer_stat = os.fstat(writer_fd)
+        if (
+            reader_fd < 3
+            or writer_fd < 3
+            or not stat.S_ISFIFO(reader_stat.st_mode)
+            or not stat.S_ISFIFO(writer_stat.st_mode)
+            or reader_stat.st_nlink != 0
+            or writer_stat.st_nlink != 0
+            or (fcntl.fcntl(reader_fd, fcntl.F_GETFL) & os.O_ACCMODE)
+            != os.O_RDONLY
+            or (fcntl.fcntl(writer_fd, fcntl.F_GETFL) & os.O_ACCMODE)
+            != os.O_WRONLY
+        ):
+            raise OSError
+        written = 0
+        while written < len(payload):
+            count = os.write(writer_fd, payload[written:])
+            if count <= 0:
+                raise OSError
+            written += count
+        os.close(writer_fd)
+        writer_fd = -1
+        return reader_fd
+    except BaseException:
+        for descriptor in (reader_fd, writer_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        raise RuntimeError("Supabase CA fd materialization failed") from None
+
+
+def _prove_tls_ingress(
+    host: str,
+    port: int,
+    *,
+    context: ssl.SSLContext,
+    client_sessions: int,
+    postgres_ssl_request: bool,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    if (
+        not 2 <= client_sessions <= CONCURRENCY
+        or not 1 <= timeout_seconds <= 30
+    ):
+        raise ValueError("invalid TLS ingress proof bounds")
+    ready = threading.Barrier(client_sessions + 1)
+    release = threading.Event()
+
+    def connect(_: int) -> bool:
+        raw_socket: socket.socket | None = None
+        tls_socket: ssl.SSLSocket | None = None
+        try:
+            raw_socket = socket.create_connection(
+                (host, port),
+                timeout=timeout_seconds,
+            )
+            if postgres_ssl_request:
+                raw_socket.sendall(struct.pack("!II", 8, 80877103))
+                if raw_socket.recv(1) != b"S":
+                    raise RuntimeError("PostgreSQL TLS was not accepted")
+            tls_socket = context.wrap_socket(
+                raw_socket,
+                server_hostname=host,
+            )
+            raw_socket = None
+            if not tls_socket.getpeercert(binary_form=True):
+                raise RuntimeError("TLS peer certificate missing")
+            ready.wait(timeout=timeout_seconds)
+            if not release.wait(timeout_seconds):
+                raise RuntimeError("TLS ingress release timed out")
+            return True
+        finally:
+            if tls_socket is not None:
+                tls_socket.close()
+            if raw_socket is not None:
+                raw_socket.close()
+
+    futures = []
+    try:
+        with ThreadPoolExecutor(max_workers=client_sessions) as pool:
+            futures = [pool.submit(connect, index) for index in range(client_sessions)]
+            try:
+                ready.wait(timeout=timeout_seconds)
+            except threading.BrokenBarrierError:
+                raise RuntimeError(
+                    "TLS ingress did not establish every client session"
+                ) from None
+            finally:
+                release.set()
+            if any(future.result() is not True for future in futures):
+                raise RuntimeError("TLS ingress client session failed")
+    finally:
+        release.set()
+    return {
+        "client_sessions": client_sessions,
+        "simultaneously_established": True,
+    }
+
+
+def _prove_postgres_tls_ingress(
+    psql: "Psql",
+    host: str,
+    port: int,
+) -> dict[str, object]:
+    if psql.ca_payload is None:
+        raise RuntimeError("remote PostgreSQL CA payload unavailable")
+    try:
+        ca_text = psql.ca_payload.decode("ascii", "strict")
+    except UnicodeDecodeError:
+        raise RuntimeError("remote PostgreSQL CA payload invalid") from None
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cadata=ca_text)
+    ca_text = ""
+    evidence = _prove_tls_ingress(
+        host,
+        port,
+        context=context,
+        client_sessions=CONCURRENCY,
+        postgres_ssl_request=True,
+        timeout_seconds=min(30.0, max(5.0, psql.timeout_seconds)),
+    )
+    return {
+        "method": "postgres_sslrequest_tls",
+        **evidence,
+        "certificate_authority_sha256": SUPABASE_CA_SHA256,
+    }
 
 
 def _validated_disposable_preview_ref(
@@ -117,12 +496,10 @@ def _validated_disposable_preview_ref(
     port: int,
     expected_branch_ref: str | None,
     parent_project_ref: str | None,
+    database_transport: str,
+    user: str,
+    database: str,
 ) -> str:
-    match = DIRECT_SUPABASE_DB_HOST_PATTERN.fullmatch(host.lower())
-    if not match or port != 5432:
-        raise ValueError(
-            "disposable Preview mode requires the direct db.<branch-ref>.supabase.co:5432 host"
-        )
     if not re.fullmatch(r"[a-z0-9]{20}", expected_branch_ref or ""):
         raise ValueError(
             "disposable Preview mode requires exact 20-character --expected-branch-ref"
@@ -131,12 +508,27 @@ def _validated_disposable_preview_ref(
         raise ValueError(
             "disposable Preview mode requires exact 20-character --parent-project-ref"
         )
-    host_ref = match.group(1)
-    if host_ref != expected_branch_ref:
-        raise ValueError("direct database host does not match the approved Preview branch ref")
-    if host_ref == parent_project_ref:
+    if expected_branch_ref == parent_project_ref:
         raise ValueError("refusing to run the disposable Preview probe against Production")
-    return host_ref
+    if database != "postgres" or port != 5432:
+        raise ValueError("disposable Preview database target is invalid")
+    if database_transport == "direct":
+        match = DIRECT_SUPABASE_DB_HOST_PATTERN.fullmatch(host.lower())
+        if (
+            match is None
+            or match.group(1) != expected_branch_ref
+            or user != "postgres"
+        ):
+            raise ValueError("direct Preview database fence is invalid")
+    elif database_transport == "supavisor-session":
+        if (
+            SUPAVISOR_HOST_PATTERN.fullmatch(host.lower()) is None
+            or user != f"postgres.{expected_branch_ref}"
+        ):
+            raise ValueError("Supavisor session Preview fence is invalid")
+    else:
+        raise ValueError("unsupported database transport")
+    return expected_branch_ref
 
 
 def _is_canonical_lowercase_uuid4(value: object) -> bool:
@@ -151,6 +543,21 @@ def _is_canonical_lowercase_uuid4(value: object) -> bool:
         and parsed.variant == uuid.RFC_4122
         and str(parsed) == value
     )
+
+
+def _required_free_database_connections(
+    database_transport: str,
+    backend_concurrency_target: int,
+) -> int:
+    if database_transport == "direct":
+        if backend_concurrency_target != CONCURRENCY:
+            raise ValueError("direct backend concurrency target mismatch")
+        return CONCURRENCY + 8
+    if database_transport == "supavisor-session":
+        if not 1 <= backend_concurrency_target <= CONCURRENCY:
+            raise ValueError("session backend concurrency target invalid")
+        return backend_concurrency_target + 2
+    raise ValueError("unsupported database transport")
 
 
 def _verify_happy_path_identities(
@@ -213,7 +620,10 @@ class Psql:
         user: str,
         database: str,
         timeout_seconds: float,
+        backend_concurrency_target: int = CONCURRENCY,
     ) -> None:
+        if not 1 <= backend_concurrency_target <= CONCURRENCY:
+            raise ValueError("invalid backend concurrency target")
         self.command = [
             executable,
             "-X",
@@ -230,7 +640,28 @@ class Psql:
             "-Atq",
         ]
         self.timeout_seconds = timeout_seconds
-        self.environment = _psql_child_environment(host)
+        self.backend_concurrency_target = backend_concurrency_target
+        self.environment, self.ca_payload = _psql_child_environment(host)
+        self._server_gate_local = threading.local()
+        self.server_concurrency_evidence: dict[str, dict[str, object]] = {}
+
+    def run_with_server_concurrency_gate(
+        self,
+        gate: ServerConcurrencyGate,
+        invoke: Callable[[], dict[str, object]],
+    ) -> dict[str, object]:
+        if getattr(self._server_gate_local, "gate", None) is not None:
+            raise RuntimeError("nested server concurrency gate")
+        self._server_gate_local.gate = gate
+        self._server_gate_local.used = False
+        try:
+            result = invoke()
+            if self._server_gate_local.used is not True:
+                raise RuntimeError("server concurrency gate was not consumed")
+            return result
+        finally:
+            self._server_gate_local.gate = None
+            self._server_gate_local.used = False
 
     def _execute(
         self,
@@ -238,14 +669,45 @@ class Psql:
         *,
         timeout_seconds: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        certificate_fd = -1
+        environment = dict(self.environment)
+        pass_fds: tuple[int, ...] = ()
         try:
+            gate = getattr(self._server_gate_local, "gate", None)
+            if gate is not None:
+                if self._server_gate_local.used is True:
+                    raise RuntimeError(
+                        "server concurrency gate consumed more than once"
+                    )
+                if not isinstance(gate, ServerConcurrencyGate):
+                    raise RuntimeError("invalid server concurrency gate")
+                self._server_gate_local.used = True
+                sql = gate.wrap(sql)
+            if self.ca_payload is not None:
+                certificate_fd = _create_unlinked_ca_reader(self.ca_payload)
+                certificate_stat = os.fstat(certificate_fd)
+                if (
+                    certificate_fd < 3
+                    or not stat.S_ISFIFO(certificate_stat.st_mode)
+                    or certificate_stat.st_nlink != 0
+                    or (
+                        fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
+                        & os.O_ACCMODE
+                    )
+                    != os.O_RDONLY
+                ):
+                    raise RuntimeError("Supabase CA fd materialization failed")
+                environment["PGSSLROOTCERT"] = f"/dev/fd/{certificate_fd}"
+                pass_fds = (certificate_fd,)
             return subprocess.run(
                 self.command,
                 input=sql,
                 text=True,
                 capture_output=True,
                 check=False,
-                env=self.environment,
+                env=environment,
+                close_fds=True,
+                pass_fds=pass_fds,
                 timeout=(
                     self.timeout_seconds
                     if timeout_seconds is None
@@ -256,6 +718,16 @@ class Psql:
             raise RuntimeError(
                 "psql_timeout_commit_state_unknown_no_retry"
             ) from exc
+        finally:
+            environment.pop("PGSSLROOTCERT", None)
+            environment.clear()
+            if certificate_fd >= 0:
+                try:
+                    os.close(certificate_fd)
+                except OSError:
+                    raise RuntimeError(
+                        "Supabase CA fd cleanup failed"
+                    ) from None
 
     def run(self, sql: str) -> str:
         result = self._execute(sql)
@@ -1082,24 +1554,189 @@ def _assert_no_forbidden_side_effects(
         raise RuntimeError(f"{operation} race reported a forbidden side effect")
 
 
+def _server_concurrency_setup_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+create unlogged table {gate.table_name} (
+  singleton boolean primary key default true check (singleton),
+  participants integer not null default 0,
+  server_peak integer not null default 0,
+  released boolean not null default false
+);
+insert into {gate.table_name} (singleton) values (true);
+select pg_catalog.jsonb_build_object(
+  'participants', participants,
+  'released', released,
+  'server_peak', server_peak
+)::text
+from {gate.table_name}
+where singleton;
+"""
+
+
+def _server_concurrency_readback_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+select pg_catalog.jsonb_build_object(
+  'participants', participants,
+  'released', released,
+  'server_peak', server_peak
+)::text
+from {gate.table_name}
+where singleton;
+"""
+
+
+def _server_concurrency_release_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+update {gate.table_name} set released = true where singleton;
+select 'released';
+"""
+
+
+def _server_concurrency_drop_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+drop table if exists {gate.table_name};
+select 'dropped';
+"""
+
+
+def _setup_server_concurrency_gate(
+    psql: Psql,
+    gate: ServerConcurrencyGate,
+) -> None:
+    try:
+        initial = psql.json(_server_concurrency_setup_sql(gate))
+        if initial != {
+            "participants": 0,
+            "released": False,
+            "server_peak": 0,
+        }:
+            raise RuntimeError("server concurrency gate setup failed")
+    except BaseException:
+        try:
+            if psql.run(_server_concurrency_drop_sql(gate)) != "dropped":
+                raise RuntimeError
+        except BaseException as cleanup_error:
+            raise RuntimeError(
+                "server concurrency gate setup cleanup failed"
+            ) from cleanup_error
+        raise
+
+
+def _server_concurrency_receipt(psql: Psql) -> dict[str, object]:
+    if set(psql.server_concurrency_evidence) != set(
+        SERVER_CONCURRENCY_RACE_LABELS
+    ):
+        raise RuntimeError("server concurrency evidence set mismatch")
+    races: dict[str, dict[str, object]] = {}
+    minimum_peak = CONCURRENCY
+    for label in SERVER_CONCURRENCY_RACE_LABELS:
+        evidence = psql.server_concurrency_evidence.get(label)
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {
+                "participants",
+                "released",
+                "server_peak",
+            }
+            or evidence.get("participants") != CONCURRENCY
+            or evidence.get("released") is not True
+            or type(evidence.get("server_peak")) is not int
+            or not psql.backend_concurrency_target
+            <= int(evidence["server_peak"])
+            <= CONCURRENCY
+        ):
+            raise RuntimeError("server concurrency evidence invalid")
+        races[label] = dict(evidence)
+        minimum_peak = min(minimum_peak, int(evidence["server_peak"]))
+    return {
+        "method": SERVER_CONCURRENCY_METHOD,
+        "client_sessions": CONCURRENCY,
+        "backend_target": psql.backend_concurrency_target,
+        "minimum_server_peak": minimum_peak,
+        "race_count": len(SERVER_CONCURRENCY_RACE_LABELS),
+        "races": races,
+    }
+
+
 def _race_rows(
+    psql: Psql,
+    label: str,
     invoke: Callable[[int], dict[str, object]],
+    *,
+    concurrency: int | None = None,
 ) -> list[dict[str, object]]:
-    barrier = threading.Barrier(CONCURRENCY)
+    if concurrency is None:
+        concurrency = CONCURRENCY
+    backend_target = min(psql.backend_concurrency_target, concurrency)
+    gate = _new_server_concurrency_gate(
+        label,
+        concurrency,
+        backend_target,
+    )
+    _setup_server_concurrency_gate(psql, gate)
+    barrier = threading.Barrier(concurrency)
+    rows: list[dict[str, object]] | None = None
+    primary_failure: BaseException | None = None
 
     def race(index: int) -> dict[str, object]:
         barrier.wait(timeout=30)
-        return invoke(index)
+        return psql.run_with_server_concurrency_gate(
+            gate,
+            lambda: invoke(index),
+        )
 
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        return list(pool.map(race, range(CONCURRENCY)))
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            rows = list(pool.map(race, range(concurrency)))
+        evidence = psql.json(_server_concurrency_readback_sql(gate))
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {
+                "participants",
+                "released",
+                "server_peak",
+            }
+            or type(evidence.get("participants")) is not int
+            or evidence.get("participants") != concurrency
+            or evidence.get("released") is not True
+            or type(evidence.get("server_peak")) is not int
+            or not backend_target
+            <= int(evidence["server_peak"])
+            <= concurrency
+        ):
+            raise RuntimeError(
+                "server concurrency participant readback mismatch"
+            )
+        if label in psql.server_concurrency_evidence:
+            raise RuntimeError("duplicate server concurrency label")
+        psql.server_concurrency_evidence[label] = evidence
+    except BaseException as exc:
+        primary_failure = exc
+        try:
+            psql.run(_server_concurrency_release_sql(gate))
+        except BaseException:
+            pass
+    finally:
+        try:
+            dropped = psql.run(_server_concurrency_drop_sql(gate))
+            if dropped != "dropped":
+                raise RuntimeError("server concurrency gate cleanup failed")
+        except BaseException as exc:
+            if primary_failure is None:
+                primary_failure = exc
+    if primary_failure is not None:
+        raise primary_failure
+    if rows is None:
+        raise RuntimeError("server concurrency race produced no rows")
+    return rows
 
 
 def _race_exactly_once(
+    psql: Psql,
     operation: str,
     invoke: Callable[[int], dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    rows = _race_rows(invoke)
+    rows = _race_rows(psql, operation, invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1124,11 +1761,13 @@ def _race_exactly_once(
 
 
 def _race_codex_idempotent(
+    psql: Psql,
     operation: str,
     invoke: Callable[[int], dict[str, object]],
     identity_keys: tuple[str, ...],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    rows = _race_rows(invoke)
+    label = "codex_" + operation.rsplit(" ", 1)[-1].lower()
+    rows = _race_rows(psql, label, invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1146,9 +1785,10 @@ def _race_codex_idempotent(
 
 
 def _race_codex_claim(
+    psql: Psql,
     invoke: Callable[[int], dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    rows = _race_rows(invoke)
+    rows = _race_rows(psql, "codex_claim", invoke)
     claimed = [row for row in rows if row.get("claimed") is True]
     not_claimed = [row for row in rows if row.get("claimed") is False]
     if (len(claimed), len(not_claimed)) != (1, CONCURRENCY - 1):
@@ -1167,9 +1807,10 @@ def _race_codex_claim(
 
 
 def _race_codex_start(
+    psql: Psql,
     invoke: Callable[[int], dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    rows = _race_rows(invoke)
+    rows = _race_rows(psql, "codex_start", invoke)
     authorized = [row for row in rows if row.get("execute_authorized") is True]
     non_authorizing = [
         row for row in rows if row.get("execute_authorized") is False
@@ -1334,16 +1975,10 @@ def _qa_denial_expression(
 
 
 def _race_qa_denial(
+    psql: Psql,
     invoke: Callable[[int], dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    barrier = threading.Barrier(CONCURRENCY)
-
-    def race(index: int) -> dict[str, object]:
-        barrier.wait(timeout=30)
-        return invoke(index)
-
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        rows = list(pool.map(race, range(CONCURRENCY)))
+    rows = _race_rows(psql, "qa_denial", invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1372,18 +2007,12 @@ def _race_qa_denial(
 
 
 def _race_codex_reconciliation(
+    psql: Psql,
     invoke: Callable[[int], dict[str, object]],
     *,
     expected_work_key: str,
 ) -> tuple[dict[str, object], dict[str, int]]:
-    barrier = threading.Barrier(CONCURRENCY)
-
-    def race(index: int) -> dict[str, object]:
-        barrier.wait(timeout=30)
-        return invoke(index)
-
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        rows = list(pool.map(race, range(CONCURRENCY)))
+    rows = _race_rows(psql, "codex_reconciliation", invoke)
     winners = [row for row in rows if row.get("reconciled") is True]
     no_ops = [row for row in rows if row.get("reconciled") is False]
     if (len(winners), len(no_ops)) != (1, CONCURRENCY - 1):
@@ -1439,6 +2068,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
                 args.port,
                 args.expected_branch_ref,
                 args.parent_project_ref,
+                args.database_transport,
+                args.user,
+                args.database,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -1451,6 +2083,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         raise SystemExit("--config-sha256 must be an exact lowercase 64-hex digest")
     if not 1 <= args.command_timeout_seconds <= 120:
         raise SystemExit("--command-timeout-seconds must be between 1 and 120")
+    if not 1 <= args.backend_concurrency_target <= CONCURRENCY:
+        raise SystemExit(
+            "--backend-concurrency-target must be between 1 and 64"
+        )
+    if (
+        args.database_transport == "direct"
+        and args.backend_concurrency_target != CONCURRENCY
+    ):
+        raise SystemExit(
+            "direct transport requires a 64-backend concurrency target"
+        )
     if not 1 <= args.fence_ttl_minutes <= 120:
         raise SystemExit("--fence-ttl-minutes must be between 1 and the approved 120-minute TTL")
     psql = Psql(
@@ -1460,6 +2103,12 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         args.user,
         args.database,
         args.command_timeout_seconds,
+        args.backend_concurrency_target,
+    )
+    tls_ingress = (
+        None
+        if is_local
+        else _prove_postgres_tls_ingress(psql, args.host, args.port)
     )
     _assert_connector_request_digest_vector(psql)
     preflight = psql.json(_environment_preflight_sql())
@@ -1492,9 +2141,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError(f"Preview ledger preflight was not empty: {preflight}")
     max_connections = int(preflight.get("max_connections", 0))
     current_connections = int(preflight.get("current_connections", max_connections))
-    if max_connections - current_connections < CONCURRENCY + 8:
+    required_free_connections = _required_free_database_connections(
+        args.database_transport,
+        args.backend_concurrency_target,
+    )
+    if max_connections - current_connections < required_free_connections:
         raise RuntimeError(
-            "insufficient_direct_connection_capacity_for_64_way_probe"
+            "insufficient_database_backend_capacity_for_concurrency_probe"
         )
     uid = lambda: str(uuid.uuid4())
     ids = {
@@ -1689,14 +2342,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         ),
         "harmony_preview_connector_registration_invalid",
     )
-    barrier = threading.Barrier(CONCURRENCY)
-
     def race(_: int) -> dict[str, object]:
-        barrier.wait(timeout=30)
         return psql.json(_rpc_sql(quiz[3], _submit_expression(ids, quiz[4], quiz[2])))
 
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        raced = list(pool.map(race, range(CONCURRENCY)))
+    raced = _race_rows(psql, "connector_request", race)
     new_count = sum(row.get("reused") is False for row in raced)
     reused_count = sum(row.get("reused") is True for row in raced)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1963,7 +2612,7 @@ select pg_catalog.jsonb_build_object(
         )
         return psql.json(_rpc_sql(claims, plan_expression(uid())))
 
-    plan, plan_race = _race_exactly_once("plan", invoke_plan)
+    plan, plan_race = _race_exactly_once(psql, "plan", invoke_plan)
     operation_races: dict[str, dict[str, int]] = {"plan": plan_race}
     plan_rows = psql.json(f"""
 select pg_catalog.jsonb_build_object(
@@ -2080,7 +2729,7 @@ select pg_catalog.jsonb_build_object(
                 _stage_expression(ids, stage, uid(), inbox_id),
             ))
 
-        result, stage_race = _race_exactly_once(stage, invoke_stage)
+        result, stage_race = _race_exactly_once(psql, stage, invoke_stage)
         operation_races[stage] = stage_race
         after_stage = psql.json(f"""
 select pg_catalog.jsonb_build_object(
@@ -2174,7 +2823,10 @@ select pg_catalog.jsonb_build_object(
                 ))
 
             prepared, codex_qa_races["prepare"] = _race_codex_idempotent(
-                "Codex QA prepare", invoke_prepare, ("work_key", "request_key")
+                psql,
+                "Codex QA prepare",
+                invoke_prepare,
+                ("work_key", "request_key"),
             )
             codex_work_key = str(prepared["work_key"])
             request_key = str(prepared["request_key"])
@@ -2223,7 +2875,9 @@ where request.workspace_id = '{ids['workspace']}'::uuid
                     _codex_claim_expression(ids),
                 ))
 
-            claimed, codex_qa_races["claim"] = _race_codex_claim(invoke_claim)
+            claimed, codex_qa_races["claim"] = _race_codex_claim(
+                psql, invoke_claim
+            )
             if (claimed["work_key"], claimed["request_key"]) != (
                 codex_work_key, request_key
             ):
@@ -2292,7 +2946,9 @@ select pg_catalog.jsonb_build_object(
                     _codex_start_expression(ids, codex_work_key, claim_fence),
                 ))
 
-            started, codex_qa_races["start"] = _race_codex_start(invoke_start)
+            started, codex_qa_races["start"] = _race_codex_start(
+                psql, invoke_start
+            )
             attempt_fence = str(started["attempt_fence_sha256"])
             criteria = {
                 "automatic_publication_off": True,
@@ -2317,7 +2973,10 @@ select pg_catalog.jsonb_build_object(
                 ))
 
             _, codex_qa_races["submit"] = _race_codex_idempotent(
-                "Codex QA submit", invoke_submit, ("work_key", "result_sha256")
+                psql,
+                "Codex QA submit",
+                invoke_submit,
+                ("work_key", "result_sha256"),
             )
 
             def invoke_verify(_: int) -> dict[str, object]:
@@ -2327,6 +2986,7 @@ select pg_catalog.jsonb_build_object(
                 ))
 
             verified, codex_qa_races["verify"] = _race_codex_idempotent(
+                psql,
                 "Codex QA verify", invoke_verify,
                 ("work_key", "verification_receipt_sha256"),
             )
@@ -2548,7 +3208,7 @@ select pg_catalog.jsonb_build_object(
             _qa_denial_expression(denial_ids, uid(), failed_qa_evidence),
         ))
 
-    qa_denial, qa_denial_race = _race_qa_denial(invoke_qa_denial)
+    qa_denial, qa_denial_race = _race_qa_denial(psql, invoke_qa_denial)
     qa_denial_receipt = qa_denial.get("qa_denial_receipt")
     if (
         not isinstance(qa_denial_receipt, dict)
@@ -2966,6 +3626,7 @@ where workspace_id = '{ids['workspace']}'::uuid
         ))
 
     _, stale_reconciliation_race = _race_codex_reconciliation(
+        psql,
         invoke_stale_reconciliation,
         expected_work_key=stale_work_key,
     )
@@ -3254,9 +3915,10 @@ select pg_catalog.jsonb_build_object(
     if counts != expected:
         raise RuntimeError(f"vertical slice ledger mismatch: {counts}")
     identities = _verify_happy_path_identities(psql, ids)
+    server_concurrency = _server_concurrency_receipt(psql)
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@4",
+        "schema_version": "harmony-preview-concurrency-proof@5",
         "connections": CONCURRENCY,
         "release_sha": args.release_sha,
         "config_sha256": args.config_sha256,
@@ -3264,6 +3926,8 @@ select pg_catalog.jsonb_build_object(
         "identities": identities,
         "new": new_count,
         "reused": reused_count,
+        "tls_ingress": tls_ingress,
+        "server_concurrency": server_concurrency,
         "connector_request_race": {
             "new": new_count,
             "reused": reused_count,
@@ -3333,6 +3997,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", required=True)
     parser.add_argument("--database", default="postgres")
+    parser.add_argument(
+        "--database-transport",
+        choices=DATABASE_TRANSPORTS,
+        required=True,
+    )
     parser.add_argument("--psql", type=str)
     parser.add_argument("--confirm-disposable-local", action="store_true")
     parser.add_argument("--confirm-disposable-preview", action="store_true")
@@ -3340,6 +4009,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--parent-project-ref")
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--config-sha256", required=True)
+    parser.add_argument(
+        "--backend-concurrency-target",
+        required=True,
+        type=int,
+    )
     parser.add_argument("--command-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--fence-ttl-minutes", type=int, default=120)
     return parser.parse_args(argv)

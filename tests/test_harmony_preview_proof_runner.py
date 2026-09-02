@@ -38,7 +38,12 @@ PUBLISHABLE = "sb_publishable_secret_must_never_appear"
 API_KEY_ID = "22222222-2222-4222-8222-222222222222"
 SECRET_KEY_ID = "33333333-3333-4333-8333-333333333333"
 MANAGEMENT_TOKEN = "sbp_scoped_management_token_must_never_appear"
+POOLER_HOST = "aws-0-us-east-1.pooler.supabase.com"
+POOLER_URI_SECRET = "pooler-uri-secret-must-never-appear"
 SQL_PAYLOAD = b"-- immutable exact-head sql\n"
+SUPABASE_CA_PAYLOAD = (
+    Path(__file__).parents[1] / "certs/supabase-prod-ca-2021.crt"
+).read_bytes()
 ROUND_ID = "11111111-1111-4111-8111-111111111111"
 PLAN_ID = "22222222-2222-4222-8222-222222222222"
 INBOX_ID = "33333333-3333-4333-8333-333333333333"
@@ -62,15 +67,64 @@ def _migration_manifest() -> dict[str, str]:
     }
 
 
-def _direct_probe_receipt() -> dict[str, object]:
+def _pooler_config(
+    *,
+    project_ref: str = CHILD_REF,
+    default_pool_size: int | None = 15,
+    max_client_conn: int | None = 200,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "identifier": project_ref,
+            "database_type": "PRIMARY",
+            "db_user": f"postgres.{project_ref}",
+            "db_host": POOLER_HOST,
+            "db_port": 6543,
+            "db_name": "postgres",
+            "pool_mode": "transaction",
+            "default_pool_size": default_pool_size,
+            "max_client_conn": max_client_conn,
+            "connection_string": (
+                f"postgres://postgres.{project_ref}:{POOLER_URI_SECRET}@"
+                f"{POOLER_HOST}:6543/postgres"
+            ),
+        }
+    ]
+
+
+def _direct_probe_receipt(
+    backend_target: int = 64,
+) -> dict[str, object]:
+    races = {
+        label: {
+            "participants": 64,
+            "released": True,
+            "server_peak": backend_target,
+        }
+        for label in RUNNER.DIRECT_SERVER_CONCURRENCY_RACE_LABELS
+    }
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@4",
+        "schema_version": "harmony-preview-concurrency-proof@5",
         "release_sha": RELEASE_SHA,
         "config_sha256": CONFIG_SHA,
         "connections": 64,
         "new": 1,
         "reused": 63,
+        "tls_ingress": {
+            "method": "postgres_sslrequest_tls",
+            "client_sessions": 64,
+            "simultaneously_established": True,
+            "certificate_authority_sha256": RUNNER.SUPABASE_CA_SHA256,
+        },
+        "server_concurrency": {
+            "method": "postgres_advisory_session_latch",
+            "client_sessions": 64,
+            "backend_target": backend_target,
+            "minimum_server_peak": backend_target,
+            "race_count": len(races),
+            "races": races,
+        },
         "identities": {
             "round_id": ROUND_ID,
             "plan_id": PLAN_ID,
@@ -190,7 +244,9 @@ def _direct_probe_receipt() -> dict[str, object]:
     }
 
 
-def _postgrest_probe_receipt() -> dict[str, object]:
+def _postgrest_probe_receipt(
+    backend_target: int = 64,
+) -> dict[str, object]:
     registration_invalid = {
         "status": 400,
         "code": "P0001",
@@ -203,13 +259,25 @@ def _postgrest_probe_receipt() -> dict[str, object]:
     }
     return {
         "ok": True,
-        "schema_version": "harmony-preview-postgrest-proof@2",
+        "schema_version": "harmony-preview-postgrest-proof@3",
         "branch_ref": CHILD_REF,
         "release_sha": RELEASE_SHA,
         "config_sha256": CONFIG_SHA,
         "connections": 64,
         "new": 1,
         "reused": 63,
+        "tls_ingress": {
+            "method": "https_tls",
+            "client_sessions": 64,
+            "simultaneously_established": True,
+        },
+        "server_concurrency": {
+            "method": "registration_row_lock_blocker_graph",
+            "client_requests": 64,
+            "backend_target": min(backend_target, 8),
+            "server_blocked_peak": min(backend_target, 8),
+            "holder_released": True,
+        },
         "counts": {
             "signals": 1,
             "connector_receipts": 1,
@@ -279,6 +347,57 @@ def _postgrest_probe_receipt() -> dict[str, object]:
     }
 
 
+def test_tls_ingress_projection_rejects_json_boolean_type_confusion() -> None:
+    direct = _direct_probe_receipt()["tls_ingress"]
+    assert isinstance(direct, dict)
+    direct["simultaneously_established"] = 1
+    with pytest.raises(RUNNER.ProofError, match="probe_tls_ingress_contract_invalid"):
+        RUNNER._project_direct_tls_ingress(direct)
+
+    postgrest = _postgrest_probe_receipt()["tls_ingress"]
+    assert isinstance(postgrest, dict)
+    postgrest["simultaneously_established"] = 1
+    with pytest.raises(RUNNER.ProofError, match="probe_tls_ingress_contract_invalid"):
+        RUNNER._project_postgrest_tls_ingress(postgrest)
+
+
+def test_server_concurrency_projection_rejects_target_and_label_drift() -> None:
+    direct = _direct_probe_receipt(15)["server_concurrency"]
+    assert isinstance(direct, dict)
+    direct["backend_target"] = 14
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="probe_server_concurrency_contract_invalid",
+    ):
+        RUNNER._project_direct_server_concurrency(direct, backend_target=15)
+
+    missing_label = _direct_probe_receipt(15)["server_concurrency"]
+    assert isinstance(missing_label, dict)
+    races = missing_label["races"]
+    assert isinstance(races, dict)
+    races.pop("plan")
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="probe_server_concurrency_contract_invalid",
+    ):
+        RUNNER._project_direct_server_concurrency(
+            missing_label,
+            backend_target=15,
+        )
+
+    postgrest = _postgrest_probe_receipt(15)["server_concurrency"]
+    assert isinstance(postgrest, dict)
+    postgrest["backend_target"] = 7
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="probe_server_concurrency_contract_invalid",
+    ):
+        RUNNER._project_postgrest_server_concurrency(
+            postgrest,
+            backend_target=15,
+        )
+
+
 def _assert_valid_receipt_digest(receipt: dict[str, object]) -> None:
     assert receipt["receipt_sha256_scheme"] == (
         "sha256-canonical-json-utf8-sort-keys-compact-"
@@ -301,6 +420,8 @@ def _assert_valid_receipt_digest(receipt: dict[str, object]) -> None:
 def _support_payload(relative: Path) -> bytes:
     if relative == RUNNER.CONFIG_PATH:
         return CONFIG_PAYLOAD
+    if relative == RUNNER.SUPABASE_CA_PATH:
+        return SUPABASE_CA_PAYLOAD
     if relative in RUNNER.PROBE_PATHS:
         return PROBE_PAYLOAD
     return _security_payload(relative.name)
@@ -325,6 +446,7 @@ def _args(tmp_path: Path) -> SimpleNamespace:
         repo_root=str(tmp_path),
         parent_project_ref=PARENT_REF,
         release_sha=RELEASE_SHA,
+        database_transport="direct",
         max_small_hourly_usd="0.020600",
         max_total_cost_usd="0.070000",
         supabase="supabase",
@@ -339,6 +461,26 @@ def _args(tmp_path: Path) -> SimpleNamespace:
         poll_interval_seconds=0.01,
         fence_ttl_minutes=105,
     )
+
+
+def test_runner_cli_requires_explicit_database_transport(tmp_path: Path) -> None:
+    required = [
+        "--repo-root",
+        str(tmp_path),
+        "--parent-project-ref",
+        PARENT_REF,
+        "--release-sha",
+        RELEASE_SHA,
+        "--max-small-hourly-usd",
+        "0.020600",
+        "--max-total-cost-usd",
+        "0.070000",
+    ]
+    with pytest.raises(SystemExit):
+        RUNNER.parse_args(required)
+    assert RUNNER.parse_args(
+        [*required, "--database-transport", "direct"]
+    ).database_transport == "direct"
 
 
 def _assert_no_live_group_members(pgid: int, *, timeout: float = 5.0) -> None:
@@ -890,6 +1032,7 @@ class FakeRunner:
         self.events: list[str] = []
         self.commands: list[list[str]] = []
         self.environments: list[dict[str, str]] = []
+        self.pass_fds: list[tuple[int, ...]] = []
         self.quiet_environment_references: list[dict[str, str]] = []
         self.working_directories: list[str | None] = []
         self.timeouts: list[tuple[str, float]] = []
@@ -915,6 +1058,7 @@ class FakeRunner:
         self.compute_size = compute_size
         self.small_hourly_price_usd = small_hourly_price_usd
         self.management_requests: list[dict[str, object]] = []
+        self.secret_process_groups_confirmed = True
 
     def open_endpoint(
         self,
@@ -942,12 +1086,22 @@ class FakeRunner:
             RUNNER.MANAGEMENT_API_BASE_URL
             + f"/projects/{CHILD_REF}/api-keys/{API_KEY_ID}?reveal=true"
         )
+        parent_pooler_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{PARENT_REF}/config/database/pooler"
+        )
+        child_pooler_url = (
+            RUNNER.MANAGEMENT_API_BASE_URL
+            + f"/projects/{CHILD_REF}/config/database/pooler"
+        )
         if url in {
             parent_url,
             child_url,
             branch_config_url,
             api_keys_url,
             publishable_key_url,
+            parent_pooler_url,
+            child_pooler_url,
         }:
             get_header = getattr(req, "get_header")
             self.management_requests.append(
@@ -1036,6 +1190,12 @@ class FakeRunner:
                         "api_key": PUBLISHABLE,
                     }
                 )
+            if url == parent_pooler_url:
+                self.events.append("parent_pooler_config_get")
+                return OpenApiResponse(_pooler_config(project_ref=PARENT_REF))
+            if url == child_pooler_url:
+                self.events.append("child_pooler_config_get")
+                return OpenApiResponse(_pooler_config())
             self.events.append("billing_addons_get")
             selected = []
             if self.compute_size is not None:
@@ -1059,11 +1219,13 @@ class FakeRunner:
         cwd: str | None = None,
         timeout: float,
         code: str,
+        pass_fds: tuple[int, ...] = (),
     ) -> bytes:
         assert input_bytes is None
         assert code in {"migration_snapshot", "proof_support_snapshot"}
         self.commands.append(list(command))
         self.environments.append(dict(env or {}))
+        self.pass_fds.append(tuple(pass_fds))
         self.working_directories.append(cwd)
         self.timeouts.append((code, timeout))
         self.events.append(code)
@@ -1083,12 +1245,14 @@ class FakeRunner:
         timeout: float,
         code: str,
         before_spawn: object | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> object:
         if before_spawn is not None:
             assert callable(before_spawn)
             before_spawn()
         self.commands.append(list(command))
         self.environments.append(dict(env or {}))
+        self.pass_fds.append(tuple(pass_fds))
         self.working_directories.append(cwd)
         self.timeouts.append((code, timeout))
         self.json_inputs.append((code, input_bytes))
@@ -1143,20 +1307,34 @@ class FakeRunner:
             if self.delete_ambiguous:
                 raise RUNNER.CommandError("supabase_branch_delete_timeout", ambiguous=True)
             return {"deleted": True}
-        if code == "direct_database_probe":
+        if code == "database_concurrency_probe":
             assert command[:3] == [sys.executable, "-I", "-"]
+            assert command[command.index("--database-transport") + 1] in (
+                "direct",
+                "supavisor-session",
+            )
             assert input_bytes == PROBE_PAYLOAD
             self.events.append("direct_probe")
             if self.direct_failure:
-                raise RUNNER.CommandError("direct_database_probe_failed", ambiguous=True)
-            return _direct_probe_receipt()
+                raise RUNNER.CommandError("database_concurrency_probe_failed", ambiguous=True)
+            backend_target = int(
+                command[command.index("--backend-concurrency-target") + 1]
+            )
+            return _direct_probe_receipt(backend_target)
         if code == "signed_postgrest_probe":
             assert command[:3] == [sys.executable, "-I", "-"]
+            assert command[command.index("--database-transport") + 1] in (
+                "direct",
+                "supavisor-session",
+            )
             assert input_bytes == RUNNER.build_postgrest_probe_bundle(
                 PROBE_PAYLOAD, PROBE_PAYLOAD
             )
             self.events.append("postgrest_probe")
-            return _postgrest_probe_receipt()
+            backend_target = int(
+                command[command.index("--backend-concurrency-target") + 1]
+            )
+            return _postgrest_probe_receipt(backend_target)
         raise AssertionError(f"unexpected JSON command: {command}")
 
     def run_quiet(
@@ -1168,11 +1346,13 @@ class FakeRunner:
         cwd: str | None = None,
         timeout: float,
         code: str,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         if env is not None:
             self.quiet_environment_references.append(env)
         self.commands.append(list(command))
         self.environments.append(dict(env or {}))
+        self.pass_fds.append(tuple(pass_fds))
         self.working_directories.append(cwd)
         self.timeouts.append((code, timeout))
         self.events.append(code)
@@ -1225,6 +1405,7 @@ class FakeRunner:
     ) -> FakeWatchdog:
         self.commands.append(list(command))
         self.environments.append(dict(env))
+        self.pass_fds.append(tuple(pass_fds))
         self.working_directories.append(None)
         self.events.append("watchdog_armed")
         assert len(pass_fds) == 1
@@ -1633,6 +1814,10 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    monkeypatch.setenv("PGHOSTADDR", "127.0.0.1")
+    monkeypatch.setenv("PGSERVICE", "ambient-route-bypass")
+    monkeypatch.setenv("PGSSLKEY", "/tmp/ambient-client.key")
+    monkeypatch.setenv("PGGSSENCMODE", "require")
     fake = FakeRunner()
     proof = RUNNER.HarmonyPreviewProof(
         _args(tmp_path),
@@ -1645,7 +1830,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@5"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@6"
+    assert receipt["database_transport"] == "direct"
+    assert receipt["database_transport_selection"] == "explicit"
+    assert receipt["database_pooler_capacity"] is None
+    assert "direct_database" not in receipt
     assert receipt["database_connectivity_preflight"] == "passed"
     assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
     assert receipt["security_completed_count"] == len(RUNNER.SECURITY_SUITES)
@@ -1689,6 +1878,8 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "connections",
         "new",
         "reused",
+        "tls_ingress",
+        "server_concurrency",
         "side_effect_baseline_unchanged",
         "automatic_publication",
         "external_calls",
@@ -1716,7 +1907,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "operator_inbox_stage4_delta",
         "recap_operator_inbox_delta",
     }
-    assert receipt["direct_database"] == {
+    assert receipt["database_concurrency"] == {
         field: direct_source[field] for field in direct_fields
     }
     postgrest_source = _postgrest_probe_receipt()
@@ -1728,6 +1919,8 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "connections",
         "new",
         "reused",
+        "tls_ingress",
+        "server_concurrency",
         "side_effect_baseline_unchanged",
         "automatic_publication",
         "external_calls",
@@ -1749,6 +1942,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         field: postgrest_source[field] for field in postgrest_fields
     }
     _assert_valid_receipt_digest(receipt)
+    tampered_transport = json.loads(json.dumps(receipt))
+    tampered_transport["database_transport"] = "supavisor-session"
+    assert RUNNER.canonical_receipt_sha256(tampered_transport) != receipt[
+        "receipt_sha256"
+    ]
     assert proof.branch_create_mutation_invoked is True
     assert fake.watchdog.terminated and fake.watchdog.waited
     assert receipt["planned_execution_order"] == [
@@ -1758,7 +1956,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "branch_ready_and_shape_verified",
         "database_connectivity_preflight",
         "migration_and_rls_security",
-        "direct_database_64_way",
+        "database_client_race_64_way",
         "postgrest_schema_readiness_get",
         "signed_postgrest_once",
         "branch_delete_absence_confirmed",
@@ -1872,18 +2070,26 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         if command[:3] == [sys.executable, "-I", "-"]
     ]
     assert len(probe_commands) == 2
+    assert all(
+        command[command.index("--database-transport") + 1] == "direct"
+        for command in probe_commands
+    )
     assert [
         (code, payload)
         for code, payload in fake.json_inputs
-        if code in {"direct_database_probe", "signed_postgrest_probe"}
+        if code in {"database_concurrency_probe", "signed_postgrest_probe"}
     ] == [
-        ("direct_database_probe", PROBE_PAYLOAD),
+        ("database_concurrency_probe", PROBE_PAYLOAD),
         (
             "signed_postgrest_probe",
             RUNNER.build_postgrest_probe_bundle(PROBE_PAYLOAD, PROBE_PAYLOAD),
         ),
     ]
     assert receipt["proof_artifact_sha256"] == _support_manifest()
+    assert receipt["proof_artifact_sha256"][str(RUNNER.SUPABASE_CA_PATH)] == (
+        RUNNER.SUPABASE_CA_SHA256
+    )
+    assert receipt["cleanup"]["ssl_root_cert_removed"] is True
     assert receipt["secret_cleanup_confirmed"] is True
     assert receipt["secrets_persisted"] is False
     assert all(not environment for environment in fake.quiet_environment_references)
@@ -1896,6 +2102,33 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "must-be-ignored",
     ):
         assert secret not in serialized
+
+    for command, environment, inherited_fds in zip(
+        fake.commands,
+        fake.environments,
+        fake.pass_fds,
+    ):
+        if command and command[0] == "psql":
+            assert len(inherited_fds) == 1
+            assert environment["PGSSLROOTCERT"] == (
+                f"/dev/fd/{inherited_fds[0]}"
+            )
+            assert RUNNER.SUPABASE_CA_FD_ENV not in environment
+        elif command[:3] == [sys.executable, "-I", "-"]:
+            assert len(inherited_fds) == 1
+            assert "PGSSLROOTCERT" not in environment
+            assert environment[RUNNER.SUPABASE_CA_FD_ENV] == str(
+                inherited_fds[0]
+            )
+        else:
+            continue
+        assert "PGHOSTADDR" not in environment
+        assert environment["PGSSLMODE"] == "verify-full"
+        assert environment["PGGSSENCMODE"] == "disable"
+        assert environment["PGSSLCERTMODE"] == "disable"
+        assert environment["PGCONNECT_TIMEOUT"] == "15"
+    assert proof.ssl_root_cert_owned_fds == {}
+    assert proof.ssl_root_cert_master_fd == -1
 
     cli_envs = [
         env
@@ -1980,6 +2213,224 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
             assert timeout == 7
         if code in {"supabase_branch_create", "supabase_branch_delete"}:
             assert timeout == 11
+
+
+def test_supavisor_session_uses_exact_child_pooler_without_direct_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+    fake = FakeRunner()
+    proof = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    )
+
+    receipt, exit_code = proof.run()
+
+    assert exit_code == 0
+    assert receipt["database_transport"] == "supavisor-session"
+    assert receipt["database_transport_selection"] == "explicit"
+    assert receipt["database_pooler_capacity"] == {
+        "default_pool_size": 15,
+        "max_client_conn": 200,
+        "max_client_at_least_64": True,
+        "backend_concurrency_target": 15,
+    }
+    assert fake.events.count("parent_pooler_config_get") == 1
+    assert fake.events.count("child_pooler_config_get") == 1
+    assert fake.events.index("parent_pooler_config_get") < fake.events.index(
+        "branch_create"
+    )
+    assert fake.events.index("child_pooler_config_get") < fake.events.index(
+        "preview_database_connectivity"
+    )
+    assert fake.events.index("child_pooler_config_get") < fake.events.index(
+        "publishable_key_get"
+    )
+    database_commands = [
+        command
+        for command in fake.commands
+        if command
+        and (
+            command[0] == "psql"
+            or (command[0] == sys.executable and "--host" in command)
+        )
+    ]
+    assert database_commands
+    for command in database_commands:
+        if "--port" in command:
+            assert command[command.index("--host") + 1] == POOLER_HOST
+            assert command[command.index("--port") + 1] == "5432"
+            assert command[command.index("--user") + 1] == f"postgres.{CHILD_REF}"
+            assert command[command.index("--database-transport") + 1] == (
+                "supavisor-session"
+            )
+        else:
+            assert command[command.index("-h") + 1] == POOLER_HOST
+            assert command[command.index("-p") + 1] == "5432"
+            assert command[command.index("-U") + 1] == f"postgres.{CHILD_REF}"
+    serialized = json.dumps(receipt, sort_keys=True)
+    for forbidden in (
+        POOLER_HOST,
+        f"postgres.{CHILD_REF}",
+        POOLER_URI_SECRET,
+        DB_SECRET,
+        JWT_SECRET,
+    ):
+        assert forbidden not in serialized
+    assert receipt["database_concurrency"] is not None
+    assert "direct_database" not in receipt
+    assert receipt["same_child_repair_attempts"] == 0
+    assert receipt["replacement_branch_attempts"] == 0
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_parent_pooler_capacity_does_not_gate_exact_child_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+
+    class LowerParentCapacityRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{PARENT_REF}/config/database/pooler"
+            ):
+                self.events.append("parent_pooler_config_get")
+                return OpenApiResponse(
+                    _pooler_config(
+                        project_ref=PARENT_REF,
+                        max_client_conn=63,
+                    )
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = LowerParentCapacityRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 0
+    assert receipt["database_pooler_capacity"] == {
+        "default_pool_size": 15,
+        "max_client_conn": 200,
+        "max_client_at_least_64": True,
+        "backend_concurrency_target": 15,
+    }
+    assert fake.events.count("branch_create") == 1
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_child_pooler_primary_lag_retries_before_key_reveal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+
+    class LaggingChildPoolerRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_pooler_calls = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{CHILD_REF}/config/database/pooler"
+            ):
+                self.child_pooler_calls += 1
+                self.events.append("child_pooler_config_get")
+                if self.child_pooler_calls == 1:
+                    return OpenApiResponse([])
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = LaggingChildPoolerRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 0
+    assert fake.child_pooler_calls == 2
+    assert fake.events.count("publishable_key_get") == 1
+    assert fake.events.index("child_pooler_config_get") < fake.events.index(
+        "publishable_key_get"
+    )
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_supavisor_permission_preflight_fails_before_paid_child_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+
+    class PoolerDeniedRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{PARENT_REF}/config/database/pooler"
+            ):
+                raise RUNNER.error.HTTPError(
+                    url,
+                    403,
+                    "Forbidden",
+                    {},
+                    io.BytesIO(POOLER_URI_SECRET.encode()),
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = PoolerDeniedRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "supabase_pooler_config_preflight_authorization_failed"
+    )
+    assert "branch_create" not in fake.events
+    assert receipt["cleanup"]["branch_create_mutation_invoked"] is False
+    assert POOLER_URI_SECRET not in json.dumps(receipt, sort_keys=True)
+    _assert_valid_receipt_digest(receipt)
 
 
 def test_database_connectivity_failure_stops_before_sql_and_still_cleans_up(
@@ -2912,12 +3363,73 @@ def test_direct_probe_failure_never_runs_postgrest_and_still_deletes(
         clock=_clock(),
     ).run()
     assert exit_code == 1
-    assert receipt["failure_code"] == "direct_database_probe_failed"
+    assert receipt["failure_code"] == "database_concurrency_probe_failed"
     assert "postgrest_probe" not in fake.events
     assert "branch_delete" in fake.events
     assert receipt["cleanup"]["absence_confirmations"] == 3
     assert receipt["same_child_repair_attempts"] == 0
     assert receipt["replacement_branch_attempts"] == 0
+
+
+def test_unconfirmed_secret_process_group_cannot_claim_secret_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class UnconfirmedProbeRunner(FakeRunner):
+        def run_json(self, command: list[str], **kwargs: object) -> object:
+            if kwargs.get("code") == "database_concurrency_probe":
+                raise RUNNER.CommandError(
+                    "database_concurrency_probe_process_group_unconfirmed",
+                    ambiguous=True,
+                )
+            return super().run_json(command, **kwargs)
+
+    fake = UnconfirmedProbeRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "database_concurrency_probe_process_group_unconfirmed"
+    )
+    assert receipt["cleanup"]["secret_process_groups_confirmed"] is False
+    assert receipt["cleanup_failure_code"] == (
+        "secret_process_group_cleanup_unconfirmed"
+    )
+    assert receipt["secret_cleanup_confirmed"] is False
+    assert receipt["secrets_persisted"] is None
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_runner_without_process_group_cleanup_state_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner()
+    del fake.secret_process_groups_confirmed
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+    assert exit_code == 1
+    assert receipt["ok"] is False
+    assert receipt["cleanup_failure_code"] == (
+        "secret_process_group_cleanup_unconfirmed"
+    )
+    assert receipt["cleanup"]["secret_process_groups_confirmed"] is False
+    assert receipt["secret_cleanup_confirmed"] is False
+    assert receipt["secrets_persisted"] is None
 
 
 def test_exact_checkout_change_after_branch_creation_fails_before_migration(
@@ -3039,7 +3551,7 @@ def test_tampered_probe_receipt_fails_exact_fence_and_never_runs_postgrest(
     class TamperedRunner(FakeRunner):
         def run_json(self, command: list[str], **kwargs: object) -> object:
             value = super().run_json(command, **kwargs)
-            if kwargs.get("code") == "direct_database_probe":
+            if kwargs.get("code") == "database_concurrency_probe":
                 assert isinstance(value, dict)
                 value["release_sha"] = "d" * 40
             return value
@@ -3061,10 +3573,10 @@ def test_tampered_probe_receipt_fails_exact_fence_and_never_runs_postgrest(
 @pytest.mark.parametrize(
     ("probe_code", "tamper_case"),
     (
-        ("direct_database_probe", "missing_nested_key"),
-        ("direct_database_probe", "extra_nested_secret"),
-        ("direct_database_probe", "wrong_nested_scalar_type"),
-        ("direct_database_probe", "invalid_nested_identity"),
+        ("database_concurrency_probe", "missing_nested_key"),
+        ("database_concurrency_probe", "extra_nested_secret"),
+        ("database_concurrency_probe", "wrong_nested_scalar_type"),
+        ("database_concurrency_probe", "invalid_nested_identity"),
         ("signed_postgrest_probe", "missing_nested_key"),
         ("signed_postgrest_probe", "extra_nested_secret"),
         ("signed_postgrest_probe", "wrong_nested_scalar_type"),
@@ -3084,7 +3596,7 @@ def test_nested_probe_projection_fails_closed_on_shape_or_value_drift(
             if kwargs.get("code") != probe_code:
                 return value
             assert isinstance(value, dict)
-            if probe_code == "direct_database_probe":
+            if probe_code == "database_concurrency_probe":
                 if tamper_case == "missing_nested_key":
                     counts = value["counts"]
                     assert isinstance(counts, dict)
@@ -3134,12 +3646,12 @@ def test_nested_probe_projection_fails_closed_on_shape_or_value_drift(
     assert exit_code == 1
     assert receipt["failure_code"] == "probe_receipt_nested_contract_invalid"
     assert receipt["cleanup"]["absence_confirmations"] == 3
-    if probe_code == "direct_database_probe":
+    if probe_code == "database_concurrency_probe":
         assert "postgrest_probe" not in fake.events
-        assert receipt["direct_database"] is None
+        assert receipt["database_concurrency"] is None
     else:
         assert "postgrest_probe" in fake.events
-        assert receipt["direct_database"] is not None
+        assert receipt["database_concurrency"] is not None
         assert receipt["signed_postgrest"] is None
     assert JWT_SECRET not in json.dumps(receipt, sort_keys=True)
     _assert_valid_receipt_digest(receipt)
@@ -3391,7 +3903,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@5"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@6"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -3731,7 +4243,7 @@ def test_receipt_digest_binds_failure_and_cleanup_codes_after_redaction(
     ).run()
 
     assert exit_code == 1
-    assert receipt["failure_code"] == "direct_database_probe_failed"
+    assert receipt["failure_code"] == "database_concurrency_probe_failed"
     assert receipt["cleanup_failure_code"] == "cleanup_watchdog_cancel_failed"
     _assert_valid_receipt_digest(receipt)
     original_digest = receipt["receipt_sha256"]
@@ -3855,6 +4367,110 @@ def _publishable_key() -> dict[str, object]:
         "type": "publishable",
         "api_key": PUBLISHABLE,
     }
+
+
+def test_pooler_session_endpoint_is_exact_child_and_derives_only_port() -> None:
+    payload = _pooler_config()
+    payload[0]["connection_string"] = object()
+    endpoint = RUNNER.extract_management_pooler_session_endpoint(
+        payload,
+        CHILD_REF,
+    )
+    assert endpoint == RUNNER.PoolerSessionEndpoint(
+        host=POOLER_HOST,
+        port=5432,
+        user=f"postgres.{CHILD_REF}",
+        database="postgres",
+        default_pool_size=15,
+        max_client_conn=200,
+        max_client_at_least_64=True,
+    )
+
+    unobserved = RUNNER.extract_management_pooler_session_endpoint(
+        _pooler_config(default_pool_size=None, max_client_conn=None),
+        CHILD_REF,
+    )
+    assert (
+        unobserved.default_pool_size,
+        unobserved.max_client_conn,
+        unobserved.max_client_at_least_64,
+    ) == (None, None, None)
+
+    opaque_identifier = _pooler_config()
+    opaque_identifier[0]["identifier"] = "opaque-primary-id"
+    assert RUNNER.extract_management_pooler_session_endpoint(
+        opaque_identifier,
+        CHILD_REF,
+    ).user == f"postgres.{CHILD_REF}"
+
+
+def test_pooler_backend_target_requires_holder_and_observer_capacity() -> None:
+    for size in (None, 1):
+        endpoint = RUNNER.extract_management_pooler_session_endpoint(
+            _pooler_config(default_pool_size=size),
+            CHILD_REF,
+        )
+        with pytest.raises(
+            RUNNER.ProofError,
+            match="branch_pooler_default_pool_size_insufficient",
+        ):
+            RUNNER.pooler_backend_concurrency_target(endpoint)
+    endpoint_two = RUNNER.extract_management_pooler_session_endpoint(
+        _pooler_config(default_pool_size=2),
+        CHILD_REF,
+    )
+    endpoint_large = RUNNER.extract_management_pooler_session_endpoint(
+        _pooler_config(default_pool_size=100),
+        CHILD_REF,
+    )
+    assert RUNNER.pooler_backend_concurrency_target(endpoint_two) == 2
+    assert RUNNER.pooler_backend_concurrency_target(endpoint_large) == 64
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    (
+        ("identifier", "", "branch_pooler_identifier_invalid"),
+        ("identifier", PARENT_REF, "branch_pooler_child_fence_mismatch"),
+        ("db_user", f"postgres.{PARENT_REF}", "branch_pooler_child_fence_mismatch"),
+        ("db_host", "green.pooler.supabase.com", "branch_pooler_host_invalid"),
+        ("db_host", "127.0.0.1", "branch_pooler_host_invalid"),
+        ("db_host", "aws.us-east-1.pooler.supabase.com", "branch_pooler_host_invalid"),
+        ("db_port", 5432, "branch_pooler_primary_config_invalid"),
+        ("db_name", "other", "branch_pooler_primary_config_invalid"),
+        ("pool_mode", "session", "branch_pooler_primary_config_invalid"),
+        ("default_pool_size", 0, "branch_pooler_backend_capacity_invalid"),
+        ("default_pool_size", True, "branch_pooler_backend_capacity_invalid"),
+        ("max_client_conn", 63, "branch_pooler_concurrency_capacity_insufficient"),
+        ("max_client_conn", True, "branch_pooler_concurrency_capacity_invalid"),
+    ),
+)
+def test_pooler_session_endpoint_rejects_fence_and_capacity_drift(
+    field: str,
+    value: object,
+    expected: str,
+) -> None:
+    payload = _pooler_config()
+    payload[0][field] = value
+    with pytest.raises(RUNNER.ProofError, match=expected):
+        RUNNER.extract_management_pooler_session_endpoint(payload, CHILD_REF)
+def test_pooler_session_endpoint_rejects_missing_or_ambiguous_primary() -> None:
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_pooler_primary_unavailable",
+    ):
+        RUNNER.extract_management_pooler_session_endpoint(
+            [{"database_type": "READ_REPLICA"}],
+            CHILD_REF,
+        )
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_pooler_primary_ambiguous",
+    ):
+        RUNNER.extract_management_pooler_session_endpoint(
+            _pooler_config() + _pooler_config(),
+            CHILD_REF,
+        )
 
 
 def test_management_branch_credentials_are_strict_and_scrubbable() -> None:
@@ -4183,20 +4799,44 @@ def test_external_group_confirmation_uses_same_quiescent_states_without_signals(
         lambda pgid, signum: kill_calls.append((pgid, signum)),
     )
 
+    runner = RUNNER.ProcessRunner()
     if expected_code is None:
-        RUNNER.ProcessRunner.confirm_external_process_group_quiescent(
+        runner.confirm_external_process_group_quiescent(
             424242,
             code="synthetic",
         )
     else:
         with pytest.raises(RUNNER.ProofError) as caught:
-            RUNNER.ProcessRunner.confirm_external_process_group_quiescent(
+            runner.confirm_external_process_group_quiescent(
                 424242,
                 code="synthetic",
             )
         assert caught.value.code == expected_code
 
     assert kill_calls == []
+
+
+def test_process_group_uncertainty_is_sticky_across_later_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = RUNNER.ProcessRunner()
+    monkeypatch.setattr(RUNNER, "PROCESS_GROUP_KILL_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(
+        runner,
+        "_process_group_state",
+        lambda _pgid: RUNNER.PROCESS_GROUP_LIVE,
+    )
+    with pytest.raises(RUNNER.ProofError, match="process_group_still_present"):
+        runner.confirm_external_process_group_quiescent(424242, code="first")
+    assert runner.secret_process_groups_confirmed is False
+
+    monkeypatch.setattr(
+        runner,
+        "_process_group_state",
+        lambda _pgid: RUNNER.PROCESS_GROUP_ABSENT,
+    )
+    runner.confirm_external_process_group_quiescent(424242, code="later")
+    assert runner.secret_process_groups_confirmed is False
 
 
 @pytest.mark.parametrize(
@@ -4486,9 +5126,9 @@ while True:
         with pytest.raises(RUNNER.ProofError) as caught:
             RUNNER.ProcessRunner().terminate_process_group(
                 process,
-                code="direct_database_probe",
+                code="database_concurrency_probe",
             )
-        assert caught.value.code == "direct_database_probe_signal_mask_failed"
+        assert caught.value.code == "database_concurrency_probe_signal_mask_failed"
         heartbeat_size = heartbeat_path.stat().st_size
         time.sleep(0.15)
         assert heartbeat_path.stat().st_size == heartbeat_size
@@ -4601,15 +5241,15 @@ raise SystemExit(int(sys.argv[3]))
                 command,
                 env={"LC_ALL": "C"},
                 timeout=10,
-                code="direct_database_probe",
+                code="database_concurrency_probe",
             )
-        assert caught.value.code == "direct_database_probe_failed"
+        assert caught.value.code == "database_concurrency_probe_failed"
     else:
         result = runner.run_bytes(
             command,
             env={"LC_ALL": "C"},
             timeout=10,
-            code="direct_database_probe",
+            code="database_concurrency_probe",
         )
         assert result == b""
 

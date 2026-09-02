@@ -30,8 +30,10 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import sys
 import threading
+import time
 from typing import Callable
 from urllib import error, parse, request
 import uuid
@@ -42,6 +44,10 @@ PUBLISHABLE_KEY_ENV = "HARMONY_PREVIEW_SUPABASE_PUBLISHABLE_KEY"
 LEGACY_JWT_SECRET_ENV = "HARMONY_PREVIEW_SUPABASE_LEGACY_JWT_SECRET"
 MAX_RESPONSE_BYTES = 262_144
 RPC_NAME = "submit_preview_harmony_signal"
+POSTGREST_BACKEND_TARGET_CAP = 8
+POSTGREST_SERVER_CONCURRENCY_METHOD = (
+    "registration_row_lock_blocker_graph"
+)
 HEX_SHA40_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 HEX_SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
@@ -260,6 +266,27 @@ def _validated_project_url(
             "project URL must be exact https://<Preview-ref>.supabase.co"
         )
     return f"https://{expected_host}"
+
+
+def _prove_https_tls_ingress(
+    project_url: str,
+    *,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    parsed = parse.urlsplit(project_url)
+    if parsed.hostname is None or parsed.port not in {None, 443}:
+        raise RuntimeError("invalid exact-child HTTPS ingress target")
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    evidence = BASE._prove_tls_ingress(
+        parsed.hostname,
+        443,
+        context=context,
+        client_sessions=CONCURRENCY,
+        postgres_ssl_request=False,
+        timeout_seconds=timeout_seconds,
+    )
+    return {"method": "https_tls", **evidence}
 
 
 def _load_http_secrets() -> tuple[str, str]:
@@ -777,8 +804,248 @@ def _validate_success(
     return value
 
 
+class PostgrestServerGate:
+    def __init__(
+        self,
+        *,
+        table_name: str,
+        advisory_class: int,
+        advisory_object: int,
+        backend_target: int,
+    ) -> None:
+        self.table_name = table_name
+        self.advisory_class = advisory_class
+        self.advisory_object = advisory_object
+        self.backend_target = backend_target
+
+
+def _new_postgrest_server_gate(backend_target: int) -> PostgrestServerGate:
+    if not 1 <= backend_target <= POSTGREST_BACKEND_TARGET_CAP:
+        raise ValueError("invalid PostgREST backend target")
+    nonce = uuid.uuid4().hex
+    return PostgrestServerGate(
+        table_name=f"private.harmony_postgrest_latch_{nonce}",
+        advisory_class=int(nonce[:8], 16) & 0x7FFFFFFF or 1,
+        advisory_object=int(nonce[8:16], 16) & 0x7FFFFFFF or 1,
+        backend_target=backend_target,
+    )
+
+
+def _postgrest_gate_setup_sql(gate: PostgrestServerGate) -> str:
+    return f"""
+create unlogged table {gate.table_name} (
+  singleton boolean primary key default true check (singleton),
+  released boolean not null default false,
+  server_peak integer not null default 0,
+  holder_pid integer
+);
+insert into {gate.table_name} (singleton) values (true);
+select pg_catalog.jsonb_build_object(
+  'holder_pid', holder_pid,
+  'released', released,
+  'server_peak', server_peak
+)::text from {gate.table_name} where singleton;
+"""
+
+
+def _postgrest_gate_holder_sql(
+    gate: PostgrestServerGate,
+    *,
+    workspace_id: str,
+    registration_id: str,
+) -> str:
+    return f"""
+begin;
+do $harmony_postgrest_holder_lock$
+declare
+  locked_registration uuid;
+begin
+  select registration.registration_id into strict locked_registration
+  from private.harmony_preview_connector_registrations registration
+  where registration.workspace_id = '{workspace_id}'::uuid
+    and registration.client_id = 'squid'
+    and registration.registration_id = '{registration_id}'::uuid
+  for update;
+end
+$harmony_postgrest_holder_lock$;
+select pg_catalog.pg_advisory_lock(
+  {gate.advisory_class}, {gate.advisory_object}
+);
+do $harmony_postgrest_holder_wait$
+declare
+  deadline timestamptz := pg_catalog.clock_timestamp() + interval '30 seconds';
+begin
+  loop
+    exit when (
+      select latch.released from {gate.table_name} latch
+      where latch.singleton
+    );
+    if pg_catalog.clock_timestamp() >= deadline then
+      raise exception 'harmony_preview_postgrest_holder_timeout';
+    end if;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+end
+$harmony_postgrest_holder_wait$;
+rollback;
+select pg_catalog.pg_advisory_unlock(
+  {gate.advisory_class}, {gate.advisory_object}
+);
+select 'holder_released';
+"""
+
+
+def _postgrest_gate_observe_sql(gate: PostgrestServerGate) -> str:
+    return f"""
+with recursive holder(pid) as (
+  select activity.pid
+  from pg_catalog.pg_locks lock
+  join pg_catalog.pg_stat_activity activity
+    on activity.pid = lock.pid
+  where lock.locktype = 'advisory'
+    and lock.database = (
+      select database.oid from pg_catalog.pg_database database
+      where database.datname = pg_catalog.current_database()
+    )
+    and lock.classid = {gate.advisory_class}::oid
+    and lock.objid = {gate.advisory_object}::oid
+    and lock.objsubid = 2
+    and lock.mode = 'ExclusiveLock'
+    and lock.granted
+), blocked(pid) as (
+  select candidate.pid
+  from pg_catalog.pg_stat_activity candidate
+  cross join holder
+  where holder.pid = any(pg_catalog.pg_blocking_pids(candidate.pid))
+    and candidate.datname = pg_catalog.current_database()
+    and candidate.query like '%submit_preview_harmony_signal%'
+  union
+  select candidate.pid
+  from pg_catalog.pg_stat_activity candidate
+  join blocked prior
+    on prior.pid = any(pg_catalog.pg_blocking_pids(candidate.pid))
+  where candidate.datname = pg_catalog.current_database()
+    and candidate.query like '%submit_preview_harmony_signal%'
+)
+select pg_catalog.jsonb_build_object(
+  'blocked_requests', (select pg_catalog.count(distinct pid) from blocked),
+  'holder_count', (select pg_catalog.count(*) from holder),
+  'holder_pid', (select pg_catalog.min(pid) from holder)
+)::text;
+"""
+
+
+def _postgrest_gate_release_sql(
+    gate: PostgrestServerGate,
+    *,
+    holder_pid: int | None,
+    server_peak: int,
+) -> str:
+    pid_sql = "null" if holder_pid is None else str(holder_pid)
+    return f"""
+update {gate.table_name}
+set released = true,
+    server_peak = greatest(server_peak, {server_peak}),
+    holder_pid = {pid_sql}
+where singleton;
+select 'released';
+"""
+
+
+def _postgrest_gate_readback_sql(gate: PostgrestServerGate) -> str:
+    return f"""
+select pg_catalog.jsonb_build_object(
+  'holder_pid_recorded', holder_pid is not null,
+  'released', released,
+  'server_peak', server_peak
+)::text from {gate.table_name} where singleton;
+"""
+
+
+def _postgrest_gate_drop_sql(gate: PostgrestServerGate) -> str:
+    return f"""
+drop table if exists {gate.table_name};
+select 'dropped';
+"""
+
+
+def _setup_postgrest_server_gate(
+    psql: object,
+    gate: PostgrestServerGate,
+) -> None:
+    try:
+        initial = psql.json(_postgrest_gate_setup_sql(gate))
+        if initial != {
+            "holder_pid": None,
+            "released": False,
+            "server_peak": 0,
+        }:
+            raise RuntimeError("PostgREST server gate setup failed")
+    except BaseException:
+        try:
+            if psql.run(_postgrest_gate_drop_sql(gate)) != "dropped":
+                raise RuntimeError
+        except BaseException as cleanup_error:
+            raise RuntimeError(
+                "PostgREST server gate setup cleanup failed"
+            ) from cleanup_error
+        raise
+
+
+def _wait_for_postgrest_server_participants(
+    psql: object,
+    gate: PostgrestServerGate,
+    *,
+    timeout_seconds: float,
+) -> tuple[int, int]:
+    deadline = time.monotonic() + timeout_seconds
+    peak = 0
+    holder_pid = 0
+    while time.monotonic() < deadline:
+        value = psql.json(_postgrest_gate_observe_sql(gate))
+        if (
+            not isinstance(value, dict)
+            or type(value.get("holder_count")) is not int
+            or type(value.get("blocked_requests")) is not int
+            or value.get("holder_count") != 1
+            or type(value.get("holder_pid")) is not int
+            or value["holder_pid"] <= 1
+            or value["blocked_requests"] < 0
+            or value["blocked_requests"] > CONCURRENCY
+        ):
+            raise RuntimeError("PostgREST server gate observation invalid")
+        holder_pid = value["holder_pid"]
+        peak = max(peak, value["blocked_requests"])
+        if peak >= gate.backend_target:
+            return holder_pid, peak
+        time.sleep(0.05)
+    raise RuntimeError("PostgREST server concurrency target not observed")
+
+
+def _wait_for_postgrest_holder(
+    psql: object,
+    gate: PostgrestServerGate,
+    *,
+    timeout_seconds: float,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        value = psql.json(_postgrest_gate_observe_sql(gate))
+        if (
+            isinstance(value, dict)
+            and value.get("holder_count") == 1
+            and type(value.get("holder_pid")) is int
+            and value["holder_pid"] > 1
+            and value.get("blocked_requests") == 0
+        ):
+            return value["holder_pid"]
+        time.sleep(0.05)
+    raise RuntimeError("PostgREST server gate holder not observed")
+
+
 def _run_race(
     client: PostgrestClient,
+    psql: object,
     rpc_payload: dict[str, object],
     jwt: str,
     *,
@@ -786,8 +1053,14 @@ def _run_race(
     expected_connector_receipt_id: str,
     expected_registration: dict[str, str],
     expected_claims: dict[str, object],
+    workspace_id: str,
+    backend_target: int,
     concurrency: int = CONCURRENCY,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    gate = _new_postgrest_server_gate(
+        min(backend_target, POSTGREST_BACKEND_TARGET_CAP)
+    )
+    _setup_postgrest_server_gate(psql, gate)
     barrier = threading.Barrier(concurrency)
 
     def submit(_: int) -> dict[str, object]:
@@ -803,8 +1076,88 @@ def _run_race(
             expected_claims=expected_claims,
         )
 
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        return list(pool.map(submit, range(concurrency)))
+    primary_failure: BaseException | None = None
+    rows: list[dict[str, object]] | None = None
+    evidence: dict[str, object] | None = None
+    release_sent = False
+    holder_pid: int | None = None
+    server_peak = 0
+    pool: ThreadPoolExecutor | None = None
+    holder = None
+    request_futures = []
+    try:
+        holder_sql = _postgrest_gate_holder_sql(
+            gate,
+            workspace_id=workspace_id,
+            registration_id=expected_registration["registration_id"],
+        )
+        pool = ThreadPoolExecutor(max_workers=concurrency + 1)
+        holder = pool.submit(psql.run, holder_sql)
+        holder_pid = _wait_for_postgrest_holder(
+            psql,
+            gate,
+            timeout_seconds=5.0,
+        )
+        request_futures = [
+            pool.submit(submit, index) for index in range(concurrency)
+        ]
+        holder_pid, server_peak = _wait_for_postgrest_server_participants(
+            psql,
+            gate,
+            timeout_seconds=10.0,
+        )
+        if psql.run(_postgrest_gate_release_sql(
+            gate,
+            holder_pid=holder_pid,
+            server_peak=server_peak,
+        )) != "released":
+            raise RuntimeError("PostgREST server gate release failed")
+        release_sent = True
+        rows = [future.result() for future in request_futures]
+        if holder is None or holder.result() != "holder_released":
+            raise RuntimeError("PostgREST server gate holder did not release")
+        readback = psql.json(_postgrest_gate_readback_sql(gate))
+        if (
+            not isinstance(readback, dict)
+            or readback.get("holder_pid_recorded") is not True
+            or readback.get("released") is not True
+            or type(readback.get("server_peak")) is not int
+            or readback["server_peak"] < gate.backend_target
+            or readback["server_peak"] > concurrency
+        ):
+            raise RuntimeError("PostgREST server gate readback invalid")
+        evidence = {
+            "method": POSTGREST_SERVER_CONCURRENCY_METHOD,
+            "client_requests": concurrency,
+            "backend_target": gate.backend_target,
+            "server_blocked_peak": readback["server_peak"],
+            "holder_released": True,
+        }
+    except BaseException as exc:
+        primary_failure = exc
+    finally:
+        if not release_sent:
+            try:
+                psql.run(_postgrest_gate_release_sql(
+                    gate,
+                    holder_pid=holder_pid,
+                    server_peak=server_peak,
+                ))
+            except BaseException:
+                pass
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+        try:
+            if psql.run(_postgrest_gate_drop_sql(gate)) != "dropped":
+                raise RuntimeError("PostgREST server gate cleanup failed")
+        except BaseException as exc:
+            if primary_failure is None:
+                primary_failure = exc
+    if primary_failure is not None:
+        raise primary_failure
+    if rows is None or evidence is None:
+        raise RuntimeError("PostgREST server race produced no evidence")
+    return rows, evidence
 
 
 def run_probe(args: argparse.Namespace) -> dict[str, object]:
@@ -819,6 +1172,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
             args.port,
             args.expected_branch_ref,
             args.parent_project_ref,
+            args.database_transport,
+            args.user,
+            args.database,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -828,6 +1184,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         raise SystemExit("--config-sha256 must be an exact lowercase 64-hex digest")
     if not 1 <= args.command_timeout_seconds <= 120:
         raise SystemExit("--command-timeout-seconds must be between 1 and 120")
+    if not 1 <= args.backend_concurrency_target <= CONCURRENCY:
+        raise SystemExit(
+            "--backend-concurrency-target must be between 1 and 64"
+        )
+    if (
+        args.database_transport == "direct"
+        and args.backend_concurrency_target != CONCURRENCY
+    ):
+        raise SystemExit(
+            "direct transport requires a 64-backend concurrency target"
+        )
     if not 1 <= args.http_timeout_seconds <= 30:
         raise SystemExit("--http-timeout-seconds must be between 1 and 30")
     if not 5 <= args.fence_ttl_minutes <= 120:
@@ -845,6 +1212,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         args.user,
         args.database,
         args.command_timeout_seconds,
+        args.backend_concurrency_target,
+    )
+    tls_ingress = _prove_https_tls_ingress(
+        project_url,
+        timeout_seconds=min(30.0, max(5.0, args.http_timeout_seconds)),
     )
     BASE._assert_connector_request_digest_vector(psql)
 
@@ -953,14 +1325,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         project_url, publishable_key, args.http_timeout_seconds
     )
     positive_jwt = _mint_hs256_jwt(positive_claims, jwt_secret)
-    raced = _run_race(
+    raced, server_concurrency = _run_race(
         client,
+        psql,
         _rpc_payload(workspace_id, positive_receipt_id, positive_signal),
         positive_jwt,
         expected_signal=positive_signal,
         expected_connector_receipt_id=positive_receipt_id,
         expected_registration=positive_registration,
         expected_claims=positive_claims,
+        workspace_id=workspace_id,
+        backend_target=args.backend_concurrency_target,
     )
     new_count = sum(row.get("reused") is False for row in raced)
     reused_count = sum(row.get("reused") is True for row in raced)
@@ -1069,7 +1444,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         )
     return {
         "ok": True,
-        "schema_version": "harmony-preview-postgrest-proof@2",
+        "schema_version": "harmony-preview-postgrest-proof@3",
         "branch_ref": branch_ref,
         "workspace_id": workspace_id,
         "release_sha": args.release_sha,
@@ -1077,6 +1452,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         "connections": CONCURRENCY,
         "new": new_count,
         "reused": reused_count,
+        "tls_ingress": tls_ingress,
+        "server_concurrency": server_concurrency,
         "counts": stable_counts,
         "verification_method": "jwt",
         "connector_registration_rows": 1,
@@ -1102,12 +1479,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", required=True)
     parser.add_argument("--database", default="postgres")
+    parser.add_argument(
+        "--database-transport",
+        choices=BASE.DATABASE_TRANSPORTS,
+        required=True,
+    )
     parser.add_argument("--psql")
     parser.add_argument("--confirm-disposable-preview", action="store_true")
     parser.add_argument("--expected-branch-ref", required=True)
     parser.add_argument("--parent-project-ref", required=True)
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--config-sha256", required=True)
+    parser.add_argument(
+        "--backend-concurrency-target",
+        required=True,
+        type=int,
+    )
     parser.add_argument("--command-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--http-timeout-seconds", type=float, default=10.0)
     parser.add_argument("--fence-ttl-minutes", type=int, default=120)
