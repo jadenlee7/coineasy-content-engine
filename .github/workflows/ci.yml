@@ -392,7 +392,10 @@ jobs:
         with:
           node-version: "24"
       - name: Validate the offline managed-inspector activation pack
-        run: node --test ops/managed-inspector-activation/pack.test.mjs
+        run: >-
+          node --test
+          ops/managed-inspector-activation/pack.test.mjs
+          ops/managed-inspector-activation/production-apply.test.mjs
       - name: Build the isolated default-OFF inspect image
         run: >-
           docker build --file Dockerfile.managed-inspect

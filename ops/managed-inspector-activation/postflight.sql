@@ -1,10 +1,12 @@
 -- managed-inspector-production-postflight@1
 -- One catalog-only query. Every returned row must have passed=true.
 with recursive
-expected_migrations(version, migration_name) as (
+expected_migrations(version, migration_name, migration_sha256) as (
     values
-        ('20260831180000'::text, 'managed_auth_telegram_inspect'::text),
-        ('20260901120000'::text, 'managed_inspector_role_boundary'::text)
+        ('20260831180000'::text, 'managed_auth_telegram_inspect'::text,
+            '61bf61ee4be6993c88d471b0d9b3e3fa2bf1063ba87d1a901cceff2fc953ab46'::text),
+        ('20260901120000'::text, 'managed_inspector_role_boundary'::text,
+            '256f8ddb19a6bbfaf2fc98ea168a1da6dc1945c54856f7450b0ba90d70817a25'::text)
 ),
 target_role as (
     select r.*
@@ -495,10 +497,21 @@ checks(check_id, passed, expected, observed) as (
     select
         'migration_rows_exact',
         count(*) = 2
-          and count(*) filter (where m.name = e.migration_name) = 2,
-        '20260831180000,20260901120000 with canonical names',
+          and count(*) filter (
+              where m.name = e.migration_name
+                and pg_catalog.cardinality(m.statements) = 1
+                and pg_catalog.encode(extensions.digest(
+                    pg_catalog.convert_to(m.statements[1], 'UTF8'), 'sha256'
+                ), 'hex') = e.migration_sha256
+          ) = 2,
+        'two canonical version/name rows with one exact-source statement each',
         coalesce(pg_catalog.string_agg(
-            m.version || ':' || coalesce(m.name, ''), ',' order by m.version
+            m.version || ':' || coalesce(m.name, '')
+            || ':statements=' || coalesce(pg_catalog.cardinality(m.statements)::text, 'null')
+            || ':sha256=' || coalesce(pg_catalog.encode(extensions.digest(
+                pg_catalog.convert_to(m.statements[1], 'UTF8'), 'sha256'
+            ), 'hex'), 'null'),
+            ',' order by m.version
         ), '')
     from expected_migrations e
     left join supabase_migrations.schema_migrations m on m.version = e.version

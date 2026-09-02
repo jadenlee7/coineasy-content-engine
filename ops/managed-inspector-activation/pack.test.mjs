@@ -88,8 +88,56 @@ test("the preflight makes the future NOINHERIT role state predictable", async ()
   assert.ok(
     checkIds.includes("authenticator_platform_admin_descendants_exact"),
   );
-  assert.equal(checkIds.length, 25);
+  assert.ok(checkIds.includes("read_only_executor_data_capability"));
+  assert.equal(checkIds.length, 26);
   assert.equal(new Set(checkIds).size, checkIds.length);
+});
+
+test("the intermediate gate fixes the safe state between canonical migrations", async () => {
+  const sql = await readFile(new URL("./intermediate.sql", import.meta.url), "utf8");
+  const checkIds = [
+    ...sql.matchAll(/select\s*\n\s*'([a-z0-9_]+)',/gu),
+  ].map((match) => match[1]);
+
+  assert.deepEqual(checkIds, [
+    "execution_role_read_only",
+    "transaction_read_only_on",
+    "execution_role_can_observe_forced_rls_rows",
+    "ordinary_roles_exist_exact",
+    "first_migration_history_exact",
+    "second_migration_history_absent",
+    "target_role_absent",
+    "target_tables_exact",
+    "target_relations_no_unexpected_object",
+    "target_tables_owned_by_postgres",
+    "target_tables_rls_forced",
+    "target_table_acl_exact_owner_only",
+    "target_column_acl_inventory_zero",
+    "target_functions_exact",
+    "target_functions_no_unexpected_overload",
+    "target_functions_owned_by_postgres",
+    "target_function_acl_exact_owner_only",
+    "target_function_security_and_config_exact",
+    "target_table_triggers_exact",
+    "target_tables_zero_rows",
+    "public_execute_on_entrypoints_zero",
+    "ordinary_roles_execute_on_entrypoints_zero",
+  ]);
+  assert.equal(new Set(checkIds).size, checkIds.length);
+  assert.equal(checkIds.length, 22);
+  assert.match(sql, /first_migration_history_exact/u);
+  assert.match(sql, /second_migration_history_absent/u);
+  assert.match(sql, /pg_catalog\.acldefault\('r', c\.relowner\)/u);
+  assert.match(sql, /pg_catalog\.acldefault\('f', f\.proowner\)/u);
+  assert.match(sql, /except all/gu);
+  assert.match(sql, /count\(\*\) = 8/u);
+  assert.match(sql, /coalesce\(sum\(row_count\), 0\) = 0/u);
+  assert.match(sql, /pg_catalog\.pg_has_role\(r\.oid, reader\.oid, 'USAGE'\)/u);
+  assert.match(sql, /61bf61ee4be6993c88d471b0d9b3e3fa2bf1063ba87d1a901cceff2fc953ab46/u);
+  assert.match(sql, /pg_catalog\.octet_length\(observed\) <= 4096/u);
+  assert.match(sql, /extensions\.digest/u);
+  assert.match(sql, /false as generic_db_push_allowed/u);
+  assert.match(sql, /true as custom_apply_receipt_required/u);
 });
 
 test("the PostgreSQL 17 postflight covers the MAINTAIN table privilege", async () => {
@@ -100,6 +148,9 @@ test("the PostgreSQL 17 postflight covers the MAINTAIN table privilege", async (
     /SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN/u,
   );
   assert.match(sql, /eight PostgreSQL 17 table privileges per target table/u);
+  assert.match(sql, /pg_catalog\.cardinality\(m\.statements\) = 1/u);
+  assert.match(sql, /61bf61ee4be6993c88d471b0d9b3e3fa2bf1063ba87d1a901cceff2fc953ab46/u);
+  assert.match(sql, /256f8ddb19a6bbfaf2fc98ea168a1da6dc1945c54856f7450b0ba90d70817a25/u);
 });
 
 test("the postflight measures effective object privileges through schema usage", async () => {
