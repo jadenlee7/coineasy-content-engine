@@ -206,6 +206,16 @@ export async function startLocalManagedAuth() {
     if (!sql.endsWith(';')) throw new Error('local_validation_pack_statement_invalid');
     return sql.slice(0, -1);
   };
+  const exactHistoryInsert = (fileName, version, name) => {
+    if (!/^\d{14}_[a-z0-9_]+\.sql$/u.test(fileName)
+        || !/^\d{14}$/u.test(version) || !/^[a-z0-9_]+$/u.test(name))
+      throw new Error('local_migration_history_fixture_invalid');
+    const sourceHex = readFileSync(path.join(ROOT, 'supabase/migrations', fileName)).toString('hex');
+    return `insert into supabase_migrations.schema_migrations(version,name,statements)
+      values ('${version}','${name}',array[
+        pg_catalog.convert_from(pg_catalog.decode('${sourceHex}','hex'),'UTF8')
+      ]::text[]);`;
+  };
   const runValidateOnly = async (fileName) => {
     const query = validationQuery(fileName);
     const raw = await state.sql(`begin transaction read only;
@@ -226,8 +236,11 @@ export async function startLocalManagedAuth() {
   };
   const assertValidateOnly = async (fileName, expectedFailures = []) => {
     const rows = await runValidateOnly(fileName);
-    const expectedRowCount = fileName === 'preflight.sql' ? 25
-      : fileName === 'postflight.sql' ? 39 : null;
+    const expectedRowCount = {
+      'preflight.sql': 26,
+      'intermediate.sql': 22,
+      'postflight.sql': 39,
+    }[fileName] ?? null;
     if (rows.length !== expectedRowCount)
       throw new Error(`local_${fileName.replace('.sql', '')}_row_count_unexpected`);
     const failures = rows.filter((row) => row.passed !== true).map((row) => row.check_id).sort();
@@ -480,12 +493,14 @@ export async function startLocalManagedAuth() {
           end
           $fixture_cleanup$;`);
         if (imageProfile === PRODUCTION_OBSERVED_PROFILE)
-          await state.sqlAs('postgres', `insert into supabase_migrations.schema_migrations(version,name)
-            values ('20260831180000','managed_auth_telegram_inspect');`);
+          await state.sqlAs('postgres', exactHistoryInsert(
+            MANAGED_BUILD_MIGRATION, '20260831180000', 'managed_auth_telegram_inspect',
+          ));
       }
       if (migration === MANAGED_BOUNDARY_MIGRATION && imageProfile === PRODUCTION_OBSERVED_PROFILE)
-        await state.sqlAs('postgres', `insert into supabase_migrations.schema_migrations(version,name)
-          values ('20260901120000','managed_inspector_role_boundary');`);
+        await state.sqlAs('postgres', exactHistoryInsert(
+          MANAGED_BOUNDARY_MIGRATION, '20260901120000', 'managed_inspector_role_boundary',
+        ));
     }
     if (imageProfile === PRODUCTION_OBSERVED_PROFILE) {
       await assertValidateOnly('postflight.sql');
