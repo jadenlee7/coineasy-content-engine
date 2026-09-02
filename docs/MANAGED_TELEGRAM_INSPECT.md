@@ -232,21 +232,25 @@ authorized check before applying the migration or activating the runtime.
 `ops/managed-inspector-activation/manifest.json` fixes the exact order and
 SHA-256 identity of the two migrations. Its `canonicalSetSha256` is the digest
 of the documented ordered canonical-line payload; it is not a release SHA.
-`preflight.sql` and `postflight.sql` are each one catalog-only `WITH ... SELECT`
-statement and are intended for the platform read-only SQL surface. They do not
-apply migrations, grant privileges, seed a release, create an account, or
-enable the runtime.
+`preflight.sql`, `intermediate.sql` and `postflight.sql` are each one
+catalog-only `WITH ... SELECT` statement for the platform read-only SQL
+surface. They do not apply migrations, grant privileges, seed a release,
+create an account, or enable the runtime. The intermediate gate verifies the
+exact first history source SHA plus the safe no-role/no-entry-grant state before
+the second migration.
 
 The production migration history diverges from this checkout's ordinary local
 history, so a generic `supabase db push` is not an allowed activation path.
 Any future production operation must use the reviewed canonical pair in strict
-order under separate approval, with saved preflight and postflight readbacks.
+order under separate approval, with saved preflight, intermediate and
+postflight readbacks and a hash-chained custom-apply receipt. Raw migration and
+history commits are non-atomic; ambiguous outcomes are never retried.
 Any query error, missing result, digest mismatch, partial state, or
 `passed=false` is a BLOCK.
 
 ```sh
 node ops/managed-inspector-activation/validate-pack.mjs
-node --test ops/managed-inspector-activation/pack.test.mjs
+node --test ops/managed-inspector-activation/*.test.mjs
 ```
 
 The browser test uses a fresh headless Chromium profile and a loopback-only

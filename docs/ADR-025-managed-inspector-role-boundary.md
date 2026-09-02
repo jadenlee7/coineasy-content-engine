@@ -145,11 +145,13 @@ provides the integration proof. Completion requires:
 
 Passing local tests and the production-observed-version replay is not hosted
 production proof. The canonical two-migration manifest and single-query,
-SELECT-only pre/post ACL probes in
-`ops/managed-inspector-activation/` prepare a fail-closed review gate; they do
-not apply either migration. Hosted Hook state, exposed schemas, cumulative
-ACLs, exact release SHA, and the new-account ceremony remain separate approval
-gates.
+SELECT-only pre/intermediate/post ACL probes in
+`ops/managed-inspector-activation/` prepare a fail-closed review gate. The
+default-off custom runner additionally models the non-atomic migration/history
+gap, exact-source history hashes and no-retry terminal states, but does not by
+itself authorize an apply. Hosted Hook state, exposed schemas, cumulative ACLs,
+exact release SHA, the production apply and the new-account ceremony remain
+separate approval gates.
 
 ## Rollback
 

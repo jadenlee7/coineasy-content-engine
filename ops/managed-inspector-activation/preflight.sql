@@ -312,6 +312,22 @@ checks(check_id, passed, expected, observed) as (
     where r.rolname in (select role_name from expected_roles)
     union all
     select
+        'read_only_executor_data_capability',
+        count(*) = 1,
+        'supabase_read_only_user:bypassrls=true,pg_read_all_data=true',
+        coalesce(pg_catalog.string_agg(
+            r.rolname || ':bypassrls=' || r.rolbypassrls::text
+            || ',pg_read_all_data='
+            || pg_catalog.pg_has_role(r.oid, reader.oid, 'USAGE')::text,
+            ',' order by r.rolname
+        ), '')
+    from pg_catalog.pg_roles r
+    join pg_catalog.pg_roles reader on reader.rolname = 'pg_read_all_data'
+    where r.rolname = 'supabase_read_only_user'
+      and r.rolbypassrls
+      and pg_catalog.pg_has_role(r.oid, reader.oid, 'USAGE')
+    union all
+    select
         'postgres_definer_prerequisite',
         count(*) = 1,
         'postgres superuser-or-bypassrls',

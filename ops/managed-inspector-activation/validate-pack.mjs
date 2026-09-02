@@ -63,7 +63,11 @@ const REJECTED_MIGRATION_HASHES = Object.freeze(new Set([
   // exact platform-managed postgres -> cli_login_postgres role path.
   "ac5538098b0ce71f1a4f24c15478456354fc30b29814e9bc4c9a9fb6d8ff83ad",
 ]));
-const SQL_FILES = Object.freeze(["preflight.sql", "postflight.sql"]);
+const SQL_FILES = Object.freeze([
+  "preflight.sql",
+  "intermediate.sql",
+  "postflight.sql",
+]);
 const FORBIDDEN_SQL_WORDS = Object.freeze([
   "alter",
   "analyze",
