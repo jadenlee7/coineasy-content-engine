@@ -391,6 +391,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Verify the dedicated Railway deployment contract
+        run: node --test tests_js/managed-inspect-image.test.mts
       - name: Validate the offline managed-inspector activation pack
         run: >-
           node --test

@@ -269,7 +269,31 @@ repository, then set `MANAGED_INSPECT_BROWSER_TEST=1` and
 The image build requires a 40-character `MANAGED_INSPECT_SOURCE_SHA` build
 argument. This writes the read-only build stamp; runtime SHA environment values
 cannot replace it. A local smoke-test stamp is not a production release proof.
-No deployment manifest or live enable command is supplied here.
+No production-bound deployment manifest or live enable command is supplied here.
+
+### Railway deployment contract
+
+`railway.managed-inspect.json` is a reviewed repository contract for CI and
+owner-system deployment readback. It fixes the isolated Dockerfile, exact
+watched source set, Docker-owned start command, absent healthcheck while OFF
+returns HTTP 503, and bounded restart policy. It does not enable the runtime.
+
+Railway Config as Code is deprecated, new services cannot opt in, and files for
+services already using it stop being read on 2026-12-01. This managed-inspect
+service is new and has no legacy Config as Code binding, so do not set
+`railwayConfigFile` to this JSON or claim that the file controls production. A
+later separately approved GitHub-origin deployment must apply the equivalent
+settings through Railway's
+supported service configuration or project-level Infrastructure as Code, keep
+automatic deployment and `MANAGED_INSPECT_ENABLED` false, and prove the exact
+source SHA from Railway deployment metadata, build logs, the image stamp and
+the disabled HTTP readback. Any project-level Infrastructure as Code import,
+plan or apply is a separate scope because omitted resources can be destructive.
+
+Primary Railway references:
+
+- [Config as Code deprecation](https://docs.railway.com/config-as-code)
+- [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code)
 
 ## Primary contracts
 
