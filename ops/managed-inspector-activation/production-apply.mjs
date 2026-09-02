@@ -13,6 +13,7 @@ import {
   newApprovalTemplate,
   parseCanonicalJson,
   runProductionApply,
+  validateApprovedSubjectSha256,
   validateApproval,
 } from "./production-apply-lib.mjs";
 
@@ -23,7 +24,7 @@ function usage() {
   return `Usage:
   node ops/managed-inspector-activation/production-apply.mjs --template
   node ops/managed-inspector-activation/production-apply.mjs --validate --approval /absolute/approval.json
-  node ops/managed-inspector-activation/production-apply.mjs --apply --approval /absolute/approval.json --receipt-root /absolute/new/private-directory
+  node ops/managed-inspector-activation/production-apply.mjs --apply --approval /absolute/approval.json --approved-subject-sha256 <64-lowercase-hex> --receipt-root /absolute/new/private-directory
 
 Default behavior is offline. --apply is the only network/write mode and never activates runtime, creates Auth users, or contacts Telegram/providers.\n`;
 }
@@ -36,6 +37,7 @@ function parseArguments(args) {
     else if (argument === "--template") options.template = true;
     else if (argument === "--validate") options.validate = true;
     else if (argument === "--approval") options.approval = args.shift();
+    else if (argument === "--approved-subject-sha256") options.approvedSubjectSha256 = args.shift();
     else if (argument === "--receipt-root") options.receiptRoot = args.shift();
     else throw new Error(`unknown_argument:${argument}`);
   }
@@ -48,6 +50,17 @@ function parseArguments(args) {
   if (options.apply) {
     assert.equal(typeof options.receiptRoot, "string", "--receipt-root is required");
     assert.equal(isAbsolute(options.receiptRoot), true, "receipt root must be absolute");
+    assert.equal(
+      typeof options.approvedSubjectSha256,
+      "string",
+      "--approved-subject-sha256 is required for --apply",
+    );
+  } else {
+    assert.equal(
+      options.approvedSubjectSha256,
+      undefined,
+      "--approved-subject-sha256 is valid only with --apply",
+    );
   }
   return options;
 }
@@ -92,8 +105,12 @@ async function main() {
     return;
   }
   const approval = await readApproval(options.approval);
-  const releaseSha = options.apply ? exactReleaseSha() : git("rev-parse", "HEAD");
+  const releaseSha = git("rev-parse", "HEAD");
   validateApproval(approval, pack.manifest, releaseSha);
+  if (options.apply) {
+    validateApprovedSubjectSha256(approval, options.approvedSubjectSha256);
+    assert.equal(exactReleaseSha(), releaseSha);
+  }
   if (options.validate) {
     process.stdout.write(`${JSON.stringify({
       ok: true,
@@ -131,6 +148,7 @@ async function main() {
   });
   const outcome = await runProductionApply({
     approval,
+    approvedSubjectSha256: options.approvedSubjectSha256,
     fetchImpl: fetch,
     journal,
     pack,

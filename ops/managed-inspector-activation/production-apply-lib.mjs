@@ -9,6 +9,7 @@ export const PROJECT_REF = "isuqcqwxpojgzevxfdwr";
 export const API_ORIGIN = "https://api.supabase.com";
 export const APPROVAL_SCHEMA = "coineasy-managed-inspector-production-approval@1";
 export const RECEIPT_SCHEMA = "coineasy-supabase-custom-apply-receipt@1";
+export const APPROVAL_ACTOR_PLACEHOLDER = "replace-with-approved-actor";
 export const EXPECTED_CHECKS = Object.freeze({
   preflight: Object.freeze({
     pack: "managed-inspector-production-preflight@1",
@@ -173,6 +174,14 @@ export function canonicalJson(value) {
   return `${JSON.stringify(canonicalValue(value), null, 2)}\n`;
 }
 
+function deepFreeze(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 export function parseCanonicalJson(raw, label = "JSON") {
   const value = JSON.parse(raw);
   assert.equal(raw, canonicalJson(value), `${label} must be deterministic canonical JSON`);
@@ -228,6 +237,11 @@ export function validateApproval(approval, manifest, releaseSha, now = new Date(
   assert.equal(approval.genericDbPushAllowed, false, "genericDbPushAllowed must remain false");
   assert.equal(approval.runtimeActivationAllowed, false, "runtimeActivationAllowed must remain false");
   assert.match(approval.approvedBy, /^[A-Za-z0-9@._:-]{3,120}$/u);
+  assert.notEqual(
+    approval.approvedBy,
+    APPROVAL_ACTOR_PLACEHOLDER,
+    "approvedBy placeholder must be replaced",
+  );
   const expectedSubject = boundedApprovalSubject(approval);
   assert.equal(approval.approvalSubject, expectedSubject, "approvalSubject does not match bounded fields");
   assert.equal(
@@ -243,6 +257,25 @@ export function validateApproval(approval, manifest, releaseSha, now = new Date(
   assert.ok(current >= approvedAt - 60_000, "approval is not active yet");
   assert.ok(current < expiresAt, "approval expired");
   return approval;
+}
+
+export function validateApprovedSubjectSha256(approval, approvedSubjectSha256) {
+  assert.equal(
+    typeof approvedSubjectSha256,
+    "string",
+    "operator-approved subject SHA-256 is required",
+  );
+  assert.match(
+    approvedSubjectSha256,
+    SHA256,
+    "operator-approved subject SHA-256 must be exactly 64 lowercase hex characters",
+  );
+  assert.equal(
+    approvedSubjectSha256,
+    approval.approvalSubjectSha256,
+    "operator-approved subject SHA-256 does not match approval packet",
+  );
+  return approvedSubjectSha256;
 }
 
 export async function loadProductionPack(repositoryRoot) {
@@ -708,7 +741,8 @@ function apiDetail(result, extra = {}) {
 }
 
 export async function runProductionApply({
-  approval,
+  approval: suppliedApproval,
+  approvedSubjectSha256,
   fetchImpl,
   journal,
   now = () => new Date(),
@@ -716,10 +750,15 @@ export async function runProductionApply({
   releaseSha,
   token,
 }) {
+  const approval = deepFreeze(canonicalValue(suppliedApproval));
   const currentTime = () => typeof now === "function" ? now() : now;
-  const assertApprovalActive = () => validateApproval(
-    approval, pack.manifest, releaseSha, currentTime(),
-  );
+  const assertApprovalActive = () => {
+    const validated = validateApproval(
+      approval, pack.manifest, releaseSha, currentTime(),
+    );
+    validateApprovedSubjectSha256(validated, approvedSubjectSha256);
+    return validated;
+  };
   assertApprovalActive();
   const common = {
     approvalExpiresAt: approval.expiresAt,
@@ -940,7 +979,7 @@ export function newApprovalTemplate({ releaseSha, canonicalSetSha256, now = new 
     approvalSubject: "",
     approvalSubjectSha256: "",
     approvedAt,
-    approvedBy: "replace-with-approved-actor",
+    approvedBy: APPROVAL_ACTOR_PLACEHOLDER,
     canonicalSetSha256,
     environment: "production",
     expiresAt,

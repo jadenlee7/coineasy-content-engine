@@ -182,6 +182,14 @@ is an operator-review binding, not a detached cryptographic signature or a
 substitute for the explicit approval record. Approval expiry is rechecked before
 every mutation.
 
+The generated template is intentionally not an approval: its
+`approvedBy=replace-with-approved-actor` value is rejected. Replace that actor,
+then recompute the complete bounded subject and its SHA-256 before running
+offline validation. Production `--apply` and the underlying runner additionally
+require the exact hash
+from the operator's separate approval as `--approved-subject-sha256`; a missing
+or different hash stops before the receipt directory or any network request.
+
 Offline-only commands:
 
 ```sh
