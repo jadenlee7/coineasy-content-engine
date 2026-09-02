@@ -83,6 +83,9 @@ SUPABASE_CA_SHA256 = (
     "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
 )
 SUPABASE_CA_FD_ENV = "HARMONY_PREVIEW_SUPABASE_CA_FD"
+LINUX_ANONYMOUS_PIPE_TARGET_PATTERN = re.compile(
+    r"^pipe:\[([1-9][0-9]*)\]$"
+)
 PSQL_BLOCKED_ENV_NAMES = {
     "PAGER",
     "PSQLRC",
@@ -107,6 +110,54 @@ SERVER_CONCURRENCY_RACE_LABELS = (
     "qa_denial",
     "codex_reconciliation",
 )
+
+
+def _anonymous_pipe_fd_identity(
+    file_descriptor: int,
+    expected_access_mode: int,
+) -> tuple[int, int] | None:
+    """Return a stable anonymous-pipe identity on supported proof hosts."""
+
+    if (
+        type(file_descriptor) is not int
+        or file_descriptor < 3
+        or expected_access_mode not in {os.O_RDONLY, os.O_WRONLY}
+    ):
+        return None
+    try:
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISFIFO(before.st_mode)
+            or (
+                fcntl.fcntl(file_descriptor, fcntl.F_GETFL)
+                & os.O_ACCMODE
+            )
+            != expected_access_mode
+        ):
+            return None
+        identity = (before.st_dev, before.st_ino)
+        if sys.platform == "darwin":
+            if before.st_nlink != 0:
+                return None
+        elif sys.platform.startswith("linux"):
+            if before.st_nlink != 1:
+                return None
+            target = os.readlink(f"/proc/self/fd/{file_descriptor}")
+            match = LINUX_ANONYMOUS_PIPE_TARGET_PATTERN.fullmatch(target)
+            if match is None or int(match.group(1)) != before.st_ino:
+                return None
+        else:
+            return None
+        after = os.fstat(file_descriptor)
+        if (
+            (after.st_dev, after.st_ino) != identity
+            or after.st_mode != before.st_mode
+            or after.st_nlink != before.st_nlink
+        ):
+            return None
+        return identity
+    except (OSError, ValueError):
+        return None
 
 
 class ServerConcurrencyGate:
@@ -288,16 +339,10 @@ def _psql_child_environment(
         )
     certificate_payload = b""
     try:
-        certificate_stat = os.fstat(certificate_fd)
-        if (
-            not stat.S_ISFIFO(certificate_stat.st_mode)
-            or certificate_stat.st_nlink != 0
-            or (
-                fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
-                & os.O_ACCMODE
-            )
-            != os.O_RDONLY
-        ):
+        if _anonymous_pipe_fd_identity(
+            certificate_fd,
+            os.O_RDONLY,
+        ) is None:
             raise ValueError
         chunks: list[bytes] = []
         total = 0
@@ -357,19 +402,9 @@ def _create_unlinked_ca_reader(payload: bytes) -> int:
     writer_fd = -1
     try:
         reader_fd, writer_fd = os.pipe()
-        reader_stat = os.fstat(reader_fd)
-        writer_stat = os.fstat(writer_fd)
         if (
-            reader_fd < 3
-            or writer_fd < 3
-            or not stat.S_ISFIFO(reader_stat.st_mode)
-            or not stat.S_ISFIFO(writer_stat.st_mode)
-            or reader_stat.st_nlink != 0
-            or writer_stat.st_nlink != 0
-            or (fcntl.fcntl(reader_fd, fcntl.F_GETFL) & os.O_ACCMODE)
-            != os.O_RDONLY
-            or (fcntl.fcntl(writer_fd, fcntl.F_GETFL) & os.O_ACCMODE)
-            != os.O_WRONLY
+            _anonymous_pipe_fd_identity(reader_fd, os.O_RDONLY) is None
+            or _anonymous_pipe_fd_identity(writer_fd, os.O_WRONLY) is None
         ):
             raise OSError
         written = 0
@@ -685,17 +720,10 @@ class Psql:
                 sql = gate.wrap(sql)
             if self.ca_payload is not None:
                 certificate_fd = _create_unlinked_ca_reader(self.ca_payload)
-                certificate_stat = os.fstat(certificate_fd)
-                if (
-                    certificate_fd < 3
-                    or not stat.S_ISFIFO(certificate_stat.st_mode)
-                    or certificate_stat.st_nlink != 0
-                    or (
-                        fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
-                        & os.O_ACCMODE
-                    )
-                    != os.O_RDONLY
-                ):
+                if _anonymous_pipe_fd_identity(
+                    certificate_fd,
+                    os.O_RDONLY,
+                ) is None:
                     raise RuntimeError("Supabase CA fd materialization failed")
                 environment["PGSSLROOTCERT"] = f"/dev/fd/{certificate_fd}"
                 pass_fds = (certificate_fd,)

@@ -383,8 +383,10 @@ PSQL 문서가 제공하는 `Supabase Root 2021 CA` 공개 PEM을
 `certs/supabase-prod-ca-2021.crt`로 추적합니다. 고정 SHA-256
 `700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`과 exact
 release SHA snapshot의 `proof_artifact_sha256`이 모두 일치해야 합니다. Runner는
-그 검증된 bytes만 익명 `os.pipe()`에 쓰고 writer를 닫은 뒤, 링크 수 0인 FIFO의
-read-only descriptor 하나만 `pass_fds`와 `/dev/fd/<n>`으로 자식에 넘깁니다. 각
+그 검증된 bytes만 익명 `os.pipe()`에 쓰고 writer를 닫은 뒤, macOS에서는 링크 수
+0인 FIFO인지, Linux에서는 `/proc/self/fd/N`이 동일 inode의 `pipe:[inode]`인지
+확인합니다. read-only descriptor 하나만 `pass_fds`와 `/dev/fd/<n>`으로 자식에
+넘깁니다. 각
 `psql` 실행은 새 익명 pipe를 사용하고 이름 있는 CA 파일이나 directory를 만들지
 않습니다. 자식은 전달받은 bytes의 exact digest를 다시 확인하며 host의 canonical
 DNS 이름을 유지해 certificate hostname도 검증합니다. Runtime 다운로드,

@@ -109,7 +109,8 @@ All remote database subprocesses use `verify-full` with the checked-in
 exact release SHA and fixed SHA-256
 `700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`.
 The runner writes those bytes to an anonymous pipe, closes the writer, validates
-the unlinked FIFO and read-only descriptor, and passes only that descriptor via
+the macOS unlinked FIFO or the Linux `/proc/self/fd/N = pipe:[inode]` identity
+plus the read-only descriptor, and passes only that descriptor via
 `pass_fds` and `/dev/fd/<n>`. Each `psql` process receives a fresh anonymous
 pipe; no named CA file or directory is created. The child rechecks the exact
 digest and the runner rejects system or caller-supplied trust and weaker SSL

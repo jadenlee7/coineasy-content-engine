@@ -33,6 +33,41 @@ def _read_only_pipe(payload: bytes) -> int:
     return reader_fd
 
 
+def test_anonymous_pipe_identity_is_platform_bound(
+    tmp_path: Path,
+) -> None:
+    reader_fd, writer_fd = os.pipe()
+    try:
+        reader_stat = os.fstat(reader_fd)
+        writer_stat = os.fstat(writer_fd)
+        assert PROBE._anonymous_pipe_fd_identity(
+            reader_fd,
+            os.O_RDONLY,
+        ) == (reader_stat.st_dev, reader_stat.st_ino)
+        assert PROBE._anonymous_pipe_fd_identity(
+            writer_fd,
+            os.O_WRONLY,
+        ) == (writer_stat.st_dev, writer_stat.st_ino)
+        assert (
+            PROBE._anonymous_pipe_fd_identity(reader_fd, os.O_WRONLY)
+            is None
+        )
+    finally:
+        os.close(reader_fd)
+        os.close(writer_fd)
+
+    named_fifo = tmp_path / "named-ca-fifo"
+    os.mkfifo(named_fifo, 0o600)
+    named_fd = os.open(named_fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        assert (
+            PROBE._anonymous_pipe_fd_identity(named_fd, os.O_RDONLY)
+            is None
+        )
+    finally:
+        os.close(named_fd)
+
+
 class FakeServerConcurrencyPsql:
     def __init__(self, concurrency: int) -> None:
         self.backend_concurrency_target = concurrency
@@ -376,7 +411,10 @@ def test_remote_psql_requires_verify_full_and_explicit_trust(
         certificate_fd = inherited_fds[0]
         assert kwargs["env"]["PGSSLROOTCERT"] == f"/dev/fd/{certificate_fd}"
         certificate_stat = os.fstat(certificate_fd)
-        assert certificate_stat.st_nlink == 0
+        assert PROBE._anonymous_pipe_fd_identity(
+            certificate_fd,
+            os.O_RDONLY,
+        ) == (certificate_stat.st_dev, certificate_stat.st_ino)
         assert os.read(certificate_fd, 4097) == exact_ca
         return subprocess.CompletedProcess([], 0, "", "")
 

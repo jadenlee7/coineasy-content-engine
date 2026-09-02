@@ -349,6 +349,9 @@ SUPABASE_CA_PATH = Path("certs/supabase-prod-ca-2021.crt")
 SUPABASE_CA_SHA256 = (
     "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
 )
+LINUX_ANONYMOUS_PIPE_TARGET_PATTERN = re.compile(
+    r"^pipe:\[([1-9][0-9]*)\]$"
+)
 PROBE_PATHS = (
     Path("scripts/probe_harmony_preview_concurrency.py"),
     Path("scripts/probe_harmony_preview_postgrest.py"),
@@ -429,6 +432,54 @@ class ManagementApiError(ProofError):
     def __init__(self, code: str, *, retryable: bool) -> None:
         super().__init__(code)
         self.retryable = retryable
+
+
+def _anonymous_pipe_fd_identity(
+    file_descriptor: int,
+    expected_access_mode: int,
+) -> tuple[int, int] | None:
+    """Return a stable anonymous-pipe identity on supported proof hosts."""
+
+    if (
+        type(file_descriptor) is not int
+        or file_descriptor < 3
+        or expected_access_mode not in {os.O_RDONLY, os.O_WRONLY}
+    ):
+        return None
+    try:
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISFIFO(before.st_mode)
+            or (
+                fcntl.fcntl(file_descriptor, fcntl.F_GETFL)
+                & os.O_ACCMODE
+            )
+            != expected_access_mode
+        ):
+            return None
+        identity = (before.st_dev, before.st_ino)
+        if sys.platform == "darwin":
+            if before.st_nlink != 0:
+                return None
+        elif sys.platform.startswith("linux"):
+            if before.st_nlink != 1:
+                return None
+            target = os.readlink(f"/proc/self/fd/{file_descriptor}")
+            match = LINUX_ANONYMOUS_PIPE_TARGET_PATTERN.fullmatch(target)
+            if match is None or int(match.group(1)) != before.st_ino:
+                return None
+        else:
+            return None
+        after = os.fstat(file_descriptor)
+        if (
+            (after.st_dev, after.st_ino) != identity
+            or after.st_mode != before.st_mode
+            or after.st_nlink != before.st_nlink
+        ):
+            return None
+        return identity
+    except (OSError, ValueError):
+        return None
 
 
 class RejectRedirectHandler(request.HTTPRedirectHandler):
@@ -2311,32 +2362,21 @@ class HarmonyPreviewProof:
                 code="supabase_ca_materialize"
             )
             certificate_fd, writer_fd = os.pipe()
-            certificate_stat = os.fstat(certificate_fd)
-            writer_stat = os.fstat(writer_fd)
+            certificate_identity = _anonymous_pipe_fd_identity(
+                certificate_fd,
+                os.O_RDONLY,
+            )
+            writer_identity = _anonymous_pipe_fd_identity(
+                writer_fd,
+                os.O_WRONLY,
+            )
             if (
-                certificate_fd < 3
-                or writer_fd < 3
-                or not stat.S_ISFIFO(certificate_stat.st_mode)
-                or not stat.S_ISFIFO(writer_stat.st_mode)
-                or certificate_stat.st_nlink != 0
-                or writer_stat.st_nlink != 0
-                or (
-                    fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
-                    & os.O_ACCMODE
-                )
-                != os.O_RDONLY
-                or (fcntl.fcntl(writer_fd, fcntl.F_GETFL) & os.O_ACCMODE)
-                != os.O_WRONLY
+                certificate_identity is None
+                or writer_identity is None
             ):
                 raise ProofError("supabase_ca_materialize_identity_mismatch")
-            self.ssl_root_cert_owned_fds[certificate_fd] = (
-                certificate_stat.st_dev,
-                certificate_stat.st_ino,
-            )
-            self.ssl_root_cert_owned_fds[writer_fd] = (
-                writer_stat.st_dev,
-                writer_stat.st_ino,
-            )
+            self.ssl_root_cert_owned_fds[certificate_fd] = certificate_identity
+            self.ssl_root_cert_owned_fds[writer_fd] = writer_identity
             self.ssl_root_cert_cleanup_confirmed = False
             written = 0
             while written < len(payload):
@@ -3705,22 +3745,16 @@ raise SystemExit(
     def _db_environment(self, certificate_fd: int) -> dict[str, str]:
         assert self.credentials is not None
         try:
-            certificate_stat = os.fstat(certificate_fd)
             expected_identity = self.ssl_root_cert_owned_fds.get(
                 certificate_fd
             )
+            observed_identity = _anonymous_pipe_fd_identity(
+                certificate_fd,
+                os.O_RDONLY,
+            )
             if (
-                certificate_fd < 3
-                or expected_identity is None
-                or (certificate_stat.st_dev, certificate_stat.st_ino)
-                != expected_identity
-                or not stat.S_ISFIFO(certificate_stat.st_mode)
-                or certificate_stat.st_nlink != 0
-                or (
-                    fcntl.fcntl(certificate_fd, fcntl.F_GETFL)
-                    & os.O_ACCMODE
-                )
-                != os.O_RDONLY
+                expected_identity is None
+                or observed_identity != expected_identity
             ):
                 raise ProofError("supabase_ca_materialized_fd_invalid")
         except ProofError:

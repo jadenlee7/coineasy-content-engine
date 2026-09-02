@@ -50,6 +50,41 @@ INBOX_ID = "33333333-3333-4333-8333-333333333333"
 RECONCILER_ID = "44444444-4444-4444-8444-444444444444"
 
 
+def test_runner_anonymous_pipe_identity_is_platform_bound(
+    tmp_path: Path,
+) -> None:
+    reader_fd, writer_fd = os.pipe()
+    try:
+        reader_stat = os.fstat(reader_fd)
+        writer_stat = os.fstat(writer_fd)
+        assert RUNNER._anonymous_pipe_fd_identity(
+            reader_fd,
+            os.O_RDONLY,
+        ) == (reader_stat.st_dev, reader_stat.st_ino)
+        assert RUNNER._anonymous_pipe_fd_identity(
+            writer_fd,
+            os.O_WRONLY,
+        ) == (writer_stat.st_dev, writer_stat.st_ino)
+        assert (
+            RUNNER._anonymous_pipe_fd_identity(reader_fd, os.O_WRONLY)
+            is None
+        )
+    finally:
+        os.close(reader_fd)
+        os.close(writer_fd)
+
+    named_fifo = tmp_path / "named-ca-fifo"
+    os.mkfifo(named_fifo, 0o600)
+    named_fd = os.open(named_fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        assert (
+            RUNNER._anonymous_pipe_fd_identity(named_fd, os.O_RDONLY)
+            is None
+        )
+    finally:
+        os.close(named_fd)
+
+
 def _migration_payload(filename: str) -> bytes:
     assert filename in RUNNER.MIGRATIONS
     return f"-- immutable migration {filename}\n".encode("ascii")
