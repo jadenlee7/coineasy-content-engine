@@ -39,11 +39,27 @@ API_KEY_ID = "22222222-2222-4222-8222-222222222222"
 SECRET_KEY_ID = "33333333-3333-4333-8333-333333333333"
 MANAGEMENT_TOKEN = "sbp_scoped_management_token_must_never_appear"
 SQL_PAYLOAD = b"-- immutable exact-head sql\n"
-SQL_SHA256 = hashlib.sha256(SQL_PAYLOAD).hexdigest()
 ROUND_ID = "11111111-1111-4111-8111-111111111111"
 PLAN_ID = "22222222-2222-4222-8222-222222222222"
 INBOX_ID = "33333333-3333-4333-8333-333333333333"
 RECONCILER_ID = "44444444-4444-4444-8444-444444444444"
+
+
+def _migration_payload(filename: str) -> bytes:
+    assert filename in RUNNER.MIGRATIONS
+    return f"-- immutable migration {filename}\n".encode("ascii")
+
+
+def _security_payload(filename: str) -> bytes:
+    assert filename in RUNNER.SECURITY_SUITES
+    return f"-- immutable security suite {filename}\n".encode("ascii")
+
+
+def _migration_manifest() -> dict[str, str]:
+    return {
+        filename: hashlib.sha256(_migration_payload(filename)).hexdigest()
+        for filename in RUNNER.MIGRATIONS
+    }
 
 
 def _direct_probe_receipt() -> dict[str, object]:
@@ -287,7 +303,7 @@ def _support_payload(relative: Path) -> bytes:
         return CONFIG_PAYLOAD
     if relative in RUNNER.PROBE_PATHS:
         return PROBE_PAYLOAD
-    return SQL_PAYLOAD
+    return _security_payload(relative.name)
 
 
 def _support_manifest() -> dict[str, str]:
@@ -858,6 +874,9 @@ class FakeRunner:
         self,
         *,
         direct_failure: bool = False,
+        connectivity_failure: bool = False,
+        migration_failure_ordinal: int | None = None,
+        security_failure_ordinal: int | None = None,
         create_ambiguous: bool = False,
         delete_ambiguous: bool = False,
         timeout_code: str | None = None,
@@ -871,12 +890,18 @@ class FakeRunner:
         self.events: list[str] = []
         self.commands: list[list[str]] = []
         self.environments: list[dict[str, str]] = []
+        self.quiet_environment_references: list[dict[str, str]] = []
         self.working_directories: list[str | None] = []
         self.timeouts: list[tuple[str, float]] = []
         self.json_inputs: list[tuple[str, bytes | None]] = []
         self.branch_name = ""
         self.list_calls = 0
         self.direct_failure = direct_failure
+        self.connectivity_failure = connectivity_failure
+        self.migration_failure_ordinal = migration_failure_ordinal
+        self.security_failure_ordinal = security_failure_ordinal
+        self.migration_calls = 0
+        self.security_calls = 0
         self.create_ambiguous = create_ambiguous
         self.delete_ambiguous = delete_ambiguous
         self.timeout_code = timeout_code
@@ -1043,7 +1068,8 @@ class FakeRunner:
         self.timeouts.append((code, timeout))
         self.events.append(code)
         if code == "migration_snapshot":
-            return SQL_PAYLOAD
+            relative = Path(command[-1].split(":", 1)[1])
+            return _migration_payload(relative.name)
         relative = Path(command[-1].split(":", 1)[1])
         return _support_payload(relative)
 
@@ -1143,12 +1169,52 @@ class FakeRunner:
         timeout: float,
         code: str,
     ) -> None:
-        assert input_bytes == SQL_PAYLOAD
+        if env is not None:
+            self.quiet_environment_references.append(env)
         self.commands.append(list(command))
         self.environments.append(dict(env or {}))
         self.working_directories.append(cwd)
         self.timeouts.append((code, timeout))
         self.events.append(code)
+        if code == "preview_database_connectivity":
+            assert input_bytes is None
+            assert command[-2:] == ["-Atqc", "select 1"]
+            if self.connectivity_failure:
+                raise RUNNER.CommandError(
+                    "preview_database_connectivity_failed",
+                    ambiguous=True,
+                )
+            return
+        assert command[-2:] == ["-f", "-"]
+        if code == "preview_migration_apply":
+            self.migration_calls += 1
+            filename = RUNNER.MIGRATIONS[self.migration_calls - 1]
+            assert input_bytes == _migration_payload(filename)
+            if self.migration_calls == self.migration_failure_ordinal:
+                failure = RUNNER.CommandError(
+                    "preview_migration_apply_failed",
+                    ambiguous=True,
+                )
+                failure.args = (
+                    f"{DB_SECRET} {JWT_SECRET} synthetic-stderr-marker",
+                )
+                raise failure
+            return
+        if code == "preview_security_suite":
+            self.security_calls += 1
+            filename = RUNNER.SECURITY_SUITES[self.security_calls - 1]
+            assert input_bytes == _security_payload(filename)
+            if self.security_calls == self.security_failure_ordinal:
+                failure = RUNNER.CommandError(
+                    "preview_security_suite_failed",
+                    ambiguous=True,
+                )
+                failure.args = (
+                    f"{DB_SECRET} {JWT_SECRET} synthetic-stderr-marker",
+                )
+                raise failure
+            return
+        raise AssertionError(f"unexpected quiet command: {command}")
 
     def popen(
         self,
@@ -1504,7 +1570,7 @@ def test_management_child_credential_path_requires_expected_ref(
 def _fake_exact_checkout(
     *_args: object,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    return ({name: SQL_SHA256 for name in RUNNER.MIGRATIONS}, _support_manifest())
+    return (_migration_manifest(), _support_manifest())
 
 
 def _clock() -> callable:
@@ -1579,7 +1645,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@4"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@5"
+    assert receipt["database_connectivity_preflight"] == "passed"
+    assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
+    assert receipt["security_completed_count"] == len(RUNNER.SECURITY_SUITES)
+    assert receipt["sql_failure"] is None
     assert receipt["parent_project_ref"] == PARENT_REF
     assert receipt["parent_child_fence"] is True
     assert receipt["migration_count"] == 9
@@ -1686,6 +1756,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "exact_sha_snapshot_bound",
         "management_permission_preflight",
         "branch_ready_and_shape_verified",
+        "database_connectivity_preflight",
         "migration_and_rls_security",
         "direct_database_64_way",
         "postgrest_schema_readiness_get",
@@ -1700,6 +1771,15 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert fake.events.index("api_keys_get") < fake.events.index(
         "publishable_key_get"
     )
+    assert fake.events.index("publishable_key_get") < fake.events.index(
+        "preview_database_connectivity"
+    )
+    assert fake.events.index("preview_database_connectivity") < fake.events.index(
+        "preview_migration_apply"
+    )
+    assert fake.events.index("preview_migration_apply") < fake.events.index(
+        "preview_security_suite"
+    )
     assert fake.events.index("watchdog_armed") < fake.events.index("branch_list_2")
     assert fake.events.index("direct_probe") < fake.events.index("postgrest_probe")
     assert fake.events.count("postgrest_probe") == 1
@@ -1707,6 +1787,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert fake.events.count("branch_delete") == 1
     assert fake.events.count("preview_migration_apply") == 9
     assert fake.events.count("preview_security_suite") == 3
+    assert fake.events.count("preview_database_connectivity") == 1
     assert fake.events.count("migration_snapshot") == 9
     assert fake.events.count("proof_support_snapshot") == len(RUNNER.SUPPORT_PATHS)
     assert fake.events[-5:] == [
@@ -1730,8 +1811,9 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         for command in snapshot_commands
     )
     psql_commands = [command for command in fake.commands if command[0] == "psql"]
-    assert len(psql_commands) == 12
-    assert all(command[-2:] == ["-f", "-"] for command in psql_commands)
+    assert len(psql_commands) == 13
+    assert sum(command[-2:] == ["-Atqc", "select 1"] for command in psql_commands) == 1
+    assert sum(command[-2:] == ["-f", "-"] for command in psql_commands) == 12
     assert not any(
         "projects" in command and "list" in command
         for command in fake.commands
@@ -1804,6 +1886,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
     assert receipt["proof_artifact_sha256"] == _support_manifest()
     assert receipt["secret_cleanup_confirmed"] is True
     assert receipt["secrets_persisted"] is False
+    assert all(not environment for environment in fake.quiet_environment_references)
     serialized = json.dumps(receipt, sort_keys=True)
     for secret in (
         DB_SECRET,
@@ -1897,6 +1980,269 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
             assert timeout == 7
         if code in {"supabase_branch_create", "supabase_branch_delete"}:
             assert timeout == 11
+
+
+def test_database_connectivity_failure_stops_before_sql_and_still_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner(connectivity_failure=True)
+    proof = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    )
+
+    receipt, exit_code = proof.run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "preview_database_connectivity_failed"
+    assert receipt["database_connectivity_preflight"] == "failed"
+    assert receipt["migration_completed_count"] == 0
+    assert receipt["security_completed_count"] == 0
+    assert receipt["sql_failure"] is None
+    assert fake.events.count("preview_database_connectivity") == 1
+    assert "preview_migration_apply" not in fake.events
+    assert "preview_security_suite" not in fake.events
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
+    assert receipt["completed_steps"] == [
+        "cost_guard_inputs_validated",
+        "exact_sha_snapshot_bound",
+        "management_permission_preflight",
+        "branch_ready_and_shape_verified",
+        "branch_delete_absence_confirmed",
+    ]
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["cleanup"]["watchdog_cancelled"] is True
+    assert receipt["secret_cleanup_confirmed"] is True
+    assert receipt["secrets_persisted"] is False
+    assert proof.credentials is None
+    assert all(not environment for environment in fake.quiet_environment_references)
+    _assert_valid_receipt_digest(receipt)
+
+
+@pytest.mark.parametrize("ordinal", (1, 4, 9))
+def test_migration_failure_records_only_allowlisted_exact_payload_diagnostic(
+    ordinal: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner(migration_failure_ordinal=ordinal)
+    proof = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    )
+
+    receipt, exit_code = proof.run()
+
+    filename = RUNNER.MIGRATIONS[ordinal - 1]
+    assert exit_code == 1
+    assert receipt["failure_code"] == "preview_migration_apply_failed"
+    assert receipt["database_connectivity_preflight"] == "passed"
+    assert receipt["migration_completed_count"] == ordinal - 1
+    assert receipt["security_completed_count"] == 0
+    assert receipt["sql_failure"] == {
+        "phase": "migration",
+        "ordinal": ordinal,
+        "filename": filename,
+        "sha256": hashlib.sha256(_migration_payload(filename)).hexdigest(),
+        "completed_count": ordinal - 1,
+    }
+    assert set(receipt["sql_failure"]) == {
+        "phase",
+        "ordinal",
+        "filename",
+        "sha256",
+        "completed_count",
+    }
+    assert filename in RUNNER.MIGRATIONS
+    assert Path(filename).name == filename
+    assert fake.migration_calls == ordinal
+    assert fake.security_calls == 0
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["secret_cleanup_confirmed"] is True
+    assert proof.credentials is None
+    assert all(not environment for environment in fake.quiet_environment_references)
+    serialized = json.dumps(receipt, sort_keys=True)
+    for forbidden in (DB_SECRET, JWT_SECRET, "synthetic-stderr-marker"):
+        assert forbidden not in serialized
+    _assert_valid_receipt_digest(receipt)
+    original_digest = receipt["receipt_sha256"]
+    for field, value in (
+        ("phase", "security"),
+        ("ordinal", ordinal + 1),
+        ("filename", "tampered.sql"),
+        ("sha256", "0" * 64),
+        ("completed_count", ordinal),
+    ):
+        tampered = json.loads(json.dumps(receipt))
+        tampered["sql_failure"][field] = value
+        assert RUNNER.canonical_receipt_sha256(tampered) != original_digest
+
+
+@pytest.mark.parametrize("ordinal", (1, 2, 3))
+def test_security_failure_records_phase_local_completed_count(
+    ordinal: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner(security_failure_ordinal=ordinal)
+    proof = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    )
+
+    receipt, exit_code = proof.run()
+
+    filename = RUNNER.SECURITY_SUITES[ordinal - 1]
+    assert exit_code == 1
+    assert receipt["failure_code"] == "preview_security_suite_failed"
+    assert receipt["database_connectivity_preflight"] == "passed"
+    assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
+    assert receipt["security_completed_count"] == ordinal - 1
+    assert receipt["sql_failure"] == {
+        "phase": "security",
+        "ordinal": ordinal,
+        "filename": filename,
+        "sha256": hashlib.sha256(_security_payload(filename)).hexdigest(),
+        "completed_count": ordinal - 1,
+    }
+    assert set(receipt["sql_failure"]) == {
+        "phase",
+        "ordinal",
+        "filename",
+        "sha256",
+        "completed_count",
+    }
+    assert filename in RUNNER.SECURITY_SUITES
+    assert Path(filename).name == filename
+    assert fake.migration_calls == len(RUNNER.MIGRATIONS)
+    assert fake.security_calls == ordinal
+    assert "direct_probe" not in fake.events
+    assert "postgrest_probe" not in fake.events
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["secret_cleanup_confirmed"] is True
+    assert proof.credentials is None
+    assert all(not environment for environment in fake.quiet_environment_references)
+    serialized = json.dumps(receipt, sort_keys=True)
+    for forbidden in (DB_SECRET, JWT_SECRET, "synthetic-stderr-marker"):
+        assert forbidden not in serialized
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_sql_failure_diagnostic_is_best_effort_and_never_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proof = RUNNER.HarmonyPreviewProof(_args(tmp_path))
+    proof._record_sql_failure(
+        phase="invalid",
+        ordinal=1,
+        filename="../../secret.sql",
+        payload=SQL_PAYLOAD,
+        completed_count=0,
+    )
+    assert proof.sql_failure is None
+
+    def fail_digest(_payload: bytes) -> object:
+        raise RuntimeError("diagnostic failure must not replace SQL failure")
+
+    monkeypatch.setattr(RUNNER.hashlib, "sha256", fail_digest)
+    proof._record_sql_failure(
+        phase="migration",
+        ordinal=1,
+        filename=RUNNER.MIGRATIONS[0],
+        payload=SQL_PAYLOAD,
+        completed_count=0,
+    )
+    assert proof.sql_failure is None
+
+
+def test_operator_interrupt_during_sql_is_not_reported_as_sql_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class InterruptedRunner(FakeRunner):
+        def run_quiet(self, command: list[str], **kwargs: object) -> None:
+            super().run_quiet(command, **kwargs)
+            if kwargs.get("code") == "preview_migration_apply":
+                raise RUNNER.ProofError("preview_proof_interrupted")
+
+    fake = InterruptedRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "preview_proof_interrupted"
+    assert receipt["database_connectivity_preflight"] == "passed"
+    assert receipt["migration_completed_count"] == 0
+    assert receipt["security_completed_count"] == 0
+    assert receipt["sql_failure"] is None
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_sql_failure_survives_ambiguous_delete_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    fake = FakeRunner(
+        migration_failure_ordinal=4,
+        delete_ambiguous=True,
+    )
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "preview_migration_apply_failed"
+    assert receipt["sql_failure"] == {
+        "phase": "migration",
+        "ordinal": 4,
+        "filename": RUNNER.MIGRATIONS[3],
+        "sha256": hashlib.sha256(
+            _migration_payload(RUNNER.MIGRATIONS[3])
+        ).hexdigest(),
+        "completed_count": 3,
+    }
+    assert receipt["cleanup"]["delete_response_ambiguous"] is True
+    assert receipt["cleanup"]["delete_failure_code"] == (
+        "supabase_branch_delete_timeout"
+    )
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["same_child_repair_attempts"] == 0
+    assert receipt["replacement_branch_attempts"] == 0
+    _assert_valid_receipt_digest(receipt)
 
 
 @pytest.mark.parametrize(
@@ -2588,7 +2934,7 @@ def test_exact_checkout_change_after_branch_creation_fails_before_migration(
         support_manifest = _support_manifest()
         if calls != 1:
             support_manifest[str(RUNNER.CONFIG_PATH)] = "d" * 64
-        return ({name: SQL_SHA256 for name in RUNNER.MIGRATIONS}, support_manifest)
+        return (_migration_manifest(), support_manifest)
 
     monkeypatch.setattr(RUNNER, "verify_exact_checkout", changing_checkout)
     fake = FakeRunner()
@@ -3045,7 +3391,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@4"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@5"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -4369,11 +4715,10 @@ raise SystemExit(4)
         while time.monotonic() < deadline:
             if pid_path.exists() and heartbeat_path.exists():
                 if heartbeat_path.stat().st_size > 0:
-                    inner_pids = tuple(
-                        int(value)
-                        for value in pid_path.read_text(encoding="ascii").split()
-                    )
-                    break
+                    values = pid_path.read_text(encoding="ascii").split()
+                    if len(values) == 2:
+                        inner_pids = tuple(int(value) for value in values)
+                        break
             time.sleep(0.05)
         assert inner_pids is not None
 

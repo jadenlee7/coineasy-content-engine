@@ -1,9 +1,9 @@
 # ADR-025: Squid Codex Gate Runner v1
 
-**Status:** Proposed; the durable migration and one-shot Preview runner are
-included in this branch and have local PostgreSQL evidence, but neither has
-been applied to Production. The clean exact-SHA disposable Supabase Preview
-proof remains pending.
+**Status:** Proposed; exact SHA
+`a24492147b256785b71bc431e268844587591df1` produced a fail-closed paid Preview
+receipt, not a successful proof. The child and scoped PAT cleanup were verified,
+and neither the durable migration nor runner has been applied to Production.
 **Date:** 2026-08-27
 **Deciders:** CoinEasy representative, content, community, security, and
 engineering leads
@@ -18,11 +18,15 @@ label; it is not proof that a Codex reviewer performed semantic or factual
 review.
 
 The new durable Codex gate described here is included as a checked-in migration
-and one-shot Preview proof runner. It has passed disposable local PostgreSQL
-migration, security, and 64-way convergence checks. Those files have not been
-applied to Production, and that local evidence does not substitute for the
-separately approved clean exact-SHA Supabase Preview proof. This ADR therefore
-does not call the durable gate deployed, deployable, or Production-ready.
+and one-shot Preview proof runner. Local PostgreSQL 16 replay passes all nine
+allowlisted migrations and all three Harmony security suites, alongside the
+64-way convergence checks. The paid `harmony-preview-one-shot-proof@4` execution
+at the exact SHA above failed closed with `preview_migration_apply_failed`.
+Its child and scoped PAT were deleted and verified absent; actual billing is
+`unobserved`. Those files have not been applied to Production, and neither the
+local evidence nor the failed receipt substitutes for a successful, separately
+approved exact-SHA Supabase Preview proof. This ADR therefore does not call the
+durable gate deployed, deployable, or Production-ready.
 
 Moving directly from that rehearsal to a live model worker would leave a more
 important boundary unproven. The current stage operation key includes the
@@ -86,6 +90,16 @@ and `within_estimated_total_cap`; it does not call the estimate an actual charge
 or an absolute cap. The guard covers disposable Supabase infrastructure billing
 only and does not relax the zero model/provider-cost authority represented by
 `max_cost_microusd=0`.
+
+The current outer receipt is `harmony-preview-one-shot-proof@5`. After loading
+the exact child credential and before applying SQL, it runs a secret-free
+`SELECT 1` connectivity preflight. A typed or ambiguous migration/security
+`psql` apply failure may expose only the allowlisted diagnostic
+`sql_failure={phase,ordinal,filename,sha256,completed_count}`: the filename is a
+fixed basename, the digest binds the exact payload, and `completed_count` must
+equal `ordinal - 1`. Operator interrupts and unrelated cleanup failures leave
+this field null. Raw stdout/stderr, SQL text, connection strings, secrets, and
+arbitrary exception text are prohibited from the receipt.
 
 One invocation may create at most one uniquely named, non-persistent,
 no-data child. It never repairs or replaces that child. Any new invocation,
@@ -293,7 +307,7 @@ avoid.
 
 | Dimension | Assessment |
 |---|---|
-| Duplicate-call safety | Local durable DB proof passed; Supabase Preview proof pending |
+| Duplicate-call safety | Local durable DB proof passed; successful Supabase Preview proof pending |
 | Least privilege | Strong |
 | Recovery clarity | Strong |
 | Initial implementation cost | Medium |
@@ -339,7 +353,18 @@ separate, non-self-approving contexts.
   Python and Netlify function suites. Exact counts are intentionally omitted
   because they change as the repository evolves; the current exact SHA must be
   re-tested before any Preview execution.
-- No exact-SHA disposable Supabase Preview receipt is recorded here yet.
+- Exact SHA `a24492147b256785b71bc431e268844587591df1` produced one paid
+  `harmony-preview-one-shot-proof@4` receipt that failed closed at
+  `preview_migration_apply_failed`. The exact child and scoped PAT cleanup were
+  verified; actual billing remains `unobserved`. This is not a successful proof.
+- The `@4` receipt could not distinguish direct database connectivity failure
+  from failure against the hosted baseline because it had neither the separate
+  connectivity preflight nor the allowlisted ordinal SQL diagnostic. Direct
+  IPv6 reachability and hosted parent schema drift remain hypotheses; the root
+  cause is unobserved.
+- The current `@5` runner adds the pre-SQL `SELECT 1` check and safe
+  `{phase, ordinal, filename, sha256, completed_count}` diagnostic without raw
+  command output, SQL, secrets, or exception text.
 - The durable migration and runner are included but not applied to Production.
   Therefore the exact-SHA Supabase Preview proof, live Codex worker, Production
   migration, and every feature-flag activation remain blocked.
@@ -355,11 +380,11 @@ separate, non-self-approving contexts.
 4. [x] Pass local PostgreSQL migration, security, and 64-way convergence
        checks; preserve only the non-secret distribution and side-effect
        receipt in this ADR.
-5. [ ] After a fresh external representative approval and issuance of a fresh
-       scoped PAT, invoke the runner once with both required cost ceilings,
-       pass the same contract on one disposable Supabase Preview, and
-       immediately confirm child deletion. Do not reuse, repair, or replace a
-       failed child; a new invocation requires a new approval and scoped PAT.
+5. [ ] The historical `@4` invocation is consumed. Only after a fresh external
+       representative approval and issuance of a fresh scoped PAT, invoke the
+       current `@5` runner once with both required cost ceilings, pass the same
+       contract on one disposable Supabase Preview, and immediately confirm
+       child deletion. Do not reuse, repair, or replace the failed child.
 6. [ ] Under another separate approval, connect one QA-only Codex worker with
        no planning, content, operator, Recap, messaging, or publication token.
 7. [ ] Require clean Preview rounds and measured operator value before adding

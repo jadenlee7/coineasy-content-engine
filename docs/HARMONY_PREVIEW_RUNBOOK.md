@@ -49,9 +49,12 @@ Recap aggregate ┘                                      v
 
 아홉 번째 durable Codex gate migration과 64-way DB proof 자체는 dashboard를
 포함한 어떤 feature flag도 켜지 않습니다. Migration과 runner는 포함되어
-있을 뿐 Production에 적용되지 않았고, clean exact-SHA Supabase Preview proof도
-아직 pending입니다. 이 범위에서는 모든 flag가 OFF이며, 아래 Gate 4의 짧은
-dashboard 관측은 별도 승인·별도 실행으로만 가능합니다.
+있을 뿐 Production에 적용되지 않았습니다. Exact SHA
+`a24492147b256785b71bc431e268844587591df1`의 유료 one-shot은
+`harmony-preview-one-shot-proof@4`에서 `preview_migration_apply_failed`로
+fail-closed했고, child와 해당 scoped PAT의 삭제가 확인됐습니다. 실제 청구액은
+`미관측`이며 성공 proof는 아직 없습니다. 이 범위에서는 모든 flag가 OFF이고,
+아래 Gate 4의 짧은 dashboard 관측도 별도 승인·별도 실행으로만 가능합니다.
 
 ## 현재 계약 스냅샷
 
@@ -155,7 +158,7 @@ Netlify 계약은 다음과 같습니다.
 - Studio session 인증 필수, `Cache-Control: no-store`
 - service-role fallback 없음
 
-### Preview 실행 전 남은 검증 차단점
+### Preview 재실행 전 남은 검증 차단점
 
 계약 구현 파일이 존재하는 것만으로 Gate 1을 통과하지 않습니다. exact Git
 SHA에서 아홉 migration의 disposable PostgreSQL 적용, 기존 Harmony security
@@ -169,15 +172,27 @@ suite와 `harmony_preview_codex_gate_security.sql`,
 즉시 제외되어야 합니다. 이 중 하나라도 확인되지 않으면 Gate 1에서
 `BLOCK`입니다.
 
-현재 문서 시점에는 포함된 durable migration과 runner가 fresh disposable local
-PostgreSQL 16에서 아홉 migration, 당시의 격리 SQL
-security/least-privilege·Squid recovery concurrency·64-way durable QA 검증과
-전체 Python/Netlify 함수 suite를 통과했습니다. 고정 test count는 repository가
-변할 때 낡으므로 기록하지 않으며, 실행할 exact SHA에서 현재 suite를 다시
-검증해야 합니다. 이 migration과 runner는 Production에 적용되지 않았고 clean
-exact-SHA Supabase Preview 성공 receipt도 아직 없으므로 **Preview proof
-pending**입니다. 로컬 증거를 live Preview 또는 Production 증거로 대체해
-주장하지 않습니다.
+현재 local PostgreSQL 16 재현에서는 allowlist의 migration **9/9**와 Harmony
+security suite **3/3**가 통과했습니다. 따라서 일반적인 SQL 구문·로컬 계약
+오류는 재현되지 않았습니다. 그러나 위 역사적 `@4` receipt는 direct DB
+connectivity와 첫 hosted SQL 실행을 분리하지 않았고 실패 ordinal도 남기지 않아,
+direct IPv6 reachability와 hosted parent schema drift 중 무엇이 원인인지 구분할 수
+없습니다. 둘은 진단 가설일 뿐이며 원인은 `미관측`입니다. Production 적용과
+성공한 exact-SHA Supabase Preview proof는 여전히 없고, 로컬 증거를 live Preview
+또는 Production 증거로 대체해 주장하지 않습니다.
+
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@5`입니다. Exact
+child credential을 읽은 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
+preflight를 실행하고, receipt에는 `database_connectivity_preflight`의 typed 상태만
+남깁니다. Migration 또는 security `psql` apply가 typed command failure 또는
+ambiguous 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
+`{phase, ordinal, filename, sha256, completed_count}`만 기록합니다. 운영자
+interrupt와 별도 cleanup failure에는 이 필드를 기록하지 않습니다.
+`completed_count`는 실패 ordinal보다 정확히 하나 작아야 하며, filename은 고정
+basename, SHA-256은 실행한 exact payload의 digest여야 합니다. Raw stderr/stdout,
+SQL 본문, connection string, 비밀, 임의 exception text는 receipt에 넣지 않습니다.
+이 진단 변경은 재실행 권한이 아니며 새 invocation에는 새 대표 승인과 새 scoped
+PAT이 필요합니다.
 
 ## 승인 게이트
 
@@ -337,8 +352,9 @@ receipt가 아닙니다.
   `cost_guard.server_side_budget_lock=false`
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
-Outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@4`입니다. Direct DB probe의
+현재 outer terminal receipt 계약은
+`schema_version=harmony-preview-one-shot-proof@5`입니다. 역사적 exact-SHA
+one-shot은 이전 `@4` receipt로 실패했으며 성공 receipt가 아닙니다. Direct DB probe의
 `harmony-preview-concurrency-proof@4` 결과에서는 exact `round_id`, `plan_id`,
 `inbox_id`, fence expiry, 최종 row counts, connector/revocation/QA-denial/
 stale-result race, durable Codex QA race, negative-path delta, stage/inbox delta를
@@ -519,7 +535,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@4` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@5` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 1. signal, plan, private-content, operator-inbox, Recap의 각 64개 호출과

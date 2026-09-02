@@ -39,7 +39,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@4"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@5"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@4"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@2"
 RECEIPT_SHA256_SCHEME = (
@@ -1735,6 +1735,10 @@ class HarmonyPreviewProof:
         self.cost_guard: dict[str, object] | None = None
         self.proof_snapshot_payloads: dict[str, bytes] = {}
         self.completed_steps: list[str] = []
+        self.database_connectivity_preflight = "not_started"
+        self.migration_completed_count = 0
+        self.security_completed_count = 0
+        self.sql_failure: dict[str, object] | None = None
         self.cleanup_receipt: dict[str, object] = {
             "delete_requested": False,
             "absence_confirmations": 0,
@@ -3146,6 +3150,64 @@ raise SystemExit(
             self.credentials.database,
         ]
 
+    def _check_database_connectivity(self) -> None:
+        environment = self._db_environment()
+        self.database_connectivity_preflight = "running"
+        try:
+            self.runner.run_quiet(
+                [*self._psql_base(), "-Atqc", "select 1"],
+                env=environment,
+                timeout=self.args.migration_timeout_seconds,
+                code="preview_database_connectivity",
+            )
+        except BaseException:
+            self.database_connectivity_preflight = "failed"
+            raise
+        else:
+            self.database_connectivity_preflight = "passed"
+        finally:
+            environment.clear()
+
+    def _record_sql_failure(
+        self,
+        *,
+        phase: str,
+        ordinal: int,
+        filename: str,
+        payload: bytes,
+        completed_count: int,
+    ) -> None:
+        # Diagnostics must never replace the typed SQL failure that triggered
+        # this path.  Only values derived from fixed allowlists and the exact
+        # bytes handed to psql may enter the receipt; an invariant failure
+        # therefore leaves the optional diagnostic unset.
+        try:
+            if phase == "migration":
+                allowlist = MIGRATIONS
+            elif phase == "security":
+                allowlist = SECURITY_SUITES
+            else:
+                return
+            if (
+                filename not in allowlist
+                or Path(filename).name != filename
+                or not isinstance(payload, bytes)
+                or not payload
+                or ordinal != allowlist.index(filename) + 1
+                or completed_count != ordinal - 1
+            ):
+                return
+            payload_sha256 = hashlib.sha256(payload).hexdigest()
+        except Exception:
+            return
+        self.sql_failure = {
+            "phase": phase,
+            "ordinal": ordinal,
+            "filename": filename,
+            "sha256": payload_sha256,
+            "completed_count": completed_count,
+        }
+
     def _apply_migrations_and_security(
         self,
         migration_payloads: Mapping[str, bytes],
@@ -3153,30 +3215,54 @@ raise SystemExit(
     ) -> None:
         environment = self._db_environment()
         try:
-            for filename in MIGRATIONS:
-                self.runner.run_quiet(
-                    [
-                        *self._psql_base(),
-                        "-f",
-                        "-",
-                    ],
-                    env=environment,
-                    input_bytes=migration_payloads[filename],
-                    timeout=self.args.migration_timeout_seconds,
-                    code="preview_migration_apply",
-                )
-            for filename in SECURITY_SUITES:
-                self.runner.run_quiet(
-                    [
-                        *self._psql_base(),
-                        "-f",
-                        "-",
-                    ],
-                    env=environment,
-                    input_bytes=security_payloads[filename],
-                    timeout=self.args.migration_timeout_seconds,
-                    code="preview_security_suite",
-                )
+            for ordinal, filename in enumerate(MIGRATIONS, start=1):
+                payload = migration_payloads[filename]
+                try:
+                    self.runner.run_quiet(
+                        [
+                            *self._psql_base(),
+                            "-f",
+                            "-",
+                        ],
+                        env=environment,
+                        input_bytes=payload,
+                        timeout=self.args.migration_timeout_seconds,
+                        code="preview_migration_apply",
+                    )
+                except CommandError:
+                    self._record_sql_failure(
+                        phase="migration",
+                        ordinal=ordinal,
+                        filename=filename,
+                        payload=payload,
+                        completed_count=self.migration_completed_count,
+                    )
+                    raise
+                self.migration_completed_count += 1
+            for ordinal, filename in enumerate(SECURITY_SUITES, start=1):
+                payload = security_payloads[filename]
+                try:
+                    self.runner.run_quiet(
+                        [
+                            *self._psql_base(),
+                            "-f",
+                            "-",
+                        ],
+                        env=environment,
+                        input_bytes=payload,
+                        timeout=self.args.migration_timeout_seconds,
+                        code="preview_security_suite",
+                    )
+                except CommandError:
+                    self._record_sql_failure(
+                        phase="security",
+                        ordinal=ordinal,
+                        filename=filename,
+                        payload=payload,
+                        completed_count=self.security_completed_count,
+                    )
+                    raise
+                self.security_completed_count += 1
         finally:
             environment.clear()
 
@@ -3727,6 +3813,8 @@ raise SystemExit(
             self._complete_step("branch_ready_and_shape_verified")
             self._load_credentials()
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
+            self._check_database_connectivity()
+            self._complete_step("database_connectivity_preflight")
             self._apply_migrations_and_security(
                 migration_payloads, security_payloads
             )
@@ -3839,6 +3927,7 @@ raise SystemExit(
                 "exact_sha_snapshot_bound",
                 "management_permission_preflight",
                 "branch_ready_and_shape_verified",
+                "database_connectivity_preflight",
                 "migration_and_rls_security",
                 "direct_database_64_way",
                 "postgrest_schema_readiness_get",
@@ -3846,6 +3935,12 @@ raise SystemExit(
                 "branch_delete_absence_confirmed",
             ],
             "completed_steps": list(self.completed_steps),
+            "database_connectivity_preflight": (
+                self.database_connectivity_preflight
+            ),
+            "migration_completed_count": self.migration_completed_count,
+            "security_completed_count": self.security_completed_count,
+            "sql_failure": self.sql_failure,
             "direct_database": direct_receipt,
             "signed_postgrest": postgrest_receipt,
             "cleanup": self.cleanup_receipt,
