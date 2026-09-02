@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
 import {
   APPROVAL_SCHEMA,
+  APPROVAL_ACTOR_PLACEHOLDER,
   EXPECTED_CHECKS,
   PROJECT_REF,
   ReceiptJournal,
@@ -19,12 +21,14 @@ import {
   runProductionApply,
   sha256,
   validateApproval,
+  validateApprovedSubjectSha256,
   validateCheckRows,
 } from "./production-apply-lib.mjs";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../..");
 const RELEASE_SHA = "a".repeat(40);
 const NOW = new Date("2026-09-01T12:30:00.000Z");
+const CLI_PATH = resolve(import.meta.dirname, "production-apply.mjs");
 
 function approvalFor(pack, overrides = {}) {
   const approval = {
@@ -56,6 +60,10 @@ function approvalFor(pack, overrides = {}) {
   return approval;
 }
 
+function approvedApply(approval) {
+  return { approval, approvedSubjectSha256: approval.approvalSubjectSha256 };
+}
+
 function checkRows(kind) {
   const contract = EXPECTED_CHECKS[kind];
   return contract.ids.map((checkId) => ({
@@ -71,6 +79,21 @@ function checkRows(kind) {
     pack: contract.pack,
     passed: true,
   }));
+}
+
+function successfulApplyResponses(pack) {
+  return [
+    checkRows("preflight"),
+    [{ current_user: "postgres", session_user: "postgres", transaction_read_only: "off" }],
+    [],
+    [{ schema_version: "coineasy-managed-inspector-history-write@1", version: pack.migrations[0].version,
+      history_name: pack.migrations[0].name, write_executor: "postgres", transaction_read_only: "off" }],
+    checkRows("intermediate"),
+    [],
+    [{ schema_version: "coineasy-managed-inspector-history-write@1", version: pack.migrations[1].version,
+      history_name: pack.migrations[1].name, write_executor: "postgres", transaction_read_only: "off" }],
+    checkRows("postflight"),
+  ];
 }
 
 function jsonResponse(value, status = 201, contentType = "application/json") {
@@ -94,11 +117,17 @@ function journalFixture() {
 test("approval is exact, short-lived, production-only, and release-bound", async () => {
   const pack = await loadProductionPack(REPOSITORY_ROOT);
   assert.equal(validateApproval(approvalFor(pack), pack.manifest, RELEASE_SHA, NOW).environment, "production");
-  assert.equal(validateApproval(newApprovalTemplate({
+  const template = newApprovalTemplate({
     releaseSha: RELEASE_SHA,
     canonicalSetSha256: pack.manifest.canonicalSetSha256,
     now: NOW,
-  }), pack.manifest, RELEASE_SHA, NOW).approvalSubjectSha256.length, 64);
+  });
+  assert.equal(template.approvedBy, APPROVAL_ACTOR_PLACEHOLDER);
+  assert.equal(template.approvalSubjectSha256.length, 64);
+  assert.throws(
+    () => validateApproval(template, pack.manifest, RELEASE_SHA, NOW),
+    /approvedBy placeholder must be replaced/u,
+  );
   assert.throws(
     () => validateApproval({ ...approvalFor(pack), runtimeActivationAllowed: true }, pack.manifest, RELEASE_SHA, NOW),
     /runtimeActivationAllowed/u,
@@ -115,6 +144,93 @@ test("approval is exact, short-lived, production-only, and release-bound", async
     () => validateApproval({ ...approvalFor(pack), approvalSubjectSha256: "c".repeat(64) }, pack.manifest, RELEASE_SHA, NOW),
     /does not bind/u,
   );
+});
+
+test("apply requires the separately supplied operator-approved subject hash", async () => {
+  const pack = await loadProductionPack(REPOSITORY_ROOT);
+  const approval = approvalFor(pack);
+  assert.equal(
+    validateApprovedSubjectSha256(approval, approval.approvalSubjectSha256),
+    approval.approvalSubjectSha256,
+  );
+  assert.throws(
+    () => validateApprovedSubjectSha256(approval, "c".repeat(64)),
+    /does not match approval packet/u,
+  );
+  assert.throws(
+    () => validateApprovedSubjectSha256(approval, "NOT-A-SHA"),
+    /64 lowercase hex/u,
+  );
+});
+
+test("the direct runner rejects a missing or mismatched approved hash before journal and network", async () => {
+  const pack = await loadProductionPack(REPOSITORY_ROOT);
+  const approval = approvalFor(pack);
+  for (const approvedSubjectSha256 of [undefined, "c".repeat(64)]) {
+    const journal = journalFixture();
+    let calls = 0;
+    await assert.rejects(runProductionApply({
+      approval,
+      approvedSubjectSha256,
+      fetchImpl: async () => { calls += 1; throw new Error("network_must_not_run"); },
+      journal,
+      now: NOW,
+      pack,
+      releaseSha: RELEASE_SHA,
+      token: "fixture-token-that-is-long-enough",
+    }), /operator-approved subject SHA-256/u);
+    assert.equal(calls, 0);
+    assert.deepEqual(journal.events, []);
+  }
+});
+
+test("the CLI rejects apply before file or network access when the approved hash is omitted", () => {
+  const result = spawnSync(process.execPath, [
+    CLI_PATH,
+    "--apply",
+    "--approval",
+    "/private/tmp/approval-file-must-not-be-read.json",
+    "--receipt-root",
+    "/private/tmp/receipt-root-must-not-be-touched",
+  ], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--approved-subject-sha256_is_required_for_--apply/u);
+  assert.doesNotMatch(result.stderr, /ENOENT|fetch|network/iu);
+});
+
+test("the CLI rejects a mismatched approved hash before credentials, receipt, or remote-main access", async () => {
+  const pack = await loadProductionPack(REPOSITORY_ROOT);
+  const directory = await realpath(await mkdtemp(resolve(tmpdir(), "coineasy-apply-cli-gate-")));
+  const releaseSha = spawnSync("git", ["-C", REPOSITORY_ROOT, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    timeout: 15_000,
+  }).stdout.trim();
+  const approvedAt = new Date();
+  const approval = approvalFor(pack, {
+    approvedAt: approvedAt.toISOString(),
+    expiresAt: new Date(approvedAt.getTime() + 60 * 60 * 1000).toISOString(),
+    releaseSha,
+  });
+  const approvalPath = resolve(directory, "approval.json");
+  await writeFile(approvalPath, canonicalJson(approval), { encoding: "utf8", mode: 0o600 });
+  const result = spawnSync(process.execPath, [
+    CLI_PATH,
+    "--apply",
+    "--approval",
+    approvalPath,
+    "--approved-subject-sha256",
+    "c".repeat(64),
+    "--receipt-root",
+    resolve(directory, "receipts-must-not-exist"),
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: resolve(directory, "missing-home") },
+    timeout: 15_000,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /operator-approved_subject_SHA-256_does_not_match_approval_packet/u);
+  assert.doesNotMatch(result.stderr, /management_token|trusted_GitHub_main|ENOENT|fetch|network/iu);
+  assert.deepEqual(await readdir(directory), ["approval.json"]);
 });
 
 test("history SQL stores exact source as hex data with no upsert or raw source text", async () => {
@@ -192,25 +308,14 @@ test("full mocked apply advances only through exact ordered gates", async () => 
   const pack = await loadProductionPack(REPOSITORY_ROOT);
   const journal = journalFixture();
   const calls = [];
-  const responses = [
-    checkRows("preflight"),
-    [{ current_user: "postgres", session_user: "postgres", transaction_read_only: "off" }],
-    [],
-    [{ schema_version: "coineasy-managed-inspector-history-write@1", version: pack.migrations[0].version,
-      history_name: pack.migrations[0].name, write_executor: "postgres", transaction_read_only: "off" }],
-    checkRows("intermediate"),
-    [],
-    [{ schema_version: "coineasy-managed-inspector-history-write@1", version: pack.migrations[1].version,
-      history_name: pack.migrations[1].name, write_executor: "postgres", transaction_read_only: "off" }],
-    checkRows("postflight"),
-  ];
+  const responses = successfulApplyResponses(pack);
   const fetchImpl = async (url, init) => {
     const payload = JSON.parse(Buffer.from(init.body).toString("utf8"));
     calls.push({ url, query: payload.query, readOnly: !Object.hasOwn(payload, "read_only") });
     return jsonResponse(responses[calls.length - 1]);
   };
   const outcome = await runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal, now: NOW, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   });
   assert.equal(outcome.ok, true);
@@ -234,6 +339,42 @@ test("full mocked apply advances only through exact ordered gates", async () => 
   assert.equal(journal.events.at(-1).detail.telegramSent, false);
 });
 
+test("caller mutation after entry cannot change the approved immutable packet", async () => {
+  const pack = await loadProductionPack(REPOSITORY_ROOT);
+  const approval = approvalFor(pack);
+  const originalOperationId = approval.operationId;
+  const approvedSubjectSha256 = approval.approvalSubjectSha256;
+  const journal = journalFixture();
+  const append = journal.append.bind(journal);
+  journal.append = async (state, detail) => {
+    const receipt = await append(state, detail);
+    if (state === "PACK_VERIFIED") {
+      approval.operationId = "77777777-7777-4777-8777-777777777777";
+      approval.approvalId = "88888888-8888-4888-8888-888888888888";
+      approval.approvedBy = "unapproved:mutated-caller";
+      approval.approvalSubject = boundedApprovalSubject(approval);
+      approval.approvalSubjectSha256 = sha256(approval.approvalSubject);
+    }
+    return receipt;
+  };
+  const responses = successfulApplyResponses(pack);
+  let calls = 0;
+  const outcome = await runProductionApply({
+    approval,
+    approvedSubjectSha256,
+    fetchImpl: async () => jsonResponse(responses[calls++]),
+    journal,
+    now: NOW,
+    pack,
+    releaseSha: RELEASE_SHA,
+    token: "fixture-token-that-is-long-enough",
+  });
+  assert.equal(calls, 8);
+  assert.equal(outcome.operationId, originalOperationId);
+  assert.notEqual(approval.operationId, originalOperationId);
+  assert.notEqual(approval.approvalSubjectSha256, approvedSubjectSha256);
+});
+
 test("ambiguous first migration response stops before history and second migration", async () => {
   const pack = await loadProductionPack(REPOSITORY_ROOT);
   const journal = journalFixture();
@@ -245,7 +386,7 @@ test("ambiguous first migration response stops before history and second migrati
     return jsonResponse({ error: "fixture" }, 503);
   };
   await assert.rejects(runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal, now: NOW, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   }), /provider_http_503/u);
   assert.equal(calls, 3);
@@ -265,7 +406,7 @@ test("history ambiguity records pending and never sends the next migration", asy
     return new Response("not-json", { status: 201, headers: { "content-type": "application/json" } });
   };
   await assert.rejects(runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal, now: NOW, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   }), /provider_json_invalid/u);
   assert.equal(calls, 4);
@@ -288,7 +429,7 @@ test("approval expiration is rechecked before the first mutation", async () => {
     return clockCalls < 3 ? NOW : new Date("2026-09-01T14:00:00.000Z");
   };
   await assert.rejects(runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal, now, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal, now, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   }), /expired/u);
   assert.equal(calls, 2);
@@ -343,15 +484,15 @@ test("two hosts racing M1 allow only one single-flight winner", async () => {
     throw new Error("unexpected_mock_query");
   };
   const runA = runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal: journalA, now: NOW, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal: journalA, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   });
   await firstLocked;
   const runB = runProductionApply({
-    approval: approvalFor(pack, {
+    ...approvedApply(approvalFor(pack, {
       operationId: "33333333-3333-4333-8333-333333333333",
       approvalId: "44444444-4444-4444-8444-444444444444",
-    }),
+    })),
     fetchImpl, journal: journalB, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   });
@@ -409,15 +550,15 @@ test("a stale-preflight host is fenced after the winner releases the M1 transact
     throw new Error("unexpected_mock_query");
   };
   const runA = runProductionApply({
-    approval: approvalFor(pack), fetchImpl, journal: journalA, now: NOW, pack,
+    ...approvedApply(approvalFor(pack)), fetchImpl, journal: journalA, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   });
   await m1CommittedSignal;
   const runB = runProductionApply({
-    approval: approvalFor(pack, {
+    ...approvedApply(approvalFor(pack, {
       operationId: "55555555-5555-4555-8555-555555555555",
       approvalId: "66666666-6666-4666-8666-666666666666",
-    }),
+    })),
     fetchImpl, journal: journalB, now: NOW, pack,
     releaseSha: RELEASE_SHA, token: "fixture-token-that-is-long-enough",
   });

@@ -248,6 +248,12 @@ history commits are non-atomic; ambiguous outcomes are never retried.
 Any query error, missing result, digest mismatch, partial state, or
 `passed=false` is a BLOCK.
 
+The production approval template is deliberately incomplete. Its placeholder
+actor must be replaced and the bounded subject and SHA-256 recomputed. The
+write-capable CLI and underlying runner also require the operator-approved subject SHA-256 as a
+separate `--approved-subject-sha256` input and rejects a missing or mismatched
+binding before any network or filesystem write.
+
 ```sh
 node ops/managed-inspector-activation/validate-pack.mjs
 node --test ops/managed-inspector-activation/*.test.mjs
