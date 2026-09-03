@@ -42,7 +42,9 @@ Thumbs.db
 .LSOverride
 
 # Railway
-.railway/
+.railway/*
+!.railway/README.md
+!.railway/railway.ts
 
 # Netlify local state
 .netlify/

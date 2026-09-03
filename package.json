@@ -6,7 +6,8 @@
     "test:functions": "node --test tests_js/*.test.mts"
   },
   "devDependencies": {
-    "@netlify/functions": "^5.3.0"
+    "@netlify/functions": "^5.3.0",
+    "railway": "3.11.0"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
