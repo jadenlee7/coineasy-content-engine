@@ -213,7 +213,8 @@ scripts/
 └── migrate_tokens.py   # One-time template migration
 
 Dockerfile              # Production container
-railway.json            # Railway deploy config
+.railway/railway.ts     # Railway named IaC partial (web + managed inspect)
+railway.*.json           # Existing service manifests and review fixtures
 requirements.txt
 ```
 

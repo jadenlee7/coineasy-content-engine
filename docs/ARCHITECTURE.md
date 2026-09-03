@@ -84,7 +84,9 @@ coineasy-content-engine/
 │
 ├── Dockerfile                           # Railway 배포용
 ├── requirements.txt
-├── railway.json
+├── .railway/
+│   └── railway.ts                       # 저장소 소유 서비스 2개의 named IaC partial
+├── railway.*.json                       # 기존 서비스별 manifest 및 검수 fixture
 └── README.md
 ```
 

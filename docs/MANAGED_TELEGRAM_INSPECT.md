@@ -273,22 +273,35 @@ No production-bound deployment manifest or live enable command is supplied here.
 
 ### Railway deployment contract
 
-`railway.managed-inspect.json` is a reviewed repository contract for CI and
+`railway.managed-inspect.json` remains a reviewed repository fixture for CI and
 owner-system deployment readback. It fixes the isolated Dockerfile, exact
 watched source set, Docker-owned start command, absent healthcheck while OFF
-returns HTTP 503, and bounded restart policy. It does not enable the runtime.
+returns HTTP 503, and bounded restart policy. It does not enable the runtime or
+control Railway by itself.
 
 Railway Config as Code is deprecated, new services cannot opt in, and files for
 services already using it stop being read on 2026-12-01. This managed-inspect
 service is new and has no legacy Config as Code binding, so do not set
-`railwayConfigFile` to this JSON or claim that the file controls production. A
-later separately approved GitHub-origin deployment must apply the equivalent
-settings through Railway's
-supported service configuration or project-level Infrastructure as Code, keep
-automatic deployment and `MANAGED_INSPECT_ENABLED` false, and prove the exact
-source SHA from Railway deployment metadata, build logs, the image stamp and
-the disabled HTTP readback. Any project-level Infrastructure as Code import,
-plan or apply is a separate scope because omitted resources can be destructive.
+`railwayConfigFile` to this JSON or claim that the file controls production.
+
+The repository's supported control-plane proposal is now
+`.railway/railway.ts`. It uses the stable named partial
+`coineasy-content-engine-services` and owns exactly the main web service and
+the managed-inspect service. The root auto-discovered `railway.json` is absent,
+and `configFile` is omitted from both resources so the required
+`railwayConfigFile=null` state is preserved. The partial includes every current
+variable name as `preserve()` because omitting one would create delete intent;
+it never contains secret values. Other project resources and legacy-bound
+services are outside this partial.
+
+CI evaluates the offline contract but never applies it. A later separately
+approved production plan must contain no diagnostic, destructive change,
+addition, deletion, or third-service change. Applying that exact plan,
+retaining automatic deployment and `MANAGED_INSPECT_ENABLED` false, and any
+GitHub-origin exact-SHA deployment are separate approvals. Completion still
+requires the source SHA from Railway deployment metadata, build logs, the image
+stamp and the disabled HTTP readback, plus zero-I/O and forbidden-secret
+readbacks. See [ADR-026](./ADR-026-railway-service-iac.md).
 
 Primary Railway references:
 
