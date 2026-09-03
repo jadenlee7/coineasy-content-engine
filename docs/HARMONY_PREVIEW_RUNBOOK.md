@@ -56,9 +56,13 @@ fail-closed했고, child와 해당 scoped PAT의 삭제가 확인됐습니다. �
 `미관측`입니다. Exact SHA `919d70feb0b778830d8f20f70823c20fcf049f61`의
 두 번째 유료 one-shot도 `harmony-preview-one-shot-proof@5`에서 SQL 시작 전
 `preview_database_connectivity_failed`로 fail-closed했고, child와 해당 scoped
-PAT의 삭제가 확인됐습니다. 따라서 성공 proof는 아직 없습니다. 이 범위에서는
-모든 flag가 OFF이고, 아래 Gate 4의 짧은 dashboard 관측도 별도 승인·별도
-실행으로만 가능합니다.
+PAT의 삭제가 확인됐습니다. Exact SHA
+`91dc0fc6cba7025d8db816f9864dd0a5d89acd3e`의 세 번째 유료 one-shot은
+`harmony-preview-one-shot-proof@6`에서 SQL 시작 전
+`branch_pooler_default_pool_size_insufficient`로 fail-closed했고, child와 해당
+scoped PAT의 삭제가 확인됐습니다. 따라서 성공 proof는 아직 없습니다. 이
+범위에서는 모든 flag가 OFF이고, 아래 Gate 4의 짧은 dashboard 관측도 별도
+승인·별도 실행으로만 가능합니다.
 
 ## 현재 계약 스냅샷
 
@@ -195,12 +199,13 @@ self-signed chain을 거절했습니다. 이 관측은 direct IPv6 route와 syst
 않습니다. Production 적용과 성공한 exact-SHA Supabase Preview proof는 여전히
 없고, 로컬·transport 증거를 live Preview 성공 증거로 대체해 주장하지 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@6`입니다. CLI에서
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@7`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
 preflight를 실행합니다. Receipt에는 선택한 `database_transport`, 고정된
 `database_transport_selection=explicit`, typed connectivity 상태, 그리고 session
-route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`만 남깁니다.
+route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`와
+`database_pooler_readiness`만 남깁니다.
 Migration 또는 security `psql` apply가 typed command failure 또는 ambiguous
 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
 `{phase, ordinal, filename, sha256, completed_count}`만 기록합니다. 운영자
@@ -264,8 +269,8 @@ non-Production control plane에서 만료되는 one-time grant를 원자적으�
 실행 직전에 Supabase의 현재 branch 시간당 비용을 조회해 조직, Production
 project ref, 예상 TTL, 최대 예상액, 선택할 DB route를 함께 대표에게 제시합니다.
 대표가 해당 금액, branch 생성, `direct` 또는 `supavisor-session` 한 route를
-action-time에 새로 명시적으로 승인하기 전에는 생성하지 않습니다. 역사적 `@4`와
-`@5` 실행 승인은 다음 유료 invocation에 재사용할 수 없습니다.
+action-time에 새로 명시적으로 승인하기 전에는 생성하지 않습니다. 역사적 `@4`,
+`@5`, `@6` 실행 승인은 다음 유료 invocation에 재사용할 수 없습니다.
 Branch는 clean exact HEAD를 이름과 receipt에 고정한 non-persistent Small
 disposable child 한 곳만 만들며 `with_data=false`를 사용합니다. migration과
 probe는 그 exact commit의 immutable checkout에서만 읽습니다. 실패한 child를
@@ -327,13 +332,12 @@ cleanup, child 삭제, branch 목록의 연속 3회 부재 확인 중 하나라�
 폐기한 뒤 새로운 대표 승인과 새 PAT 없이는 다음 invocation을 시작하지 않습니다.
 
 DB route는 branch 생성 전에 `direct` 또는 `supavisor-session` 중 정확히 하나로
-고정하며 자동 선택이나 runtime fallback을 허용하지 않습니다. 먼저 exact
-`GET /v1/branches/{child_ref}`에서 DB password와 Legacy JWT secret을 읽고
-ref·`ACTIVE_HEALTHY`와 branch 응답의 exact
-`db.{child_ref}.supabase.co:5432`·`postgres` principal을 모든 route의 child
+고정하며 자동 선택이나 runtime fallback을 허용하지 않습니다. 모든 route는 exact
+`GET /v1/branches/{child_ref}`의 ref·`ACTIVE_HEALTHY`, DB password, Legacy JWT
+secret과 exact `db.{child_ref}.supabase.co:5432`·`postgres` principal을 child
 credential fence로 검증합니다. `direct`는 이 endpoint를 그대로 사용합니다.
-`supavisor-session`은 추가로 exact child ref에만 read-only
-`GET /v1/projects/{child_ref}/config/database/pooler`를 호출합니다. Management
+`supavisor-session`은 secret-bearing branch config보다 먼저 exact child ref에만
+read-only `GET /v1/projects/{child_ref}/config/database/pooler`를 호출합니다. Management
 API가 돌려주는 유일한 `database_type=PRIMARY`, `pool_mode=transaction`, port
 `6543`, database `postgres`, exact `postgres.{child_ref}` user와
 `*.pooler.supabase.com` host를 구조적으로 고정 검증한 다음, 같은 host와 user의
@@ -344,12 +348,23 @@ API가 돌려주는 유일한 `database_type=PRIMARY`, `pool_mode=transaction`, 
 정의되어 있습니다.
 `default_pool_size`는 exact child 응답의 2 이상 정수여야 합니다. 하나의 backend는
 PostgREST registration row-lock holder가 사용하고 별도 observer가 release를 수행해야
-하므로 1이면 자기 교착을 피하기 위해 중단합니다. `max_client_conn`은 양의 정수 또는
-JSON `null`만 허용하고, 관측된 값이 64보다 작으면 중단합니다. Direct route의 outer
-`database_pooler_capacity`는 `null`입니다. Session route에서는 비밀 없는
-`{default_pool_size,max_client_conn,max_client_at_least_64,backend_concurrency_target}`만
-기록합니다. `backend_concurrency_target=min(default_pool_size,64)`이며 parent 값을
-child capacity 증거로 대체하거나 client 수를 자동 축소하지 않습니다. DB의
+하므로 1이면 자기 교착을 피하기 위해 즉시 중단합니다. Management API의 JSON
+`null`은 용량 증거가 아니므로 같은 exact-child read-only GET만 재시도하되 기존
+monotonic branch-readiness deadline 뒤에는 새 retry를 시작하지 않습니다. 이미 시작한
+GET은 bounded per-request read timeout까지 끝날 수 있고, branch readiness를 마지막
+poll에서 확인한 경우에도 첫 exact-child readiness read 한 번은 수행합니다. 이때
+branch config나 API key를 요청하지 않고, deadline을 갱신하거나 1을 provisioning
+지연으로 간주하지 않습니다.
+`max_client_conn`은 양의 정수 또는 JSON `null`만 허용하고, 관측된 값이 64보다 작으면
+중단합니다. Direct route의 outer `database_pooler_capacity`와
+`database_pooler_readiness`는 모두 `null`입니다. Session route의 검증 성공 뒤에만
+`database_pooler_capacity`에는 `default_pool_size`, `max_client_conn`,
+`max_client_at_least_64`, `backend_concurrency_target`만
+기록합니다. 별도 `database_pooler_readiness`에는 bounded read 횟수와 마지막 nullable
+숫자 관측 및 `capacity_unobserved|capacity_insufficient|capacity_sufficient` 상태만
+기록합니다. raw 응답, host, user, connection string, 오류 본문은 기록하지 않습니다.
+`backend_concurrency_target=min(default_pool_size,64)`이며 parent 값을 child capacity
+증거로 대체하거나 client 수를 자동 축소하지 않습니다. DB의
 `max_connections-current_connections` preflight는 direct에서 72개, session에서
 `backend_concurrency_target+2`개의 여유를 요구합니다.
 
@@ -439,8 +454,8 @@ receipt가 아닙니다.
 - parent project ref
 - branch 이름, 현재 시간당 비용과 두 CLI 상한
 - 명시적으로 선택한 `database_transport`와 `database_transport_selection=explicit`
-- session route에서만 exact child의 비밀 없는 `database_pooler_capacity`와
-  `backend_concurrency_target`
+- session route에서만 exact child의 비밀 없는 `database_pooler_capacity`,
+  bounded `database_pooler_readiness`, `backend_concurrency_target`
 - `database_connectivity_preflight`, outer `database_concurrency`, 그리고
   `database_client_race_64_way` planned/completed step
 - DB TLS client 64개 동시 ingress, 12개 race별 server latch peak, signed HTTPS TLS
@@ -454,8 +469,12 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@6`입니다. 역사적 exact-SHA
-one-shot은 `@4`와 `@5` receipt로 각각 실패했으며 둘 다 성공 receipt가 아닙니다.
+`schema_version=harmony-preview-one-shot-proof@7`입니다. 역사적 exact-SHA
+one-shot은 `@4`, `@5`, `@6` receipt로 각각 실패했으며 어느 것도 성공 receipt가
+아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
+중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
+child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미관측입니다. 현재
+`@7`은 이 두 값을 분리하고 nullable 값만 기존 deadline 전까지 재조회합니다.
 현재 Database concurrency probe의 `harmony-preview-concurrency-proof@5` 결과에서는
 64-client TLS ingress와 12개 race 각각의
 `{participants=64,released=true,server_peak}`를 먼저 검증합니다. `server_peak`는
@@ -659,7 +678,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@6` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@7` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 1. signal, plan, private-content, operator-inbox, Recap의 각 64개 호출과

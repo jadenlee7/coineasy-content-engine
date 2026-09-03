@@ -1865,10 +1865,11 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@6"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@7"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
+    assert receipt["database_pooler_readiness"] is None
     assert "direct_database" not in receipt
     assert receipt["database_connectivity_preflight"] == "passed"
     assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
@@ -2277,6 +2278,15 @@ def test_supavisor_session_uses_exact_child_pooler_without_direct_retry(
         "max_client_at_least_64": True,
         "backend_concurrency_target": 15,
     }
+    assert receipt["database_pooler_readiness"] == {
+        "read_attempts": 1,
+        "last_observation": {
+            "default_pool_size": 15,
+            "max_client_conn": 200,
+            "max_client_at_least_64": True,
+            "state": "capacity_sufficient",
+        },
+    }
     assert fake.events.count("parent_pooler_config_get") == 1
     assert fake.events.count("child_pooler_config_get") == 1
     assert fake.events.index("parent_pooler_config_get") < fake.events.index(
@@ -2414,10 +2424,342 @@ def test_child_pooler_primary_lag_retries_before_key_reveal(
 
     assert exit_code == 0
     assert fake.child_pooler_calls == 2
+    assert fake.events.count("branch_config_get") == 1
+    assert fake.events.count("api_keys_get") == 1
     assert fake.events.count("publishable_key_get") == 1
     assert fake.events.index("child_pooler_config_get") < fake.events.index(
         "publishable_key_get"
     )
+    assert receipt["database_pooler_readiness"] == {
+        "read_attempts": 2,
+        "last_observation": {
+            "default_pool_size": 15,
+            "max_client_conn": 200,
+            "max_client_at_least_64": True,
+            "state": "capacity_sufficient",
+        },
+    }
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_child_pooler_nullable_capacity_retries_before_key_reveal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+
+    class NullableChildPoolerRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_pooler_calls = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{CHILD_REF}/config/database/pooler"
+            ):
+                self.child_pooler_calls += 1
+                self.events.append("child_pooler_config_get")
+                if self.child_pooler_calls == 1:
+                    return OpenApiResponse(
+                        _pooler_config(default_pool_size=None)
+                    )
+                return OpenApiResponse(_pooler_config(default_pool_size=2))
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = NullableChildPoolerRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 0
+    assert fake.child_pooler_calls == 2
+    assert fake.events.count("branch_config_get") == 1
+    assert fake.events.count("api_keys_get") == 1
+    assert fake.events.count("publishable_key_get") == 1
+    assert receipt["database_pooler_capacity"] == {
+        "default_pool_size": 2,
+        "max_client_conn": 200,
+        "max_client_at_least_64": True,
+        "backend_concurrency_target": 2,
+    }
+    assert receipt["database_pooler_readiness"] == {
+        "read_attempts": 2,
+        "last_observation": {
+            "default_pool_size": 2,
+            "max_client_conn": 200,
+            "max_client_at_least_64": True,
+            "state": "capacity_sufficient",
+        },
+    }
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_child_pooler_persistent_nullable_capacity_fails_bounded_and_sanitized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+    args.branch_ready_timeout_seconds = 3
+
+    class NullableChildPoolerRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_pooler_calls = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{CHILD_REF}/config/database/pooler"
+            ):
+                self.child_pooler_calls += 1
+                self.events.append("child_pooler_config_get")
+                return OpenApiResponse(
+                    _pooler_config(default_pool_size=None)
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = NullableChildPoolerRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "branch_pooler_default_pool_size_unobserved"
+    )
+    assert fake.child_pooler_calls > 1
+    assert fake.events.count("branch_config_get") == 0
+    assert fake.events.count("api_keys_get") == 0
+    assert fake.events.count("publishable_key_get") == 0
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["database_pooler_capacity"] is None
+    assert receipt["database_pooler_readiness"] == {
+        "read_attempts": fake.child_pooler_calls,
+        "last_observation": {
+            "default_pool_size": None,
+            "max_client_conn": 200,
+            "max_client_at_least_64": True,
+            "state": "capacity_unobserved",
+        },
+    }
+    assert receipt["database_connectivity_preflight"] == "not_started"
+    assert receipt["same_child_repair_attempts"] == 0
+    assert receipt["replacement_branch_attempts"] == 0
+    serialized = json.dumps(receipt, sort_keys=True)
+    for forbidden in (
+        POOLER_HOST,
+        f"postgres.{CHILD_REF}",
+        POOLER_URI_SECRET,
+        DB_SECRET,
+        JWT_SECRET,
+    ):
+        assert forbidden not in serialized
+    _assert_valid_receipt_digest(receipt)
+
+
+@pytest.mark.parametrize(
+    (
+        "advance_stage",
+        "expected_branch_reads",
+        "expected_api_key_reads",
+    ),
+    (
+        ("pooler", 0, 0),
+        ("branch", 1, 0),
+        ("api_keys", 1, 1),
+    ),
+)
+def test_child_pooler_retry_starts_no_followup_read_after_deadline(
+    advance_stage: str,
+    expected_branch_reads: int,
+    expected_api_key_reads: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+    args.branch_ready_timeout_seconds = 3
+    args.poll_interval_seconds = 2.5
+
+    class ManualClock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = ManualClock()
+
+    class DeadlineChildPoolerRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.branch_reads = 0
+            self.pooler_reads = 0
+            self.api_key_reads = 0
+            self.trigger_timeout: float | None = None
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            branch_url = (
+                RUNNER.MANAGEMENT_API_BASE_URL + f"/branches/{CHILD_REF}"
+            )
+            pooler_url = (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{CHILD_REF}/config/database/pooler"
+            )
+            api_keys_url = (
+                RUNNER.MANAGEMENT_API_BASE_URL
+                + f"/projects/{CHILD_REF}/api-keys?reveal=false"
+            )
+            if url == branch_url:
+                self.branch_reads += 1
+                response = super().open_endpoint(req, timeout=timeout)
+                if advance_stage == "branch":
+                    self.trigger_timeout = timeout
+                    clock.advance(1.0)
+                return response
+            if url == pooler_url:
+                self.pooler_reads += 1
+                self.events.append("child_pooler_config_get")
+                if self.pooler_reads == 1:
+                    return OpenApiResponse(
+                        _pooler_config(default_pool_size=None)
+                    )
+                response = OpenApiResponse(_pooler_config())
+                if advance_stage == "pooler":
+                    self.trigger_timeout = timeout
+                    clock.advance(1.0)
+                return response
+            if url == api_keys_url:
+                self.api_key_reads += 1
+                response = super().open_endpoint(req, timeout=timeout)
+                if advance_stage == "api_keys":
+                    self.trigger_timeout = timeout
+                    clock.advance(1.0)
+                return response
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = DeadlineChildPoolerRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=(
+            lambda seconds: (
+                clock.advance(seconds) if fake.pooler_reads > 0 else None
+            )
+        ),
+        clock=clock,
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == "branch_credentials_readiness_timeout"
+    assert fake.branch_reads == expected_branch_reads
+    assert fake.pooler_reads == 2
+    assert fake.api_key_reads == expected_api_key_reads
+    assert fake.events.count("publishable_key_get") == 0
+    assert fake.trigger_timeout == pytest.approx(0.5)
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["database_connectivity_preflight"] == "not_started"
+    assert receipt["same_child_repair_attempts"] == 0
+    assert receipt["replacement_branch_attempts"] == 0
+    _assert_valid_receipt_digest(receipt)
+
+
+def test_child_pooler_one_capacity_is_terminal_and_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+    args = _args(tmp_path)
+    args.database_transport = "supavisor-session"
+
+    class OneCapacityChildPoolerRunner(FakeRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.child_pooler_calls = 0
+
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(
+                f"/projects/{CHILD_REF}/config/database/pooler"
+            ):
+                self.child_pooler_calls += 1
+                self.events.append("child_pooler_config_get")
+                return OpenApiResponse(_pooler_config(default_pool_size=1))
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = OneCapacityChildPoolerRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        args,
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "branch_pooler_default_pool_size_insufficient"
+    )
+    assert fake.child_pooler_calls == 1
+    assert fake.events.count("branch_config_get") == 0
+    assert fake.events.count("api_keys_get") == 0
+    assert fake.events.count("publishable_key_get") == 0
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    assert receipt["database_pooler_capacity"] is None
+    assert receipt["database_pooler_readiness"] == {
+        "read_attempts": 1,
+        "last_observation": {
+            "default_pool_size": 1,
+            "max_client_conn": 200,
+            "max_client_at_least_64": True,
+            "state": "capacity_insufficient",
+        },
+    }
+    assert receipt["database_connectivity_preflight"] == "not_started"
+    assert receipt["same_child_repair_attempts"] == 0
+    assert receipt["replacement_branch_attempts"] == 0
     _assert_valid_receipt_digest(receipt)
 
 
@@ -3938,7 +4280,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@6"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@7"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -4440,16 +4782,24 @@ def test_pooler_session_endpoint_is_exact_child_and_derives_only_port() -> None:
 
 
 def test_pooler_backend_target_requires_holder_and_observer_capacity() -> None:
-    for size in (None, 1):
-        endpoint = RUNNER.extract_management_pooler_session_endpoint(
-            _pooler_config(default_pool_size=size),
-            CHILD_REF,
-        )
-        with pytest.raises(
-            RUNNER.ProofError,
-            match="branch_pooler_default_pool_size_insufficient",
-        ):
-            RUNNER.pooler_backend_concurrency_target(endpoint)
+    endpoint_unobserved = RUNNER.extract_management_pooler_session_endpoint(
+        _pooler_config(default_pool_size=None),
+        CHILD_REF,
+    )
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_pooler_default_pool_size_unobserved",
+    ):
+        RUNNER.pooler_backend_concurrency_target(endpoint_unobserved)
+    endpoint_one = RUNNER.extract_management_pooler_session_endpoint(
+        _pooler_config(default_pool_size=1),
+        CHILD_REF,
+    )
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="branch_pooler_default_pool_size_insufficient",
+    ):
+        RUNNER.pooler_backend_concurrency_target(endpoint_one)
     endpoint_two = RUNNER.extract_management_pooler_session_endpoint(
         _pooler_config(default_pool_size=2),
         CHILD_REF,

@@ -41,7 +41,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@6"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@7"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
@@ -2060,6 +2060,8 @@ def pooler_backend_concurrency_target(
     endpoint: PoolerSessionEndpoint,
 ) -> int:
     default_pool_size = endpoint.default_pool_size
+    if default_pool_size is None:
+        raise ProofError("branch_pooler_default_pool_size_unobserved")
     if type(default_pool_size) is not int or default_pool_size < 2:
         raise ProofError("branch_pooler_default_pool_size_insufficient")
     return min(default_pool_size, 64)
@@ -2073,7 +2075,7 @@ class HarmonyPreviewProof:
         runner: ProcessRunner | None = None,
         opener: Callable[..., object] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.args = args
         self.runner = runner or ProcessRunner()
@@ -2122,6 +2124,8 @@ class HarmonyPreviewProof:
         self.completed_steps: list[str] = []
         self.database_transport: str | None = None
         self.database_pooler_capacity: dict[str, object] | None = None
+        self.database_pooler_readiness: dict[str, object] | None = None
+        self.database_pooler_read_attempts = 0
         self.database_connectivity_preflight = "not_started"
         self.migration_completed_count = 0
         self.security_completed_count = 0
@@ -3637,11 +3641,24 @@ raise SystemExit(
             raise ProofError("preview_child_ref_invalid")
         last_retryable: ManagementApiError | None = None
         attempted = False
+
+        def read_timeout(*, initial_attempt: bool) -> float | None:
+            if initial_attempt:
+                return self.args.supabase_read_timeout_seconds
+            remaining = self.branch_ready_deadline - self.clock()
+            if remaining <= 0:
+                return None
+            return min(self.args.supabase_read_timeout_seconds, remaining)
+
         try:
             # A child may become ready on the final readiness poll. Preserve
-            # the same absolute deadline for retries, but always perform one
-            # exact-child credential read before failing closed.
+            # the same monotonic start deadline for retries, but always
+            # perform one exact-child readiness read before failing closed.
+            # Session capacity is proven before any secret-bearing branch or
+            # API-key response is requested.
+            # A GET already in flight retains its bounded per-request timeout.
             while not attempted or self.clock() < self.branch_ready_deadline:
+                initial_attempt = not attempted
                 attempted = True
                 branch_config: object | None = None
                 pooler_config: object | None = None
@@ -3650,17 +3667,29 @@ raise SystemExit(
                 candidate_credentials: BranchCredentials | None = None
                 candidate_pooler_capacity: dict[str, object] | None = None
                 try:
-                    branch_config = self._management_get_json(
-                        f"/branches/{branch_ref}",
-                        code="supabase_branch_config_get",
-                        timeout=self.args.supabase_read_timeout_seconds,
-                        expected_project_ref=branch_ref,
-                    )
                     if self.database_transport == "supavisor-session":
+                        timeout = read_timeout(initial_attempt=initial_attempt)
+                        if timeout is None:
+                            if last_retryable is None:
+                                last_retryable = ManagementApiError(
+                                    "branch_credentials_readiness_timeout",
+                                    retryable=True,
+                                )
+                            break
+                        self.database_pooler_read_attempts += 1
+                        last_observation = None
+                        if self.database_pooler_readiness is not None:
+                            last_observation = self.database_pooler_readiness.get(
+                                "last_observation"
+                            )
+                        self.database_pooler_readiness = {
+                            "read_attempts": self.database_pooler_read_attempts,
+                            "last_observation": last_observation,
+                        }
                         pooler_config = self._management_get_json(
                             f"/projects/{branch_ref}/config/database/pooler",
                             code="supabase_pooler_config_get",
-                            timeout=self.args.supabase_read_timeout_seconds,
+                            timeout=timeout,
                             expected_project_ref=branch_ref,
                         )
                         endpoint = extract_management_pooler_session_endpoint(
@@ -3674,25 +3703,67 @@ raise SystemExit(
                                 endpoint.max_client_at_least_64
                             ),
                         }
+                        if endpoint.default_pool_size is None:
+                            readiness_state = "capacity_unobserved"
+                        elif endpoint.default_pool_size < 2:
+                            readiness_state = "capacity_insufficient"
+                        else:
+                            readiness_state = "capacity_sufficient"
+                        self.database_pooler_readiness = {
+                            "read_attempts": self.database_pooler_read_attempts,
+                            "last_observation": {
+                                **candidate_pooler_capacity,
+                                "state": readiness_state,
+                            },
+                        }
                         candidate_pooler_capacity[
                             "backend_concurrency_target"
                         ] = pooler_backend_concurrency_target(endpoint)
+                        last_retryable = None
                         # The raw response may contain a connection string.
                         # Destroy it before requesting any revealed API key.
                         _clear_mutable_json(pooler_config)
                         pooler_config = None
                         gc.collect()
+                    timeout = read_timeout(initial_attempt=initial_attempt)
+                    if timeout is None:
+                        if last_retryable is None:
+                            last_retryable = ManagementApiError(
+                                "branch_credentials_readiness_timeout",
+                                retryable=True,
+                            )
+                        break
+                    branch_config = self._management_get_json(
+                        f"/branches/{branch_ref}",
+                        code="supabase_branch_config_get",
+                        timeout=timeout,
+                        expected_project_ref=branch_ref,
+                    )
+                    timeout = read_timeout(initial_attempt=initial_attempt)
+                    if timeout is None:
+                        last_retryable = ManagementApiError(
+                            "branch_credentials_readiness_timeout",
+                            retryable=True,
+                        )
+                        break
                     api_keys_metadata = self._management_get_json(
                         f"/projects/{branch_ref}/api-keys?reveal=false",
                         code="supabase_api_keys_get",
-                        timeout=self.args.supabase_read_timeout_seconds,
+                        timeout=timeout,
                         expected_project_ref=branch_ref,
                     )
                     key_id = extract_publishable_api_key_id(api_keys_metadata)
+                    timeout = read_timeout(initial_attempt=initial_attempt)
+                    if timeout is None:
+                        last_retryable = ManagementApiError(
+                            "branch_credentials_readiness_timeout",
+                            retryable=True,
+                        )
+                        break
                     api_key = self._management_get_json(
                         f"/projects/{branch_ref}/api-keys/{key_id}?reveal=true",
                         code="supabase_publishable_key_get",
-                        timeout=self.args.supabase_read_timeout_seconds,
+                        timeout=timeout,
                         expected_project_ref=branch_ref,
                     )
                     candidate_credentials = extract_management_branch_credentials(
@@ -3717,7 +3788,10 @@ raise SystemExit(
                         raise
                     last_retryable = exc
                 except ProofError as exc:
-                    if exc.code != "branch_pooler_primary_unavailable":
+                    if exc.code not in {
+                        "branch_pooler_primary_unavailable",
+                        "branch_pooler_default_pool_size_unobserved",
+                    }:
                         raise
                     last_retryable = ManagementApiError(
                         exc.code,
@@ -3735,7 +3809,11 @@ raise SystemExit(
                     api_keys_metadata = None
                     api_key = None
                     gc.collect()
-                self.sleeper(self.args.poll_interval_seconds)
+                remaining = self.branch_ready_deadline - self.clock()
+                if remaining > 0:
+                    self.sleeper(
+                        min(self.args.poll_interval_seconds, remaining)
+                    )
             if last_retryable is not None:
                 raise last_retryable
             raise ProofError("branch_credentials_readiness_timeout")
@@ -4682,6 +4760,7 @@ raise SystemExit(
             "database_transport": self.database_transport,
             "database_transport_selection": "explicit",
             "database_pooler_capacity": self.database_pooler_capacity,
+            "database_pooler_readiness": self.database_pooler_readiness,
             "database_connectivity_preflight": (
                 self.database_connectivity_preflight
             ),
