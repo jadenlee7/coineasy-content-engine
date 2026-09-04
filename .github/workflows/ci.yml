@@ -397,6 +397,7 @@ jobs:
         run: >-
           node --test
           tests_js/managed-inspect-image.test.mts
+          tests_js/railway-iac-owner-receipt.test.mts
           tests_js/railway-iac.test.mts
       - name: Validate the offline managed-inspector activation pack
         run: >-

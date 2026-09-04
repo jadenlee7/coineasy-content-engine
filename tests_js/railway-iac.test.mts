@@ -168,36 +168,37 @@ test('Railway IaC has no auto-discovered root config and owns only two services'
   assertPreservedVariables(managed.variables, managedVariables);
 });
 
+const legacyMigrationChanges = [
+  {
+    summary: 'Update coineasy-content-engine build.builder',
+    severity: 'safe',
+    kind: 'resource.update',
+    details: ['build.builder (null → "DOCKERFILE")'],
+  },
+  {
+    summary: 'Update coineasy-content-engine deploy.healthcheckPath, deploy.healthcheckTimeout, deploy.restartPolicyMaxRetries and 2 more',
+    severity: 'safe',
+    kind: 'resource.update',
+    details: [
+      'deploy.healthcheckPath (null → "/health")',
+      'deploy.healthcheckTimeout (null → 100)',
+      'deploy.restartPolicyMaxRetries (null → 3)',
+      'deploy.restartPolicyType (null → "ON_FAILURE")',
+      'deploy.startCommand (null → "sh -c \'uvicorn api.server:app --host 0.0.0.0 --port $PORT\'")',
+    ],
+  },
+  {
+    summary: 'Update coineasy-managed-inspect deploy.restartPolicyMaxRetries, deploy.restartPolicyType',
+    severity: 'safe',
+    kind: 'resource.update',
+    details: [
+      'deploy.restartPolicyMaxRetries (null → 10)',
+      'deploy.restartPolicyType (null → "ON_FAILURE")',
+    ],
+  },
+];
+
 function planFixture(overrides: Record<string, unknown> = {}) {
-  const expectedChanges = [
-    {
-      summary: 'Update coineasy-content-engine build.builder',
-      severity: 'safe',
-      kind: 'resource.update',
-      details: ['build.builder (null → "DOCKERFILE")'],
-    },
-    {
-      summary: 'Update coineasy-content-engine deploy.healthcheckPath, deploy.healthcheckTimeout, deploy.restartPolicyMaxRetries and 2 more',
-      severity: 'safe',
-      kind: 'resource.update',
-      details: [
-        'deploy.healthcheckPath (null → "/health")',
-        'deploy.healthcheckTimeout (null → 100)',
-        'deploy.restartPolicyMaxRetries (null → 3)',
-        'deploy.restartPolicyType (null → "ON_FAILURE")',
-        'deploy.startCommand (null → "sh -c \'uvicorn api.server:app --host 0.0.0.0 --port $PORT\'")',
-      ],
-    },
-    {
-      summary: 'Update coineasy-managed-inspect deploy.restartPolicyMaxRetries, deploy.restartPolicyType',
-      severity: 'safe',
-      kind: 'resource.update',
-      details: [
-        'deploy.restartPolicyMaxRetries (null → 10)',
-        'deploy.restartPolicyType (null → "ON_FAILURE")',
-      ],
-    },
-  ];
   return {
     ok: true,
     command: 'plan',
@@ -209,7 +210,7 @@ function planFixture(overrides: Record<string, unknown> = {}) {
       configEtag: 'a'.repeat(64),
     },
     changeSet: {
-      changes: expectedChanges,
+      changes: [],
     },
     diagnostics: [],
     currentGraph: { secret: 'current-graph-secret' },
@@ -236,12 +237,14 @@ function runPlanGate(plan: Record<string, unknown>) {
   });
 }
 
-test('Railway plan gate emits only bounded metadata and rejects unsafe plans', () => {
+test('Railway convergence gate emits only bounded metadata and rejects any change', () => {
   const accepted = runPlanGate(planFixture());
   assert.equal(accepted.status, 0, accepted.stderr);
   const output = JSON.parse(accepted.stdout);
   assert.deepEqual(output, {
     ok: true,
+    state: 'converged',
+    action: 'stop_no_apply',
     projectId: '43f15c45-4a5c-4cf9-9400-e462cac46bb1',
     project: 'noble-illumination',
     environmentId: '5bf47282-1982-4930-95ad-29230ec0429b',
@@ -251,17 +254,16 @@ test('Railway plan gate emits only bounded metadata and rejects unsafe plans', (
       'service.coineasy-content-engine',
       'service.coineasy-managed-inspect',
     ],
-    changeCount: 3,
-    changes: [
-      'Update coineasy-content-engine build.builder',
-      'Update coineasy-content-engine deploy.healthcheckPath, deploy.healthcheckTimeout, deploy.restartPolicyMaxRetries and 2 more',
-      'Update coineasy-managed-inspect deploy.restartPolicyMaxRetries, deploy.restartPolicyType',
-    ],
+    changeCount: 0,
+    changes: [],
     diagnostics: [],
   });
   assert.doesNotMatch(accepted.stdout, /secret|currentGraph|desiredGraph|details/i);
 
   const unsafePlans = [
+    planFixture({ errors: [] }),
+    planFixture({ extensions: {} }),
+    planFixture({ changeSet: { changes: legacyMigrationChanges } }),
     planFixture({
       desiredGraph: { resources: [{ address: 'service.coineasy-content-engine' }] },
     }),
@@ -302,4 +304,27 @@ test('Railway plan gate emits only bounded metadata and rejects unsafe plans', (
     assert.equal(rejected.stdout, '');
     assert.equal(rejected.stderr, 'railway_iac_plan_rejected\n');
   }
+
+  const rejectedArgument = spawnSync(process.execPath, [
+    new URL('../scripts/validate_railway_iac_plan.mjs', import.meta.url).pathname,
+    '--expect-migration',
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify(planFixture()),
+  });
+  assert.notEqual(rejectedArgument.status, 0);
+  assert.equal(rejectedArgument.stdout, '');
+  assert.equal(rejectedArgument.stderr, 'railway_iac_plan_rejected\n');
+});
+
+test('Railway convergence gate rejects oversized input', () => {
+  const rejected = spawnSync(process.execPath, [
+    new URL('../scripts/validate_railway_iac_plan.mjs', import.meta.url).pathname,
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({ data: 'x'.repeat(5 * 1024 * 1024) }),
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.equal(rejected.stdout, '');
+  assert.equal(rejected.stderr, 'railway_iac_plan_rejected\n');
 });

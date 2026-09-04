@@ -1,0 +1,48 @@
+query RailwayIacOwnerReceipt(
+  $projectId: String!
+  $environmentId: String!
+  $webServiceId: String!
+  $managedServiceId: String!
+) {
+  project(id: $projectId) {
+    id
+    name
+  }
+  environment(id: $environmentId, projectId: $projectId) {
+    id
+    name
+    projectId
+  }
+  web: serviceInstance(
+    environmentId: $environmentId
+    serviceId: $webServiceId
+  ) {
+    environmentId
+    serviceId
+    serviceName
+    railwayConfigFile
+    builder
+    dockerfilePath
+    healthcheckPath
+    healthcheckTimeout
+    restartPolicyType
+    restartPolicyMaxRetries
+    startCommand
+  }
+  managed: serviceInstance(
+    environmentId: $environmentId
+    serviceId: $managedServiceId
+  ) {
+    environmentId
+    serviceId
+    serviceName
+    railwayConfigFile
+    builder
+    dockerfilePath
+    healthcheckPath
+    healthcheckTimeout
+    restartPolicyType
+    restartPolicyMaxRetries
+    startCommand
+  }
+}
