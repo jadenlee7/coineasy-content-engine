@@ -43,6 +43,10 @@ test('managed inspect packaging has a minimal separate copy list and defaults OF
   assert.match(docker, /FROM node:24\.11\.1-slim/);
   assert.equal((docker.match(/MANAGED_INSPECT_ENABLED=false/g) ?? []).length, 1);
   assert.doesNotMatch(docker, /MANAGED_INSPECT_ENABLED=true/);
+  assert.match(docker, /^ARG RAILWAY_GIT_COMMIT_SHA$/m);
+  assert.match(docker, /process\.env\.RAILWAY_GIT_COMMIT_SHA/);
+  assert.doesNotMatch(docker, /ARG MANAGED_INSPECT_SOURCE_SHA/,
+    'a mutable service variable cannot claim GitHub build provenance');
   assert.match(docker, /USER node/);
   assert.match(docker, /build-sha\.txt/);
   assert.match(docker, /mode: 0o444/);
@@ -65,6 +69,13 @@ test('managed inspect packaging has a minimal separate copy list and defaults OF
       .filter((name) => name.endsWith('.mjs')).sort(),
     ['auth.mjs', 'browser-guard.mjs', 'config.mjs', 'server.mjs'],
   );
+  const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow,
+    /--build-arg RAILWAY_GIT_COMMIT_SHA=\$\{\{ github\.sha \}\}/);
+  assert.equal((workflow.match(/--build-arg MANAGED_INSPECT_SOURCE_SHA=\$\{\{ github\.sha \}\}/g) ?? []).length, 1,
+    'CI keeps one negative build proving the mutable legacy SHA is rejected');
+  assert.match(workflow, /legacy mutable SHA unexpectedly produced an image/);
+  assert.match(workflow, /EXPECTED_BUILD_SHA=\$\{\{ github\.sha \}\}/);
   const netlify = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
   assert.doesNotMatch(netlify.toLowerCase(), /managed(?:-|_)inspect|managed(?:-|_)telegram(?:-|_)inspect/,
     'no existing-site deployment integration');

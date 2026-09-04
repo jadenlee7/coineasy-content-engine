@@ -6,8 +6,8 @@ WORKDIR /app
 COPY tools/managed-telegram-inspect/*.mjs ./tools/managed-telegram-inspect/
 COPY scripts/lib/telegram-resolution-inspect.mjs ./scripts/lib/telegram-resolution-inspect.mjs
 
-ARG MANAGED_INSPECT_SOURCE_SHA
-RUN node --input-type=module -e 'import { writeFileSync } from "node:fs"; const sha = process.env.MANAGED_INSPECT_SOURCE_SHA; if (!/^[a-f0-9]{40}$/.test(sha || "")) process.exit(2); writeFileSync("tools/managed-telegram-inspect/build-sha.txt", sha + "\n", { mode: 0o444 });'
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN node --input-type=module -e 'import { writeFileSync } from "node:fs"; const sha = process.env.RAILWAY_GIT_COMMIT_SHA; if (!/^[a-f0-9]{40}$/.test(sha || "")) process.exit(2); writeFileSync("tools/managed-telegram-inspect/build-sha.txt", sha + "\n", { mode: 0o444 });'
 
 ENV NODE_ENV=production \
     MANAGED_INSPECT_ENABLED=false \

@@ -110,6 +110,12 @@ names drift, or the isolated settings weaken. CI never applies the definition.
 - Automatic deployment and disabled-mode state still require Railway metadata,
   runtime, image-stamp, HTTP 503, zero-I/O, and forbidden-secret readbacks after
   a separately approved exact-SHA deployment.
+- The managed-inspect image stamp is sourced only from Railway's
+  `RAILWAY_GIT_COMMIT_SHA` Docker build argument. Railway supplies Git variables
+  only to GitHub-triggered deployments, so a CLI-origin source upload fails
+  closed before producing an image. The preserved historical
+  `MANAGED_INSPECT_SOURCE_SHA` service variable is not provenance and can be
+  removed only through a separately reviewed production-variable change.
 - A plan is no longer an idempotence oracle under CLI `5.45.5`. The executable
   gate accepts only a true zero-change plan. The historical adoption diff and
   the known restart-policy residual are both rejected so neither can authorize
