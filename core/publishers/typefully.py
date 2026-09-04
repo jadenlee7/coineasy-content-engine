@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -14,6 +15,7 @@ X_POST_LIMIT = 280
 TIMEOUT_SECONDS = 30.0
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MAX_ATTEMPTS = 3
+AUTO_PUBLISH_DELAY_SECONDS = 30
 
 
 def _normalize_newlines(text: str) -> str:
@@ -82,9 +84,19 @@ class TypefullyPublisher(Publisher):
         }
 
     def _draft_title(self, payload: dict[str, Any]) -> str:
-        from datetime import datetime, timezone
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return f"Daily News - {self.client_id} - {date}"
+
+    @staticmethod
+    def _auto_publish_enabled() -> bool:
+        return os.environ.get("TYPEFULLY_AUTO_PUBLISH", "true").strip().lower() == "true"
+
+    @staticmethod
+    def _auto_publish_at() -> str:
+        # Schedule ~30s in the future so the Typefully scheduler picks it up
+        # rather than treating it as an immediate (and possibly raced) post.
+        ts = datetime.now(timezone.utc) + timedelta(seconds=AUTO_PUBLISH_DELAY_SECONDS)
+        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _build_request_body(
         self,
@@ -103,6 +115,8 @@ class TypefullyPublisher(Publisher):
         }
         if publish_at is not None:
             body["publish_at"] = publish_at
+        elif self._auto_publish_enabled():
+            body["publish_at"] = self._auto_publish_at()
         else:
             body["publish_at"] = None
         return body
@@ -116,12 +130,15 @@ class TypefullyPublisher(Publisher):
         text = _build_x_post(payload)
 
         if dry_run:
+            dry_body = self._build_request_body(payload, publish_at)
             return {
                 "ok": True,
                 "channel": self.name,
                 "dry_run": True,
                 "would_post": text,
                 "would_target_social_set_id": self.social_set_id,
+                "would_publish_at": dry_body.get("publish_at"),
+                "auto_publish_enabled": self._auto_publish_enabled(),
                 "response": None,
                 "error": None,
                 "skipped_reason": None,

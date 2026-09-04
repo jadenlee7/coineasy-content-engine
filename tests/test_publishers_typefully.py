@@ -117,7 +117,60 @@ async def test_dry_run_makes_no_http_call(monkeypatch):
     assert result["would_target_social_set_id"] == 254669
     assert "would_post" in result
     assert SAMPLE_PAYLOAD["headline"] in result["would_post"]
+    assert "would_publish_at" in result
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_dry_run_default_auto_publish_emits_iso_publish_at(monkeypatch):
+    """With no env override, default behavior is to auto-publish, so the dry_run
+    response must surface a real ISO8601 publish_at value (not None)."""
+    monkeypatch.delenv("TYPEFULLY_AUTO_PUBLISH", raising=False)
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=True)
+    assert result["auto_publish_enabled"] is True
+    assert result["would_publish_at"] is not None
+    # Format: YYYY-MM-DDTHH:MM:SSZ
+    import re
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", result["would_publish_at"])
+
+
+@pytest.mark.asyncio
+async def test_auto_publish_disabled_via_env_keeps_publish_at_none(monkeypatch):
+    monkeypatch.setenv("TYPEFULLY_AUTO_PUBLISH", "false")
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=True)
+    assert result["auto_publish_enabled"] is False
+    assert result["would_publish_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_publish_at_overrides_auto_publish(monkeypatch):
+    monkeypatch.setenv("TYPEFULLY_AUTO_PUBLISH", "true")
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    result = await publisher.publish(
+        SAMPLE_PAYLOAD,
+        dry_run=True,
+        publish_at="next-free-slot",
+    )
+    assert result["would_publish_at"] == "next-free-slot"
+
+
+@pytest.mark.asyncio
+async def test_real_post_sends_iso_publish_at_when_auto_publish_on(monkeypatch):
+    monkeypatch.setenv("TYPEFULLY_AUTO_PUBLISH", "true")
+    fake = _FakeAsyncClient([_FakeResponse(200, {"id": "draft_abc"})])
+    monkeypatch.setattr(
+        "core.publishers.typefully.httpx.AsyncClient",
+        lambda *a, **kw: fake,
+    )
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    await publisher.publish(SAMPLE_PAYLOAD, dry_run=False)
+    body = fake.calls[0]["json"]
+    publish_at = body["publish_at"]
+    assert publish_at is not None
+    import re
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", publish_at)
 
 
 @pytest.mark.asyncio
