@@ -2,9 +2,10 @@
 
 **Status:** Proposed; exact SHAs
 `a24492147b256785b71bc431e268844587591df1`,
-`919d70feb0b778830d8f20f70823c20fcf049f61`, and
-`91dc0fc6cba7025d8db816f9864dd0a5d89acd3e` each produced a fail-closed paid
-Preview receipt, not a successful proof. All three children and scoped PATs
+`919d70feb0b778830d8f20f70823c20fcf049f61`,
+`91dc0fc6cba7025d8db816f9864dd0a5d89acd3e`, and
+`b64b6676d2f8f67690288b82cd319a1d45864fc2` each produced a fail-closed paid
+Preview receipt, not a successful proof. All four children and scoped PATs
 were verified deleted, and neither the durable migration nor runner has been
 applied to Production.
 **Date:** 2026-08-27
@@ -28,8 +29,10 @@ at the first exact SHA above failed closed with `preview_migration_apply_failed`
 The paid `harmony-preview-one-shot-proof@5` execution at the second exact SHA
 failed closed before SQL with `preview_database_connectivity_failed`. The paid
 `harmony-preview-one-shot-proof@6` execution at the third exact SHA failed
-closed before SQL with `branch_pooler_default_pool_size_insufficient`. All
-three children and scoped PATs were deleted and verified absent; actual billing
+closed before SQL with `branch_pooler_default_pool_size_insufficient`. The paid
+`harmony-preview-one-shot-proof@7` execution at the fourth exact SHA failed
+closed before SQL with `branch_pooler_default_pool_size_unobserved`. All four
+children and scoped PATs were deleted and verified absent; actual billing
 is `unobserved`. Those files have not been applied to Production, and neither
 the local evidence nor any failed receipt substitutes for a successful,
 separately approved exact-SHA Supabase Preview proof. This ADR therefore does
@@ -98,7 +101,7 @@ or an absolute cap. The guard covers disposable Supabase infrastructure billing
 only and does not relax the zero model/provider-cost authority represented by
 `max_cost_microusd=0`.
 
-The current outer receipt is `harmony-preview-one-shot-proof@7`. The runner
+The current outer receipt is `harmony-preview-one-shot-proof@8`. The runner
 requires an explicit `direct` or `supavisor-session` route before any paid child
 creation and records that choice. It never switches routes on failure. The
 session route first validates read-only parent pooler access, then binds the
@@ -127,27 +130,39 @@ The outer receipt uses the route-neutral `database_concurrency` result and
 It accepts only `harmony-preview-concurrency-proof@5` and
 `harmony-preview-postgrest-proof@3`, rebuilding their TLS and server-overlap
 objects from exact allowlists rather than forwarding arbitrary child JSON.
-`database_pooler_capacity` is null for direct. For session it is populated only
-after capacity is verified and contains `default_pool_size`, `max_client_conn`,
-`max_client_at_least_64`, and `backend_concurrency_target`. The exact child
-`default_pool_size` must be an integer of at least two so the row-lock holder and
+`database_pooler_capacity` is null for direct. For a session route with verified
+numeric configuration it contains `default_pool_size`, `max_client_conn`,
+`max_client_at_least_64`, and `backend_concurrency_target`. When the exact child
+`default_pool_size` is numeric, it must be at least two so the row-lock holder and
 observer cannot self-deadlock; `backend_concurrency_target=min(default_pool_size,64)`.
 A numeric `max_client_conn` below 64 fails closed.
 
 The Management API permits a nullable `default_pool_size`. A null value is not
-capacity evidence, so the runner retries only that exact-child read-only GET
-and starts no new retry after the existing monotonic branch-readiness deadline.
-One GET already in flight remains bounded by its per-request read timeout, and a
-mandatory first exact-child read still runs when branch readiness is observed on
-the final poll. The session route requests neither the secret-bearing branch
-configuration nor an API key while capacity is unresolved.
-An integer one remains a terminal insufficient-
-capacity failure; the runner does not reinterpret it as provisioning lag. The
-separate secret-free `database_pooler_readiness` field records only the bounded
-read count and the last nullable numeric observation plus its state. It is null
-for direct, while `database_pooler_capacity` remains null on every unverified
-session failure. No raw pooler response, endpoint, principal, connection string,
-or error text enters either field.
+configured capacity evidence. After validating the exact-child pooler structure
+and identity, the runner does not spend the remaining branch-readiness window
+polling for a number. It loads the exact child secrets and runs the existing
+64-client database advisory-latch and signed PostgREST blocker-graph probes with
+a runtime lower-bound target of two. It does not extend a timeout, substitute
+parent capacity, or fall back to direct. An integer one remains a terminal
+insufficient-capacity failure and is not reinterpreted as provisioning lag.
+Both capacity keys remain required; a missing key is schema drift and is
+rejected rather than treated as explicit JSON null.
+
+`database_backend_target_selection` is null for direct and remains null when a
+session attempt fails before a valid exact-child target is selected. After that
+selection, an integer `default_pool_size>=2` produces
+`{source:"management_api_default_pool_size",target:min(default_pool_size,64),
+runtime_verified:<bool>}` and the configured values remain in
+`database_pooler_capacity`. For `default_pool_size=null`, it is
+`{source:"runtime_lower_bound_required",target:2,runtime_verified:<bool>}` while
+`database_pooler_capacity` remains null. `runtime_verified` equals the final
+outer `ok` bool and becomes true only after both nested live proofs pass outer
+contract validation. A null `max_client_conn` remains unobserved and success
+still requires measured 64-client ingress; a numeric value below 64 fails
+closed. The separate secret-free `database_pooler_readiness` field records only
+the bounded read count and last nullable numeric observation plus its state. No
+raw pooler response, endpoint, principal, connection string, or error text
+enters these fields.
 
 After loading the exact child credential and selected route, the runner runs a
 secret-free `SELECT 1` connectivity preflight before applying SQL. A typed or
@@ -299,11 +314,12 @@ cannot start after a reclaim.
 The approved 64-way proof contract is exact, not statistical. It separates 64
 simultaneously held TLS client sessions and 64 authenticated client calls from
 the PostgreSQL backend overlap readback. Direct requires a server peak of 64;
-the session route requires the exact-child `backend_concurrency_target` for all
+the session route requires `database_backend_target_selection.target` for all
 twelve DB races. The signed PostgREST proof separately holds 64 HTTPS TLS
 sessions, executes 64 signed requests, and observes at least
-`min(backend_concurrency_target,8)` matching RPC backends in the registration
-row-lock blocker graph. It does not claim 64 concurrent PostgREST DB backends.
+`min(database_backend_target_selection.target,8)` matching RPC backends in the
+registration row-lock blocker graph. It does not claim 64 concurrent PostgREST
+DB backends.
 
 The logical convergence contract is:
 
@@ -455,15 +471,24 @@ separate, non-self-approving contexts.
   not start, migration and security completed counts were zero, three exact
   child absence confirmations and scoped PAT deletion were verified, and
   actual billing remains `unobserved`. This is not a successful proof.
-- The current `@7` runner preserves the `@6` explicit route, exact parent and
+- Exact SHA `b64b6676d2f8f67690288b82cd319a1d45864fc2` produced one paid
+  `harmony-preview-one-shot-proof@7` receipt that failed closed at
+  `branch_pooler_default_pool_size_unobserved` after 165 pooler read attempts
+  without sufficient numeric capacity evidence; the final observation was null.
+  SQL did not start, migration and security completed counts were zero, three
+  exact child absence confirmations and scoped PAT deletion were verified, and
+  actual billing remains `unobserved`. The approval and PAT used for this
+  invocation are consumed and cannot authorize another paid run.
+- The current `@8` runner preserves the `@7` explicit route, exact parent and
   child pooler readbacks, pinned CA over anonymous descriptors, route-neutral
   concurrency receipt, 64-client TLS ingress, route-bound server overlap
   readback, pre-SQL `SELECT 1`, and safe SQL diagnostic. It additionally
-  distinguishes a nullable unobserved pool size from integer one, retries only
-  null without starting a new retry after the existing deadline, and retains a
-  secret-free bounded readiness observation. It also moves nullable-capacity
-  polling before every secret-bearing child response, without retaining raw
-  command output, SQL, secrets, endpoint identity, or exception text.
+  keeps integer one terminal while sending a nullable unobserved pool size to
+  the existing live probes with a minimum target of two. The receipt separates
+  configured capacity from this runtime lower-bound selection and marks it
+  verified only when both nested proof contracts and the outer proof succeed,
+  without retaining raw command output, SQL, secrets, endpoint identity, or
+  exception text.
 - The durable migration and runner are included but not applied to Production.
   Therefore the exact-SHA Supabase Preview proof, live Codex worker, Production
   migration, and every feature-flag activation remain blocked.
@@ -479,10 +504,10 @@ separate, non-self-approving contexts.
 4. [x] Pass local PostgreSQL migration, security, and 64-way convergence
        checks; preserve only the non-secret distribution and side-effect
        receipt in this ADR.
-5. [ ] The historical `@4`, `@5`, and `@6` invocations are consumed. Only
+5. [ ] The historical `@4`, `@5`, `@6`, and `@7` invocations are consumed. Only
        after a fresh external representative approval and issuance of a fresh
        scoped PAT,
-       invoke the current `@7` runner once with both required cost ceilings and
+       invoke the current `@8` runner once with both required cost ceilings and
        one explicit route, pass the same contract on one disposable Supabase
        Preview, and immediately confirm child deletion. Do not reuse, repair,
        replace, or switch route on the failed child.

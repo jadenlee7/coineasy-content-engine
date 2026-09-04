@@ -432,6 +432,20 @@ def test_server_concurrency_projection_rejects_target_and_label_drift() -> None:
             backend_target=15,
         )
 
+    postgrest_peak_one = _postgrest_probe_receipt(2)[
+        "server_concurrency"
+    ]
+    assert isinstance(postgrest_peak_one, dict)
+    postgrest_peak_one["server_blocked_peak"] = 1
+    with pytest.raises(
+        RUNNER.ProofError,
+        match="probe_server_concurrency_contract_invalid",
+    ):
+        RUNNER._project_postgrest_server_concurrency(
+            postgrest_peak_one,
+            backend_target=2,
+        )
+
 
 def _assert_valid_receipt_digest(receipt: dict[str, object]) -> None:
     assert receipt["receipt_sha256_scheme"] == (
@@ -1865,11 +1879,12 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@7"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@8"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
     assert receipt["database_pooler_readiness"] is None
+    assert receipt["database_backend_target_selection"] is None
     assert "direct_database" not in receipt
     assert receipt["database_connectivity_preflight"] == "passed"
     assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
@@ -2287,6 +2302,11 @@ def test_supavisor_session_uses_exact_child_pooler_without_direct_retry(
             "state": "capacity_sufficient",
         },
     }
+    assert receipt["database_backend_target_selection"] == {
+        "source": "management_api_default_pool_size",
+        "target": 15,
+        "runtime_verified": True,
+    }
     assert fake.events.count("parent_pooler_config_get") == 1
     assert fake.events.count("child_pooler_config_get") == 1
     assert fake.events.index("parent_pooler_config_get") < fake.events.index(
@@ -2442,7 +2462,7 @@ def test_child_pooler_primary_lag_retries_before_key_reveal(
     _assert_valid_receipt_digest(receipt)
 
 
-def test_child_pooler_nullable_capacity_retries_before_key_reveal(
+def test_child_pooler_nullable_capacity_uses_runtime_lower_bound_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2467,11 +2487,12 @@ def test_child_pooler_nullable_capacity_retries_before_key_reveal(
             ):
                 self.child_pooler_calls += 1
                 self.events.append("child_pooler_config_get")
-                if self.child_pooler_calls == 1:
-                    return OpenApiResponse(
-                        _pooler_config(default_pool_size=None)
+                return OpenApiResponse(
+                    _pooler_config(
+                        default_pool_size=None,
+                        max_client_conn=None,
                     )
-                return OpenApiResponse(_pooler_config(default_pool_size=2))
+                )
             return super().open_endpoint(req, timeout=timeout)
 
     fake = NullableChildPoolerRunner()
@@ -2484,36 +2505,44 @@ def test_child_pooler_nullable_capacity_retries_before_key_reveal(
     ).run()
 
     assert exit_code == 0
-    assert fake.child_pooler_calls == 2
+    assert fake.child_pooler_calls == 1
     assert fake.events.count("branch_config_get") == 1
     assert fake.events.count("api_keys_get") == 1
     assert fake.events.count("publishable_key_get") == 1
-    assert receipt["database_pooler_capacity"] == {
-        "default_pool_size": 2,
-        "max_client_conn": 200,
-        "max_client_at_least_64": True,
-        "backend_concurrency_target": 2,
-    }
+    assert receipt["database_pooler_capacity"] is None
     assert receipt["database_pooler_readiness"] == {
-        "read_attempts": 2,
+        "read_attempts": 1,
         "last_observation": {
-            "default_pool_size": 2,
-            "max_client_conn": 200,
-            "max_client_at_least_64": True,
-            "state": "capacity_sufficient",
+            "default_pool_size": None,
+            "max_client_conn": None,
+            "max_client_at_least_64": None,
+            "state": "capacity_unobserved",
         },
     }
+    assert receipt["database_backend_target_selection"] == {
+        "source": "runtime_lower_bound_required",
+        "target": 2,
+        "runtime_verified": True,
+    }
+    database_probe = next(
+        command
+        for command in fake.commands
+        if "--backend-concurrency-target" in command
+        and "--host" in command
+    )
+    assert database_probe[
+        database_probe.index("--backend-concurrency-target") + 1
+    ] == "2"
     _assert_valid_receipt_digest(receipt)
 
 
-def test_child_pooler_persistent_nullable_capacity_fails_bounded_and_sanitized(
+def test_child_pooler_nullable_capacity_rejects_runtime_peak_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
     args = _args(tmp_path)
     args.database_transport = "supavisor-session"
-    args.branch_ready_timeout_seconds = 3
 
     class NullableChildPoolerRunner(FakeRunner):
         def __init__(self) -> None:
@@ -2537,6 +2566,41 @@ def test_child_pooler_persistent_nullable_capacity_fails_bounded_and_sanitized(
                 )
             return super().open_endpoint(req, timeout=timeout)
 
+        def run_json(
+            self,
+            command: list[str],
+            *,
+            env: dict[str, str] | None = None,
+            input_bytes: bytes | None = None,
+            cwd: str | None = None,
+            timeout: float,
+            code: str,
+            before_spawn: object | None = None,
+            pass_fds: tuple[int, ...] = (),
+        ) -> object:
+            value = super().run_json(
+                command,
+                env=env,
+                input_bytes=input_bytes,
+                cwd=cwd,
+                timeout=timeout,
+                code=code,
+                before_spawn=before_spawn,
+                pass_fds=pass_fds,
+            )
+            if code == "database_concurrency_probe":
+                assert isinstance(value, dict)
+                concurrency = value["server_concurrency"]
+                assert isinstance(concurrency, dict)
+                races = concurrency["races"]
+                assert isinstance(races, dict)
+                first = RUNNER.DIRECT_SERVER_CONCURRENCY_RACE_LABELS[0]
+                evidence = races[first]
+                assert isinstance(evidence, dict)
+                evidence["server_peak"] = 1
+                concurrency["minimum_server_peak"] = 1
+            return value
+
     fake = NullableChildPoolerRunner()
     receipt, exit_code = RUNNER.HarmonyPreviewProof(
         args,
@@ -2547,18 +2611,18 @@ def test_child_pooler_persistent_nullable_capacity_fails_bounded_and_sanitized(
     ).run()
 
     assert exit_code == 1
-    assert receipt["failure_code"] == (
-        "branch_pooler_default_pool_size_unobserved"
-    )
-    assert fake.child_pooler_calls > 1
-    assert fake.events.count("branch_config_get") == 0
-    assert fake.events.count("api_keys_get") == 0
-    assert fake.events.count("publishable_key_get") == 0
+    assert receipt["failure_code"] == "probe_server_concurrency_contract_invalid"
+    assert fake.child_pooler_calls == 1
+    assert fake.events.count("branch_config_get") == 1
+    assert fake.events.count("api_keys_get") == 1
+    assert fake.events.count("publishable_key_get") == 1
+    assert fake.events.count("direct_probe") == 1
+    assert fake.events.count("postgrest_probe") == 0
     assert fake.events.count("branch_create") == 1
     assert fake.events.count("branch_delete") == 1
     assert receipt["database_pooler_capacity"] is None
     assert receipt["database_pooler_readiness"] == {
-        "read_attempts": fake.child_pooler_calls,
+        "read_attempts": 1,
         "last_observation": {
             "default_pool_size": None,
             "max_client_conn": 200,
@@ -2566,7 +2630,16 @@ def test_child_pooler_persistent_nullable_capacity_fails_bounded_and_sanitized(
             "state": "capacity_unobserved",
         },
     }
-    assert receipt["database_connectivity_preflight"] == "not_started"
+    assert receipt["database_backend_target_selection"] == {
+        "source": "runtime_lower_bound_required",
+        "target": 2,
+        "runtime_verified": False,
+    }
+    assert receipt["database_connectivity_preflight"] == "passed"
+    assert receipt["migration_completed_count"] == len(RUNNER.MIGRATIONS)
+    assert receipt["security_completed_count"] == len(RUNNER.SECURITY_SUITES)
+    assert receipt["database_concurrency"] is None
+    assert receipt["signed_postgrest"] is None
     assert receipt["same_child_repair_attempts"] == 0
     assert receipt["replacement_branch_attempts"] == 0
     serialized = json.dumps(receipt, sort_keys=True)
@@ -2655,9 +2728,7 @@ def test_child_pooler_retry_starts_no_followup_read_after_deadline(
                 self.pooler_reads += 1
                 self.events.append("child_pooler_config_get")
                 if self.pooler_reads == 1:
-                    return OpenApiResponse(
-                        _pooler_config(default_pool_size=None)
-                    )
+                    return OpenApiResponse([])
                 response = OpenApiResponse(_pooler_config())
                 if advance_stage == "pooler":
                     self.trigger_timeout = timeout
@@ -4280,7 +4351,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@7"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@8"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -4781,16 +4852,16 @@ def test_pooler_session_endpoint_is_exact_child_and_derives_only_port() -> None:
     ).user == f"postgres.{CHILD_REF}"
 
 
-def test_pooler_backend_target_requires_holder_and_observer_capacity() -> None:
+def test_pooler_backend_target_selection_preserves_evidence_source() -> None:
     endpoint_unobserved = RUNNER.extract_management_pooler_session_endpoint(
         _pooler_config(default_pool_size=None),
         CHILD_REF,
     )
-    with pytest.raises(
-        RUNNER.ProofError,
-        match="branch_pooler_default_pool_size_unobserved",
-    ):
-        RUNNER.pooler_backend_concurrency_target(endpoint_unobserved)
+    assert RUNNER.pooler_backend_target_selection(endpoint_unobserved) == {
+        "source": "runtime_lower_bound_required",
+        "target": 2,
+        "runtime_verified": False,
+    }
     endpoint_one = RUNNER.extract_management_pooler_session_endpoint(
         _pooler_config(default_pool_size=1),
         CHILD_REF,
@@ -4799,7 +4870,7 @@ def test_pooler_backend_target_requires_holder_and_observer_capacity() -> None:
         RUNNER.ProofError,
         match="branch_pooler_default_pool_size_insufficient",
     ):
-        RUNNER.pooler_backend_concurrency_target(endpoint_one)
+        RUNNER.pooler_backend_target_selection(endpoint_one)
     endpoint_two = RUNNER.extract_management_pooler_session_endpoint(
         _pooler_config(default_pool_size=2),
         CHILD_REF,
@@ -4808,8 +4879,16 @@ def test_pooler_backend_target_requires_holder_and_observer_capacity() -> None:
         _pooler_config(default_pool_size=100),
         CHILD_REF,
     )
-    assert RUNNER.pooler_backend_concurrency_target(endpoint_two) == 2
-    assert RUNNER.pooler_backend_concurrency_target(endpoint_large) == 64
+    assert RUNNER.pooler_backend_target_selection(endpoint_two) == {
+        "source": "management_api_default_pool_size",
+        "target": 2,
+        "runtime_verified": False,
+    }
+    assert RUNNER.pooler_backend_target_selection(endpoint_large) == {
+        "source": "management_api_default_pool_size",
+        "target": 64,
+        "runtime_verified": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -4839,6 +4918,29 @@ def test_pooler_session_endpoint_rejects_fence_and_capacity_drift(
     payload[0][field] = value
     with pytest.raises(RUNNER.ProofError, match=expected):
         RUNNER.extract_management_pooler_session_endpoint(payload, CHILD_REF)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    (
+        ("default_pool_size", "branch_pooler_backend_capacity_invalid"),
+        ("max_client_conn", "branch_pooler_concurrency_capacity_invalid"),
+    ),
+)
+def test_pooler_session_endpoint_distinguishes_missing_capacity_from_null(
+    field: str,
+    expected: str,
+) -> None:
+    payload = _pooler_config(
+        default_pool_size=None,
+        max_client_conn=None,
+    )
+    del payload[0][field]
+
+    with pytest.raises(RUNNER.ProofError, match=expected):
+        RUNNER.extract_management_pooler_session_endpoint(payload, CHILD_REF)
+
+
 def test_pooler_session_endpoint_rejects_missing_or_ambiguous_primary() -> None:
     with pytest.raises(
         RUNNER.ProofError,

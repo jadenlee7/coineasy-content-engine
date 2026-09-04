@@ -60,13 +60,19 @@ PAT의 삭제가 확인됐습니다. Exact SHA
 `91dc0fc6cba7025d8db816f9864dd0a5d89acd3e`의 세 번째 유료 one-shot은
 `harmony-preview-one-shot-proof@6`에서 SQL 시작 전
 `branch_pooler_default_pool_size_insufficient`로 fail-closed했고, child와 해당
-scoped PAT의 삭제가 확인됐습니다. 따라서 성공 proof는 아직 없습니다. 이
-범위에서는 모든 flag가 OFF이고, 아래 Gate 4의 짧은 dashboard 관측도 별도
+scoped PAT의 삭제가 확인됐습니다. Exact SHA
+`b64b6676d2f8f67690288b82cd319a1d45864fc2`의 네 번째 유료 one-shot은
+`harmony-preview-one-shot-proof@7`에서 SQL 시작 전
+`branch_pooler_default_pool_size_unobserved`로 fail-closed했고, exact child의 연속
+3회 부재와 해당 scoped PAT의 삭제가 확인됐습니다. 실제 청구액은 `미관측`입니다.
+이 실행에 사용한 승인과 PAT은 소비됐으며 재사용할 수 없습니다. 따라서 성공
+proof는 아직 없습니다. 이 범위에서는 모든 flag가 OFF이고, 아래 Gate 4의 짧은
+dashboard 관측도 별도
 승인·별도 실행으로만 가능합니다.
 
 ## 현재 계약 스냅샷
 
-아래 이름은 2026-09-03의 작업 트리에서 읽은 **미병합 계약**입니다. 실행
+아래 이름은 2026-09-04의 작업 트리에서 읽은 **미병합 계약**입니다. 실행
 직전에 exact Git SHA에서 다시 확인해야 하며, 이름이나 응답 shape가 바뀌면
 이 런북보다 코드를 우선하지 말고 검증을 중단해 문서를 함께 갱신합니다.
 
@@ -199,13 +205,13 @@ self-signed chain을 거절했습니다. 이 관측은 direct IPv6 route와 syst
 않습니다. Production 적용과 성공한 exact-SHA Supabase Preview proof는 여전히
 없고, 로컬·transport 증거를 live Preview 성공 증거로 대체해 주장하지 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@7`입니다. CLI에서
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@8`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
 preflight를 실행합니다. Receipt에는 선택한 `database_transport`, 고정된
 `database_transport_selection=explicit`, typed connectivity 상태, 그리고 session
-route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`와
-`database_pooler_readiness`만 남깁니다.
+route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`,
+`database_pooler_readiness`, `database_backend_target_selection`만 남깁니다.
 Migration 또는 security `psql` apply가 typed command failure 또는 ambiguous
 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
 `{phase, ordinal, filename, sha256, completed_count}`만 기록합니다. 운영자
@@ -346,32 +352,44 @@ API가 돌려주는 유일한 `database_type=PRIMARY`, `pool_mode=transaction`, 
 `6543`으로 연결하지 않습니다. 이 endpoint와 permission은 Supabase의
 [Management API](https://supabase.com/docs/reference/api/v1-get-pooler-config)에
 정의되어 있습니다.
-`default_pool_size`는 exact child 응답의 2 이상 정수여야 합니다. 하나의 backend는
-PostgREST registration row-lock holder가 사용하고 별도 observer가 release를 수행해야
-하므로 1이면 자기 교착을 피하기 위해 즉시 중단합니다. Management API의 JSON
-`null`은 용량 증거가 아니므로 같은 exact-child read-only GET만 재시도하되 기존
-monotonic branch-readiness deadline 뒤에는 새 retry를 시작하지 않습니다. 이미 시작한
-GET은 bounded per-request read timeout까지 끝날 수 있고, branch readiness를 마지막
-poll에서 확인한 경우에도 첫 exact-child readiness read 한 번은 수행합니다. 이때
-branch config나 API key를 요청하지 않고, deadline을 갱신하거나 1을 provisioning
-지연으로 간주하지 않습니다.
+`default_pool_size`가 정수 1이면 하나의 backend를 PostgREST registration row-lock
+holder와 별도 observer가 공유해 자기 교착할 수 있으므로 즉시 중단합니다. 2 이상
+정수이면 configured target은 `min(default_pool_size,64)`입니다. Management API의
+JSON `null`은 configured capacity 증거가 아닙니다. 구조와 exact-child identity가
+유효한 응답에서 이 값을 관측하면 숫자만을 기다리며 15분 동안 반복 재조회하지 않고
+secret 단계로 진행하되, configured capacity를 주장하지 않은 채 runtime lower bound
+2를 기존 DB와 signed PostgREST probe로 실측합니다. 이 전환은 readiness deadline을
+연장하거나 parent pooler 값을 쓰거나 direct route로 fallback하는 권한이 아닙니다.
+두 capacity key 자체는 필수이므로 key 부재는 explicit `null`과 구분해 즉시
+거부합니다. 정수 1도 provisioning 지연으로 재해석하지 않습니다.
 `max_client_conn`은 양의 정수 또는 JSON `null`만 허용하고, 관측된 값이 64보다 작으면
-중단합니다. Direct route의 outer `database_pooler_capacity`와
-`database_pooler_readiness`는 모두 `null`입니다. Session route의 검증 성공 뒤에만
-`database_pooler_capacity`에는 `default_pool_size`, `max_client_conn`,
-`max_client_at_least_64`, `backend_concurrency_target`만
-기록합니다. 별도 `database_pooler_readiness`에는 bounded read 횟수와 마지막 nullable
-숫자 관측 및 `capacity_unobserved|capacity_insufficient|capacity_sufficient` 상태만
-기록합니다. raw 응답, host, user, connection string, 오류 본문은 기록하지 않습니다.
-`backend_concurrency_target=min(default_pool_size,64)`이며 parent 값을 child capacity
-증거로 대체하거나 client 수를 자동 축소하지 않습니다. DB의
+중단합니다. `max_client_conn=null`은 미관측이며 성공하려면 그대로 64-client ingress를
+실측해야 합니다. Direct route의 outer `database_pooler_capacity`,
+`database_pooler_readiness`, `database_backend_target_selection`은 모두 `null`입니다.
+Session route도 유효한 exact-child target을 선택하기 전에 중단되면
+`database_backend_target_selection=null`입니다.
+Session route에서 `default_pool_size>=2`이면 `database_pooler_capacity`에
+`default_pool_size`, `max_client_conn`, `max_client_at_least_64`,
+`backend_concurrency_target`을 기록하고,
+`database_backend_target_selection={source:"management_api_default_pool_size",
+target:min(default_pool_size,64),runtime_verified:<bool>}`을 기록합니다.
+`default_pool_size=null`이면 `database_pooler_capacity=null`을 유지하고
+`database_backend_target_selection={source:"runtime_lower_bound_required",target:2,
+runtime_verified:<bool>}`을 기록합니다. 두 경우의 `runtime_verified`는 최종 outer
+`ok`와 같은 bool이며, DB concurrency nested proof와 signed PostgREST nested proof를
+모두 검증한 성공 receipt에서만 `true`입니다. 별도 `database_pooler_readiness`에는
+bounded read 횟수와 마지막 nullable 숫자 관측 및
+`capacity_unobserved|capacity_insufficient|capacity_sufficient` 상태만 기록합니다.
+raw 응답, host, user, connection string, 오류 본문은 기록하지 않습니다. Parent 값을
+child capacity 증거로 대체하거나 client 수를 자동 축소하지 않습니다. DB의
 `max_connections-current_connections` preflight는 direct에서 72개, session에서
-`backend_concurrency_target+2`개의 여유를 요구합니다.
+선택한 target보다 2개 많은 여유를 요구합니다.
 
 성공한 DB proof는 route와 관계없이 64개의 TLS client session을 동시에 유지한
 transport ingress와 64개의 실제 인증 DB 호출을 별도로 확인합니다. 각 race의
-server latch는 direct에서 64, session에서 `backend_concurrency_target`만큼의 실제
-PostgreSQL backend가 RPC 직전에 겹쳤음을 readback합니다. 따라서 session 결과를
+server latch는 direct에서 64, session에서
+`database_backend_target_selection.target`만큼의 실제 PostgreSQL backend가 RPC
+직전에 겹쳤음을 readback합니다. 따라서 session 결과를
 64개의 backend가 동시에 mutation SQL을 실행했다는 증거로 해석하지 않습니다.
 
 그다음 exact
@@ -455,7 +473,7 @@ receipt가 아닙니다.
 - branch 이름, 현재 시간당 비용과 두 CLI 상한
 - 명시적으로 선택한 `database_transport`와 `database_transport_selection=explicit`
 - session route에서만 exact child의 비밀 없는 `database_pooler_capacity`,
-  bounded `database_pooler_readiness`, `backend_concurrency_target`
+  bounded `database_pooler_readiness`, `database_backend_target_selection`
 - `database_connectivity_preflight`, outer `database_concurrency`, 그리고
   `database_client_race_64_way` planned/completed step
 - DB TLS client 64개 동시 ingress, 12개 race별 server latch peak, signed HTTPS TLS
@@ -469,17 +487,24 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@7`입니다. 역사적 exact-SHA
-one-shot은 `@4`, `@5`, `@6` receipt로 각각 실패했으며 어느 것도 성공 receipt가
+`schema_version=harmony-preview-one-shot-proof@8`입니다. 역사적 exact-SHA
+one-shot은 `@4`, `@5`, `@6`, `@7` receipt로 각각 실패했으며 어느 것도 성공 receipt가
 아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
 중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
-child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미관측입니다. 현재
-`@7`은 이 두 값을 분리하고 nullable 값만 기존 deadline 전까지 재조회합니다.
+child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미관측입니다. `@7`은
+두 값을 분리했지만 165회의 exact-child pooler read 동안 2 이상 정수 용량을
+관측하지 못했고, 마지막 `default_pool_size=null` 관측 뒤
+`branch_pooler_default_pool_size_unobserved`로 중단했습니다. Migration과 security는
+시작하지 않았고, exact child 3회 부재와 scoped PAT 삭제가 확인됐으며 실제 청구액은
+미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@8`은 정수 1을 계속 terminal
+failure로 처리하고, 정수 2 이상은 Management API 값으로 target을 정합니다.
+`null`은 configured capacity로 기록하지 않으며 runtime lower bound 2를 두 nested
+live proof에서 실측합니다.
 현재 Database concurrency probe의 `harmony-preview-concurrency-proof@5` 결과에서는
 64-client TLS ingress와 12개 race 각각의
 `{participants=64,released=true,server_peak}`를 먼저 검증합니다. `server_peak`는
-direct에서 64, session에서 exact child pooler readback으로 정한
-`backend_concurrency_target` 이상이어야 합니다. 그 뒤
+direct에서 64, session에서 `database_backend_target_selection.target` 이상이어야
+합니다. 그 뒤
 exact `round_id`, `plan_id`,
 `inbox_id`, fence expiry, 최종 row counts, connector/revocation/QA-denial/
 stale-result race, durable Codex QA race, negative-path delta, stage/inbox delta를
@@ -493,8 +518,9 @@ Outer runner도 nested key 누락, 타입/고정값 불일치, 임의 key 추가
 현재 Signed PostgREST `harmony-preview-postgrest-proof@3` 결과에서는 64-client HTTPS
 TLS ingress와 64개 signed request를 확인하고, exact registration row를 잠근
 holder를 기준으로 `pg_blocking_pids` graph에서
-`min(backend_concurrency_target,8)`개 이상의 해당 RPC backend가 동시에 대기했음을
-readback합니다. 이 peak는 64개 backend 동시 실행을 뜻하지 않습니다. 이어서 exact signal,
+`min(database_backend_target_selection.target,8)`개 이상의 해당 RPC backend가
+동시에 대기했음을 readback합니다. 이 peak는 64개 backend 동시 실행을 뜻하지
+않습니다. 이어서 exact signal,
 connector receipt, request receipt count와 JWT verification 방식, registration/
 revocation/request-receipt delta, nonce=`jti`, negative row delta를 다시
 구성합니다. `negative_matrix`는 코드에 고정된 15개 label 전체와 각 label의
@@ -598,8 +624,8 @@ context에서 같은 route는 403, flag OFF는 503, 비인증 요청은 거절�
 별도 승인 후 synthetic/aggregate 입력만 사용합니다. 먼저 64개의 독립 TLS client
 session을 동시에 유지해 exact route ingress를 확인합니다. 이어서 64개의 인증 DB
 client 호출이 동일한 exact signal request를 제출합니다. 각 race는 server latch로
-direct 64개 또는 session의 exact `backend_concurrency_target`만큼 backend가 RPC
-직전에 실제로 겹친 것을 확인합니다.
+direct 64개 또는 session의 `database_backend_target_selection.target`만큼 backend가
+RPC 직전에 실제로 겹친 것을 확인합니다.
 그 뒤 나머지 세 typed signal을 각각 한 번 기록하고 plan과 private-content를
 각각 64-way로 race합니다. QA는 generic stage append가 아니라 다음 고정 순서를
 각 단계마다 64개 독립 client 호출로 검증합니다.
@@ -678,8 +704,14 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@7` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@8` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
+
+Session route에서는 `database_backend_target_selection.runtime_verified=true`여야
+합니다. 이 값은 선택된 target으로 DB advisory-latch와 signed PostgREST
+blocker-graph의 nested contract를 모두 검증하고 outer `ok=true`일 때만 가능합니다.
+`source=runtime_lower_bound_required`이면 이 성공도 configured pooler capacity를
+뜻하지 않으며 `database_pooler_capacity`는 계속 `null`이어야 합니다.
 
 1. signal, plan, private-content, operator-inbox, Recap의 각 64개 호출과
    Codex QA의 prepare/submit/verify가 같은 idempotency 결과로 수렴합니다.

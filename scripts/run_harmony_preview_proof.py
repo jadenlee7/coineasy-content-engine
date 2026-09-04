@@ -41,7 +41,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@7"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@8"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
@@ -2029,12 +2029,16 @@ def extract_management_pooler_session_endpoint(
         or row.get("pool_mode") != "transaction"
     ):
         raise ProofError("branch_pooler_primary_config_invalid")
-    default_pool_size = row.get("default_pool_size")
+    if "default_pool_size" not in row:
+        raise ProofError("branch_pooler_backend_capacity_invalid")
+    default_pool_size = row["default_pool_size"]
     if default_pool_size is not None and (
         type(default_pool_size) is not int or default_pool_size <= 0
     ):
         raise ProofError("branch_pooler_backend_capacity_invalid")
-    max_client_conn = row.get("max_client_conn")
+    if "max_client_conn" not in row:
+        raise ProofError("branch_pooler_concurrency_capacity_invalid")
+    max_client_conn = row["max_client_conn"]
     if max_client_conn is not None and type(max_client_conn) is not int:
         raise ProofError("branch_pooler_concurrency_capacity_invalid")
     if (
@@ -2056,15 +2060,24 @@ def extract_management_pooler_session_endpoint(
     )
 
 
-def pooler_backend_concurrency_target(
+def pooler_backend_target_selection(
     endpoint: PoolerSessionEndpoint,
-) -> int:
+) -> dict[str, object]:
+    """Select a target without turning nullable metadata into capacity proof."""
     default_pool_size = endpoint.default_pool_size
     if default_pool_size is None:
-        raise ProofError("branch_pooler_default_pool_size_unobserved")
+        return {
+            "source": "runtime_lower_bound_required",
+            "target": 2,
+            "runtime_verified": False,
+        }
     if type(default_pool_size) is not int or default_pool_size < 2:
         raise ProofError("branch_pooler_default_pool_size_insufficient")
-    return min(default_pool_size, 64)
+    return {
+        "source": "management_api_default_pool_size",
+        "target": min(default_pool_size, 64),
+        "runtime_verified": False,
+    }
 
 
 class HarmonyPreviewProof:
@@ -2125,6 +2138,7 @@ class HarmonyPreviewProof:
         self.database_transport: str | None = None
         self.database_pooler_capacity: dict[str, object] | None = None
         self.database_pooler_readiness: dict[str, object] | None = None
+        self.database_backend_target_selection: dict[str, object] | None = None
         self.database_pooler_read_attempts = 0
         self.database_connectivity_preflight = "not_started"
         self.migration_completed_count = 0
@@ -2149,6 +2163,7 @@ class HarmonyPreviewProof:
             raise ProofError("database_transport_invalid")
         self.database_transport = requested
         self.database_pooler_capacity = None
+        self.database_backend_target_selection = None
 
     def _load_cost_guard_limits(self) -> None:
         limits = CostGuardLimits(
@@ -3654,8 +3669,10 @@ raise SystemExit(
             # A child may become ready on the final readiness poll. Preserve
             # the same monotonic start deadline for retries, but always
             # perform one exact-child readiness read before failing closed.
-            # Session capacity is proven before any secret-bearing branch or
-            # API-key response is requested.
+            # Exact-child pooler identity and any numeric capacity limits are
+            # validated before any secret-bearing response is requested. A
+            # nullable configured capacity remains unclaimed and instead
+            # requires the later runtime probes to prove the lower bound.
             # A GET already in flight retains its bounded per-request timeout.
             while not attempted or self.clock() < self.branch_ready_deadline:
                 initial_attempt = not attempted
@@ -3666,8 +3683,11 @@ raise SystemExit(
                 api_key: object | None = None
                 candidate_credentials: BranchCredentials | None = None
                 candidate_pooler_capacity: dict[str, object] | None = None
+                candidate_backend_target_selection: dict[str, object] | None = None
                 try:
                     if self.database_transport == "supavisor-session":
+                        self.database_pooler_capacity = None
+                        self.database_backend_target_selection = None
                         timeout = read_timeout(initial_attempt=initial_attempt)
                         if timeout is None:
                             if last_retryable is None:
@@ -3696,7 +3716,7 @@ raise SystemExit(
                             pooler_config,
                             branch_ref,
                         )
-                        candidate_pooler_capacity = {
+                        pooler_observation = {
                             "default_pool_size": endpoint.default_pool_size,
                             "max_client_conn": endpoint.max_client_conn,
                             "max_client_at_least_64": (
@@ -3712,13 +3732,28 @@ raise SystemExit(
                         self.database_pooler_readiness = {
                             "read_attempts": self.database_pooler_read_attempts,
                             "last_observation": {
-                                **candidate_pooler_capacity,
+                                **pooler_observation,
                                 "state": readiness_state,
                             },
                         }
-                        candidate_pooler_capacity[
-                            "backend_concurrency_target"
-                        ] = pooler_backend_concurrency_target(endpoint)
+                        candidate_backend_target_selection = (
+                            pooler_backend_target_selection(endpoint)
+                        )
+                        if endpoint.default_pool_size is not None:
+                            candidate_pooler_capacity = {
+                                **pooler_observation,
+                                "backend_concurrency_target": (
+                                    candidate_backend_target_selection[
+                                        "target"
+                                    ]
+                                ),
+                            }
+                        self.database_pooler_capacity = (
+                            candidate_pooler_capacity
+                        )
+                        self.database_backend_target_selection = dict(
+                            candidate_backend_target_selection
+                        )
                         last_retryable = None
                         # The raw response may contain a connection string.
                         # Destroy it before requesting any revealed API key.
@@ -3777,9 +3812,6 @@ raise SystemExit(
                         candidate_credentials.port = endpoint.port
                         candidate_credentials.user = endpoint.user
                         candidate_credentials.database = endpoint.database
-                        self.database_pooler_capacity = (
-                            candidate_pooler_capacity
-                        )
                     self.credentials = candidate_credentials
                     candidate_credentials = None
                     return
@@ -3790,7 +3822,6 @@ raise SystemExit(
                 except ProofError as exc:
                     if exc.code not in {
                         "branch_pooler_primary_unavailable",
-                        "branch_pooler_default_pool_size_unobserved",
                     }:
                         raise
                     last_retryable = ManagementApiError(
@@ -3873,11 +3904,33 @@ raise SystemExit(
     def _database_backend_concurrency_target(self) -> int:
         if self.database_transport == "direct":
             return 64
+        selection = self.database_backend_target_selection
+        if (
+            type(selection) is not dict
+            or set(selection) != {"source", "target", "runtime_verified"}
+            or type(selection.get("source")) is not str
+            or type(selection.get("target")) is not int
+            or type(selection.get("runtime_verified")) is not bool
+        ):
+            raise ProofError("branch_pooler_backend_capacity_invalid")
+        source = selection["source"]
+        target = selection["target"]
         capacity = self.database_pooler_capacity
-        if not isinstance(capacity, dict):
-            raise ProofError("branch_pooler_capacity_unavailable")
-        target = capacity.get("backend_concurrency_target")
-        if type(target) is not int or not 1 <= target <= 64:
+        if source == "runtime_lower_bound_required":
+            if target != 2 or capacity is not None:
+                raise ProofError("branch_pooler_backend_capacity_invalid")
+        elif source == "management_api_default_pool_size":
+            if type(capacity) is not dict:
+                raise ProofError("branch_pooler_backend_capacity_invalid")
+            default_pool_size = capacity.get("default_pool_size")
+            if (
+                type(default_pool_size) is not int
+                or default_pool_size < 2
+                or target != min(default_pool_size, 64)
+                or capacity.get("backend_concurrency_target") != target
+            ):
+                raise ProofError("branch_pooler_backend_capacity_invalid")
+        else:
             raise ProofError("branch_pooler_backend_capacity_invalid")
         return target
 
@@ -4700,6 +4753,11 @@ raise SystemExit(
             and self.cleanup_receipt.get("watchdog_cancelled") is True
             and process_group_secret_cleanup_confirmed
         )
+        if self.database_backend_target_selection is not None:
+            self.database_backend_target_selection = {
+                **self.database_backend_target_selection,
+                "runtime_verified": ok,
+            }
         self.cleanup_receipt.update(
             {
                 "management_home_removed": self.management_home_cleanup_confirmed,
@@ -4761,6 +4819,9 @@ raise SystemExit(
             "database_transport_selection": "explicit",
             "database_pooler_capacity": self.database_pooler_capacity,
             "database_pooler_readiness": self.database_pooler_readiness,
+            "database_backend_target_selection": (
+                self.database_backend_target_selection
+            ),
             "database_connectivity_preflight": (
                 self.database_connectivity_preflight
             ),

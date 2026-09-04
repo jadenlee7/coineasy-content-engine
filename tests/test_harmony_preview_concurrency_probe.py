@@ -239,6 +239,28 @@ def test_server_gate_sql_records_real_backend_peak_before_rpc() -> None:
     )
 
 
+def test_runtime_lower_bound_requires_peak_two_in_every_race() -> None:
+    psql = FakeServerConcurrencyPsql(2)
+    psql.server_concurrency_evidence = {
+        label: {
+            "participants": 64,
+            "released": True,
+            "server_peak": 2,
+        }
+        for label in PROBE.SERVER_CONCURRENCY_RACE_LABELS
+    }
+
+    receipt = PROBE._server_concurrency_receipt(psql)
+
+    assert receipt["backend_target"] == 2
+    assert receipt["minimum_server_peak"] == 2
+
+    first = PROBE.SERVER_CONCURRENCY_RACE_LABELS[0]
+    psql.server_concurrency_evidence[first]["server_peak"] = 1
+    with pytest.raises(RuntimeError, match="server concurrency evidence invalid"):
+        PROBE._server_concurrency_receipt(psql)
+
+
 def test_happy_path_identity_readback_is_canonical_distinct_and_db_bound() -> None:
     ids = {
         "workspace": "44444444-4444-4444-8444-444444444444",
