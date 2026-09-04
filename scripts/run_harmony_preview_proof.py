@@ -20,6 +20,7 @@ import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+import errno
 import fcntl
 import gc
 import hashlib
@@ -31,6 +32,7 @@ import re
 import shutil
 import signal
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -41,13 +43,44 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@8"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@9"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
     "sha256-canonical-json-utf8-sort-keys-compact-excluding-receipt_sha256"
 )
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
+MANAGEMENT_TRANSPORT_CATEGORIES = frozenset(
+    {
+        "dns",
+        "tls",
+        "timeout",
+        "connect",
+        "response_io",
+        "client_value",
+        "unknown",
+    }
+)
+_MANAGEMENT_TIMEOUT_ERRNOS = frozenset(
+    value
+    for value in (getattr(errno, "ETIMEDOUT", None),)
+    if isinstance(value, int)
+)
+_MANAGEMENT_CONNECT_ERRNOS = frozenset(
+    value
+    for value in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EPERM", None),
+        getattr(errno, "ECONNABORTED", None),
+        getattr(errno, "ECONNREFUSED", None),
+        getattr(errno, "ECONNRESET", None),
+        getattr(errno, "EHOSTDOWN", None),
+        getattr(errno, "EHOSTUNREACH", None),
+        getattr(errno, "ENETDOWN", None),
+        getattr(errno, "ENETUNREACH", None),
+    )
+    if isinstance(value, int)
+)
 SUPAVISOR_HOST_PATTERN = re.compile(
     r"^(?=[a-z0-9-]{1,63}\.pooler\.supabase\.com$)"
     r"(?=[^.]*-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -410,6 +443,80 @@ SUBPROCESS_BLOCKED_ENV_NAMES = BRANCH_SECRET_ENV_NAMES | {
     "SUPABASE_PROFILE",
     SUPABASE_CA_FD_ENV,
 }
+
+
+def _management_transport_exception_chain(
+    exc: BaseException,
+) -> tuple[BaseException, ...]:
+    """Return a bounded exception chain without inspecting messages."""
+
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    result: list[BaseException] = []
+    while pending and len(result) < 8:
+        current = pending.pop(0)
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(current)
+        if isinstance(current, error.URLError) and isinstance(
+            current.reason, BaseException
+        ):
+            pending.append(current.reason)
+        if isinstance(current.__cause__, BaseException):
+            pending.append(current.__cause__)
+        if isinstance(current.__context__, BaseException):
+            pending.append(current.__context__)
+    return tuple(result)
+
+
+def _classify_management_transport_exception(exc: BaseException) -> str:
+    """Classify with exception types and errno, never provider-controlled text."""
+
+    chain = _management_transport_exception_chain(exc)
+    if any(isinstance(item, socket.gaierror) for item in chain):
+        return "dns"
+    if any(
+        isinstance(item, (ssl.CertificateError, ssl.SSLError)) for item in chain
+    ):
+        return "tls"
+    if any(isinstance(item, (TimeoutError, socket.timeout)) for item in chain):
+        return "timeout"
+    if any(
+        isinstance(item, OSError)
+        and not isinstance(item, error.URLError)
+        and item.errno in _MANAGEMENT_TIMEOUT_ERRNOS
+        for item in chain
+    ):
+        return "timeout"
+    if any(isinstance(item, ConnectionError) for item in chain):
+        return "connect"
+    if any(
+        isinstance(item, OSError)
+        and not isinstance(item, error.URLError)
+        and item.errno in _MANAGEMENT_CONNECT_ERRNOS
+        for item in chain
+    ):
+        return "connect"
+    if any(isinstance(item, ValueError) for item in chain):
+        return "client_value"
+    if any(
+        isinstance(item, OSError) and not isinstance(item, error.URLError)
+        for item in chain
+    ):
+        return "response_io"
+    return "unknown"
+
+
+def _management_transport_failure_code(
+    code: str,
+    exc: BaseException,
+) -> str:
+    category = _classify_management_transport_exception(exc)
+    if category == "unknown":
+        return f"{code}_transport_failed"
+    return f"{code}_transport_{category}_failed"
 
 
 class ProofError(RuntimeError):
@@ -2093,7 +2200,10 @@ class HarmonyPreviewProof:
         self.args = args
         self.runner = runner or ProcessRunner()
         self._http_opener = (
-            request.build_opener(RejectRedirectHandler())
+            request.build_opener(
+                request.ProxyHandler({}),
+                RejectRedirectHandler(),
+            )
             if opener is None
             else None
         )
@@ -2638,15 +2748,15 @@ class HarmonyPreviewProof:
             raise
         except error.HTTPError as exc:
             try:
-                raw = exc.read(MAX_MANAGEMENT_API_BYTES + 1)
-            except (OSError, ValueError):
-                pass
-            finally:
                 exc.close()
+            except Exception:
+                # Cleanup failures must not replace the allow-listed status code
+                # with a provider-controlled exception message.
+                pass
             raise self._management_status_error(code, exc.code) from None
-        except (error.URLError, TimeoutError, OSError, ValueError):
+        except (error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise ManagementApiError(
-                f"{code}_transport_failed",
+                _management_transport_failure_code(code, exc),
                 retryable=True,
             ) from None
         finally:

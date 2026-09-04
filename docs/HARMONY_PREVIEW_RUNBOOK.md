@@ -65,7 +65,13 @@ scoped PAT의 삭제가 확인됐습니다. Exact SHA
 `harmony-preview-one-shot-proof@7`에서 SQL 시작 전
 `branch_pooler_default_pool_size_unobserved`로 fail-closed했고, exact child의 연속
 3회 부재와 해당 scoped PAT의 삭제가 확인됐습니다. 실제 청구액은 `미관측`입니다.
-이 실행에 사용한 승인과 PAT은 소비됐으며 재사용할 수 없습니다. 따라서 성공
+Exact SHA `0a71391578f0cb4d6490b96326eb016a6a85fb83`의 다섯 번째 승인된
+one-shot invocation은 `harmony-preview-one-shot-proof@8`에서 가격 readback과
+Preview child 생성 전에 `supabase_billing_addons_preflight_transport_failed`로
+fail-closed했습니다. Invocation은 1회 소비됐지만 paid-child attempt는 0회이고
+child 생성도 0건입니다. `branch=null`, branch create mutation 0회, 해당 scoped
+PAT 삭제와 owner UI의 Preview 0건이 확인됐으며 실제 청구액은 `미관측`입니다.
+이 실행들에 사용한 승인과 PAT은 소비됐으며 재사용할 수 없습니다. 따라서 성공
 proof는 아직 없습니다. 이 범위에서는 모든 flag가 OFF이고, 아래 Gate 4의 짧은
 dashboard 관측도 별도
 승인·별도 실행으로만 가능합니다.
@@ -205,10 +211,39 @@ self-signed chain을 거절했습니다. 이 관측은 direct IPv6 route와 syst
 않습니다. Production 적용과 성공한 exact-SHA Supabase Preview proof는 여전히
 없고, 로컬·transport 증거를 live Preview 성공 증거로 대체해 주장하지 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@8`입니다. CLI에서
+### 무자격증명 Management API reachability gate
+
+새 PAT을 만들거나 one-shot invocation을 claim하기 전에, 실제 runner를 시작할
+동일한 shell, Python interpreter, 네트워크 권한 경로에서 다음 committed probe를
+먼저 실행합니다.
+
+```bash
+.venv/bin/python scripts/probe_harmony_management_reachability.py \
+  --parent-project-ref isuqcqwxpojgzevxfdwr \
+  --timeout-seconds 10
+```
+
+고정된 mutation-free `GET /v1/projects/{ref}/billing/addons`가 무인증 HTTP 401에
+도달하고 `schema_version=harmony-management-reachability@1`,
+`category=http_status`, `http_status=401`, `ok=true`를 반환할 때만 다음 단계로
+진행합니다. Probe는 credential environment가 있으면 network I/O 전에 실패하며,
+Authorization header, response body, exception message를 읽거나 기록하지 않습니다.
+환경 proxy를 쓰지 않고 redirect도 따라가지 않습니다. Transport 실패 분류는
+`dns`, `tls`, `timeout`, `connect`, `response_io`, `client_value`, `unknown` 중
+하나입니다. 입력·credential 환경·HTTP status 실패는 각각 별도 고정 category를
+사용합니다.
+
+순서는 반드시 `tokenless probe -> scoped PAT 생성 -> public-key/token wait ->
+invocation claim -> runner Popen`입니다. Probe가 실패하면 PAT 생성, key/token wait,
+claim, Popen은 모두 0회여야 합니다. 이 순서 강제는 operator wrapper의 계약이며,
+probe 단독 실행이 향후 wrapper의 순서를 기계적으로 증명하지는 않습니다.
+
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@9`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
-preflight를 실행합니다. Receipt에는 선택한 `database_transport`, 고정된
+preflight를 실행합니다. Management API client도 환경 proxy를 끄고 redirect를
+거부해 tokenless probe와 같은 직접 network path를 사용합니다. Receipt에는 선택한
+`database_transport`, 고정된
 `database_transport_selection=explicit`, typed connectivity 상태, 그리고 session
 route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`,
 `database_pooler_readiness`, `database_backend_target_selection`만 남깁니다.
@@ -219,6 +254,10 @@ interrupt와 별도 cleanup failure에는 이 필드를 기록하지 않습니�
 `completed_count`는 실패 ordinal보다 정확히 하나 작아야 하며, filename은 고정
 basename, SHA-256은 실행한 exact payload의 digest여야 합니다. Raw stderr/stdout,
 SQL 본문, connection string, 비밀, 임의 exception text는 receipt에 넣지 않습니다.
+포착한 Management API transport 예외는 message를 보지 않고 `dns`, `tls`, `timeout`,
+`connect`, `response_io`, `client_value`로 typed failure code를 남기며, 안전하게
+분류할 수 없는 `URLError` reason은 기존 generic `transport_failed`를 유지합니다.
+HTTP error body는 읽지 않고 allow-listed status code만 사용합니다.
 고정 CA와 route 변경은 재실행 권한이 아니며 새 invocation에는 새 대표 승인과 새
 scoped PAT이 필요합니다.
 
@@ -276,7 +315,7 @@ non-Production control plane에서 만료되는 one-time grant를 원자적으�
 project ref, 예상 TTL, 최대 예상액, 선택할 DB route를 함께 대표에게 제시합니다.
 대표가 해당 금액, branch 생성, `direct` 또는 `supavisor-session` 한 route를
 action-time에 새로 명시적으로 승인하기 전에는 생성하지 않습니다. 역사적 `@4`,
-`@5`, `@6` 실행 승인은 다음 유료 invocation에 재사용할 수 없습니다.
+`@5`, `@6`, `@7`, `@8` 실행 승인은 다음 유료 invocation에 재사용할 수 없습니다.
 Branch는 clean exact HEAD를 이름과 receipt에 고정한 non-persistent Small
 disposable child 한 곳만 만들며 `with_data=false`를 사용합니다. migration과
 probe는 그 exact commit의 immutable checkout에서만 읽습니다. 실패한 child를
@@ -487,19 +526,24 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@8`입니다. 역사적 exact-SHA
-one-shot은 `@4`, `@5`, `@6`, `@7` receipt로 각각 실패했으며 어느 것도 성공 receipt가
-아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
+`schema_version=harmony-preview-one-shot-proof@9`입니다. 역사적 exact-SHA
+one-shot은 `@4`, `@5`, `@6`, `@7`, `@8` receipt로 각각 실패했으며 어느 것도 성공
+receipt가 아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
 중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
 child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미관측입니다. `@7`은
 두 값을 분리했지만 165회의 exact-child pooler read 동안 2 이상 정수 용량을
 관측하지 못했고, 마지막 `default_pool_size=null` 관측 뒤
 `branch_pooler_default_pool_size_unobserved`로 중단했습니다. Migration과 security는
 시작하지 않았고, exact child 3회 부재와 scoped PAT 삭제가 확인됐으며 실제 청구액은
-미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@8`은 정수 1을 계속 terminal
-failure로 처리하고, 정수 2 이상은 Management API 값으로 target을 정합니다.
+미관측입니다. `@8`은 billing add-ons preflight transport의 generic failure에서
+가격 readback과 child 생성 전에 중단됐습니다. Invocation 1회, paid-child attempt
+0회, child 생성 0건이며 scoped PAT 삭제와 Preview 0건이 확인됐습니다. 실제 청구액은
+미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@9`은 `@8`의 capacity 계약을
+유지해 정수 1을 terminal failure로 처리하고, 정수 2 이상은 Management API 값으로
+target을 정합니다.
 `null`은 configured capacity로 기록하지 않으며 runtime lower bound 2를 두 nested
-live proof에서 실측합니다.
+live proof에서 실측합니다. Transport failure는 secret-free typed category를 새로
+기록하지만 역사적 `@8` generic failure의 subtype을 소급해 확정하지 않습니다.
 현재 Database concurrency probe의 `harmony-preview-concurrency-proof@5` 결과에서는
 64-client TLS ingress와 12개 race 각각의
 `{participants=64,released=true,server_peak}`를 먼저 검증합니다. `server_peak`는
@@ -704,7 +748,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@8` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@9` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 Session route에서는 `database_backend_target_selection.runtime_verified=true`여야

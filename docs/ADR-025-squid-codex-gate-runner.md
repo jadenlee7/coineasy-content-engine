@@ -5,9 +5,12 @@
 `919d70feb0b778830d8f20f70823c20fcf049f61`,
 `91dc0fc6cba7025d8db816f9864dd0a5d89acd3e`, and
 `b64b6676d2f8f67690288b82cd319a1d45864fc2` each produced a fail-closed paid
-Preview receipt, not a successful proof. All four children and scoped PATs
-were verified deleted, and neither the durable migration nor runner has been
-applied to Production.
+Preview receipt. Exact SHA `0a71391578f0cb4d6490b96326eb016a6a85fb83`
+produced a fifth fail-closed invocation before paid child creation. None was a
+successful proof. Five invocations occurred, four reached paid-child creation,
+and four children were created. All four children and all five scoped PATs were
+verified deleted, and neither the durable migration nor runner has been applied
+to Production.
 **Date:** 2026-08-27
 **Deciders:** CoinEasy representative, content, community, security, and
 engineering leads
@@ -31,12 +34,17 @@ failed closed before SQL with `preview_database_connectivity_failed`. The paid
 `harmony-preview-one-shot-proof@6` execution at the third exact SHA failed
 closed before SQL with `branch_pooler_default_pool_size_insufficient`. The paid
 `harmony-preview-one-shot-proof@7` execution at the fourth exact SHA failed
-closed before SQL with `branch_pooler_default_pool_size_unobserved`. All four
-children and scoped PATs were deleted and verified absent; actual billing
-is `unobserved`. Those files have not been applied to Production, and neither
-the local evidence nor any failed receipt substitutes for a successful,
-separately approved exact-SHA Supabase Preview proof. This ADR therefore does
-not call the durable gate deployed, deployable, or Production-ready.
+closed before SQL with `branch_pooler_default_pool_size_unobserved`. The fifth
+`harmony-preview-one-shot-proof@8` invocation at exact SHA
+`0a71391578f0cb4d6490b96326eb016a6a85fb83` failed before price readback and
+child creation with `supabase_billing_addons_preflight_transport_failed`.
+Across the five invocations, paid-child attempt and created-child counts are
+both four. All four children and all five scoped PATs were deleted and verified
+absent; actual billing is `unobserved`. Those files have not been applied to
+Production. Neither the local evidence nor any failed receipt substitutes for
+a successful, separately approved exact-SHA Supabase Preview proof. This ADR
+therefore does not call the durable gate deployed, deployable, or
+Production-ready.
 
 Moving directly from that rehearsal to a live model worker would leave a more
 important boundary unproven. The current stage operation key includes the
@@ -101,14 +109,38 @@ or an absolute cap. The guard covers disposable Supabase infrastructure billing
 only and does not relax the zero model/provider-cost authority represented by
 `max_cost_microusd=0`.
 
-The current outer receipt is `harmony-preview-one-shot-proof@8`. The runner
+Before creating a scoped PAT, waiting for a public key or token, claiming an
+invocation, or starting the paid runner, the operator must run the committed
+`scripts/probe_harmony_management_reachability.py` in the same shell, Python
+interpreter, and network-permission path. It sends one fixed, unauthenticated,
+mutation-free billing add-ons GET with environment proxies disabled and
+redirects rejected. Only an
+HTTP 401 with `harmony-management-reachability@1`, `category=http_status`, and
+`ok=true` permits the credential flow to start. Credential environment
+presence and every other HTTP or transport result fail closed before network
+or credential use as applicable. The probe records no Authorization header,
+body, exception message, or invalid arbitrary input. Transport categories are
+limited to `dns`, `tls`, `timeout`, `connect`, `response_io`, `client_value`, and
+`unknown`.
+
+The required wrapper order is tokenless probe, scoped PAT creation, public-key
+and token wait, invocation claim, then runner process creation. A failed probe
+requires zero occurrences of every later step. This ordering remains an
+operator-wrapper contract: the probe alone cannot prove that a future wrapper
+obeyed it.
+
+The current outer receipt is `harmony-preview-one-shot-proof@9`. The runner
 requires an explicit `direct` or `supavisor-session` route before any paid child
 creation and records that choice. It never switches routes on failure. The
 session route first validates read-only parent pooler access, then binds the
 exact child `PRIMARY` pooler row and derives only the documented session port
 5432 from its transaction-mode 6543 response. It never parses a returned
 connection string. Parent pooler values cannot serve as child endpoint or
-capacity evidence.
+capacity evidence. Management API transport failures use the same secret-free
+typed categories and the same proxy-disabled, redirect-rejecting network path;
+an unclassifiable `URLError` reason retains the legacy generic
+`transport_failed` code. HTTP error bodies are closed without being read, and
+only allow-listed status-derived codes reach the receipt.
 
 All remote database subprocesses use `verify-full` with the checked-in
 `certs/supabase-prod-ca-2021.crt` (`Supabase Root 2021 CA`) bytes bound to the
@@ -479,7 +511,15 @@ separate, non-self-approving contexts.
   exact child absence confirmations and scoped PAT deletion were verified, and
   actual billing remains `unobserved`. The approval and PAT used for this
   invocation are consumed and cannot authorize another paid run.
-- The current `@8` runner preserves the `@7` explicit route, exact parent and
+- Exact SHA `0a71391578f0cb4d6490b96326eb016a6a85fb83` produced one approved
+  `harmony-preview-one-shot-proof@8` invocation that failed closed at
+  `supabase_billing_addons_preflight_transport_failed`, before price readback
+  and before branch creation. The invocation count is one, while paid-child
+  attempt and created-child counts are both zero. The scoped PAT was deleted,
+  the owner UI showed zero Preview children, and actual billing remains
+  `unobserved`. The generic historical receipt does not prove a transport
+  subtype, and its approval cannot authorize a retry.
+- The current `@9` runner preserves the `@8` explicit route, exact parent and
   child pooler readbacks, pinned CA over anonymous descriptors, route-neutral
   concurrency receipt, 64-client TLS ingress, route-bound server overlap
   readback, pre-SQL `SELECT 1`, and safe SQL diagnostic. It additionally
@@ -488,7 +528,8 @@ separate, non-self-approving contexts.
   configured capacity from this runtime lower-bound selection and marks it
   verified only when both nested proof contracts and the outer proof succeed,
   without retaining raw command output, SQL, secrets, endpoint identity, or
-  exception text.
+  exception text. It adds typed, message-free Management API transport failure
+  codes while retaining the generic code for an unknown category.
 - The durable migration and runner are included but not applied to Production.
   Therefore the exact-SHA Supabase Preview proof, live Codex worker, Production
   migration, and every feature-flag activation remain blocked.
@@ -504,11 +545,12 @@ separate, non-self-approving contexts.
 4. [x] Pass local PostgreSQL migration, security, and 64-way convergence
        checks; preserve only the non-secret distribution and side-effect
        receipt in this ADR.
-5. [ ] The historical `@4`, `@5`, `@6`, and `@7` invocations are consumed. Only
-       after a fresh external representative approval and issuance of a fresh
-       scoped PAT,
-       invoke the current `@8` runner once with both required cost ceilings and
-       one explicit route, pass the same contract on one disposable Supabase
+5. [ ] The historical `@4`, `@5`, `@6`, `@7`, and `@8` invocations are
+       consumed. First pass the tokenless Management API reachability gate in
+       the exact future launch context. Only after a fresh external
+       representative approval and issuance of a fresh scoped PAT, invoke the
+       current `@9` runner once with both required cost ceilings and one
+       explicit route, pass the same contract on one disposable Supabase
        Preview, and immediately confirm child deletion. Do not reuse, repair,
        replace, or switch route on the failed child.
 6. [ ] Under another separate approval, connect one QA-only Codex worker with

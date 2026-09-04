@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import importlib.util
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -1529,6 +1531,16 @@ class RawHttpResponse:
         self.closed = True
 
 
+class UnreadHttpErrorBody(io.BytesIO):
+    def __init__(self, body: bytes) -> None:
+        super().__init__(body)
+        self.read_calls = 0
+
+    def read(self, *args: object, **kwargs: object) -> bytes:
+        self.read_calls += 1
+        return super().read(*args, **kwargs)
+
+
 def _management_proof(
     tmp_path: Path,
     opener: object,
@@ -1538,7 +1550,18 @@ def _management_proof(
     return proof
 
 
-def test_default_management_opener_rejects_redirects(tmp_path: Path) -> None:
+def test_default_management_opener_disables_proxy_and_rejects_redirects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handlers: list[object] = []
+    build_opener = RUNNER.request.build_opener
+
+    def tracked_build_opener(*items: object) -> object:
+        handlers.extend(items)
+        return build_opener(*items)
+
+    monkeypatch.setattr(RUNNER.request, "build_opener", tracked_build_opener)
     proof = RUNNER.HarmonyPreviewProof(_args(tmp_path))
 
     assert proof._http_opener is not None
@@ -1546,6 +1569,10 @@ def test_default_management_opener_rejects_redirects(tmp_path: Path) -> None:
         isinstance(handler, RUNNER.RejectRedirectHandler)
         for handler in proof._http_opener.handlers
     )
+    assert len(handlers) == 2
+    assert isinstance(handlers[0], RUNNER.request.ProxyHandler)
+    assert getattr(handlers[0], "proxies") == {}
+    assert isinstance(handlers[1], RUNNER.RejectRedirectHandler)
     assert RUNNER.RejectRedirectHandler().redirect_request(
         object(), object(), 302, "Found", {}, "https://attacker.invalid/"
     ) is None
@@ -1594,7 +1621,7 @@ def test_management_http_error_is_closed_typed_and_scrubbed(
     tmp_path: Path,
 ) -> None:
     captured: list[object] = []
-    body = io.BytesIO(b'{"message":"must-not-escape"}')
+    body = UnreadHttpErrorBody(b'{"message":"must-not-escape"}')
 
     def opener(req: object, *, timeout: float) -> object:
         assert timeout == 7
@@ -1616,6 +1643,7 @@ def test_management_http_error_is_closed_typed_and_scrubbed(
 
     assert exc_info.value.retryable is retryable
     assert body.closed is True
+    assert body.read_calls == 0
     assert getattr(captured[0], "get_header")("Authorization") is None
 
 
@@ -1640,6 +1668,66 @@ def test_management_transport_error_is_retryable_and_scrubbed(
 
     assert exc_info.value.retryable is True
     assert getattr(captured[0], "get_header")("Authorization") is None
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "expected"),
+    (
+        (
+            RUNNER.error.URLError(
+                socket.gaierror(socket.EAI_AGAIN, "transport-secret")
+            ),
+            "test_management_transport_dns_failed",
+        ),
+        (
+            RUNNER.error.URLError(ssl.SSLError("transport-secret")),
+            "test_management_transport_tls_failed",
+        ),
+        (
+            RUNNER.error.URLError(TimeoutError("transport-secret")),
+            "test_management_transport_timeout_failed",
+        ),
+        (
+            RUNNER.error.URLError(
+                ConnectionRefusedError(errno.ECONNREFUSED, "transport-secret")
+            ),
+            "test_management_transport_connect_failed",
+        ),
+        (
+            RUNNER.error.URLError(OSError(errno.EIO, "transport-secret")),
+            "test_management_transport_response_io_failed",
+        ),
+        (
+            ValueError("transport-secret"),
+            "test_management_transport_client_value_failed",
+        ),
+        (
+            RUNNER.error.URLError(RuntimeError("transport-secret")),
+            "test_management_transport_failed",
+        ),
+    ),
+)
+def test_management_transport_error_has_secret_free_typed_code(
+    transport_error: BaseException,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    captured: list[object] = []
+
+    def opener(req: object, *, timeout: float) -> object:
+        captured.append(req)
+        raise transport_error
+
+    with pytest.raises(RUNNER.ManagementApiError, match=expected) as exc_info:
+        _management_proof(tmp_path, opener)._management_get_json(
+            f"/projects/{PARENT_REF}/billing/addons",
+            code="test_management",
+            timeout=7,
+        )
+
+    assert exc_info.value.retryable is True
+    assert getattr(captured[0], "get_header")("Authorization") is None
+    assert "transport-secret" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -1879,7 +1967,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@8"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@9"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
@@ -4351,7 +4439,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@8"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@9"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -4584,6 +4672,51 @@ def test_management_permission_preflight_fails_before_paid_branch_mutation(
     ]
     assert "branch_ready_and_shape_verified" not in receipt["completed_steps"]
     assert "branch_delete_absence_confirmed" not in receipt["completed_steps"]
+
+
+def test_management_dns_preflight_is_typed_and_fails_before_paid_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class PreflightDnsFailureRunner(FakeRunner):
+        def open_endpoint(
+            self,
+            req: object,
+            *,
+            timeout: float,
+        ) -> OpenApiResponse:
+            url = str(getattr(req, "full_url", ""))
+            if url.endswith(f"/projects/{PARENT_REF}/billing/addons"):
+                raise RUNNER.error.URLError(
+                    socket.gaierror(socket.EAI_AGAIN, "transport-secret")
+                )
+            return super().open_endpoint(req, timeout=timeout)
+
+    fake = PreflightDnsFailureRunner()
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path),
+        runner=fake,
+        opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None,
+        clock=_clock(),
+    ).run()
+
+    assert exit_code == 1
+    assert receipt["failure_code"] == (
+        "supabase_billing_addons_preflight_transport_dns_failed"
+    )
+    assert receipt["branch"] is None
+    assert receipt["cleanup"]["branch_create_mutation_invoked"] is False
+    assert receipt["cleanup"]["watchdog_armed"] is False
+    assert "branch_create" not in fake.events
+    assert "branch_delete" not in fake.events
+    assert receipt["completed_steps"] == [
+        "cost_guard_inputs_validated",
+        "exact_sha_snapshot_bound",
+    ]
+    assert "transport-secret" not in json.dumps(receipt, sort_keys=True)
 
 
 def test_child_compute_readback_retries_transient_404_without_recreate(
@@ -6037,7 +6170,9 @@ raise SystemExit(2)
     monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
     monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
     monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 0.2)
+    # Leave enough startup time for the nested Python fixture on a loaded CI
+    # host; the timeout case still blocks forever after writing its PID fence.
+    monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(RUNNER, "WATCHDOG_POLL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setenv("HARMONY_WATCHDOG_TEST_STATE", str(state_path))
     monkeypatch.setenv("HARMONY_WATCHDOG_TEST_PIDS", str(pid_path))
@@ -6048,7 +6183,7 @@ raise SystemExit(2)
     args = _args(tmp_path)
     args.supabase = str(fake_cli)
     args.supabase_read_timeout_seconds = 1
-    args.supabase_mutation_timeout_seconds = 0.2
+    args.supabase_mutation_timeout_seconds = 1.0
     proof = RUNNER.HarmonyPreviewProof(args, runner=RUNNER.ProcessRunner())
     proof.management_token = MANAGEMENT_TOKEN
     proof.management_home = tempfile.mkdtemp(prefix="harmony-supabase-home-")
