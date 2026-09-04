@@ -404,14 +404,22 @@ jobs:
           node --test
           ops/managed-inspector-activation/pack.test.mjs
           ops/managed-inspector-activation/production-apply.test.mjs
+      - name: Refuse a legacy mutable-SHA managed-inspect build
+        run: |
+          if docker build --file Dockerfile.managed-inspect \
+            --build-arg MANAGED_INSPECT_SOURCE_SHA=${{ github.sha }} \
+            --tag coineasy-managed-inspect-invalid .; then
+            echo 'legacy mutable SHA unexpectedly produced an image' >&2
+            exit 1
+          fi
       - name: Build the isolated default-OFF inspect image
         run: >-
           docker build --file Dockerfile.managed-inspect
-          --build-arg MANAGED_INSPECT_SOURCE_SHA=${{ github.sha }}
+          --build-arg RAILWAY_GIT_COMMIT_SHA=${{ github.sha }}
           --tag coineasy-managed-inspect-ci .
       - name: Prove disabled HTTP performs zero I/O without a network
         run: |
-          docker run --rm --network none --entrypoint node coineasy-managed-inspect-ci --input-type=module -e '
+          docker run --rm --network none --env EXPECTED_BUILD_SHA=${{ github.sha }} --entrypoint node coineasy-managed-inspect-ci --input-type=module -e '
             import assert from "node:assert/strict";
             import { existsSync, readFileSync } from "node:fs";
             import { createManagedInspectServer } from "./tools/managed-telegram-inspect/server.mjs";
@@ -424,7 +432,7 @@ jobs:
               assert.match(await response.text(), /Disabled/);
               assert.equal(calls, 0);
               for (const path of ["core", "api", "netlify", ".env"]) assert.equal(existsSync(path), false);
-              assert.match(readFileSync("tools/managed-telegram-inspect/build-sha.txt", "utf8").trim(), /^[a-f0-9]{40}$/);
+              assert.equal(readFileSync("tools/managed-telegram-inspect/build-sha.txt", "utf8").trim(), process.env.EXPECTED_BUILD_SHA);
               console.log("disabled=true auth_calls=0 database_calls=0 provider_calls=0");
             } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
           '

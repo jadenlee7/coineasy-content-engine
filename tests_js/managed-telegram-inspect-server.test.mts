@@ -148,10 +148,16 @@ test('configuration is disabled by default and requires isolated environment plu
     MANAGED_INSPECT_PROJECT_URL: config.projectUrl, MANAGED_INSPECT_PUBLISHABLE_KEY: config.publishableKey,
     MANAGED_INSPECT_WORKSPACE_ID: config.workspaceId };
   assert.throws(() => loadConfig(env));
-  assert.equal(loadConfig(env, config.buildSha).buildSha, config.buildSha);
+  assert.throws(() => loadConfig(env, config.buildSha));
+  assert.throws(() => loadConfig({ ...env, MANAGED_INSPECT_SOURCE_SHA: config.buildSha }, config.buildSha));
+  const githubEnv = { ...env, RAILWAY_GIT_COMMIT_SHA: config.buildSha };
+  assert.equal(loadConfig(githubEnv, config.buildSha).buildSha, config.buildSha);
+  for (const value of ['', config.buildSha.toUpperCase(), ` ${config.buildSha}`, `${config.buildSha} `]) {
+    assert.throws(() => loadConfig({ ...env, RAILWAY_GIT_COMMIT_SHA: value }, config.buildSha));
+  }
   assert.throws(() => loadConfig({ ...env, RAILWAY_GIT_COMMIT_SHA: 'b'.repeat(40) }, config.buildSha));
-  assert.throws(() => loadConfig({ ...env, MANAGED_INSPECT_PROJECT_URL: 'http://localhost:54321' }, config.buildSha));
-  assert.throws(() => loadConfig({ ...env, MANAGED_INSPECT_PUBLISHABLE_KEY: jwt() }, config.buildSha));
+  assert.throws(() => loadConfig({ ...githubEnv, MANAGED_INSPECT_PROJECT_URL: 'http://localhost:54321' }, config.buildSha));
+  assert.throws(() => loadConfig({ ...githubEnv, MANAGED_INSPECT_PUBLISHABLE_KEY: jwt() }, config.buildSha));
   for (const flag of ['--inspect', '--inspect-brk=0', '--require=x', '--import=x', '--tls-keylog=x', '--heap-prof', '--report-on-fatalerror']) {
     assert.throws(() => assertRuntimeFlags([flag]), /unsafe_runtime_diagnostics/);
   }

@@ -21,7 +21,8 @@ export function loadConfig(env = process.env, buildStamp) {
       || !/^sb_publishable_[A-Za-z0-9_-]{16,200}$/.test(env.MANAGED_INSPECT_PUBLISHABLE_KEY ?? '')
       || !/^[a-f0-9]{40}$/.test(buildStamp ?? '')
       || (env.MANAGED_INSPECT_BUILD_SHA !== undefined && env.MANAGED_INSPECT_BUILD_SHA !== buildStamp)
-      || (env.RAILWAY_GIT_COMMIT_SHA !== undefined && env.RAILWAY_GIT_COMMIT_SHA !== buildStamp)
+      || !/^[a-f0-9]{40}$/.test(env.RAILWAY_GIT_COMMIT_SHA ?? '')
+      || env.RAILWAY_GIT_COMMIT_SHA !== buildStamp
       || !UUID.test(env.MANAGED_INSPECT_WORKSPACE_ID ?? '')
       || env.MANAGED_INSPECT_WORKSPACE_ID === '00000000-0000-0000-0000-000000000000') {
     throw new Error('invalid_configuration');

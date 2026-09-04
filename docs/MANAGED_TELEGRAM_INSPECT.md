@@ -266,10 +266,13 @@ repository, then set `MANAGED_INSPECT_BROWSER_TEST=1` and
 `playwright/index.mjs` path before running
 `node --test tests_js/managed-inspect-browser.test.mts`.
 
-The image build requires a 40-character `MANAGED_INSPECT_SOURCE_SHA` build
-argument. This writes the read-only build stamp; runtime SHA environment values
-cannot replace it. A local smoke-test stamp is not a production release proof.
-No production-bound deployment manifest or live enable command is supplied here.
+The image build requires Railway's 40-character `RAILWAY_GIT_COMMIT_SHA` build
+argument and writes it to the read-only build stamp. Railway provides that Git
+variable only for a GitHub-triggered deployment, so an uploaded CLI source
+archive fails closed instead of inheriting a stale operator-maintained SHA. CI
+passes its own immutable `github.sha` under the same argument name solely to
+build the offline image. A local smoke-test stamp is not a production release
+proof. No production-bound live enable command is supplied here.
 
 ### Railway deployment contract
 
@@ -291,8 +294,10 @@ the managed-inspect service. The root auto-discovered `railway.json` is absent,
 and `configFile` is omitted from both resources so the required
 `railwayConfigFile=null` state is preserved. The partial includes every current
 variable name as `preserve()` because omitting one would create delete intent;
-it never contains secret values. Other project resources and legacy-bound
-services are outside this partial.
+it never contains secret values. The historical `MANAGED_INSPECT_SOURCE_SHA`
+name remains preserve-only until a separate production change removes it, but
+the Docker build does not read it and it has no provenance authority. Other
+project resources and legacy-bound services are outside this partial.
 
 CI evaluates the offline contract but never applies it. A later separately
 approved production plan must contain no diagnostic, destructive change,
