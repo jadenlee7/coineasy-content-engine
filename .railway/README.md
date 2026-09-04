@@ -1,42 +1,72 @@
 # Railway Infrastructure as Code
 
-`.railway/railway.ts` is a named Railway IaC partial for the two services this
-repository owns directly:
+`.railway/railway.ts` is the named Railway IaC partial for the two services
+this repository owns directly:
 
 - `coineasy-content-engine`
 - `coineasy-managed-inspect`
 
-The program fails closed unless Railway supplies the exact production project
+The partial fails closed unless Railway supplies the exact production project
 and environment IDs and names recorded in the file and evaluates it as a
-`plan`. A similarly named or mislinked project cannot evaluate the service
-graph, and a direct `railway config apply --file` is refused. Only a separately
-approved pinned-plan apply can cross that boundary.
+`plan`. It owns exactly those two service resources. Do not replace it with a
+whole-project import: the Railway project also contains resources owned by
+other repositories, and omitted resources can become delete intent.
 
-The `noble-illumination` project also contains resources owned by other
-repositories and five services that remain bound to their existing named
-Config-as-Code files. Do not remove or rename the exported `partial` value and
-do not replace this file with a whole-project import. Omitted resources in a
-whole-project definition can become delete intent.
+The one-time adoption plan was applied to production on 2026-09-04 from commit
+`784249900491a4fb99b152fbcf73e34511c05a93`. It is complete and must not be
+replayed. Merge, future infrastructure changes, deployment, enablement, and
+delivery remain independent approval gates.
 
-The partial deliberately declares the complete GitHub source, variable-name
-inventory, build settings, replicas, and relevant deploy/networking settings
-for both owned services. Existing variable values use `preserve()`; secret
-values must never be pulled, printed, or committed. `configFile` is omitted so
-both services retain `railwayConfigFile=null` instead of opting into deprecated
-Config as Code. Automatic deployment is not represented by the current IaC SDK
-and must remain disabled through a separate owner-system readback.
+## Owner-settings convergence authority
 
-## Review and rollout
+Railway CLI `5.45.5` builds the IaC current graph from `environment.config`.
+That read model omits the two services' restart-policy fields even though the
+owner `serviceInstance` API returns their materialized values. A new plan can
+therefore repeat `null -> desired` restart changes after a successful apply.
+That repeated diff is not evidence that production is unapplied, and submitting
+it again can cause redundant configuration and deployment churn.
 
-Run the offline contract test first:
+Use the owner API receipt as the authority for the current settings touched by
+the one-time adoption plan. The checked-in GraphQL document requests only
+project/environment identity and allow-listed service settings. It does not
+request variables, logs, deployment metadata, resolved file configuration, or
+secret values. Pipe the raw response directly to the validator so it is never
+printed or stored:
 
-```sh
-node --test tests_js/railway-iac.test.mts
+```bash
+set -euo pipefail
+test "$(railway --version)" = "railway 5.45.5"
+railway api --file scripts/railway_iac_owner_receipt.graphql \
+  --raw-var projectId=43f15c45-4a5c-4cf9-9400-e462cac46bb1 \
+  --raw-var environmentId=5bf47282-1982-4930-95ad-29230ec0429b \
+  --raw-var webServiceId=80168b5d-54f5-4684-ab32-d5f3c4f8e483 \
+  --raw-var managedServiceId=b1ab4f39-982f-4c33-9402-b0bc843aac2f \
+  --compact \
+  | node scripts/validate_railway_iac_owner_receipt.mjs
 ```
 
-After authenticating the Railway CLI to the exact production project and
-environment, preview only. The checked-in gate consumes raw runner JSON from
-stdin and emits only bounded allow-listed metadata:
+The only successful state is `owner_settings_converged`, scoped to
+`one_time_adoption_settings`, with action `stop_no_apply`. It proves the exact
+web build/health/start/restart settings and managed-service restart settings
+touched by that plan, plus both services' config-file/Dockerfile pairing. It is
+not provenance for who applied those settings and is not a complete live-state
+audit of source, replicas, runtime, watch patterns, networking, domains, or
+variable-name inventory. Those remain offline contract checks or separate
+owner-system rollout gates. Any command, schema, target, selected setting, or
+response-shape drift is `BLOCK`. A failed or unreadable receipt never
+authorizes an apply. It requires a new code change, review, and explicit
+production approval.
+
+Railway exposes a Dockerfile-backed service as `builder=RAILPACK` together with
+the materialized `dockerfilePath`. The validator checks both fields as a pair,
+plus the web health/start contract, both restart policies, and
+`railwayConfigFile=null`. Do not interpret the builder label alone.
+
+## Additional convergence diagnostic
+
+The plan gate is now post-apply only. It accepts an exact two-resource,
+zero-diagnostic, zero-change plan and emits bounded metadata. It rejects every
+change, including the historical adoption changes:
 
 ```bash
 set -o pipefail
@@ -45,90 +75,23 @@ railway config plan --file .railway/railway.ts --json \
   | node scripts/validate_railway_iac_plan.mjs
 ```
 
-The plan must have no diagnostics, deletes, destructive changes, additions, or
-changes outside the two named services. Never run raw `--json` without this
-direct pipe, and never print or store that raw stream. Never use `--show-values`
-or `--decrypt-variables`.
+With CLI `5.45.5`, the known restart-policy read-model mismatch makes this
+diagnostic fail closed even while the owner receipt passes. That failure must
+not be bypassed and must not trigger a second apply. A future CLI version needs
+a separate compatibility review before use.
 
-An apply-time review must create an owner-only pinned plan from a clean,
-approved commit and bind the approval to its commit SHA, `.railway` source-tree
-SHA, plan SHA-256, and returned `configEtag`. Keep the artifact outside the
-repository. The review ceremony uses this sequence and records only the gate's
-bounded output plus the three hashes:
+## Repository and CI boundaries
 
-```bash
-set -euo pipefail
-test "$(railway --version)" = "railway 5.45.5"
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
-test ! -e railway.json
-test ! -e railway.toml
-test "$(find .railway -maxdepth 1 -type f \
-  \( -name 'railway.ts' -o -name 'railway.py' -o -name 'railway.go' \) \
-  -print)" = ".railway/railway.ts"
-PLAN_PATH="$(mktemp "${TMPDIR:-/tmp}/coineasy-railway-plan.XXXXXX")"
-chmod 600 "$PLAN_PATH"
-trap 'rm -f "$PLAN_PATH"' EXIT HUP INT TERM
-COMMIT_SHA="$(git rev-parse HEAD)"
-SOURCE_TREE="$(git rev-parse HEAD:.railway)"
-if ! railway config plan --file .railway/railway.ts --json \
-  --source-tree "$SOURCE_TREE" --out "$PLAN_PATH" \
-  | node scripts/validate_railway_iac_plan.mjs; then
-  exit 1
-fi
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
-test ! -e railway.json
-test ! -e railway.toml
-test "$(find .railway -maxdepth 1 -type f \
-  \( -name 'railway.ts' -o -name 'railway.py' -o -name 'railway.go' \) \
-  -print)" = ".railway/railway.ts"
-test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
-test "$(git rev-parse HEAD:.railway)" = "$SOURCE_TREE"
-PLAN_SHA256="$(shasum -a 256 "$PLAN_PATH" | awk '{print $1}')"
-printf 'commit_sha=%s\nsource_tree_sha=%s\nplan_sha256=%s\n' \
-  "$COMMIT_SHA" "$SOURCE_TREE" "$PLAN_SHA256"
-trap - EXIT HUP INT TERM
-```
-
-Railway CLI `5.45.5` is the exact version used for this rollout contract; a CLI
-change requires another read-only compatibility plan before use. Delete the
-artifact if approval is denied or expires.
-
-After a separate explicit production approval, apply that same artifact with
-`railway config apply --plan "$PLAN_PATH"`; do not re-evaluate the authoring
-file. Railway must reject the pinned plan if live state has drifted. Never use
-`--confirm-destructive`. `railway config apply` is intentionally absent from
-CI. Before the approved apply, fail closed unless the current checkout and
-artifact still match the values named in that approval:
-
-```bash
-set -euo pipefail
-test "$(railway --version)" = "railway 5.45.5"
-test -n "${APPROVED_COMMIT_SHA:-}"
-test -n "${APPROVED_SOURCE_TREE_SHA:-}"
-test -n "${APPROVED_PLAN_SHA256:-}"
-test -n "${PLAN_PATH:-}"
-test -f "$PLAN_PATH"
-test ! -L "$PLAN_PATH"
-trap 'rm -f "$PLAN_PATH"' EXIT HUP INT TERM
-test -z "$(git status --porcelain=v1 --untracked-files=all)"
-test ! -e railway.json
-test ! -e railway.toml
-test "$(find .railway -maxdepth 1 -type f \
-  \( -name 'railway.ts' -o -name 'railway.py' -o -name 'railway.go' \) \
-  -print)" = ".railway/railway.ts"
-test "$(git rev-parse HEAD)" = "$APPROVED_COMMIT_SHA"
-test "$(git rev-parse HEAD:.railway)" = "$APPROVED_SOURCE_TREE_SHA"
-test "$(shasum -a 256 "$PLAN_PATH" | awk '{print $1}')" \
-  = "$APPROVED_PLAN_SHA256"
-railway config apply --plan "$PLAN_PATH"
-rm -f "$PLAN_PATH"
-trap - EXIT HUP INT TERM
-```
-
-Merge, apply, deployment, enablement, and public/private delivery are
-independent approval gates. Immediately before merge, read back
-`autoDeploy=false` for both owned services and all five legacy-bound services
-sourced from this repository; block if any source trigger is enabled. After a
-merge removes root `railway.json`, do not manually redeploy either service
-until the named partial has been applied and the resulting service settings
-have been read back.
+- `configFile` remains omitted so both services retain
+  `railwayConfigFile=null` instead of using deprecated Config as Code.
+- Existing variable values use `preserve()`; secret values must never be
+  pulled, printed, stored, or committed.
+- The named `railway.*.json` files remain unchanged for legacy-bound services
+  and review fixtures.
+- CI evaluates the two-service definition, the zero-change plan gate, and the
+  owner-receipt validator offline. CI never authenticates to Railway and never
+  mutates infrastructure.
+- `autoDeploy=false`, `MANAGED_INSPECT_ENABLED=false`, managed-inspect HTTP 503,
+  zero I/O, and runtime health remain separate owner-system readbacks.
+- There is intentionally no automatic `unapplied -> apply` path. Any future
+  material change needs its own reviewed plan and action-time approval.

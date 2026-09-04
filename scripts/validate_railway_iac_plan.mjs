@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
-
 const MAX_PLAN_BYTES = 5 * 1024 * 1024;
 const PROJECT_ID = '43f15c45-4a5c-4cf9-9400-e462cac46bb1';
 const PROJECT = 'noble-illumination';
@@ -11,45 +9,36 @@ const ADDRESSES = [
   'service.coineasy-content-engine',
   'service.coineasy-managed-inspect',
 ];
-const EXPECTED_CHANGES = [
-  {
-    summary: 'Update coineasy-content-engine build.builder',
-    severity: 'safe',
-    kind: 'resource.update',
-    details: ['build.builder (null → "DOCKERFILE")'],
-  },
-  {
-    summary: 'Update coineasy-content-engine deploy.healthcheckPath, deploy.healthcheckTimeout, deploy.restartPolicyMaxRetries and 2 more',
-    severity: 'safe',
-    kind: 'resource.update',
-    details: [
-      'deploy.healthcheckPath (null → "/health")',
-      'deploy.healthcheckTimeout (null → 100)',
-      'deploy.restartPolicyMaxRetries (null → 3)',
-      'deploy.restartPolicyType (null → "ON_FAILURE")',
-      'deploy.startCommand (null → "sh -c \'uvicorn api.server:app --host 0.0.0.0 --port $PORT\'")',
-    ],
-  },
-  {
-    summary: 'Update coineasy-managed-inspect deploy.restartPolicyMaxRetries, deploy.restartPolicyType',
-    severity: 'safe',
-    kind: 'resource.update',
-    details: [
-      'deploy.restartPolicyMaxRetries (null → 10)',
-      'deploy.restartPolicyType (null → "ON_FAILURE")',
-    ],
-  },
-];
-
 function reject() {
   process.stderr.write('railway_iac_plan_rejected\n');
   process.exitCode = 1;
 }
 
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readBoundedStdin(maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.length;
+    if (total > maxBytes) throw new Error('bounded');
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
 try {
-  const raw = readFileSync(0, { encoding: 'utf8' });
-  if (Buffer.byteLength(raw, 'utf8') > MAX_PLAN_BYTES) throw new Error('bounded');
+  if (process.argv.length !== 2) throw new Error('arguments');
+  const raw = await readBoundedStdin(MAX_PLAN_BYTES);
   const plan = JSON.parse(raw);
+  if (!isObject(plan)
+      || Object.hasOwn(plan, 'errors')
+      || Object.hasOwn(plan, 'extensions')) {
+    throw new Error('root');
+  }
   if (plan?.ok !== true || plan?.command !== 'plan') throw new Error('command');
   if (plan?.currentEnvironment?.projectId !== PROJECT_ID) throw new Error('project_id');
   if (plan?.currentEnvironment?.projectName !== PROJECT) throw new Error('project');
@@ -75,27 +64,20 @@ try {
 
   const changes = plan?.changeSet?.changes;
   if (!Array.isArray(changes)) throw new Error('changes');
-  const boundedChanges = changes.map((change) => ({
-    summary: change?.summary,
-    severity: change?.severity,
-    kind: change?.kind,
-    details: change?.details,
-  }));
-  if (JSON.stringify(boundedChanges) !== JSON.stringify(EXPECTED_CHANGES)) {
-    throw new Error('unexpected_change_set');
-  }
-  const summaries = boundedChanges.map((change) => change.summary);
+  if (changes.length !== 0) throw new Error('not_converged');
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
+    state: 'converged',
+    action: 'stop_no_apply',
     projectId: PROJECT_ID,
     project: PROJECT,
     environmentId: ENVIRONMENT_ID,
     environment: ENVIRONMENT,
     configEtag,
     desiredAddresses,
-    changeCount: summaries.length,
-    changes: summaries,
+    changeCount: 0,
+    changes: [],
     diagnostics: [],
   }, null, 2)}\n`);
 } catch {
