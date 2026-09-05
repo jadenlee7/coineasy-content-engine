@@ -129,7 +129,7 @@ requires zero occurrences of every later step. This ordering remains an
 operator-wrapper contract: the probe alone cannot prove that a future wrapper
 obeyed it.
 
-The current outer receipt is `harmony-preview-one-shot-proof@9`. The runner
+The current outer receipt is `harmony-preview-one-shot-proof@10`. The runner
 requires an explicit `direct` or `supavisor-session` route before any paid child
 creation and records that choice. It never switches routes on failure. The
 session route first validates read-only parent pooler access, then binds the
@@ -141,6 +141,23 @@ typed categories and the same proxy-disabled, redirect-rejecting network path;
 an unclassifiable `URLError` reason retains the legacy generic
 `transport_failed` code. HTTP error bodies are closed without being read, and
 only allow-listed status-derived codes reach the receipt.
+
+The `@9` invocation at `cc6de5abcbc424075d57e42eef65ce9a4f91eb7a`
+failed after two completed migrations, at
+`20260825132000_harmony_preview_collaboration.sql`; child deletion and scoped
+PAT removal were confirmed. Its receipt does not contain SQLSTATE or an input
+line, so it cannot distinguish missing baseline relations, missing columns,
+privileges, or another SQL error. Local reproduction does not retrospectively
+supply the missing hosted evidence.
+
+`@10` adds optional SQLSTATE and psql input-line metadata only for completed
+migration/security script failures with exit status 3. Both values are
+allowlisted or bounded by the exact script bytes; verbose output, arbitrary
+exception text, and unknown conditions yield no optional detail. Timeout,
+connection, interrupt, and cleanup paths retain their existing behavior.
+No migration SQL or permission grant is changed. This is diagnostic hardening,
+not evidence that the hosted SQL failure has been fixed; a new hosted invocation
+still needs its own exact-SHA approval.
 
 All remote database subprocesses use `verify-full` with the checked-in
 `certs/supabase-prod-ca-2021.crt` (`Supabase Root 2021 CA`) bytes bound to the

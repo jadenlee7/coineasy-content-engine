@@ -1398,6 +1398,7 @@ class FakeRunner:
         timeout: float,
         code: str,
         pass_fds: tuple[int, ...] = (),
+        sql_diagnostics: bool = False,
     ) -> None:
         if env is not None:
             self.quiet_environment_references.append(env)
@@ -1407,6 +1408,7 @@ class FakeRunner:
         self.working_directories.append(cwd)
         self.timeouts.append((code, timeout))
         self.events.append(code)
+        assert sql_diagnostics is (code in RUNNER.SQL_DIAGNOSTIC_PHASE_CODES)
         if code == "preview_database_connectivity":
             assert input_bytes is None
             assert command[-2:] == ["-Atqc", "select 1"]
@@ -1967,7 +1969,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@9"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@10"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
@@ -4439,7 +4441,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@9"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@10"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -6606,3 +6608,230 @@ def test_source_contract_has_no_secret_cli_arguments_and_one_postgrest_call() ->
     assert len(RUNNER.MIGRATIONS) == 9
     assert MANAGEMENT_TOKEN not in source
     assert "--profile" not in source
+
+
+@pytest.mark.parametrize(
+    ("stderr", "payload", "expected"),
+    (
+        (b"psql:<stdin>:1: ERROR:  42P01\n", b"select missing;\n", ("42P01", 1)),
+        (
+            b"psql:<stdin>:1: NOTICE:  42P06\n"
+            b"psql:<stdin>:2: WARNING:  01000\n"
+            b"psql:<stdin>:3: ERROR:  P0001\n",
+            b"begin;\nselect 1;\ndo $$ begin end $$;",
+            ("P0001", 3),
+        ),
+        (b"psql:<stdin>:1: NOTICE:  42P06\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:0: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:01: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:2: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:99999999: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:1: ERROR:  XXXXX\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:1: FATAL:  42501\n", SQL_PAYLOAD, None),
+        (b"psql:/private/secret.sql:1: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (b"psql:<stdin>:1: ERROR:  42P01 raw-secret\n", SQL_PAYLOAD, None),
+        (
+            b"psql:<stdin>:1: ERROR:  42P01\nCONTEXT: raw-secret\n",
+            SQL_PAYLOAD,
+            None,
+        ),
+        (
+            b"psql:<stdin>:1: ERROR:  42P01\n"
+            b"psql:<stdin>:1: ERROR:  42501\n",
+            SQL_PAYLOAD,
+            None,
+        ),
+        (b"\xffpsql:<stdin>:1: ERROR:  42P01\n", SQL_PAYLOAD, None),
+        (
+            b"\n" * RUNNER.SQL_DIAGNOSTIC_MAX_STDERR_BYTES
+            + b"psql:<stdin>:1: ERROR:  42P01\n",
+            SQL_PAYLOAD,
+            None,
+        ),
+        (b"psql:<stdin>:1: ERROR:  42P01\n", b"", None),
+    ),
+)
+def test_sql_diagnostic_accepts_only_bounded_sqlstate_output(
+    stderr: bytes,
+    payload: bytes,
+    expected: tuple[str, int] | None,
+) -> None:
+    diagnostic = RUNNER._parse_sql_failure_diagnostic(stderr, payload)
+    actual = None if diagnostic is None else (
+        diagnostic.sqlstate, diagnostic.psql_input_line
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    ("code", "opt_in", "returncode", "settings", "expected"),
+    (
+        ("preview_migration_apply", True, 3, True, True),
+        ("preview_security_suite", True, 3, True, True),
+        ("preview_migration_apply", False, 3, True, False),
+        ("preview_database_connectivity", True, 3, True, False),
+        ("supabase_branch_get", True, 3, True, False),
+        ("preview_migration_apply", True, 1, True, False),
+        ("preview_migration_apply", True, 2, True, False),
+        ("preview_migration_apply", True, 3, False, False),
+    ),
+)
+def test_process_sql_diagnostic_is_opt_in_and_script_exit_only(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    opt_in: bool,
+    returncode: int,
+    settings: bool,
+    expected: bool,
+) -> None:
+    command = ["psql", "-X", "-v", "ON_ERROR_STOP=1"]
+    if settings:
+        command += ["-v", "VERBOSITY=sqlstate", "-v", "SHOW_CONTEXT=never"]
+    command += ["-f", "-"]
+    process = StubPopen(
+        command,
+        returncode=returncode,
+        stdout=DB_SECRET.encode(),
+        stderr=b"psql:<stdin>:1: ERROR:  42P01\n",
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner, "terminate_process_group",
+        lambda _self, _process, *, code: None,
+    )
+    with pytest.raises(RUNNER.CommandError) as caught:
+        RUNNER.ProcessRunner().run_quiet(
+            command, code=code, input_bytes=SQL_PAYLOAD,
+            sql_diagnostics=opt_in,
+        )
+    diagnostic = caught.value.sql_diagnostic
+    assert (diagnostic is not None) is expected
+    if expected:
+        assert diagnostic == RUNNER.SqlFailureDiagnostic("42P01", 1)
+    assert str(caught.value) == f"{code}_failed"
+    assert DB_SECRET not in repr(vars(caught.value))
+    assert "psql:<stdin>" not in repr(vars(caught.value))
+
+
+@pytest.mark.parametrize("timeout", (False, True))
+def test_sql_diagnostics_never_retain_raw_output_or_timeout_bytes(
+    monkeypatch: pytest.MonkeyPatch, timeout: bool,
+) -> None:
+    command = [
+        "psql", "-X", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=sqlstate",
+        "-v", "SHOW_CONTEXT=never", "-f", "-",
+    ]
+    process = StubPopen(
+        command, returncode=3, timeout_once=timeout,
+        stdout=JWT_SECRET.encode(),
+        stderr=b"psql:<stdin>:1: ERROR:  42P01\n" + DB_SECRET.encode(),
+    )
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        RUNNER.ProcessRunner, "terminate_process_group",
+        lambda _self, _process, *, code: None,
+    )
+    with pytest.raises(RUNNER.CommandError) as caught:
+        RUNNER.ProcessRunner().run_quiet(
+            command, code="preview_migration_apply", input_bytes=SQL_PAYLOAD,
+            sql_diagnostics=True,
+        )
+    assert caught.value.sql_diagnostic is None
+    suffix = "timeout" if timeout else "failed"
+    assert caught.value.code == f"preview_migration_apply_{suffix}"
+    for secret in (DB_SECRET, JWT_SECRET):
+        assert secret not in repr(vars(caught.value))
+        assert secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("phase", ("migration", "security"))
+def test_sql_diagnostic_is_bound_into_receipt_without_changing_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    monkeypatch.setattr(RUNNER, "verify_exact_checkout", _fake_exact_checkout)
+
+    class DiagnosticRunner(FakeRunner):
+        def run_quiet(self, command: list[str], **kwargs: object) -> None:
+            try:
+                super().run_quiet(command, **kwargs)
+            except RUNNER.CommandError as exc:
+                assert kwargs["sql_diagnostics"] is True
+                assert ["-v", "VERBOSITY=sqlstate"] in [
+                    command[index:index + 2] for index in range(len(command) - 1)
+                ]
+                exc.sql_diagnostic = RUNNER.SqlFailureDiagnostic("42P01", 1)
+                raise
+
+    fake = DiagnosticRunner(
+        migration_failure_ordinal=3 if phase == "migration" else None,
+        security_failure_ordinal=1 if phase == "security" else None,
+    )
+    receipt, exit_code = RUNNER.HarmonyPreviewProof(
+        _args(tmp_path), runner=fake, opener=fake.open_endpoint,
+        sleeper=lambda _seconds: None, clock=_clock(),
+    ).run()
+    assert exit_code == 1
+    assert receipt["sql_failure"]["phase"] == phase
+    assert receipt["sql_failure"]["sqlstate"] == "42P01"
+    assert receipt["sql_failure"]["psql_input_line"] == 1
+    assert set(receipt["sql_failure"]) == {
+        "phase", "ordinal", "filename", "sha256", "completed_count",
+        "sqlstate", "psql_input_line",
+    }
+    assert receipt["cleanup"]["absence_confirmations"] == 3
+    assert receipt["secret_cleanup_confirmed"] is True
+    assert fake.events.count("branch_create") == 1
+    assert fake.events.count("branch_delete") == 1
+    _assert_valid_receipt_digest(receipt)
+    original_digest = receipt["receipt_sha256"]
+    for field, replacement in (("sqlstate", "42501"), ("psql_input_line", 2)):
+        tampered = json.loads(json.dumps(receipt))
+        tampered["sql_failure"][field] = replacement
+        assert RUNNER.canonical_receipt_sha256(tampered) != original_digest
+    for forbidden in (DB_SECRET, JWT_SECRET, "synthetic-stderr-marker"):
+        assert forbidden not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        {"sqlstate": "42P01", "psql_input_line": 1, "stderr": "raw-secret"},
+        RUNNER.SqlFailureDiagnostic("raw-secret", 1),
+        RUNNER.SqlFailureDiagnostic("42P01", True),
+        RUNNER.SqlFailureDiagnostic("42P01", 1.0),
+        RUNNER.SqlFailureDiagnostic("42P01", 0),
+        RUNNER.SqlFailureDiagnostic("42P01", 2),
+    ),
+)
+def test_receipt_revalidates_optional_sql_detail(
+    tmp_path: Path, diagnostic: object,
+) -> None:
+    proof = RUNNER.HarmonyPreviewProof(_args(tmp_path))
+    proof._record_sql_failure(
+        phase="migration", ordinal=1, filename=RUNNER.MIGRATIONS[0],
+        payload=SQL_PAYLOAD, completed_count=0, sql_diagnostic=diagnostic,
+    )
+    assert set(proof.sql_failure) == {
+        "phase", "ordinal", "filename", "sha256", "completed_count",
+    }
+    assert "raw-secret" not in json.dumps(proof.sql_failure)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        {"sqlstate": "42P01", "psql_input_line": 1, "stderr": "raw-secret"},
+        RUNNER.SqlFailureDiagnostic("raw-secret", 1),
+        RUNNER.SqlFailureDiagnostic("42P01", True),
+        RUNNER.SqlFailureDiagnostic("42P01", -1),
+        RUNNER.SqlFailureDiagnostic("42P01", 10_000_000),
+    ),
+)
+def test_command_error_drops_untrusted_sql_diagnostic_values(
+    diagnostic: object,
+) -> None:
+    error = RUNNER.CommandError(
+        "preview_migration_apply_failed", sql_diagnostic=diagnostic,
+    )
+    assert error.sql_diagnostic is None
+    assert "raw-secret" not in repr(vars(error))

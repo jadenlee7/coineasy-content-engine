@@ -43,13 +43,31 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@9"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@10"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
     "sha256-canonical-json-utf8-sort-keys-compact-excluding-receipt_sha256"
 )
 PROJECT_REF_PATTERN = re.compile(r"^[a-z0-9]{20}$")
+SQL_DIAGNOSTIC_PHASE_CODES = frozenset(
+    {"preview_migration_apply", "preview_security_suite"}
+)
+# Retain only known PostgreSQL conditions, never an arbitrary server string.
+# An unlisted condition still fails normally; its optional detail is omitted.
+SQL_DIAGNOSTIC_STATES = frozenset(
+    {
+        "0A000", "22023", "22P02", "23502", "23503", "23505", "23514",
+        "40001", "40P01", "42501", "42601", "42703", "42704", "42710",
+        "42723", "42804", "42809", "42830", "42883", "42P01", "42P06",
+        "42P07", "42P13", "53100", "53200", "53400", "54000", "55000",
+        "55P03", "57014", "P0001",
+    }
+)
+SQL_DIAGNOSTIC_MAX_STDERR_BYTES = 65_536
+SQL_DIAGNOSTIC_LINE_PATTERN = re.compile(
+    rb"psql:<stdin>:([1-9][0-9]{0,6}): (ERROR|NOTICE|WARNING):  ([A-Z0-9]{5})"
+)
 MANAGEMENT_TRANSPORT_CATEGORIES = frozenset(
     {
         "dns",
@@ -529,10 +547,79 @@ class ProofError(RuntimeError):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class SqlFailureDiagnostic:
+    sqlstate: str
+    psql_input_line: int
+
+
+def _validated_sql_diagnostic(
+    value: object, payload: bytes,
+) -> SqlFailureDiagnostic | None:
+    if type(value) is not SqlFailureDiagnostic or type(payload) is not bytes:
+        return None
+    if (
+        type(value.sqlstate) is not str
+        or value.sqlstate not in SQL_DIAGNOSTIC_STATES
+        or type(value.psql_input_line) is not int
+        or not 1 <= value.psql_input_line <= (
+            payload.count(b"\n") + int(bool(payload) and not payload.endswith(b"\n"))
+        )
+    ):
+        return None
+    return SqlFailureDiagnostic(value.sqlstate, value.psql_input_line)
+
+
+def _parse_sql_failure_diagnostic(
+    stderr: bytes, payload: bytes,
+) -> SqlFailureDiagnostic | None:
+    # SQLSTATE verbosity excludes SQL text and notice details at the source.
+    # Reject mixed/verbose output rather than searching it for a plausible line.
+    if type(stderr) is not bytes or len(stderr) > SQL_DIAGNOSTIC_MAX_STDERR_BYTES:
+        return None
+    result = None
+    for line in stderr.splitlines():
+        if not line:
+            continue
+        match = SQL_DIAGNOSTIC_LINE_PATTERN.fullmatch(line)
+        if match is None:
+            return None
+        if match.group(2) != b"ERROR":
+            continue
+        if result is not None:
+            return None
+        result = _validated_sql_diagnostic(
+            SqlFailureDiagnostic(
+                match.group(3).decode("ascii"), int(match.group(1))
+            ),
+            payload,
+        )
+        if result is None:
+            return None
+    return result
+
+
 class CommandError(ProofError):
-    def __init__(self, code: str, *, ambiguous: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        ambiguous: bool = False,
+        sql_diagnostic: SqlFailureDiagnostic | None = None,
+    ) -> None:
         super().__init__(code)
         self.ambiguous = ambiguous
+        self.sql_diagnostic = None
+        if (
+            type(sql_diagnostic) is SqlFailureDiagnostic
+            and type(sql_diagnostic.sqlstate) is str
+            and sql_diagnostic.sqlstate in SQL_DIAGNOSTIC_STATES
+            and type(sql_diagnostic.psql_input_line) is int
+            and 1 <= sql_diagnostic.psql_input_line <= 9_999_999
+        ):
+            self.sql_diagnostic = SqlFailureDiagnostic(
+                sql_diagnostic.sqlstate, sql_diagnostic.psql_input_line
+            )
 
 
 class ManagementApiError(ProofError):
@@ -908,6 +995,7 @@ class ProcessRunner:
         code: str,
         before_spawn: Callable[[], None] | None = None,
         pass_fds: Sequence[int] = (),
+        sql_diagnostics: bool = False,
     ) -> bytes:
         inherited_fds = self._validated_pass_fds(pass_fds, code=code)
         process: subprocess.Popen[bytes] | None = None
@@ -1023,12 +1111,41 @@ class ProcessRunner:
                 raise
 
             stdout = stdout or b""
-            stderr = b""
+            sql_diagnostic = None
+            try:
+                if (
+                    sql_diagnostics is True
+                    and code in SQL_DIAGNOSTIC_PHASE_CODES
+                    and process.returncode == 3
+                    and type(input_bytes) is bytes
+                    and list(command[-2:]) == ["-f", "-"]
+                    and all(
+                        any(
+                            list(command[index:index + 2]) == ["-v", setting]
+                            for index in range(len(command) - 1)
+                        )
+                        for setting in (
+                            "ON_ERROR_STOP=1", "VERBOSITY=sqlstate",
+                            "SHOW_CONTEXT=never",
+                        )
+                    )
+                ):
+                    sql_diagnostic = _parse_sql_failure_diagnostic(
+                        stderr, input_bytes
+                    )
+            except Exception:
+                # Optional metadata must not replace the original failure.
+                sql_diagnostic = None
+            finally:
+                stderr = b""
             if process.returncode != 0:
                 # stdout/stderr may contain a password-bearing connection
                 # string or branch JSON.  Never interpolate either.
                 stdout = b""
-                raise CommandError(f"{code}_failed", ambiguous=True)
+                raise CommandError(
+                    f"{code}_failed", ambiguous=True,
+                    sql_diagnostic=sql_diagnostic,
+                )
             return stdout
         finally:
             try:
@@ -1243,6 +1360,7 @@ class ProcessRunner:
         timeout: float = 120,
         code: str,
         pass_fds: Sequence[int] = (),
+        sql_diagnostics: bool = False,
     ) -> None:
         raw = self.run_bytes(
             command,
@@ -1252,6 +1370,7 @@ class ProcessRunner:
             timeout=timeout,
             code=code,
             pass_fds=pass_fds,
+            sql_diagnostics=sql_diagnostics,
         )
         raw = b""
 
@@ -4063,6 +4182,7 @@ raise SystemExit(
                 timeout=timeout,
                 code=code,
                 pass_fds=(certificate_fd,),
+                sql_diagnostics=code in SQL_DIAGNOSTIC_PHASE_CODES,
             )
         finally:
             environment.clear()
@@ -4096,10 +4216,12 @@ raise SystemExit(
         filename: str,
         payload: bytes,
         completed_count: int,
+        sql_diagnostic: SqlFailureDiagnostic | None = None,
     ) -> None:
         # Diagnostics must never replace the typed SQL failure that triggered
-        # this path.  Only values derived from fixed allowlists and the exact
-        # bytes handed to psql may enter the receipt; an invariant failure
+        # this path.  Only fixed metadata and optionally an allowlisted
+        # SQLSTATE plus a line bounded by the exact psql input may enter it.
+        # Raw exception arguments and server text are never inspected; a failure
         # therefore leaves the optional diagnostic unset.
         try:
             if phase == "migration":
@@ -4127,6 +4249,15 @@ raise SystemExit(
             "sha256": payload_sha256,
             "completed_count": completed_count,
         }
+        try:
+            diagnostic = _validated_sql_diagnostic(sql_diagnostic, payload)
+            if diagnostic is not None:
+                self.sql_failure.update({
+                    "sqlstate": diagnostic.sqlstate,
+                    "psql_input_line": diagnostic.psql_input_line,
+                })
+        except Exception:
+            pass
 
     def _apply_migrations_and_security(
         self,
@@ -4139,6 +4270,8 @@ raise SystemExit(
                 self._run_database_quiet(
                     [
                         *self._psql_base(),
+                        "-v", "VERBOSITY=sqlstate",
+                        "-v", "SHOW_CONTEXT=never",
                         "-f",
                         "-",
                     ],
@@ -4146,13 +4279,14 @@ raise SystemExit(
                     timeout=self.args.migration_timeout_seconds,
                     code="preview_migration_apply",
                 )
-            except CommandError:
+            except CommandError as exc:
                 self._record_sql_failure(
                     phase="migration",
                     ordinal=ordinal,
                     filename=filename,
                     payload=payload,
                     completed_count=self.migration_completed_count,
+                    sql_diagnostic=exc.sql_diagnostic,
                 )
                 raise
             self.migration_completed_count += 1
@@ -4162,6 +4296,8 @@ raise SystemExit(
                 self._run_database_quiet(
                     [
                         *self._psql_base(),
+                        "-v", "VERBOSITY=sqlstate",
+                        "-v", "SHOW_CONTEXT=never",
                         "-f",
                         "-",
                     ],
@@ -4169,13 +4305,14 @@ raise SystemExit(
                     timeout=self.args.migration_timeout_seconds,
                     code="preview_security_suite",
                 )
-            except CommandError:
+            except CommandError as exc:
                 self._record_sql_failure(
                     phase="security",
                     ordinal=ordinal,
                     filename=filename,
                     payload=payload,
                     completed_count=self.security_completed_count,
+                    sql_diagnostic=exc.sql_diagnostic,
                 )
                 raise
             self.security_completed_count += 1

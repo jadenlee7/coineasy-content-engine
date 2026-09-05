@@ -238,7 +238,7 @@ invocation claim -> runner Popen`입니다. Probe가 실패하면 PAT 생성, ke
 claim, Popen은 모두 0회여야 합니다. 이 순서 강제는 operator wrapper의 계약이며,
 probe 단독 실행이 향후 wrapper의 순서를 기계적으로 증명하지는 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@9`입니다. CLI에서
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@10`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
 preflight를 실행합니다. Management API client도 환경 proxy를 끄고 redirect를
@@ -249,8 +249,18 @@ route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`,
 `database_pooler_readiness`, `database_backend_target_selection`만 남깁니다.
 Migration 또는 security `psql` apply가 typed command failure 또는 ambiguous
 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
-`{phase, ordinal, filename, sha256, completed_count}`만 기록합니다. 운영자
-interrupt와 별도 cleanup failure에는 이 필드를 기록하지 않습니다.
+`{phase, ordinal, filename, sha256, completed_count}`를 기록합니다. `@10`은
+migration/security script에만 `VERBOSITY=sqlstate`, `SHOW_CONTEXT=never`를 지정하고,
+`ON_ERROR_STOP` script가 exit 3으로 정상 종료한 경우에만 선택적으로
+`sqlstate`, `psql_input_line`을 추가합니다. SQLSTATE는 코드의 고정 enum에 있어야
+하며, line은 실행한 exact payload의 실제 줄 수 이내인 양의 정수여야 합니다.
+최대 64 KiB의 stderr를 메모리에서만 검사하고, SQLSTATE-only 형식의 notice/warning과
+단일 error 이외의 출력, 알 수 없는 code, 중복 error, 범위 밖 line은 진단을
+생략합니다. Raw 출력은 보존하지 않습니다. 이 line은 psql이 보고한 input statement의
+끝 줄이며, 함수 내부의 정확한 오류 줄을 뜻하지 않습니다. Timeout, spawn 실패,
+connection 실패에는 이 추가 진단을 기록하지 않으며, 기존 실패와 cleanup 처리를
+바꾸지 않습니다. 운영자 interrupt와 별도 cleanup failure에는 `sql_failure`를
+새로 기록하지 않습니다.
 `completed_count`는 실패 ordinal보다 정확히 하나 작아야 하며, filename은 고정
 basename, SHA-256은 실행한 exact payload의 digest여야 합니다. Raw stderr/stdout,
 SQL 본문, connection string, 비밀, 임의 exception text는 receipt에 넣지 않습니다.
@@ -526,7 +536,7 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@9`입니다. 역사적 exact-SHA
+`schema_version=harmony-preview-one-shot-proof@10`입니다. 역사적 exact-SHA
 one-shot은 `@4`, `@5`, `@6`, `@7`, `@8` receipt로 각각 실패했으며 어느 것도 성공
 receipt가 아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
 중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
@@ -538,7 +548,8 @@ child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미�
 미관측입니다. `@8`은 billing add-ons preflight transport의 generic failure에서
 가격 readback과 child 생성 전에 중단됐습니다. Invocation 1회, paid-child attempt
 0회, child 생성 0건이며 scoped PAT 삭제와 Preview 0건이 확인됐습니다. 실제 청구액은
-미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@9`은 `@8`의 capacity 계약을
+미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@10`은 `@9`의 제한된 SQL
+진단을 확장한 로컬 후보이며 새 hosted 실행 승인을 뜻하지 않습니다. `@8`의 capacity 계약을
 유지해 정수 1을 terminal failure로 처리하고, 정수 2 이상은 Management API 값으로
 target을 정합니다.
 `null`은 configured capacity로 기록하지 않으며 runtime lower bound 2를 두 nested
@@ -748,7 +759,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@9` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@10` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 Session route에서는 `database_backend_target_selection.runtime_verified=true`여야
