@@ -4,11 +4,11 @@
 The probe is deliberately local/disposable only.  It seeds one immutable Squid
 official-X review fixture, four revocable connector registrations, and a
 five-role fixed-specialist roster.  It races signed request receipts, the plan,
-each successful downstream stage, and a separate failed-QA denial through 64
-independent ``psql`` processes, then proves revocation removes currentness
-without deleting history.  It never calls a provider, Buzz, approval, or
-publication routine.  The target database is expected to be discarded after
-the run.
+private content, every durable Codex QA gate transition, the representative
+inbox, Recap, and a separate failed-QA denial through 64 independent ``psql``
+processes.  It then proves revocation removes currentness without deleting
+history.  It never calls a provider, Buzz, approval, or publication routine.
+The target database is expected to be discarded after the run.
 """
 
 from __future__ import annotations
@@ -16,11 +16,16 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
+import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -68,6 +73,191 @@ CONNECTOR_REQUEST_DIGEST_VECTOR_SHA256 = (
 DIRECT_SUPABASE_DB_HOST_PATTERN = re.compile(
     r"^db\.([a-z0-9]{20})\.supabase\.co$"
 )
+SUPAVISOR_HOST_PATTERN = re.compile(
+    r"^(?=[a-z0-9-]{1,63}\.pooler\.supabase\.com$)"
+    r"(?=[^.]*-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"\.pooler\.supabase\.com$"
+)
+DATABASE_TRANSPORTS = ("direct", "supavisor-session")
+SUPABASE_CA_SHA256 = (
+    "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
+)
+SUPABASE_CA_FD_ENV = "HARMONY_PREVIEW_SUPABASE_CA_FD"
+LINUX_ANONYMOUS_PIPE_TARGET_PATTERN = re.compile(
+    r"^pipe:\[([1-9][0-9]*)\]$"
+)
+PSQL_BLOCKED_ENV_NAMES = {
+    "PAGER",
+    "PSQLRC",
+    "PSQL_HISTORY",
+    "PSQL_PAGER",
+    "PSQL_WATCH_PAGER",
+    "PSQL_EDITOR",
+    "PSQL_EDITOR_LINENUMBER_ARG",
+}
+SERVER_CONCURRENCY_METHOD = "postgres_advisory_session_latch"
+SERVER_CONCURRENCY_RACE_LABELS = (
+    "connector_request",
+    "plan",
+    "private_content",
+    "codex_prepare",
+    "codex_claim",
+    "codex_start",
+    "codex_submit",
+    "codex_verify",
+    "operator_inbox",
+    "recap",
+    "qa_denial",
+    "codex_reconciliation",
+)
+
+
+def _anonymous_pipe_fd_identity(
+    file_descriptor: int,
+    expected_access_mode: int,
+) -> tuple[int, int] | None:
+    """Return a stable anonymous-pipe identity on supported proof hosts."""
+
+    if (
+        type(file_descriptor) is not int
+        or file_descriptor < 3
+        or expected_access_mode not in {os.O_RDONLY, os.O_WRONLY}
+    ):
+        return None
+    try:
+        before = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISFIFO(before.st_mode)
+            or (
+                fcntl.fcntl(file_descriptor, fcntl.F_GETFL)
+                & os.O_ACCMODE
+            )
+            != expected_access_mode
+        ):
+            return None
+        identity = (before.st_dev, before.st_ino)
+        if sys.platform == "darwin":
+            if before.st_nlink != 0:
+                return None
+        elif sys.platform.startswith("linux"):
+            if before.st_nlink != 1:
+                return None
+            target = os.readlink(f"/proc/self/fd/{file_descriptor}")
+            match = LINUX_ANONYMOUS_PIPE_TARGET_PATTERN.fullmatch(target)
+            if match is None or int(match.group(1)) != before.st_ino:
+                return None
+        else:
+            return None
+        after = os.fstat(file_descriptor)
+        if (
+            (after.st_dev, after.st_ino) != identity
+            or after.st_mode != before.st_mode
+            or after.st_nlink != before.st_nlink
+        ):
+            return None
+        return identity
+    except (OSError, ValueError):
+        return None
+
+
+class ServerConcurrencyGate:
+    def __init__(
+        self,
+        *,
+        label: str,
+        table_name: str,
+        advisory_class: int,
+        advisory_object: int,
+        client_sessions: int,
+        backend_target: int,
+        wait_seconds: int,
+    ) -> None:
+        self.label = label
+        self.table_name = table_name
+        self.advisory_class = advisory_class
+        self.advisory_object = advisory_object
+        self.client_sessions = client_sessions
+        self.backend_target = backend_target
+        self.wait_seconds = wait_seconds
+
+    def wrap(self, sql: str) -> str:
+        lock_count_sql = f"""
+select pg_catalog.count(*)::integer as participant_count
+from pg_catalog.pg_locks lock
+where lock.locktype = 'advisory'
+  and lock.database = (
+    select database.oid
+    from pg_catalog.pg_database database
+    where database.datname = pg_catalog.current_database()
+  )
+  and lock.classid = {self.advisory_class}::oid
+  and lock.objid = {self.advisory_object}::oid
+  and lock.objsubid = 2
+  and lock.mode = 'ShareLock'
+  and lock.granted
+""".strip()
+        return f"""
+select pg_catalog.pg_advisory_lock_shared(
+  {self.advisory_class}, {self.advisory_object}
+);
+with observed as ({lock_count_sql})
+update {self.table_name} gate
+set participants = gate.participants + 1,
+    server_peak = greatest(
+      gate.server_peak, observed.participant_count
+    ),
+    released = gate.released or (
+      observed.participant_count >= {self.backend_target}
+    )
+from observed
+where gate.singleton
+returning gate.participants;
+do $harmony_server_concurrency_gate$
+declare
+  deadline timestamptz := pg_catalog.clock_timestamp()
+    + interval '{self.wait_seconds} seconds';
+begin
+  loop
+    exit when (
+      select gate.released from {self.table_name} gate
+      where gate.singleton
+    );
+    if pg_catalog.clock_timestamp() >= deadline then
+      raise exception 'harmony_preview_server_concurrency_gate_timeout';
+    end if;
+    perform pg_catalog.pg_sleep(0.01);
+  end loop;
+end
+$harmony_server_concurrency_gate$;
+{sql}
+"""
+
+
+def _new_server_concurrency_gate(
+    label: str,
+    client_sessions: int,
+    backend_target: int,
+    *,
+    wait_seconds: int = 45,
+) -> ServerConcurrencyGate:
+    if not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", label):
+        raise ValueError("invalid server concurrency label")
+    if client_sessions < 2 or client_sessions > CONCURRENCY:
+        raise ValueError("invalid server concurrency participant count")
+    if backend_target < 1 or backend_target > client_sessions:
+        raise ValueError("invalid server concurrency backend target")
+    nonce = uuid.uuid4().hex
+    advisory_class = int(nonce[:8], 16) & 0x7FFFFFFF or 1
+    advisory_object = int(nonce[8:16], 16) & 0x7FFFFFFF or 1
+    return ServerConcurrencyGate(
+        label=label,
+        table_name=f"private.harmony_probe_latch_{nonce}",
+        advisory_class=advisory_class,
+        advisory_object=advisory_object,
+        client_sessions=client_sessions,
+        backend_target=backend_target,
+        wait_seconds=wait_seconds,
+    )
 
 
 def _compact(value: object) -> str:
@@ -87,29 +277,253 @@ def _is_local_host(host: str) -> bool:
 def _psql_child_environment(
     host: str,
     source: dict[str, str] | None = None,
-) -> dict[str, str]:
-    environment = dict(os.environ if source is None else source)
+) -> tuple[dict[str, str], bytes | None]:
+    source_environment = os.environ if source is None else source
+    incoming = dict(source_environment)
+    if source is None:
+        # Consume the one-shot inherited descriptor immediately.  The other
+        # libpq controls are scrubbed after validation and before any spawn.
+        os.environ.pop(SUPABASE_CA_FD_ENV, None)
+    password = incoming.get("PGPASSWORD", "")
+    environment = {
+        name: value
+        for name, value in incoming.items()
+        if not name.upper().startswith("PG")
+        and name not in PSQL_BLOCKED_ENV_NAMES
+        and name != SUPABASE_CA_FD_ENV
+    }
     if _is_local_host(host):
-        return environment
-    if environment.get("PGSSLMODE", "").strip().lower() != "verify-full":
-        raise ValueError(
-            "remote direct database requires PGSSLMODE=verify-full"
+        if password:
+            environment["PGPASSWORD"] = password
+        environment.update(
+            {
+                "PGCONNECT_TIMEOUT": "15",
+                "PGAPPNAME": "coineasy-harmony-preview-proof",
+            }
         )
-    root_certificate = environment.get("PGSSLROOTCERT", "").strip()
-    if not root_certificate:
+        if source is None:
+            for name in tuple(os.environ):
+                if (
+                    name.upper().startswith("PG")
+                    or name in PSQL_BLOCKED_ENV_NAMES
+                ):
+                    os.environ.pop(name, None)
+        return environment, None
+    if incoming.get("PGSSLMODE", "").strip().lower() != "verify-full":
         raise ValueError(
-            "remote direct database requires explicit PGSSLROOTCERT trust"
+            "remote database requires PGSSLMODE=verify-full"
         )
-    if root_certificate.lower() != "system" and not (
-        os.path.isabs(root_certificate)
-        and os.path.isfile(root_certificate)
-        and os.access(root_certificate, os.R_OK)
+    if incoming.get("PGGSSENCMODE", "").strip().lower() != "disable":
+        raise ValueError(
+            "remote database requires PGGSSENCMODE=disable"
+        )
+    if incoming.get("PGSSLCERTMODE", "").strip().lower() != "disable":
+        raise ValueError(
+            "remote database requires PGSSLCERTMODE=disable"
+        )
+    if incoming.get("PGSSLROOTCERT", "").strip():
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    if not password:
+        raise ValueError("remote database requires an in-memory password")
+    fd_text = incoming.get(SUPABASE_CA_FD_ENV, "")
+    if not fd_text.isascii() or not fd_text.isdigit():
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    certificate_fd = int(fd_text)
+    if certificate_fd < 3 or str(certificate_fd) != fd_text:
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        )
+    certificate_payload = b""
+    try:
+        if _anonymous_pipe_fd_identity(
+            certificate_fd,
+            os.O_RDONLY,
+        ) is None:
+            raise ValueError
+        chunks: list[bytes] = []
+        total = 0
+        while total <= 4096:
+            chunk = os.read(certificate_fd, 4097 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        certificate_payload = b"".join(chunks)
+        chunks.clear()
+        if (
+            not certificate_payload
+            or len(certificate_payload) > 4096
+            or hashlib.sha256(certificate_payload).hexdigest()
+            != SUPABASE_CA_SHA256
+        ):
+            raise ValueError
+    except (OSError, ValueError):
+        raise ValueError(
+            "remote database requires inherited unlinked Supabase CA fd"
+        ) from None
+    finally:
+        try:
+            os.close(certificate_fd)
+        except OSError:
+            pass
+    environment.update(
+        {
+            "PGPASSWORD": password,
+            "PGSSLMODE": "verify-full",
+            "PGGSSENCMODE": "disable",
+            "PGSSLCERTMODE": "disable",
+            "PGCONNECT_TIMEOUT": "15",
+            "PGAPPNAME": "coineasy-harmony-preview-proof",
+        }
+    )
+    if source is None:
+        for name in tuple(os.environ):
+            if (
+                name.upper().startswith("PG")
+                or name in PSQL_BLOCKED_ENV_NAMES
+            ):
+                os.environ.pop(name, None)
+    return environment, certificate_payload
+
+
+def _create_unlinked_ca_reader(payload: bytes) -> int:
+    if (
+        not payload
+        or len(payload) > 4096
+        or hashlib.sha256(payload).hexdigest() != SUPABASE_CA_SHA256
+        or not hasattr(os, "pipe")
     ):
-        raise ValueError(
-            "remote direct database PGSSLROOTCERT must be system or "
-            "an absolute readable file"
-        )
-    return environment
+        raise RuntimeError("Supabase CA fd materialization failed")
+    reader_fd = -1
+    writer_fd = -1
+    try:
+        reader_fd, writer_fd = os.pipe()
+        if (
+            _anonymous_pipe_fd_identity(reader_fd, os.O_RDONLY) is None
+            or _anonymous_pipe_fd_identity(writer_fd, os.O_WRONLY) is None
+        ):
+            raise OSError
+        written = 0
+        while written < len(payload):
+            count = os.write(writer_fd, payload[written:])
+            if count <= 0:
+                raise OSError
+            written += count
+        os.close(writer_fd)
+        writer_fd = -1
+        return reader_fd
+    except BaseException:
+        for descriptor in (reader_fd, writer_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        raise RuntimeError("Supabase CA fd materialization failed") from None
+
+
+def _prove_tls_ingress(
+    host: str,
+    port: int,
+    *,
+    context: ssl.SSLContext,
+    client_sessions: int,
+    postgres_ssl_request: bool,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    if (
+        not 2 <= client_sessions <= CONCURRENCY
+        or not 1 <= timeout_seconds <= 30
+    ):
+        raise ValueError("invalid TLS ingress proof bounds")
+    ready = threading.Barrier(client_sessions + 1)
+    release = threading.Event()
+
+    def connect(_: int) -> bool:
+        raw_socket: socket.socket | None = None
+        tls_socket: ssl.SSLSocket | None = None
+        try:
+            raw_socket = socket.create_connection(
+                (host, port),
+                timeout=timeout_seconds,
+            )
+            if postgres_ssl_request:
+                raw_socket.sendall(struct.pack("!II", 8, 80877103))
+                if raw_socket.recv(1) != b"S":
+                    raise RuntimeError("PostgreSQL TLS was not accepted")
+            tls_socket = context.wrap_socket(
+                raw_socket,
+                server_hostname=host,
+            )
+            raw_socket = None
+            if not tls_socket.getpeercert(binary_form=True):
+                raise RuntimeError("TLS peer certificate missing")
+            ready.wait(timeout=timeout_seconds)
+            if not release.wait(timeout_seconds):
+                raise RuntimeError("TLS ingress release timed out")
+            return True
+        finally:
+            if tls_socket is not None:
+                tls_socket.close()
+            if raw_socket is not None:
+                raw_socket.close()
+
+    futures = []
+    try:
+        with ThreadPoolExecutor(max_workers=client_sessions) as pool:
+            futures = [pool.submit(connect, index) for index in range(client_sessions)]
+            try:
+                ready.wait(timeout=timeout_seconds)
+            except threading.BrokenBarrierError:
+                raise RuntimeError(
+                    "TLS ingress did not establish every client session"
+                ) from None
+            finally:
+                release.set()
+            if any(future.result() is not True for future in futures):
+                raise RuntimeError("TLS ingress client session failed")
+    finally:
+        release.set()
+    return {
+        "client_sessions": client_sessions,
+        "simultaneously_established": True,
+    }
+
+
+def _prove_postgres_tls_ingress(
+    psql: "Psql",
+    host: str,
+    port: int,
+) -> dict[str, object]:
+    if psql.ca_payload is None:
+        raise RuntimeError("remote PostgreSQL CA payload unavailable")
+    try:
+        ca_text = psql.ca_payload.decode("ascii", "strict")
+    except UnicodeDecodeError:
+        raise RuntimeError("remote PostgreSQL CA payload invalid") from None
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cadata=ca_text)
+    ca_text = ""
+    evidence = _prove_tls_ingress(
+        host,
+        port,
+        context=context,
+        client_sessions=CONCURRENCY,
+        postgres_ssl_request=True,
+        timeout_seconds=min(30.0, max(5.0, psql.timeout_seconds)),
+    )
+    return {
+        "method": "postgres_sslrequest_tls",
+        **evidence,
+        "certificate_authority_sha256": SUPABASE_CA_SHA256,
+    }
 
 
 def _validated_disposable_preview_ref(
@@ -117,12 +531,10 @@ def _validated_disposable_preview_ref(
     port: int,
     expected_branch_ref: str | None,
     parent_project_ref: str | None,
+    database_transport: str,
+    user: str,
+    database: str,
 ) -> str:
-    match = DIRECT_SUPABASE_DB_HOST_PATTERN.fullmatch(host.lower())
-    if not match or port != 5432:
-        raise ValueError(
-            "disposable Preview mode requires the direct db.<branch-ref>.supabase.co:5432 host"
-        )
     if not re.fullmatch(r"[a-z0-9]{20}", expected_branch_ref or ""):
         raise ValueError(
             "disposable Preview mode requires exact 20-character --expected-branch-ref"
@@ -131,12 +543,107 @@ def _validated_disposable_preview_ref(
         raise ValueError(
             "disposable Preview mode requires exact 20-character --parent-project-ref"
         )
-    host_ref = match.group(1)
-    if host_ref != expected_branch_ref:
-        raise ValueError("direct database host does not match the approved Preview branch ref")
-    if host_ref == parent_project_ref:
+    if expected_branch_ref == parent_project_ref:
         raise ValueError("refusing to run the disposable Preview probe against Production")
-    return host_ref
+    if database != "postgres" or port != 5432:
+        raise ValueError("disposable Preview database target is invalid")
+    if database_transport == "direct":
+        match = DIRECT_SUPABASE_DB_HOST_PATTERN.fullmatch(host.lower())
+        if (
+            match is None
+            or match.group(1) != expected_branch_ref
+            or user != "postgres"
+        ):
+            raise ValueError("direct Preview database fence is invalid")
+    elif database_transport == "supavisor-session":
+        if (
+            SUPAVISOR_HOST_PATTERN.fullmatch(host.lower()) is None
+            or user != f"postgres.{expected_branch_ref}"
+        ):
+            raise ValueError("Supavisor session Preview fence is invalid")
+    else:
+        raise ValueError("unsupported database transport")
+    return expected_branch_ref
+
+
+def _is_canonical_lowercase_uuid4(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        parsed.version == 4
+        and parsed.variant == uuid.RFC_4122
+        and str(parsed) == value
+    )
+
+
+def _required_free_database_connections(
+    database_transport: str,
+    backend_concurrency_target: int,
+) -> int:
+    if database_transport == "direct":
+        if backend_concurrency_target != CONCURRENCY:
+            raise ValueError("direct backend concurrency target mismatch")
+        return CONCURRENCY + 8
+    if database_transport == "supavisor-session":
+        if not 1 <= backend_concurrency_target <= CONCURRENCY:
+            raise ValueError("session backend concurrency target invalid")
+        return backend_concurrency_target + 2
+    raise ValueError("unsupported database transport")
+
+
+def _verify_happy_path_identities(
+    psql: Psql,
+    ids: dict[str, str],
+) -> dict[str, str]:
+    identities = {
+        "round_id": ids["round"],
+        "plan_id": ids["plan"],
+        "inbox_id": ids["inbox"],
+    }
+    if not all(
+        _is_canonical_lowercase_uuid4(value)
+        for value in identities.values()
+    ):
+        raise RuntimeError(
+            "generated happy-path identities were not canonical lowercase UUID4 values"
+        )
+    if len(set(identities.values())) != len(identities):
+        raise RuntimeError("generated happy-path identities were not distinct")
+
+    readback = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'readback_rows', pg_catalog.count(*),
+  'round_id', pg_catalog.min(round_row.round_id::text),
+  'plan_id', pg_catalog.min(plan.plan_id::text),
+  'inbox_id', pg_catalog.min(inbox.inbox_id::text)
+)::text
+from agent_runtime.harmony_rounds round_row
+join agent_runtime.harmony_plans plan
+  on plan.workspace_id = round_row.workspace_id
+ and plan.client_id = round_row.client_id
+ and plan.round_id = round_row.round_id
+ and plan.plan_id = round_row.plan_id
+join agent_runtime.harmony_operator_inbox inbox
+  on inbox.workspace_id = round_row.workspace_id
+ and inbox.client_id = round_row.client_id
+ and inbox.round_id = round_row.round_id
+ and inbox.plan_id = plan.plan_id
+join agent_runtime.harmony_stage_receipts recap
+  on recap.workspace_id = round_row.workspace_id
+ and recap.client_id = round_row.client_id
+ and recap.round_id = round_row.round_id
+ and recap.plan_id = plan.plan_id
+where round_row.workspace_id = '{ids['workspace']}'::uuid
+  and round_row.client_id = 'squid'
+  and recap.stage = 'recap';
+""")
+    if readback != {"readback_rows": 1, **identities}:
+        raise RuntimeError("persisted happy-path identity readback mismatch")
+    return identities
 
 
 class Psql:
@@ -148,7 +655,10 @@ class Psql:
         user: str,
         database: str,
         timeout_seconds: float,
+        backend_concurrency_target: int = CONCURRENCY,
     ) -> None:
+        if not 1 <= backend_concurrency_target <= CONCURRENCY:
+            raise ValueError("invalid backend concurrency target")
         self.command = [
             executable,
             "-X",
@@ -165,7 +675,28 @@ class Psql:
             "-Atq",
         ]
         self.timeout_seconds = timeout_seconds
-        self.environment = _psql_child_environment(host)
+        self.backend_concurrency_target = backend_concurrency_target
+        self.environment, self.ca_payload = _psql_child_environment(host)
+        self._server_gate_local = threading.local()
+        self.server_concurrency_evidence: dict[str, dict[str, object]] = {}
+
+    def run_with_server_concurrency_gate(
+        self,
+        gate: ServerConcurrencyGate,
+        invoke: Callable[[], dict[str, object]],
+    ) -> dict[str, object]:
+        if getattr(self._server_gate_local, "gate", None) is not None:
+            raise RuntimeError("nested server concurrency gate")
+        self._server_gate_local.gate = gate
+        self._server_gate_local.used = False
+        try:
+            result = invoke()
+            if self._server_gate_local.used is not True:
+                raise RuntimeError("server concurrency gate was not consumed")
+            return result
+        finally:
+            self._server_gate_local.gate = None
+            self._server_gate_local.used = False
 
     def _execute(
         self,
@@ -173,14 +704,38 @@ class Psql:
         *,
         timeout_seconds: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        certificate_fd = -1
+        environment = dict(self.environment)
+        pass_fds: tuple[int, ...] = ()
         try:
+            gate = getattr(self._server_gate_local, "gate", None)
+            if gate is not None:
+                if self._server_gate_local.used is True:
+                    raise RuntimeError(
+                        "server concurrency gate consumed more than once"
+                    )
+                if not isinstance(gate, ServerConcurrencyGate):
+                    raise RuntimeError("invalid server concurrency gate")
+                self._server_gate_local.used = True
+                sql = gate.wrap(sql)
+            if self.ca_payload is not None:
+                certificate_fd = _create_unlinked_ca_reader(self.ca_payload)
+                if _anonymous_pipe_fd_identity(
+                    certificate_fd,
+                    os.O_RDONLY,
+                ) is None:
+                    raise RuntimeError("Supabase CA fd materialization failed")
+                environment["PGSSLROOTCERT"] = f"/dev/fd/{certificate_fd}"
+                pass_fds = (certificate_fd,)
             return subprocess.run(
                 self.command,
                 input=sql,
                 text=True,
                 capture_output=True,
                 check=False,
-                env=self.environment,
+                env=environment,
+                close_fds=True,
+                pass_fds=pass_fds,
                 timeout=(
                     self.timeout_seconds
                     if timeout_seconds is None
@@ -191,6 +746,16 @@ class Psql:
             raise RuntimeError(
                 "psql_timeout_commit_state_unknown_no_retry"
             ) from exc
+        finally:
+            environment.pop("PGSSLROOTCERT", None)
+            environment.clear()
+            if certificate_fd >= 0:
+                try:
+                    os.close(certificate_fd)
+                except OSError:
+                    raise RuntimeError(
+                        "Supabase CA fd cleanup failed"
+                    ) from None
 
     def run(self, sql: str) -> str:
         result = self._execute(sql)
@@ -367,6 +932,50 @@ def _json_sha256(value: object) -> str:
     return hashlib.sha256(_compact(value).encode("utf-8")).hexdigest()
 
 
+def _codex_work_key_from_lineage(lineage: dict[str, object]) -> str:
+    """Mirror ``squid_codex_gate_work_key`` without assignment/time fields."""
+
+    return _json_sha256({
+        "client_id": lineage["client_id"],
+        "content_snapshot_sha256": lineage["content_snapshot_sha256"],
+        "official_content_version_id": lineage["official_content_version_id"],
+        "official_source_binding_sha256": (
+            lineage["official_source_binding_sha256"]
+        ),
+        "official_source_item_id": lineage["official_source_item_id"],
+        "plan_id": lineage["plan_id"],
+        "plan_receipt_sha256": lineage["plan_receipt_sha256"],
+        "private_content_output_sha256": (
+            lineage["private_content_output_sha256"]
+        ),
+        "private_content_receipt_sha256": (
+            lineage["private_content_receipt_sha256"]
+        ),
+        "round_id": lineage["round_id"],
+        "schema_version": "squid-codex-gate-work@1",
+        "signal_input_set_sha256": lineage["signal_input_set_sha256"],
+        "signal_manifest_sha256": lineage["signal_manifest_sha256"],
+        "signal_producer_principal_ids": (
+            lineage["signal_producer_principal_ids"]
+        ),
+        "stage": "independent_qa",
+        "workspace_id": lineage["workspace_id"],
+    })
+
+
+def _codex_assignment_key(
+    work_key: str,
+    reviewer_binding_sha256: str,
+) -> str:
+    """Mirror ``squid_codex_gate_assignment_key`` exactly."""
+
+    return _json_sha256({
+        "reviewer_binding_sha256": reviewer_binding_sha256,
+        "schema_version": "squid-codex-gate-assignment@1",
+        "work_key": work_key,
+    })
+
+
 def _connector_request_payload(
     *,
     workspace_id: str,
@@ -514,6 +1123,17 @@ select pg_catalog.jsonb_build_object(
   'plans', (select pg_catalog.count(*) from agent_runtime.harmony_plans),
   'stage_receipts', (select pg_catalog.count(*) from agent_runtime.harmony_stage_receipts),
   'operator_inbox', (select pg_catalog.count(*) from agent_runtime.harmony_operator_inbox),
+  'codex_lineages', (select pg_catalog.count(*) from private.harmony_preview_codex_source_lineage_receipts),
+  'codex_requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests),
+  'codex_runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs),
+  'codex_transitions', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_transitions),
+  'codex_claims', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_claim_receipts),
+  'codex_attempts', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_attempt_receipts),
+  'codex_evidence', (select pg_catalog.count(*) from private.harmony_preview_codex_semantic_qa_evidence),
+  'codex_results', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_result_receipts),
+  'codex_verifications', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_verification_receipts),
+  'codex_reconciliations', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_reconciliation_receipts),
+  'codex_stage_links', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_stage_links),
   'max_connections', pg_catalog.current_setting('max_connections')::integer,
   'current_connections', (select pg_catalog.count(*) from pg_catalog.pg_stat_activity)
 )::text;
@@ -579,9 +1199,36 @@ insert into public.content_versions(
 );
 update public.content_items set current_version_id = '{ids['version']}'::uuid
 where workspace_id = '{ids['workspace']}'::uuid and id = '{ids['item']}'::uuid;
+insert into public.content_items(
+  id, workspace_id, client_id, content_kind, title, status
+) values (
+  '{ids['stale_item']}', '{ids['workspace']}', 'squid', 'daily_news',
+  'Squid stale-result 격리 검증', 'needs_review'
+);
+insert into public.content_versions(
+  id, workspace_id, content_item_id, version_number, prompt_version,
+  locale, title, content, channel_copy, deliverables, qa, generation_meta
+) values (
+  '{ids['stale_version']}', '{ids['workspace']}', '{ids['stale_item']}', 1,
+  'harmony-preview-stale-probe@1', 'ko-KR',
+  'Squid stale-result 격리 검증',
+  '{{"summary_ko":"stale-result reconciliation 격리 검증 전용 프라이빗 콘텐츠입니다."}}'::jsonb,
+  '{{"telegram":"프라이빗 검토 전용"}}'::jsonb,
+  '{{}}'::jsonb, '{{"fact_check":"pending_human_review"}}'::jsonb,
+  '{{"mock_mode":false}}'::jsonb
+);
+update public.content_items
+set current_version_id = '{ids['stale_version']}'::uuid
+where workspace_id = '{ids['workspace']}'::uuid
+  and id = '{ids['stale_item']}'::uuid;
 insert into public.content_source_links(
   workspace_id, client_id, content_item_id, source_item_id, position
 ) values ('{ids['workspace']}', 'squid', '{ids['item']}', '{ids['source']}', 0);
+insert into public.content_source_links(
+  workspace_id, client_id, content_item_id, source_item_id, position
+) values (
+  '{ids['workspace']}', 'squid', '{ids['stale_item']}', '{ids['source']}', 0
+);
 insert into public.jobs(
   id, workspace_id, client_id, content_item_id, job_kind, status,
   input, output, idempotency_key
@@ -603,6 +1250,32 @@ insert into public.event_log(
   'official_x_review_draft_completed',
   pg_catalog.jsonb_build_object(
     'job_id', '{ids['job']}', 'content_version_id', '{ids['version']}',
+    'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
+  )
+);
+insert into public.jobs(
+  id, workspace_id, client_id, content_item_id, job_kind, status,
+  input, output, idempotency_key
+) values (
+  '{ids['stale_job']}', '{ids['workspace']}', 'squid',
+  '{ids['stale_item']}', 'generate', 'succeeded',
+  pg_catalog.jsonb_build_object(
+    'workflow', 'official_x_review_draft_v1',
+    'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
+  ),
+  pg_catalog.jsonb_build_object(
+    'content_item_id', '{ids['stale_item']}',
+    'content_version_id', '{ids['stale_version']}'
+  ), 'harmony:{ids['slug']}:stale-official-x'
+);
+insert into public.event_log(
+  workspace_id, entity_type, entity_id, event_type, data
+) values (
+  '{ids['workspace']}', 'content_item', '{ids['stale_item']}',
+  'official_x_review_draft_completed',
+  pg_catalog.jsonb_build_object(
+    'job_id', '{ids['stale_job']}',
+    'content_version_id', '{ids['stale_version']}',
     'source_item_ids', pg_catalog.jsonb_build_array('{ids['source']}')
   )
 );
@@ -909,18 +1582,189 @@ def _assert_no_forbidden_side_effects(
         raise RuntimeError(f"{operation} race reported a forbidden side effect")
 
 
-def _race_exactly_once(
-    operation: str,
+def _server_concurrency_setup_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+create unlogged table {gate.table_name} (
+  singleton boolean primary key default true check (singleton),
+  participants integer not null default 0,
+  server_peak integer not null default 0,
+  released boolean not null default false
+);
+insert into {gate.table_name} (singleton) values (true);
+select pg_catalog.jsonb_build_object(
+  'participants', participants,
+  'released', released,
+  'server_peak', server_peak
+)::text
+from {gate.table_name}
+where singleton;
+"""
+
+
+def _server_concurrency_readback_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+select pg_catalog.jsonb_build_object(
+  'participants', participants,
+  'released', released,
+  'server_peak', server_peak
+)::text
+from {gate.table_name}
+where singleton;
+"""
+
+
+def _server_concurrency_release_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+update {gate.table_name} set released = true where singleton;
+select 'released';
+"""
+
+
+def _server_concurrency_drop_sql(gate: ServerConcurrencyGate) -> str:
+    return f"""
+drop table if exists {gate.table_name};
+select 'dropped';
+"""
+
+
+def _setup_server_concurrency_gate(
+    psql: Psql,
+    gate: ServerConcurrencyGate,
+) -> None:
+    try:
+        initial = psql.json(_server_concurrency_setup_sql(gate))
+        if initial != {
+            "participants": 0,
+            "released": False,
+            "server_peak": 0,
+        }:
+            raise RuntimeError("server concurrency gate setup failed")
+    except BaseException:
+        try:
+            if psql.run(_server_concurrency_drop_sql(gate)) != "dropped":
+                raise RuntimeError
+        except BaseException as cleanup_error:
+            raise RuntimeError(
+                "server concurrency gate setup cleanup failed"
+            ) from cleanup_error
+        raise
+
+
+def _server_concurrency_receipt(psql: Psql) -> dict[str, object]:
+    if set(psql.server_concurrency_evidence) != set(
+        SERVER_CONCURRENCY_RACE_LABELS
+    ):
+        raise RuntimeError("server concurrency evidence set mismatch")
+    races: dict[str, dict[str, object]] = {}
+    minimum_peak = CONCURRENCY
+    for label in SERVER_CONCURRENCY_RACE_LABELS:
+        evidence = psql.server_concurrency_evidence.get(label)
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {
+                "participants",
+                "released",
+                "server_peak",
+            }
+            or evidence.get("participants") != CONCURRENCY
+            or evidence.get("released") is not True
+            or type(evidence.get("server_peak")) is not int
+            or not psql.backend_concurrency_target
+            <= int(evidence["server_peak"])
+            <= CONCURRENCY
+        ):
+            raise RuntimeError("server concurrency evidence invalid")
+        races[label] = dict(evidence)
+        minimum_peak = min(minimum_peak, int(evidence["server_peak"]))
+    return {
+        "method": SERVER_CONCURRENCY_METHOD,
+        "client_sessions": CONCURRENCY,
+        "backend_target": psql.backend_concurrency_target,
+        "minimum_server_peak": minimum_peak,
+        "race_count": len(SERVER_CONCURRENCY_RACE_LABELS),
+        "races": races,
+    }
+
+
+def _race_rows(
+    psql: Psql,
+    label: str,
     invoke: Callable[[int], dict[str, object]],
-) -> tuple[dict[str, object], dict[str, int]]:
-    barrier = threading.Barrier(CONCURRENCY)
+    *,
+    concurrency: int | None = None,
+) -> list[dict[str, object]]:
+    if concurrency is None:
+        concurrency = CONCURRENCY
+    backend_target = min(psql.backend_concurrency_target, concurrency)
+    gate = _new_server_concurrency_gate(
+        label,
+        concurrency,
+        backend_target,
+    )
+    _setup_server_concurrency_gate(psql, gate)
+    barrier = threading.Barrier(concurrency)
+    rows: list[dict[str, object]] | None = None
+    primary_failure: BaseException | None = None
 
     def race(index: int) -> dict[str, object]:
         barrier.wait(timeout=30)
-        return invoke(index)
+        return psql.run_with_server_concurrency_gate(
+            gate,
+            lambda: invoke(index),
+        )
 
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        rows = list(pool.map(race, range(CONCURRENCY)))
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            rows = list(pool.map(race, range(concurrency)))
+        evidence = psql.json(_server_concurrency_readback_sql(gate))
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {
+                "participants",
+                "released",
+                "server_peak",
+            }
+            or type(evidence.get("participants")) is not int
+            or evidence.get("participants") != concurrency
+            or evidence.get("released") is not True
+            or type(evidence.get("server_peak")) is not int
+            or not backend_target
+            <= int(evidence["server_peak"])
+            <= concurrency
+        ):
+            raise RuntimeError(
+                "server concurrency participant readback mismatch"
+            )
+        if label in psql.server_concurrency_evidence:
+            raise RuntimeError("duplicate server concurrency label")
+        psql.server_concurrency_evidence[label] = evidence
+    except BaseException as exc:
+        primary_failure = exc
+        try:
+            psql.run(_server_concurrency_release_sql(gate))
+        except BaseException:
+            pass
+    finally:
+        try:
+            dropped = psql.run(_server_concurrency_drop_sql(gate))
+            if dropped != "dropped":
+                raise RuntimeError("server concurrency gate cleanup failed")
+        except BaseException as exc:
+            if primary_failure is None:
+                primary_failure = exc
+    if primary_failure is not None:
+        raise primary_failure
+    if rows is None:
+        raise RuntimeError("server concurrency race produced no rows")
+    return rows
+
+
+def _race_exactly_once(
+    psql: Psql,
+    operation: str,
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(psql, operation, invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -942,6 +1786,95 @@ def _race_exactly_once(
     if not HEX_SHA256_PATTERN.fullmatch(str(receipt.get("operation_key_sha256", ""))):
         raise RuntimeError(f"{operation} race returned no stable operation key")
     return canonical, {"new": new_count, "reused": reused_count}
+
+
+def _race_codex_idempotent(
+    psql: Psql,
+    operation: str,
+    invoke: Callable[[int], dict[str, object]],
+    identity_keys: tuple[str, ...],
+) -> tuple[dict[str, object], dict[str, int]]:
+    label = "codex_" + operation.rsplit(" ", 1)[-1].lower()
+    rows = _race_rows(psql, label, invoke)
+    new_count = sum(row.get("reused") is False for row in rows)
+    reused_count = sum(row.get("reused") is True for row in rows)
+    if (new_count, reused_count) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            f"{operation} durable exactly-once race failed: "
+            f"new={new_count}, reused={reused_count}"
+        )
+    identities = {
+        tuple(str(row.get(key, "")) for key in identity_keys)
+        for row in rows
+    }
+    if len(identities) != 1 or any(not value for value in next(iter(identities))):
+        raise RuntimeError(f"{operation} durable race returned divergent identity")
+    return rows[0], {"new": new_count, "reused": reused_count}
+
+
+def _race_codex_claim(
+    psql: Psql,
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(psql, "codex_claim", invoke)
+    claimed = [row for row in rows if row.get("claimed") is True]
+    not_claimed = [row for row in rows if row.get("claimed") is False]
+    if (len(claimed), len(not_claimed)) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex QA claim race failed: "
+            f"claimed={len(claimed)}, not_claimed={len(not_claimed)}"
+        )
+    winner = claimed[0]
+    for key in ("work_key", "request_key", "claim_fence_sha256"):
+        if not HEX_SHA256_PATTERN.fullmatch(str(winner.get(key, ""))):
+            raise RuntimeError(f"Codex QA claim winner omitted {key}")
+    return winner, {
+        "claimed": len(claimed),
+        "not_claimed": len(not_claimed),
+    }
+
+
+def _race_codex_start(
+    psql: Psql,
+    invoke: Callable[[int], dict[str, object]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(psql, "codex_start", invoke)
+    authorized = [row for row in rows if row.get("execute_authorized") is True]
+    non_authorizing = [
+        row for row in rows if row.get("execute_authorized") is False
+    ]
+    new_count = sum(row.get("reused") is False for row in rows)
+    reused_count = sum(row.get("reused") is True for row in rows)
+    if (
+        len(authorized),
+        len(non_authorizing),
+        new_count,
+        reused_count,
+    ) != (1, CONCURRENCY - 1, 1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex QA start race failed: "
+            f"authorized={len(authorized)}, "
+            f"non_authorizing={len(non_authorizing)}, "
+            f"new={new_count}, reused={reused_count}"
+        )
+    if authorized[0].get("reused") is not False:
+        raise RuntimeError("Codex QA replay incorrectly authorized execution")
+    identities = {
+        (
+            str(row.get("work_key", "")),
+            str(row.get("attempt_fence_sha256", "")),
+        )
+        for row in rows
+    }
+    if (
+        len(identities) != 1
+        or not all(HEX_SHA256_PATTERN.fullmatch(value) for value in next(iter(identities)))
+    ):
+        raise RuntimeError("Codex QA start race returned divergent identity")
+    return authorized[0], {
+        "authorized": len(authorized),
+        "replay_non_authorizing": len(non_authorizing),
+    }
 
 
 def _submit_expression(
@@ -975,6 +1908,86 @@ def _stage_expression(
     )
 
 
+def _codex_prepare_expression(
+    ids: dict[str, str],
+    approved_cost_cap_microusd: int = 0,
+) -> str:
+    return (
+        "public.prepare_preview_harmony_squid_codex_qa("
+        f"'{ids['workspace']}'::uuid, 'squid', '{ids['round']}'::uuid, "
+        f"'{ids['plan']}'::uuid, {approved_cost_cap_microusd}::bigint)"
+    )
+
+
+def _codex_claim_expression(
+    ids: dict[str, str],
+    lease_seconds: int = 900,
+) -> str:
+    return (
+        "public.claim_preview_harmony_squid_codex_qa("
+        f"'{ids['workspace']}'::uuid, 'squid', {lease_seconds})"
+    )
+
+
+def _codex_start_expression(
+    ids: dict[str, str],
+    work_key: str,
+    claim_fence_sha256: str,
+) -> str:
+    return (
+        "public.start_preview_harmony_squid_codex_qa_attempt("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)}, "
+        f"{_sql_literal(claim_fence_sha256)})"
+    )
+
+
+def _codex_submit_result_expression(
+    ids: dict[str, str],
+    work_key: str,
+    attempt_fence_sha256: str,
+    criteria: dict[str, object],
+    *,
+    qa_output_sha256: str,
+    verdict: str,
+    finding_codes: list[str],
+) -> str:
+    findings = (
+        "array[]::text[]"
+        if not finding_codes
+        else "array["
+        + ",".join(_sql_literal(value) for value in finding_codes)
+        + "]::text[]"
+    )
+    return (
+        "public.submit_preview_harmony_squid_codex_qa_result("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)}, "
+        f"{_sql_literal(attempt_fence_sha256)}, "
+        f"{_sql_literal(_compact(criteria))}::jsonb, "
+        f"{_sql_literal(qa_output_sha256)}, {findings}, "
+        f"{_sql_literal(verdict)})"
+    )
+
+
+def _codex_verify_expression(
+    ids: dict[str, str],
+    work_key: str,
+) -> str:
+    return (
+        "public.verify_preview_harmony_squid_codex_qa_result("
+        f"'{ids['workspace']}'::uuid, 'squid', {_sql_literal(work_key)})"
+    )
+
+
+def _codex_reconcile_expression(
+    ids: dict[str, str],
+    batch_limit: int = 64,
+) -> str:
+    return (
+        "public.reconcile_preview_harmony_squid_codex_qa_lease("
+        f"'{ids['workspace']}'::uuid, 'squid', {batch_limit})"
+    )
+
+
 def _qa_denial_expression(
     ids: dict[str, str],
     denial_receipt_id: str,
@@ -990,16 +2003,10 @@ def _qa_denial_expression(
 
 
 def _race_qa_denial(
+    psql: Psql,
     invoke: Callable[[int], dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, int]]:
-    barrier = threading.Barrier(CONCURRENCY)
-
-    def race(index: int) -> dict[str, object]:
-        barrier.wait(timeout=30)
-        return invoke(index)
-
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        rows = list(pool.map(race, range(CONCURRENCY)))
+    rows = _race_rows(psql, "qa_denial", invoke)
     new_count = sum(row.get("reused") is False for row in rows)
     reused_count = sum(row.get("reused") is True for row in rows)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1027,6 +2034,50 @@ def _race_qa_denial(
     return rows[0], {"new": new_count, "reused": reused_count}
 
 
+def _race_codex_reconciliation(
+    psql: Psql,
+    invoke: Callable[[int], dict[str, object]],
+    *,
+    expected_work_key: str,
+) -> tuple[dict[str, object], dict[str, int]]:
+    rows = _race_rows(psql, "codex_reconciliation", invoke)
+    winners = [row for row in rows if row.get("reconciled") is True]
+    no_ops = [row for row in rows if row.get("reconciled") is False]
+    if (len(winners), len(no_ops)) != (1, CONCURRENCY - 1):
+        raise RuntimeError(
+            "Codex stale-result reconciliation exactly-once race failed: "
+            f"reconciled={len(winners)}, no_op={len(no_ops)}"
+        )
+    winner = winners[0]
+    if winner != {
+        "blocked": True,
+        "outcome_unknown": False,
+        "pending": False,
+        "reconciled": True,
+        "status": "blocked",
+        "work_key": expected_work_key,
+    }:
+        raise RuntimeError(
+            "Codex stale-result reconciliation returned an invalid winner: "
+            f"{winner}"
+        )
+    expected_no_op = {
+        "blocked": False,
+        "outcome_unknown": False,
+        "pending": False,
+        "reconciled": False,
+        "work_key": None,
+    }
+    if any(row != expected_no_op for row in no_ops):
+        raise RuntimeError(
+            "Codex stale-result reconciliation returned a divergent no-op"
+        )
+    return winner, {
+        "reconciled": len(winners),
+        "no_op": len(no_ops),
+    }
+
+
 def run_probe(args: argparse.Namespace) -> dict[str, object]:
     is_local = _is_local_host(args.host)
     branch_ref: str | None = None
@@ -1045,6 +2096,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
                 args.port,
                 args.expected_branch_ref,
                 args.parent_project_ref,
+                args.database_transport,
+                args.user,
+                args.database,
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -1057,6 +2111,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         raise SystemExit("--config-sha256 must be an exact lowercase 64-hex digest")
     if not 1 <= args.command_timeout_seconds <= 120:
         raise SystemExit("--command-timeout-seconds must be between 1 and 120")
+    if not 1 <= args.backend_concurrency_target <= CONCURRENCY:
+        raise SystemExit(
+            "--backend-concurrency-target must be between 1 and 64"
+        )
+    if (
+        args.database_transport == "direct"
+        and args.backend_concurrency_target != CONCURRENCY
+    ):
+        raise SystemExit(
+            "direct transport requires a 64-backend concurrency target"
+        )
     if not 1 <= args.fence_ttl_minutes <= 120:
         raise SystemExit("--fence-ttl-minutes must be between 1 and the approved 120-minute TTL")
     psql = Psql(
@@ -1066,6 +2131,12 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         args.user,
         args.database,
         args.command_timeout_seconds,
+        args.backend_concurrency_target,
+    )
+    tls_ingress = (
+        None
+        if is_local
+        else _prove_postgres_tls_ingress(psql, args.host, args.port)
     )
     _assert_connector_request_digest_vector(psql)
     preflight = psql.json(_environment_preflight_sql())
@@ -1082,20 +2153,36 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         "plans": 0,
         "stage_receipts": 0,
         "operator_inbox": 0,
+        "codex_lineages": 0,
+        "codex_requests": 0,
+        "codex_runs": 0,
+        "codex_transitions": 0,
+        "codex_claims": 0,
+        "codex_attempts": 0,
+        "codex_evidence": 0,
+        "codex_results": 0,
+        "codex_verifications": 0,
+        "codex_reconciliations": 0,
+        "codex_stage_links": 0,
     }
     if any(preflight.get(key) != value for key, value in expected_empty.items()):
         raise RuntimeError(f"Preview ledger preflight was not empty: {preflight}")
     max_connections = int(preflight.get("max_connections", 0))
     current_connections = int(preflight.get("current_connections", max_connections))
-    if max_connections - current_connections < CONCURRENCY + 8:
+    required_free_connections = _required_free_database_connections(
+        args.database_transport,
+        args.backend_concurrency_target,
+    )
+    if max_connections - current_connections < required_free_connections:
         raise RuntimeError(
-            "insufficient_direct_connection_capacity_for_64_way_probe"
+            "insufficient_database_backend_capacity_for_concurrency_probe"
         )
     uid = lambda: str(uuid.uuid4())
     ids = {
         "workspace": uid(), "feed": uid(), "source": uid(), "item": uid(),
         "version": uid(), "job": uid(), "round": uid(), "plan": uid(),
-        "inbox": uid(), "slug": uuid.uuid4().hex[:12],
+        "inbox": uid(), "stale_item": uid(), "stale_version": uid(),
+        "stale_job": uid(), "slug": uuid.uuid4().hex[:12],
     }
     specialist_principals = {
         stage: uid()
@@ -1119,7 +2206,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
     }:
         raise RuntimeError(f"Preview fence activation failed closed: {fence}")
     seed = psql.json(_seed_sql(ids))
-    if seed != {"ok": True, "grok_rows": 1, "publication_rows": 0}:
+    if seed != {"ok": True, "grok_rows": 2, "publication_rows": 0}:
         raise RuntimeError(f"fixture seed failed closed: {seed}")
     specialist_seed = psql.json(_seed_specialists_sql(
         ids,
@@ -1283,14 +2370,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, object]:
         ),
         "harmony_preview_connector_registration_invalid",
     )
-    barrier = threading.Barrier(CONCURRENCY)
-
     def race(_: int) -> dict[str, object]:
-        barrier.wait(timeout=30)
         return psql.json(_rpc_sql(quiz[3], _submit_expression(ids, quiz[4], quiz[2])))
 
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        raced = list(pool.map(race, range(CONCURRENCY)))
+    raced = _race_rows(psql, "connector_request", race)
     new_count = sum(row.get("reused") is False for row in raced)
     reused_count = sum(row.get("reused") is True for row in raced)
     if (new_count, reused_count) != (1, CONCURRENCY - 1):
@@ -1557,7 +2640,7 @@ select pg_catalog.jsonb_build_object(
         )
         return psql.json(_rpc_sql(claims, plan_expression(uid())))
 
-    plan, plan_race = _race_exactly_once("plan", invoke_plan)
+    plan, plan_race = _race_exactly_once(psql, "plan", invoke_plan)
     operation_races: dict[str, dict[str, int]] = {"plan": plan_race}
     plan_rows = psql.json(f"""
 select pg_catalog.jsonb_build_object(
@@ -1601,37 +2684,19 @@ select pg_catalog.jsonb_build_object(
             "harmony_prepare_private_content",
         ),
         (
-            "independent_qa",
-            "coineasy_harmony_qa",
-            "harmony_independent_qa",
-        ),
-        (
             "operator_inbox",
             "coineasy_harmony_operator",
             "harmony_operator_inbox",
         ),
         ("recap", "coineasy_harmony_recap", "harmony_recap"),
     ]
-    stage_results: list[dict[str, object]] = []
+    codex_qa_races: dict[str, dict[str, int]] = {}
+    codex_work_key = ""
     wrong_principal_preemption_rows = 0
     operator_inbox_stage4_delta = 0
     recap_operator_inbox_delta = 0
     for stage, role, capability in stage_specs:
-        qa_evidence: dict[str, object] | None = None
         inbox_id = ids["inbox"] if stage in {"operator_inbox", "recap"} else None
-        if stage == "independent_qa":
-            previous_receipt = stage_results[-1].get("stage_receipt")
-            if not isinstance(previous_receipt, dict):
-                raise RuntimeError("private-content race returned no receipt")
-            reviewed = str(previous_receipt["output_sha256"])
-            qa_evidence = {
-                "schema_version": "harmony-independent-qa-evidence@1",
-                "reviewed_output_sha256": reviewed,
-                "criteria": {"automatic_publication": False, "factual_binding": True,
-                             "no_external_calls": True, "private_only": True},
-                "findings": [], "verdict": "passed",
-                "verifier_version": "harmony-deterministic-qa@1",
-            }
         before_stage = psql.json(f"""
 select pg_catalog.jsonb_build_object(
   'stage_rows', (select pg_catalog.count(*)
@@ -1654,7 +2719,7 @@ select pg_catalog.jsonb_build_object(
         psql.expect_error(
             _rpc_sql(
                 wrong_claims,
-                _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
+                _stage_expression(ids, stage, uid(), inbox_id),
             ),
             "harmony_preview_stage_claim_invalid",
         )
@@ -1689,10 +2754,10 @@ select pg_catalog.jsonb_build_object(
             )
             return psql.json(_rpc_sql(
                 claims,
-                _stage_expression(ids, stage, uid(), inbox_id, qa_evidence),
+                _stage_expression(ids, stage, uid(), inbox_id),
             ))
 
-        result, stage_race = _race_exactly_once(stage, invoke_stage)
+        result, stage_race = _race_exactly_once(psql, stage, invoke_stage)
         operation_races[stage] = stage_race
         after_stage = psql.json(f"""
 select pg_catalog.jsonb_build_object(
@@ -1729,7 +2794,241 @@ select pg_catalog.jsonb_build_object(
             raise RuntimeError(
                 f"{stage} changed the representative inbox early: {after_stage}"
             )
-        stage_results.append(result)
+        if stage == "private_content":
+            private_receipt = result.get("stage_receipt")
+            if not isinstance(private_receipt, dict):
+                raise RuntimeError("private-content race returned no receipt")
+            private_output_sha256 = str(private_receipt["output_sha256"])
+
+            def qa_claims(principal_id: str) -> dict[str, object]:
+                return _claims(
+                    workspace_id=ids["workspace"], branch_ref=branch_ref,
+                    role="coineasy_harmony_qa",
+                    capability="harmony_independent_qa",
+                    principal_id=principal_id,
+                    release_sha=args.release_sha,
+                    config_sha256=args.config_sha256,
+                )
+
+            codex_before_wrong = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid')
+)::text;
+""")
+            for missing_claim in ("capability", "jti", "max_cost_microusd"):
+                incomplete_claims = qa_claims(
+                    specialist_principals["independent_qa"]
+                )
+                incomplete_claims.pop(missing_claim)
+                psql.expect_error(
+                    _rpc_sql(
+                        incomplete_claims,
+                        _codex_prepare_expression(ids),
+                    ),
+                    "harmony_preview_codex_qa_scope_invalid",
+                )
+            psql.expect_error(
+                _rpc_sql(qa_claims(uid()), _codex_prepare_expression(ids)),
+                "harmony_preview_codex_qa_scope_invalid",
+            )
+            if psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid')
+)::text;
+""") != codex_before_wrong:
+                raise RuntimeError("wrong QA principal preempted the Codex gate")
+
+            def invoke_prepare(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_prepare_expression(ids),
+                ))
+
+            prepared, codex_qa_races["prepare"] = _race_codex_idempotent(
+                psql,
+                "Codex QA prepare",
+                invoke_prepare,
+                ("work_key", "request_key"),
+            )
+            codex_work_key = str(prepared["work_key"])
+            request_key = str(prepared["request_key"])
+            if not all(HEX_SHA256_PATTERN.fullmatch(value) for value in (
+                codex_work_key, request_key
+            )):
+                raise RuntimeError("Codex QA prepare returned invalid identity")
+            canonical_identity = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'assignment_key', request.assignment_key,
+  'reviewer_binding_sha256', request.reviewer_specialist_binding_sha256,
+  'source_lineage', lineage.payload,
+  'work_key', request.work_key
+)::text
+from private.harmony_preview_codex_gate_requests request
+join private.harmony_preview_codex_source_lineage_receipts lineage
+  on lineage.workspace_id = request.workspace_id
+ and lineage.client_id = request.client_id
+ and lineage.lineage_receipt_id = request.lineage_receipt_id
+where request.workspace_id = '{ids['workspace']}'::uuid
+  and request.client_id = 'squid'
+  and request.plan_id = '{ids['plan']}'::uuid;
+""")
+            source_lineage = canonical_identity.get("source_lineage")
+            if not isinstance(source_lineage, dict):
+                raise RuntimeError("Codex QA request omitted source lineage")
+            expected_work_key = _codex_work_key_from_lineage(source_lineage)
+            reviewer_binding_sha256 = str(
+                canonical_identity.get("reviewer_binding_sha256", "")
+            )
+            expected_assignment_key = _codex_assignment_key(
+                expected_work_key, reviewer_binding_sha256
+            )
+            if (
+                canonical_identity.get("work_key") != expected_work_key
+                or canonical_identity.get("assignment_key")
+                    != expected_assignment_key
+            ):
+                raise RuntimeError(
+                    "Codex QA DB identity drifted from the offline runner"
+                )
+
+            def invoke_claim(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_claim_expression(ids),
+                ))
+
+            claimed, codex_qa_races["claim"] = _race_codex_claim(
+                psql, invoke_claim
+            )
+            if (claimed["work_key"], claimed["request_key"]) != (
+                codex_work_key, request_key
+            ):
+                raise RuntimeError("Codex QA claim selected another request")
+            claim_fence = str(claimed["claim_fence_sha256"])
+
+            # Exercise the frozen-actor prefilter against an actually eligible
+            # reconciliation candidate.  A claimed run is candidate-eligible;
+            # a pending/current run would produce the same no-op before the
+            # reviewer binding predicates are reached.
+            reconciliation_before_wrong_actor = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'reconciliations', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'status', (select pg_catalog.min(status)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and work_key = '{codex_work_key}')
+)::text;
+""")
+            wrong_actor_reconciliation = psql.json(_rpc_sql(
+                qa_claims(uid()), _codex_reconcile_expression(ids)
+            ))
+            if wrong_actor_reconciliation != {
+                "blocked": False,
+                "outcome_unknown": False,
+                "pending": False,
+                "reconciled": False,
+                "work_key": None,
+            }:
+                raise RuntimeError(
+                    "wrong QA actor observed or locked a frozen reconciliation"
+                )
+            reconciliation_after_wrong_actor = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'requests', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'runs', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'reconciliations', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'status', (select pg_catalog.min(status)
+    from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'
+      and work_key = '{codex_work_key}')
+)::text;
+""")
+            if reconciliation_after_wrong_actor != reconciliation_before_wrong_actor:
+                raise RuntimeError(
+                    "wrong QA actor changed the frozen reconciliation ledger"
+                )
+
+            def invoke_start(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_start_expression(ids, codex_work_key, claim_fence),
+                ))
+
+            started, codex_qa_races["start"] = _race_codex_start(
+                psql, invoke_start
+            )
+            attempt_fence = str(started["attempt_fence_sha256"])
+            criteria = {
+                "automatic_publication_off": True,
+                "factual_binding": True,
+                "no_external_calls": True,
+                "output_contract_valid": True,
+                "private_boundary_preserved": True,
+                "source_lineage_complete": True,
+            }
+            qa_output_sha256 = hashlib.sha256(
+                f"durable-codex-qa:{private_output_sha256}".encode()
+            ).hexdigest()
+
+            def invoke_submit(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_submit_result_expression(
+                        ids, codex_work_key, attempt_fence, criteria,
+                        qa_output_sha256=qa_output_sha256,
+                        verdict="pass", finding_codes=[],
+                    ),
+                ))
+
+            _, codex_qa_races["submit"] = _race_codex_idempotent(
+                psql,
+                "Codex QA submit",
+                invoke_submit,
+                ("work_key", "result_sha256"),
+            )
+
+            def invoke_verify(_: int) -> dict[str, object]:
+                return psql.json(_rpc_sql(
+                    qa_claims(specialist_principals["independent_qa"]),
+                    _codex_verify_expression(ids, codex_work_key),
+                ))
+
+            verified, codex_qa_races["verify"] = _race_codex_idempotent(
+                psql,
+                "Codex QA verify", invoke_verify,
+                ("work_key", "verification_receipt_sha256"),
+            )
+            verified_stage = verified.get("stage_receipt")
+            if (
+                verified.get("status") != "operator_review_pending"
+                or not isinstance(verified_stage, dict)
+                or verified_stage.get("stage") != "independent_qa"
+                or verified_stage.get("plan_id") != ids["plan"]
+            ):
+                raise RuntimeError(
+                    "Codex QA verify did not atomically create the QA stage"
+                )
+            operation_races["independent_qa"] = codex_qa_races["verify"]
 
     denial_ids = {
         **ids,
@@ -1937,7 +3236,7 @@ select pg_catalog.jsonb_build_object(
             _qa_denial_expression(denial_ids, uid(), failed_qa_evidence),
         ))
 
-    qa_denial, qa_denial_race = _race_qa_denial(invoke_qa_denial)
+    qa_denial, qa_denial_race = _race_qa_denial(psql, invoke_qa_denial)
     qa_denial_receipt = qa_denial.get("qa_denial_receipt")
     if (
         not isinstance(qa_denial_receipt, dict)
@@ -1963,19 +3262,6 @@ select pg_catalog.jsonb_build_object(
             "failed QA changed downstream rows or duplicated denials: "
             f"{denial_downstream_before} -> {denial_downstream_after}"
         )
-    passed_qa_evidence = {
-        "schema_version": "harmony-independent-qa-evidence@1",
-        "reviewed_output_sha256": denied_output_sha256,
-        "criteria": {
-            "automatic_publication": False,
-            "factual_binding": True,
-            "no_external_calls": True,
-            "private_only": True,
-        },
-        "findings": [],
-        "verdict": "passed",
-        "verifier_version": "harmony-deterministic-qa@1",
-    }
     denial_qa_claims = _claims(
         workspace_id=ids["workspace"],
         branch_ref=branch_ref,
@@ -1988,17 +3274,488 @@ select pg_catalog.jsonb_build_object(
     psql.expect_error(
         _rpc_sql(
             denial_qa_claims,
-            _stage_expression(
-                denial_ids,
-                "independent_qa",
-                uid(),
-                qa_evidence=passed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
         "harmony_preview_qa_output_already_denied",
     )
     if psql.json(denial_downstream_sql) != denial_downstream_after:
         raise RuntimeError("denied output created a passed or downstream row")
+
+    # Build a second passing Codex result, then supersede its bound content
+    # version before verification.  Sixty-four reconcilers must converge on a
+    # single immutable ``result_not_current`` receipt, leaving no QA stage,
+    # representative inbox, or recap for the stale plan.
+    stale_ids = {
+        **ids,
+        "item": ids["stale_item"],
+        "version": ids["stale_version"],
+        "job": ids["stale_job"],
+        "round": uid(),
+        "plan": uid(),
+        "inbox": uid(),
+    }
+    stale_source_body = _signal_body(
+        workspace_id=ids["workspace"],
+        signal_id=uid(),
+        source_event_id=stale_ids["version"],
+        principal_id=source_principal,
+        signal_kind="official_source",
+        lane="content_source",
+        topic_codes=[topic],
+        observed_at=observed_at,
+        expires_at=expires_at,
+        upstream_receipt_sha256="0" * 64,
+        evidence_sha256=source_body_sha,
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        extra={
+            "data_classification": "public_official",
+            "source_item_id": ids["source"],
+            "source_body_sha256": source_body_sha,
+            "source_kind": "x_post_text",
+            "source_verified": True,
+            "eligible_content_kinds": ["daily_news"],
+        },
+    )
+    stale_source_binding = psql.run(
+        "select private.harmony_preview_squid_official_source_binding("
+        + _sql_literal(_compact(stale_source_body))
+        + "::jsonb);"
+    )
+    if len(stale_source_binding) != 64:
+        raise RuntimeError(
+            "stale-result official source binding was not derived from ledger"
+        )
+    stale_source_body["upstream_receipt_sha256"] = stale_source_binding
+    stale_source_signal = _with_db_hash(psql, stale_source_body)
+    stale_source_receipt_id = uid()
+    stale_source_request_sha256 = _connector_request_sha256(
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=source_registration["registration_id"],
+        connector_receipt_id=stale_source_receipt_id,
+        signal=stale_source_signal,
+    )
+    _assert_connector_request_sha256_matches_database(
+        psql,
+        expected_sha256=stale_source_request_sha256,
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=source_registration["registration_id"],
+        connector_receipt_id=stale_source_receipt_id,
+        signal=stale_source_signal,
+    )
+    stale_source_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_connector",
+        capability="harmony_submit_content_source",
+        principal_id=source_principal,
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        connector_id=source_registration["connector_id"],
+        attestation_registration_id=source_registration["registration_id"],
+        attestation_key_id=source_registration["attestation_key_id"],
+        request_sha256=stale_source_request_sha256,
+    )
+    stale_source_claims["exp"] = min(
+        int(stale_source_claims["exp"]), int(expires.timestamp())
+    )
+    stale_source_result = psql.json(_rpc_sql(
+        stale_source_claims,
+        _submit_expression(
+            stale_ids,
+            stale_source_receipt_id,
+            stale_source_signal,
+        ),
+    ))
+    if (
+        stale_source_result.get("ok") is not True
+        or stale_source_result.get("reused") is not False
+        or not isinstance(
+            stale_source_result.get("connector_request_receipt"), dict
+        )
+    ):
+        raise RuntimeError(
+            f"stale-result official source submission failed: "
+            f"{stale_source_result}"
+        )
+    stale_quiz_registration = connector_registrations["quiz_bot"]
+    stale_quiz_body = _signal_body(
+        workspace_id=ids["workspace"],
+        signal_id=uid(),
+        source_event_id=uid(),
+        principal_id=stale_quiz_registration["principal_id"],
+        signal_kind="quiz_learning",
+        lane="quiz_bot",
+        topic_codes=[topic],
+        observed_at=observed_at,
+        expires_at=expires_at,
+        upstream_receipt_sha256=hashlib.sha256(
+            ("stale-result-quiz:" + ids["slug"]).encode()
+        ).hexdigest(),
+        evidence_sha256=hashlib.sha256(
+            ("stale-result-evidence:" + ids["slug"]).encode()
+        ).hexdigest(),
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        extra={
+            "data_classification": "aggregate_anonymous",
+            "attempts": 48,
+            "participants": 12,
+            "accuracy_basis_points": 6900,
+            "tutorial_priority_basis_points": 8500,
+        },
+    )
+    stale_quiz_signal = _with_db_hash(psql, stale_quiz_body)
+    stale_quiz_receipt_id = uid()
+    stale_quiz_request_sha256 = _connector_request_sha256(
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=stale_quiz_registration["registration_id"],
+        connector_receipt_id=stale_quiz_receipt_id,
+        signal=stale_quiz_signal,
+    )
+    _assert_connector_request_sha256_matches_database(
+        psql,
+        expected_sha256=stale_quiz_request_sha256,
+        workspace_id=ids["workspace"],
+        client_id=CLIENT_ID,
+        registration_id=stale_quiz_registration["registration_id"],
+        connector_receipt_id=stale_quiz_receipt_id,
+        signal=stale_quiz_signal,
+    )
+    stale_quiz_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_connector",
+        capability="harmony_submit_quiz_bot",
+        principal_id=stale_quiz_registration["principal_id"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+        connector_id=stale_quiz_registration["connector_id"],
+        attestation_registration_id=stale_quiz_registration["registration_id"],
+        attestation_key_id=stale_quiz_registration["attestation_key_id"],
+        request_sha256=stale_quiz_request_sha256,
+    )
+    stale_quiz_claims["exp"] = min(
+        int(stale_quiz_claims["exp"]), int(expires.timestamp())
+    )
+    stale_signal_result = psql.json(_rpc_sql(
+        stale_quiz_claims,
+        _submit_expression(
+            ids,
+            stale_quiz_receipt_id,
+            stale_quiz_signal,
+        ),
+    ))
+    if (
+        stale_signal_result.get("ok") is not True
+        or stale_signal_result.get("reused") is not False
+        or not isinstance(
+            stale_signal_result.get("connector_request_receipt"), dict
+        )
+    ):
+        raise RuntimeError(
+            f"stale-result quiz signal failed: {stale_signal_result}"
+        )
+
+    stale_signal_hashes = sorted(
+        [stale_quiz_signal["payload_sha256"]]
+        + [row[2]["payload_sha256"] for row in signals[1:]]
+        + [stale_source_signal["payload_sha256"]]
+    )
+    stale_array_sql = (
+        "array["
+        + ",".join(_sql_literal(value) for value in stale_signal_hashes)
+        + "]::text[]"
+    )
+    stale_plan_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_orchestrator",
+        capability="harmony_plan",
+        principal_id=specialist_principals["plan"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_plan = psql.json(_rpc_sql(
+        stale_plan_claims,
+        "public.create_preview_harmony_squid_plan("
+        f"'{ids['workspace']}'::uuid, 'squid', "
+        f"'{stale_ids['round']}'::uuid, '{stale_ids['plan']}'::uuid, "
+        f"'{uid()}'::uuid, {stale_array_sql}, '{topic}')",
+    ))
+    if stale_plan.get("ok") is not True or stale_plan.get("reused") is not False:
+        raise RuntimeError(f"stale-result plan failed: {stale_plan}")
+
+    stale_content_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_content",
+        capability="harmony_prepare_private_content",
+        principal_id=specialist_principals["private_content"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_content = psql.json(_rpc_sql(
+        stale_content_claims,
+        _stage_expression(stale_ids, "private_content", uid()),
+    ))
+    stale_content_receipt = stale_content.get("stage_receipt")
+    if (
+        stale_content.get("ok") is not True
+        or stale_content.get("reused") is not False
+        or not isinstance(stale_content_receipt, dict)
+    ):
+        raise RuntimeError(
+            f"stale-result private content failed: {stale_content}"
+        )
+    stale_private_output_sha256 = str(
+        stale_content_receipt["output_sha256"]
+    )
+    stale_qa_claims = _claims(
+        workspace_id=ids["workspace"],
+        branch_ref=branch_ref,
+        role="coineasy_harmony_qa",
+        capability="harmony_independent_qa",
+        principal_id=specialist_principals["independent_qa"],
+        release_sha=args.release_sha,
+        config_sha256=args.config_sha256,
+    )
+    stale_prepared = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_prepare_expression(stale_ids),
+    ))
+    stale_work_key = str(stale_prepared.get("work_key", ""))
+    if (
+        stale_prepared.get("reused") is not False
+        or not HEX_SHA256_PATTERN.fullmatch(stale_work_key)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex prepare failed: {stale_prepared}"
+        )
+    stale_claimed = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_claim_expression(stale_ids),
+    ))
+    stale_claim_fence = str(stale_claimed.get("claim_fence_sha256", ""))
+    if (
+        stale_claimed.get("claimed") is not True
+        or stale_claimed.get("work_key") != stale_work_key
+        or not HEX_SHA256_PATTERN.fullmatch(stale_claim_fence)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex claim failed: {stale_claimed}"
+        )
+    stale_started = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_start_expression(stale_ids, stale_work_key, stale_claim_fence),
+    ))
+    stale_attempt_fence = str(
+        stale_started.get("attempt_fence_sha256", "")
+    )
+    if (
+        stale_started.get("reused") is not False
+        or stale_started.get("work_key") != stale_work_key
+        or not HEX_SHA256_PATTERN.fullmatch(stale_attempt_fence)
+    ):
+        raise RuntimeError(
+            f"stale-result Codex start failed: {stale_started}"
+        )
+    stale_criteria = {
+        "automatic_publication_off": True,
+        "factual_binding": True,
+        "no_external_calls": True,
+        "output_contract_valid": True,
+        "private_boundary_preserved": True,
+        "source_lineage_complete": True,
+    }
+    stale_qa_output_sha256 = hashlib.sha256(
+        f"stale-durable-codex-qa:{stale_private_output_sha256}".encode()
+    ).hexdigest()
+    stale_submitted = psql.json(_rpc_sql(
+        stale_qa_claims,
+        _codex_submit_result_expression(
+            stale_ids,
+            stale_work_key,
+            stale_attempt_fence,
+            stale_criteria,
+            qa_output_sha256=stale_qa_output_sha256,
+            verdict="pass",
+            finding_codes=[],
+        ),
+    ))
+    if (
+        stale_submitted.get("reused") is not False
+        or stale_submitted.get("status") != "result_submitted"
+        or stale_submitted.get("work_key") != stale_work_key
+    ):
+        raise RuntimeError(
+            f"stale-result Codex submit failed: {stale_submitted}"
+        )
+
+    stale_round_current_sql = f"""
+select private.harmony_preview_round_inputs_current(
+  round.workspace_id, round.client_id, round.signal_manifest
+)::text
+from agent_runtime.harmony_rounds round
+where round.workspace_id = '{ids['workspace']}'::uuid
+  and round.client_id = 'squid'
+  and round.round_id = '{stale_ids['round']}'::uuid;
+"""
+    if psql.run(stale_round_current_sql) != "true":
+        raise RuntimeError(
+            "stale-result round was not current before content supersession"
+        )
+
+    superseding_version_id = uid()
+    superseded = psql.json(f"""
+insert into public.content_versions(
+  id, workspace_id, content_item_id, version_number, prompt_version,
+  locale, title, content, channel_copy, deliverables, qa, generation_meta
+)
+select
+  '{superseding_version_id}'::uuid, workspace_id, content_item_id, 2,
+  'harmony-preview-probe@2', locale, title, content, channel_copy,
+  deliverables, qa, generation_meta
+from public.content_versions
+where workspace_id = '{ids['workspace']}'::uuid
+  and content_item_id = '{stale_ids['item']}'::uuid
+  and id = '{stale_ids['version']}'::uuid;
+update public.content_items
+set current_version_id = '{superseding_version_id}'::uuid
+where workspace_id = '{ids['workspace']}'::uuid
+  and client_id = 'squid'
+  and id = '{stale_ids['item']}'::uuid;
+select pg_catalog.jsonb_build_object(
+  'current_version_id', current_version_id,
+  'versions', (select pg_catalog.count(*) from public.content_versions version
+    where version.workspace_id = item.workspace_id
+      and version.content_item_id = item.id)
+)::text
+from public.content_items item
+where workspace_id = '{ids['workspace']}'::uuid
+  and client_id = 'squid'
+  and id = '{stale_ids['item']}'::uuid;
+""")
+    if superseded != {
+        "current_version_id": superseding_version_id,
+        "versions": 2,
+    }:
+        raise RuntimeError(
+            f"stale-result content supersession failed: {superseded}"
+        )
+
+    def invoke_stale_reconciliation(_: int) -> dict[str, object]:
+        return psql.json(_rpc_sql(
+            stale_qa_claims,
+            _codex_reconcile_expression(stale_ids),
+        ))
+
+    _, stale_reconciliation_race = _race_codex_reconciliation(
+        psql,
+        invoke_stale_reconciliation,
+        expected_work_key=stale_work_key,
+    )
+    stale_reconciliation_receipt = psql.json(f"""
+select pg_catalog.jsonb_build_object(
+  'run_status', run.status,
+  'reconciliations', pg_catalog.count(distinct reconciliation.reconciliation_receipt_id),
+  'action', pg_catalog.min(reconciliation.reconciliation_action),
+  'attempt_bound', pg_catalog.bool_and(
+    reconciliation.attempt_receipt_id = result.attempt_receipt_id
+  ),
+  'result_bound', pg_catalog.bool_and(
+    reconciliation.result_receipt_id = result.result_receipt_id
+  ),
+  'transition_kind', pg_catalog.min(transition.transition_kind),
+  'transition_from', pg_catalog.min(transition.from_state),
+  'transition_to', pg_catalog.min(transition.to_state),
+  'terminal_reason', pg_catalog.min(transition.terminal_reason),
+  'reconciler_principal_id', pg_catalog.min(
+    reconciliation.payload ->> 'reconciler_principal_id'
+  ),
+  'qa_stages', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts stage
+    where stage.workspace_id = request.workspace_id
+      and stage.client_id = request.client_id
+      and stage.plan_id = request.plan_id
+      and stage.stage = 'independent_qa'),
+  'verifications', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_verification_receipts verification
+    where verification.workspace_id = request.workspace_id
+      and verification.client_id = request.client_id
+      and verification.request_id = request.request_id),
+  'stage_links', (select pg_catalog.count(*)
+    from private.harmony_preview_codex_gate_stage_links link
+    where link.workspace_id = request.workspace_id
+      and link.client_id = request.client_id
+      and link.request_id = request.request_id),
+  'operator_inbox', (select pg_catalog.count(*)
+    from agent_runtime.harmony_operator_inbox inbox
+    where inbox.workspace_id = request.workspace_id
+      and inbox.client_id = request.client_id
+      and inbox.plan_id = request.plan_id),
+  'recap_stages', (select pg_catalog.count(*)
+    from agent_runtime.harmony_stage_receipts stage
+    where stage.workspace_id = request.workspace_id
+      and stage.client_id = request.client_id
+      and stage.plan_id = request.plan_id
+      and stage.stage = 'recap')
+)::text
+from private.harmony_preview_codex_gate_requests request
+join private.harmony_preview_codex_gate_runs run
+  on run.workspace_id = request.workspace_id
+ and run.client_id = request.client_id
+ and run.request_id = request.request_id
+join private.harmony_preview_codex_gate_result_receipts result
+  on result.workspace_id = request.workspace_id
+ and result.client_id = request.client_id
+ and result.request_id = request.request_id
+join private.harmony_preview_codex_gate_reconciliation_receipts reconciliation
+  on reconciliation.workspace_id = request.workspace_id
+ and reconciliation.client_id = request.client_id
+ and reconciliation.request_id = request.request_id
+join private.harmony_preview_codex_gate_transitions transition
+  on transition.workspace_id = reconciliation.workspace_id
+ and transition.client_id = reconciliation.client_id
+ and transition.request_id = reconciliation.request_id
+ and transition.transition_id = reconciliation.transition_id
+where request.workspace_id = '{ids['workspace']}'::uuid
+  and request.client_id = 'squid'
+  and request.plan_id = '{stale_ids['plan']}'::uuid
+group by request.workspace_id, request.client_id, request.request_id,
+  request.plan_id, run.status;
+""")
+    if stale_reconciliation_receipt != {
+        "run_status": "blocked",
+        "reconciliations": 1,
+        "action": "result_not_current",
+        "attempt_bound": True,
+        "result_bound": True,
+        "transition_kind": "reconcile",
+        "transition_from": "result_submitted",
+        "transition_to": "blocked",
+        "terminal_reason": "request_not_current",
+        "reconciler_principal_id": specialist_principals["independent_qa"],
+        "qa_stages": 0,
+        "verifications": 0,
+        "stage_links": 0,
+        "operator_inbox": 0,
+        "recap_stages": 0,
+    }:
+        raise RuntimeError(
+            "stale-result reconciliation receipt binding mismatch: "
+            f"{stale_reconciliation_receipt}"
+        )
+    psql.expect_error(
+        _rpc_sql(
+            stale_qa_claims,
+            _codex_verify_expression(stale_ids, stale_work_key),
+        ),
+        "harmony_preview_codex_gate_not_current",
+    )
 
     round_current_sql = f"""
 select private.harmony_preview_round_inputs_current(
@@ -2022,6 +3779,10 @@ where round.workspace_id = '{ids['workspace']}'::uuid
         raise RuntimeError("completed round was not current before revocation")
     if psql.run(denial_round_current_sql) != "true":
         raise RuntimeError("denial round was not current before revocation")
+    if psql.run(stale_round_current_sql) != "false":
+        raise RuntimeError(
+            "superseded stale-result round remained current before revocation"
+        )
     quiz_registration = connector_registrations["quiz_bot"]
     revocation_id = uid()
     revocation_race = _revocation_lock_winner_race(
@@ -2033,11 +3794,7 @@ where round.workspace_id = '{ids['workspace']}'::uuid
         ),
         loser_sql=_rpc_sql(
             denial_qa_claims,
-            _qa_denial_expression(
-                denial_ids,
-                uid(),
-                failed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
         expected_loser_error="harmony_preview_plan_input_not_current",
     )
@@ -2062,19 +3819,23 @@ where revocation.workspace_id = '{ids['workspace']}'::uuid
         raise RuntimeError("revoked connector left the completed round current")
     if psql.run(denial_round_current_sql) != "false":
         raise RuntimeError("revoked connector left the denial round current")
+    if psql.run(stale_round_current_sql) != "false":
+        raise RuntimeError("revoked connector left the stale-result round current")
 
     revoked_negative_before = psql.json(denial_downstream_sql)
     psql.expect_error(
         _rpc_sql(
             denial_qa_claims,
-            _stage_expression(
-                denial_ids,
-                "independent_qa",
-                uid(),
-                qa_evidence=passed_qa_evidence,
-            ),
+            _codex_prepare_expression(denial_ids),
         ),
-        "harmony_preview_stage_input_expired_or_tampered",
+        "harmony_preview_plan_input_not_current",
+    )
+    psql.expect_error(
+        _rpc_sql(
+            denial_qa_claims,
+            _codex_verify_expression(ids, codex_work_key),
+        ),
+        "harmony_preview_codex_gate_not_current",
     )
     psql.expect_error(
         _rpc_sql(
@@ -2126,6 +3887,28 @@ select pg_catalog.jsonb_build_object(
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'operator_inbox', (select pg_catalog.count(*) from agent_runtime.harmony_operator_inbox
     where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_lineages', (select pg_catalog.count(*) from private.harmony_preview_codex_source_lineage_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_requests', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_requests
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_runs', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_runs
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_transitions', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_transitions
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_claims', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_claim_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_attempts', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_attempt_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_evidence', (select pg_catalog.count(*) from private.harmony_preview_codex_semantic_qa_evidence
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_results', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_result_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_verifications', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_verification_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_reconciliations', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_reconciliation_receipts
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
+  'codex_stage_links', (select pg_catalog.count(*) from private.harmony_preview_codex_gate_stage_links
+    where workspace_id = '{ids['workspace']}'::uuid and client_id = 'squid'),
   'qa_principal_independent', (
     select qa.principal_id <> plan.principal_id and qa.principal_id <> content.principal_id
     from agent_runtime.harmony_stage_receipts qa
@@ -2141,28 +3924,38 @@ select pg_catalog.jsonb_build_object(
 )::text;
 """)
     expected = {
-        "signals": 5, "connector_receipts": 5,
-        "connector_registrations": 4, "request_receipts": 5,
+        "signals": 7, "connector_receipts": 7,
+        "connector_registrations": 4, "request_receipts": 7,
         "connector_revocations": 1,
         "qa_denial_receipts": 1,
-        "rounds": 2, "plans": 2,
+        "rounds": 3, "plans": 3,
         "specialists": 5, "distinct_specialist_principals": 5,
-        "stage_receipts": 7, "distinct_operation_keys": 7,
+        "stage_receipts": 9, "distinct_operation_keys": 9,
         "operator_inbox": 1,
+        "codex_lineages": 2, "codex_requests": 2, "codex_runs": 2,
+        "codex_transitions": 11, "codex_claims": 2, "codex_attempts": 2,
+        "codex_evidence": 2, "codex_results": 2,
+        "codex_verifications": 1, "codex_reconciliations": 1,
+        "codex_stage_links": 1,
         "qa_principal_independent": True, "automatic_publication": False,
         "recap_cost_microusd": 0,
     }
     if counts != expected:
         raise RuntimeError(f"vertical slice ledger mismatch: {counts}")
+    identities = _verify_happy_path_identities(psql, ids)
+    server_concurrency = _server_concurrency_receipt(psql)
     return {
         "ok": True,
-        "schema_version": "harmony-preview-concurrency-proof@2",
+        "schema_version": "harmony-preview-concurrency-proof@5",
         "connections": CONCURRENCY,
         "release_sha": args.release_sha,
         "config_sha256": args.config_sha256,
         "fence_expires_at": fence_expiry,
+        "identities": identities,
         "new": new_count,
         "reused": reused_count,
+        "tls_ingress": tls_ingress,
+        "server_concurrency": server_concurrency,
         "connector_request_race": {
             "new": new_count,
             "reused": reused_count,
@@ -2179,12 +3972,17 @@ select pg_catalog.jsonb_build_object(
             "history_preserved": True,
             "denial_round_before": True,
             "denial_round_after": False,
+            "stale_result_round_before_supersession": True,
+            "stale_result_round_before_revocation": False,
+            "stale_result_round_after": False,
             "stage_after_revocation_rejected": True,
             "denial_after_revocation_rejected": True,
             "typed_negative_row_delta": 0,
         },
         "revocation_lock_winner_race": revocation_race,
         "qa_denial_race": qa_denial_race,
+        "codex_result_not_current_race": stale_reconciliation_race,
+        "codex_result_not_current_receipt": stale_reconciliation_receipt,
         "qa_denial_downstream_delta": {
             "qa_denial_receipts": 1,
             "passed_qa_stages": 0,
@@ -2194,6 +3992,10 @@ select pg_catalog.jsonb_build_object(
             "publication_rows": 0,
         },
         "operation_races": operation_races,
+        "codex_qa_races": codex_qa_races,
+        "codex_qa_execute_authorization": codex_qa_races["start"],
+        "codex_qa_stage_atomic": True,
+        "codex_qa_work_key": codex_work_key,
         "plan_exact_replay": plan_race == {
             "new": 1,
             "reused": CONCURRENCY - 1,
@@ -2223,6 +4025,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5432)
     parser.add_argument("--user", required=True)
     parser.add_argument("--database", default="postgres")
+    parser.add_argument(
+        "--database-transport",
+        choices=DATABASE_TRANSPORTS,
+        required=True,
+    )
     parser.add_argument("--psql", type=str)
     parser.add_argument("--confirm-disposable-local", action="store_true")
     parser.add_argument("--confirm-disposable-preview", action="store_true")
@@ -2230,6 +4037,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--parent-project-ref")
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--config-sha256", required=True)
+    parser.add_argument(
+        "--backend-concurrency-target",
+        required=True,
+        type=int,
+    )
     parser.add_argument("--command-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--fence-ttl-minutes", type=int, default=120)
     return parser.parse_args(argv)
