@@ -1272,6 +1272,19 @@ class FakeRunner:
         code: str,
         pass_fds: tuple[int, ...] = (),
     ) -> bytes:
+        if code == "preview_schema_prerequisites":
+            assert input_bytes == RUNNER.build_schema_prerequisite_sql()
+            self.commands.append(list(command))
+            self.environments.append(dict(env or {}))
+            self.quiet_environment_references.append(env)
+            self.pass_fds.append(tuple(pass_fds))
+            self.working_directories.append(cwd)
+            self.timeouts.append((code, timeout))
+            self.events.append(code)
+            return json.dumps({
+                key: [True] * count
+                for key, count in RUNNER._prerequisite_group_lengths().items()
+            }).encode("ascii")
         assert input_bytes is None
         assert code in {"migration_snapshot", "proof_support_snapshot"}
         self.commands.append(list(command))
@@ -1969,7 +1982,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@10"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@11"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
@@ -2096,6 +2109,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         "management_permission_preflight",
         "branch_ready_and_shape_verified",
         "database_connectivity_preflight",
+        "database_schema_prerequisites",
         "migration_and_rls_security",
         "database_client_race_64_way",
         "postgrest_schema_readiness_get",
@@ -2150,9 +2164,9 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
         for command in snapshot_commands
     )
     psql_commands = [command for command in fake.commands if command[0] == "psql"]
-    assert len(psql_commands) == 13
+    assert len(psql_commands) == 14
     assert sum(command[-2:] == ["-Atqc", "select 1"] for command in psql_commands) == 1
-    assert sum(command[-2:] == ["-f", "-"] for command in psql_commands) == 12
+    assert sum(command[-2:] == ["-f", "-"] for command in psql_commands) == 13
     assert not any(
         "projects" in command and "list" in command
         for command in fake.commands
@@ -4441,7 +4455,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@10"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@11"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )

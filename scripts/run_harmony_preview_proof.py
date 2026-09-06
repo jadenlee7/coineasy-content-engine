@@ -43,7 +43,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@10"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@11"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
@@ -174,6 +174,242 @@ MAX_OPENAPI_BYTES = 2_097_152
 MAX_MANAGEMENT_API_BYTES = 2_097_152
 MANAGEMENT_API_BASE_URL = "https://api.supabase.com/v1"
 POSTGREST_RPC_PATH = "/rpc/submit_preview_harmony_signal"
+
+# Fixed baseline metadata; never business data or repair authority.
+SCHEMA_PREREQUISITE_RELATIONS = ('public.workspace_clients',
+ 'public.source_items',
+ 'public.content_items',
+ 'public.content_versions',
+ 'private.grok_qa_dispatch_outbox',
+ 'public.workspaces',
+ 'auth.users',
+ 'public.workspace_members')
+SCHEMA_PREREQUISITE_COLUMNS = (('public.workspace_clients', 'workspace_id', 'uuid'),
+ ('public.workspace_clients', 'client_id', 'text'),
+ ('public.source_items', 'workspace_id', 'uuid'),
+ ('public.source_items', 'id', 'uuid'),
+ ('public.source_items', 'client_id', 'text'),
+ ('public.source_items', 'canonical_url', 'text'),
+ ('public.source_items', 'source_type', 'text'),
+ ('public.source_items', 'body', 'text'),
+ ('public.source_items', 'media', 'jsonb'),
+ ('public.content_items', 'workspace_id', 'uuid'),
+ ('public.content_items', 'id', 'uuid'),
+ ('public.content_items', 'current_version_id', 'uuid'),
+ ('public.content_items', 'client_id', 'text'),
+ ('public.content_items', 'status', 'text'),
+ ('public.content_versions', 'workspace_id', 'uuid'),
+ ('public.content_versions', 'content_item_id', 'uuid'),
+ ('public.content_versions', 'id', 'uuid'),
+ ('public.content_versions', 'title', 'text'),
+ ('public.content_versions', 'channel_copy', 'jsonb'),
+ ('public.content_versions', 'content', 'jsonb'),
+ ('public.content_versions', 'deliverables', 'jsonb'),
+ ('public.content_versions', 'generation_meta', 'jsonb'),
+ ('public.content_versions', 'qa', 'jsonb'),
+ ('private.grok_qa_dispatch_outbox', 'workspace_id', 'uuid'),
+ ('private.grok_qa_dispatch_outbox', 'content_item_id', 'uuid'),
+ ('private.grok_qa_dispatch_outbox', 'content_version_id', 'uuid'),
+ ('private.grok_qa_dispatch_outbox', 'source_item_id', 'uuid'),
+ ('private.grok_qa_dispatch_outbox', 'client_id', 'text'),
+ ('private.grok_qa_dispatch_outbox', 'content_kind', 'text'),
+ ('private.grok_qa_dispatch_outbox', 'source_url', 'text'),
+ ('private.grok_qa_dispatch_outbox', 'source_author_handle', 'text'),
+ ('private.grok_qa_dispatch_outbox', 'source_event_type', 'text'),
+ ('private.grok_qa_dispatch_outbox', 'status', 'text'),
+ ('public.workspaces', 'id', 'uuid'),
+ ('auth.users', 'id', 'uuid'),
+ ('public.workspace_members', 'workspace_id', 'uuid'),
+ ('public.workspace_members', 'user_id', 'uuid'),
+ ('public.workspace_members', 'status', 'text'),
+ ('public.workspace_members', 'role', 'text'))
+SCHEMA_PREREQUISITE_KEYS = (('public.workspace_clients', ('workspace_id', 'client_id')),
+ ('public.source_items', ('workspace_id', 'client_id', 'id')),
+ ('private.grok_qa_dispatch_outbox', ('workspace_id', 'content_version_id')),
+ ('public.workspaces', ('id',)),
+ ('auth.users', ('id',)))
+SCHEMA_PREREQUISITE_ROUTINES = ('auth.uid()', 'extensions.digest(bytea,text)', 'extensions.gen_random_uuid()')
+SCHEMA_PREREQUISITE_ROLES = ('anon', 'authenticated', 'service_role', 'authenticator')
+
+SCHEMA_PREREQUISITE_MAX_BYTES = 8192
+
+
+def build_schema_prerequisite_sql() -> bytes:
+    """Catalog-only query generated from static constants, never caller input."""
+    relations = ",\n".join(
+        f"({i},'{name.split('.')[0]}','{name.split('.')[1]}')"
+        for i, name in enumerate(SCHEMA_PREREQUISITE_RELATIONS)
+    )
+    columns = ",\n".join(
+        f"({i},'{name.split('.')[0]}','{name.split('.')[1]}','{col}','{kind}')"
+        for i, (name, col, kind) in enumerate(SCHEMA_PREREQUISITE_COLUMNS)
+    )
+    keys = ",\n".join(
+        f"({i},'{name.split('.')[0]}','{name.split('.')[1]}',ARRAY["
+        + ",".join(f"'{col}'" for col in cols) + "]::text[])"
+        for i, (name, cols) in enumerate(SCHEMA_PREREQUISITE_KEYS)
+    )
+    routines = ",\n".join(
+        f"({i},'{name}','{kind}')" for i, (name, kind) in enumerate(zip(
+            SCHEMA_PREREQUISITE_ROUTINES, ("uuid", "bytea", "uuid"), strict=True
+        ))
+    )
+    roles = ",\n".join(
+        f"({i},'{name}')" for i, name in enumerate(SCHEMA_PREREQUISITE_ROLES)
+    )
+    return f"""BEGIN READ ONLY;
+SET LOCAL search_path = pg_catalog;
+SET LOCAL statement_timeout = '15s';
+SET LOCAL lock_timeout = '3s';
+WITH required_relations(ord, ns, rel) AS (VALUES {relations}),
+required_columns(ord, ns, rel, col, kind) AS (VALUES {columns}),
+required_keys(ord, ns, rel, cols) AS (VALUES {keys}),
+required_routines(ord, signature, kind) AS (VALUES {routines}),
+required_roles(ord, name) AS (VALUES {roles}),
+column_checks AS (
+ SELECT r.ord, a.attnum IS NOT NULL AS present,
+        COALESCE(t.typname = r.kind AND tn.nspname = 'pg_catalog'
+                 AND a.atttypmod = -1, false) AS type_matches
+ FROM required_columns r
+ LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = r.ns
+ LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = r.rel
+ LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+      AND a.attname = r.col AND a.attnum > 0 AND NOT a.attisdropped
+ LEFT JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+ LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace
+)
+SELECT pg_catalog.json_build_object(
+ 'relations', (SELECT pg_catalog.json_agg(EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = r.ns AND c.relname = r.rel AND c.relkind IN ('r','p')
+ ) ORDER BY r.ord) FROM required_relations r),
+ 'columns', (SELECT pg_catalog.json_agg(present ORDER BY ord) FROM column_checks),
+ 'column_types', (SELECT pg_catalog.json_agg(type_matches ORDER BY ord) FROM column_checks),
+ 'keys', (SELECT pg_catalog.json_agg(EXISTS (
+    SELECT 1 FROM pg_catalog.pg_index i
+    JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = r.ns AND c.relname = r.rel
+      AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
+      AND i.indexprs IS NULL AND i.indpred IS NULL
+      AND i.indnkeyatts = pg_catalog.cardinality(r.cols)
+      AND (SELECT pg_catalog.array_agg(a.attname::text ORDER BY a.attname::text)
+           FROM pg_catalog.unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ord)
+           JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.num
+           WHERE k.ord <= i.indnkeyatts) =
+          (SELECT pg_catalog.array_agg(col ORDER BY col) FROM pg_catalog.unnest(r.cols) col)
+ ) ORDER BY r.ord) FROM required_keys r),
+ 'routines', (SELECT pg_catalog.json_agg(EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_type t ON t.oid = p.prorettype
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+    WHERE p.oid = pg_catalog.to_regprocedure(r.signature)
+      AND p.prokind = 'f' AND NOT p.proretset
+      AND t.typname = r.kind AND n.nspname = 'pg_catalog'
+ ) ORDER BY r.ord) FROM required_routines r),
+ 'roles', (SELECT pg_catalog.json_agg(EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles p WHERE p.rolname = r.name
+ ) ORDER BY r.ord) FROM required_roles r)
+);
+COMMIT;
+""".encode("ascii")
+
+
+def _prerequisite_group_lengths() -> dict[str, int]:
+    return {
+        "relations": len(SCHEMA_PREREQUISITE_RELATIONS),
+        "columns": len(SCHEMA_PREREQUISITE_COLUMNS),
+        "column_types": len(SCHEMA_PREREQUISITE_COLUMNS),
+        "keys": len(SCHEMA_PREREQUISITE_KEYS),
+        "routines": len(SCHEMA_PREREQUISITE_ROUTINES),
+        "roles": len(SCHEMA_PREREQUISITE_ROLES),
+    }
+
+
+@dataclass(frozen=True)
+class SchemaPrerequisiteObservation:
+    relations: tuple[bool, ...]
+    columns: tuple[bool, ...]
+    column_types: tuple[bool, ...]
+    keys: tuple[bool, ...]
+    routines: tuple[bool, ...]
+    roles: tuple[bool, ...]
+
+    def __post_init__(self) -> None:
+        _validate_schema_prerequisites(self)
+
+
+def _validate_schema_prerequisites(observation: SchemaPrerequisiteObservation) -> None:
+    if type(observation) is not SchemaPrerequisiteObservation:
+        raise ProofError("preview_schema_prerequisites_invalid")
+    for key, count in _prerequisite_group_lengths().items():
+        values = getattr(observation, key)
+        if (type(values) is not tuple or len(values) != count
+                or any(type(value) is not bool for value in values)):
+            raise ProofError("preview_schema_prerequisites_invalid")
+    # Reject internally contradictory observations as malformed, not evidence.
+    for present, matches in zip(observation.columns, observation.column_types, strict=True):
+        if matches and not present:
+            raise ProofError("preview_schema_prerequisites_invalid")
+
+
+def parse_schema_prerequisites(raw: bytes) -> SchemaPrerequisiteObservation:
+    """Only boolean arrays of exact fixed lengths may cross the receipt boundary."""
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    try:
+        if type(raw) is not bytes or not 0 < len(raw) <= SCHEMA_PREREQUISITE_MAX_BYTES:
+            raise ValueError
+        data = json.loads(raw.decode("ascii"), object_pairs_hook=unique_object)
+        lengths = _prerequisite_group_lengths()
+        if type(data) is not dict or set(data) != set(lengths):
+            raise ValueError
+        for key, count in lengths.items():
+            values = data[key]
+            if (type(values) is not list or len(values) != count
+                    or any(type(value) is not bool for value in values)):
+                raise ValueError
+        return SchemaPrerequisiteObservation(**{key: tuple(data[key]) for key in lengths})
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise ProofError("preview_schema_prerequisites_invalid") from None
+
+
+def project_schema_prerequisites(observation: SchemaPrerequisiteObservation) -> dict[str, object]:
+    """Revalidate immutable observations and rebuild static names locally."""
+    _validate_schema_prerequisites(observation)
+    return {
+        "relations": [
+            {"relation": name, "present": value}
+            for name, value in zip(SCHEMA_PREREQUISITE_RELATIONS, observation.relations, strict=True)
+        ],
+        "columns": [
+            {"relation": name, "column": col, "expected_type": kind,
+             "present": present, "type_matches": matches}
+            for (name, col, kind), present, matches in zip(
+                SCHEMA_PREREQUISITE_COLUMNS, observation.columns, observation.column_types, strict=True
+            )
+        ],
+        "keys": [
+            {"relation": name, "columns": list(cols), "usable": value}
+            for (name, cols), value in zip(SCHEMA_PREREQUISITE_KEYS, observation.keys, strict=True)
+        ],
+        "routines": [
+            {"signature": name, "present": value}
+            for name, value in zip(SCHEMA_PREREQUISITE_ROUTINES, observation.routines, strict=True)
+        ],
+        "roles": [
+            {"role": name, "present": value}
+            for name, value in zip(SCHEMA_PREREQUISITE_ROLES, observation.roles, strict=True)
+        ],
+    }
+
 
 DIRECT_STATIC_PROJECTIONS: dict[str, object] = {
     "counts": {
@@ -2370,6 +2606,8 @@ class HarmonyPreviewProof:
         self.database_backend_target_selection: dict[str, object] | None = None
         self.database_pooler_read_attempts = 0
         self.database_connectivity_preflight = "not_started"
+        self.schema_prerequisite_status = "not_started"
+        self.schema_prerequisite_observation: SchemaPrerequisiteObservation | None = None
         self.migration_completed_count = 0
         self.security_completed_count = 0
         self.sql_failure: dict[str, object] | None = None
@@ -4208,6 +4446,46 @@ raise SystemExit(
         else:
             self.database_connectivity_preflight = "passed"
 
+
+    def _check_schema_prerequisites(self) -> None:
+        # Use the already verified exact-child credentials and anonymous CA FD.
+        # This is one metadata read, not readiness polling or baseline repair.
+        self.schema_prerequisite_status = "failed"
+        certificate_fd = self._create_unlinked_ssl_root_cert_fd()
+        environment: dict[str, str] = {}
+        raw = b""
+        try:
+            environment = self._db_environment(certificate_fd)
+            raw = self.runner.run_bytes(
+                [*self._psql_base(), "-A", "-t", "-q", "-f", "-"],
+                env=environment,
+                input_bytes=build_schema_prerequisite_sql(),
+                timeout=min(self.args.migration_timeout_seconds, 30),
+                code="preview_schema_prerequisites",
+                pass_fds=(certificate_fd,),
+            )
+            observation = parse_schema_prerequisites(raw)
+            self.schema_prerequisite_observation = observation
+            if not all(
+                all(getattr(observation, key)) for key in _prerequisite_group_lengths()
+            ):
+                raise ProofError("preview_schema_prerequisites_not_met")
+            self.schema_prerequisite_status = "passed"
+        finally:
+            raw = b""
+            environment.clear()
+            self._close_ssl_root_cert_fd(certificate_fd)
+
+    def _schema_prerequisite_receipt(self) -> dict[str, object]:
+        checks = None
+        if self.schema_prerequisite_observation is not None:
+            checks = project_schema_prerequisites(self.schema_prerequisite_observation)
+        return {
+            "status": self.schema_prerequisite_status,
+            "query_sha256": hashlib.sha256(build_schema_prerequisite_sql()).hexdigest(),
+            "checks": checks,
+        }
+
     def _record_sql_failure(
         self,
         *,
@@ -4904,6 +5182,8 @@ raise SystemExit(
             self._assert_exact_checkout_unchanged(manifest, support_manifest)
             self._check_database_connectivity()
             self._complete_step("database_connectivity_preflight")
+            self._check_schema_prerequisites()
+            self._complete_step("database_schema_prerequisites")
             self._apply_migrations_and_security(
                 migration_payloads, security_payloads
             )
@@ -5055,6 +5335,7 @@ raise SystemExit(
                 "management_permission_preflight",
                 "branch_ready_and_shape_verified",
                 "database_connectivity_preflight",
+                "database_schema_prerequisites",
                 "migration_and_rls_security",
                 "database_client_race_64_way",
                 "postgrest_schema_readiness_get",
@@ -5072,6 +5353,7 @@ raise SystemExit(
             "database_connectivity_preflight": (
                 self.database_connectivity_preflight
             ),
+            "database_schema_prerequisites": self._schema_prerequisite_receipt(),
             "migration_completed_count": self.migration_completed_count,
             "security_completed_count": self.security_completed_count,
             "sql_failure": self.sql_failure,

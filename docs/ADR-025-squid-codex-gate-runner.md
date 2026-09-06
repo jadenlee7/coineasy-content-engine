@@ -129,7 +129,7 @@ requires zero occurrences of every later step. This ordering remains an
 operator-wrapper contract: the probe alone cannot prove that a future wrapper
 obeyed it.
 
-The current outer receipt is `harmony-preview-one-shot-proof@10`. The runner
+The current outer receipt is `harmony-preview-one-shot-proof@11`. The runner
 requires an explicit `direct` or `supavisor-session` route before any paid child
 creation and records that choice. It never switches routes on failure. The
 session route first validates read-only parent pooler access, then binds the
@@ -158,6 +158,31 @@ connection, interrupt, and cleanup paths retain their existing behavior.
 No migration SQL or permission grant is changed. This is diagnostic hardening,
 not evidence that the hosted SQL failure has been fixed; a new hosted invocation
 still needs its own exact-SHA approval.
+
+The single authorized `@10` invocation at
+`77274f1509e862648aba0754154bced20c6ede5e` returned `42P01` at input line 549 of
+migration 3 after two completed migrations. That line closes the SQL source-binding
+function; it does not identify the unresolved relation. Child/PAT cleanup was
+confirmed separately. The approval is consumed; no retry is implied.
+
+`@11` adds one exact-child metadata query after connectivity and before migration
+1. Its fixed contract checks 8 baseline relations, 39 column presence/type pairs,
+5 suitable FK target keys, 3 function signatures/return types, and 4 base roles.
+Only catalog data is queried, inside a read-only transaction with bounded timeouts.
+The query emits fixed-length boolean arrays; the parser rejects extra/missing or
+duplicate groups, non-booleans, inconsistent column/type observations, malformed
+JSON, and output over 8 KiB. A frozen observation and a second validation rebuild
+receipt names from local constants, never server identifiers or error text.
+`database_schema_prerequisites` records status, query digest, and those checks.
+Failed or malformed prerequisites stop before any migration and use the existing
+cleanup. No repair, retry, scope widening or extra migration is allowed.
+
+Suitable keys must be unique, valid, ready, immediate, nonpartial and expression-free,
+with the exact key-column set; INCLUDE columns and reordered key columns are valid.
+The query does not prove ownership, complete privilege/RLS policy correctness,
+event-trigger behavior, lock availability or absence of pre-existing Harmony objects.
+It cannot replace migrations, security suites or hosted evidence. Transport, secret
+handling, cost, watchdog and the nine-migration allowlist remain unchanged.
 
 All remote database subprocesses use `verify-full` with the checked-in
 `certs/supabase-prod-ca-2021.crt` (`Supabase Root 2021 CA`) bytes bound to the

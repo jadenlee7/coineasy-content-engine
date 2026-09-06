@@ -238,7 +238,7 @@ invocation claim -> runner Popen`입니다. Probe가 실패하면 PAT 생성, ke
 claim, Popen은 모두 0회여야 합니다. 이 순서 강제는 operator wrapper의 계약이며,
 probe 단독 실행이 향후 wrapper의 순서를 기계적으로 증명하지는 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@10`입니다. CLI에서
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@11`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
 preflight를 실행합니다. Management API client도 환경 proxy를 끄고 redirect를
@@ -247,6 +247,26 @@ preflight를 실행합니다. Management API client도 환경 proxy를 끄고 re
 `database_transport_selection=explicit`, typed connectivity 상태, 그리고 session
 route일 때 exact child에서 읽은 비밀 없는 `database_pooler_capacity`,
 `database_pooler_readiness`, `database_backend_target_selection`만 남깁니다.
+`@11`은 connectivity 다음, 첫 migration 전에 exact child의 baseline metadata를
+한 번 조회합니다. 고정된 8개 relation·39개 열의 존재/타입·5개 FK target key·
+3개 함수 signature/반환 타입·4개 기본 role만 확인합니다. 읽기 전용 transaction과
+`pg_catalog`만 사용하며 실제 테이블 행이나 함수 본문을 실행하지 않습니다.
+SQL의 이름은 runner의 상수에서만 만들고, child가 반환하는 값은 정확한 길이의
+boolean 배열뿐입니다. 8 KiB를 넘는 출력, 중복/알 수 없는 group, null·정수·문자열,
+누락된 항목, 모순된 column/type 결과는 거부합니다. Receipt는 고정된 local 이름과
+검증된 boolean에서 `database_schema_prerequisites`를 새로 만들고 query SHA-256도
+기록합니다. 원본 JSON이나 오류 문구는 기록하지 않습니다.
+
+필수 항목 미충족은 `preview_schema_prerequisites_not_met`, 잘못된 응답은
+`preview_schema_prerequisites_invalid`로 실패하며 migration/security/proof는 0회로
+남기고 기존 cleanup으로 이동합니다. 쿼리 실패/timeout에도 repair나 retry를 하지
+않습니다. Partial/expression/deferrable key는 거부하되 동일 key 열의 순서 변경과
+INCLUDE 열은 허용합니다. 체크는 credential/CA·선택한 transport 경계를 그대로 씁니다.
+이 metadata 검사는 모든 권한/소유권·RLS 정책·event trigger·lock·기존 Harmony object
+충돌을 보증하지 않습니다. 통과 후에도 9개 migration과 3개 security suite가 필요하며,
+이들 파일이나 허용 목록은 바꾸지 않았습니다. 이 쿼리는 runner 코드 SHA와 query
+hash에 결속되며 별도의 추가 migration이 아닙니다.
+
 Migration 또는 security `psql` apply가 typed command failure 또는 ambiguous
 결과로 끝날 때 `sql_failure`는 allowlist에 고정된
 `{phase, ordinal, filename, sha256, completed_count}`를 기록합니다. `@10`은
@@ -536,7 +556,7 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@10`입니다. 역사적 exact-SHA
+`schema_version=harmony-preview-one-shot-proof@11`입니다. 역사적 exact-SHA
 one-shot은 `@4`, `@5`, `@6`, `@7`, `@8` receipt로 각각 실패했으며 어느 것도 성공
 receipt가 아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
 중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
@@ -548,8 +568,13 @@ child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미�
 미관측입니다. `@8`은 billing add-ons preflight transport의 generic failure에서
 가격 readback과 child 생성 전에 중단됐습니다. Invocation 1회, paid-child attempt
 0회, child 생성 0건이며 scoped PAT 삭제와 Preview 0건이 확인됐습니다. 실제 청구액은
-미관측입니다. 이 승인과 PAT은 소비됐습니다. 현재 `@10`은 `@9`의 제한된 SQL
-진단을 확장한 로컬 후보이며 새 hosted 실행 승인을 뜻하지 않습니다. `@8`의 capacity 계약을
+미관측입니다. 이 승인과 PAT은 소비됐습니다. `@9`와 `@10`은 접속과 migration
+2개 통과 후 3번째에서 실패했습니다. `@10` exact SHA
+`77274f1509e862648aba0754154bced20c6ede5e`의 결과는 `42P01`, input line 549이며,
+해당 줄은 source-binding SQL 함수의 statement 끝입니다. 어떤 relation이 없었는지는
+기록되지 않았으므로 추론과 구분합니다. 두 실행 모두 child/PAT 정리가 확인됐고
+재실행 권한은 없습니다. 현재 `@11`은 child baseline metadata 검사를 추가하는
+로컬 후보이며 새 hosted 실행 승인을 뜻하지 않습니다. `@8`의 capacity 계약을
 유지해 정수 1을 terminal failure로 처리하고, 정수 2 이상은 Management API 값으로
 target을 정합니다.
 `null`은 configured capacity로 기록하지 않으며 runtime lower bound 2를 두 nested
@@ -759,7 +784,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@10` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@11` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 Session route에서는 `database_backend_target_selection.runtime_verified=true`여야
