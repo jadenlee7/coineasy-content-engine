@@ -43,7 +43,7 @@ from urllib import error, parse, request
 import uuid
 
 
-SCHEMA_VERSION = "harmony-preview-one-shot-proof@11"
+SCHEMA_VERSION = "harmony-preview-one-shot-proof@12"
 DIRECT_PROBE_SCHEMA_VERSION = "harmony-preview-concurrency-proof@5"
 POSTGREST_PROBE_SCHEMA_VERSION = "harmony-preview-postgrest-proof@3"
 RECEIPT_SHA256_SCHEME = (
@@ -2154,6 +2154,48 @@ def _clear_mutable_json(value: object) -> None:
         value.clear()
 
 
+def _branch_identity_from_row(mapping: Mapping[str, object]) -> BranchIdentity:
+    """Project one validated row without walking any nested metadata."""
+
+    preview_project_status = mapping.get("preview_project_status")
+    legacy_status = mapping.get("status")
+    if not isinstance(preview_project_status, str) or not preview_project_status:
+        preview_project_status = (
+            legacy_status if isinstance(legacy_status, str) else ""
+        )
+    return BranchIdentity(
+        branch_id=str(mapping["id"]),
+        ref=str(mapping.get("project_ref", mapping.get("ref"))),
+        name=str(mapping["name"]),
+        status=preview_project_status,
+        parent_project_ref=(
+            str(mapping.get("parent_project_ref"))
+            if isinstance(mapping.get("parent_project_ref"), str)
+            else ""
+        ),
+        migration_status=(
+            legacy_status
+            if isinstance(legacy_status, str)
+            and mapping.get("preview_project_status") is not None
+            else ""
+        ),
+        is_default=(
+            mapping.get("is_default") is True
+            or str(mapping.get("is_default", "")).lower() == "true"
+        ),
+        persistent=(
+            mapping.get("persistent")
+            if type(mapping.get("persistent")) is bool
+            else None
+        ),
+        with_data=(
+            mapping.get("with_data")
+            if type(mapping.get("with_data")) is bool
+            else None
+        ),
+    )
+
+
 def extract_branches(value: object) -> list[BranchIdentity]:
     branches: list[BranchIdentity] = []
     seen: set[tuple[str, str]] = set()
@@ -2169,45 +2211,7 @@ def extract_branches(value: object) -> list[BranchIdentity]:
         if key in seen:
             continue
         seen.add(key)
-        preview_project_status = mapping.get("preview_project_status")
-        legacy_status = mapping.get("status")
-        if not isinstance(preview_project_status, str) or not preview_project_status:
-            preview_project_status = (
-                legacy_status if isinstance(legacy_status, str) else ""
-            )
-        branches.append(
-            BranchIdentity(
-                branch_id=str(branch_id),
-                ref=str(ref),
-                name=str(name),
-                status=preview_project_status,
-                parent_project_ref=(
-                    str(mapping.get("parent_project_ref"))
-                    if isinstance(mapping.get("parent_project_ref"), str)
-                    else ""
-                ),
-                migration_status=(
-                    legacy_status
-                    if isinstance(legacy_status, str)
-                    and mapping.get("preview_project_status") is not None
-                    else ""
-                ),
-                is_default=(
-                    mapping.get("is_default") is True
-                    or str(mapping.get("is_default", "")).lower() == "true"
-                ),
-                persistent=(
-                    mapping.get("persistent")
-                    if type(mapping.get("persistent")) is bool
-                    else None
-                ),
-                with_data=(
-                    mapping.get("with_data")
-                    if type(mapping.get("with_data")) is bool
-                    else None
-                ),
-            )
-        )
+        branches.append(_branch_identity_from_row(mapping))
     return branches
 
 
@@ -2215,7 +2219,12 @@ def extract_preview_branch_list(
     value: object,
     expected_parent_ref: str,
 ) -> list[BranchIdentity]:
-    """Parse the CLI 2.116 LIST contract as Preview children only."""
+    """Validate the whole LIST inventory, then return only fenced children.
+
+    An optional exact default/main parent is inventory metadata, never a child
+    or a deletion target. Empty and child-only inventories remain valid.
+    Keep the embedded watchdog parser equivalent (covered by parity tests).
+    """
 
     if not PROJECT_REF_PATTERN.fullmatch(expected_parent_ref):
         raise ProofError("supabase_branch_list_parent_ref_invalid")
@@ -2229,7 +2238,9 @@ def extract_preview_branch_list(
     raw_rows = value["branches"]
 
     branches: list[BranchIdentity] = []
-    seen: set[tuple[str, str]] = set()
+    seen_ids: set[str] = set()
+    seen_refs: set[str] = set()
+    seen_names: set[str] = set()
     for raw_row in raw_rows:
         if not isinstance(raw_row, dict):
             raise ProofError("supabase_branch_list_row_invalid")
@@ -2249,22 +2260,24 @@ def extract_preview_branch_list(
             raise ProofError("supabase_branch_list_identity_invalid")
         if parent_ref != expected_parent_ref:
             raise ProofError("supabase_branch_list_parent_fence_mismatch")
-        if ref == expected_parent_ref:
-            raise ProofError("supabase_branch_list_parent_row_invalid")
         if type(raw_row.get("is_default")) is not bool:
             raise ProofError("supabase_branch_list_default_fence_invalid")
-        if raw_row["is_default"] is not False:
+        if ref == expected_parent_ref:
+            if raw_row["is_default"] is not True or name != "main":
+                raise ProofError("supabase_branch_list_parent_row_invalid")
+        elif raw_row["is_default"] is not False or name == "main":
             raise ProofError("supabase_branch_list_default_fence_invalid")
-        key = (str(branch_id), str(ref))
-        if key in seen:
+        if branch_id in seen_ids or ref in seen_refs or name in seen_names:
             raise ProofError("supabase_branch_list_duplicate_identity")
-        seen.add(key)
-        parsed = extract_branches([raw_row])
-        if len(parsed) != 1:
-            raise ProofError("supabase_branch_list_identity_invalid")
-        branch = parsed[0]
-        if branch.parent_project_ref != expected_parent_ref:
-            raise ProofError("supabase_branch_list_parent_fence_mismatch")
+        # Include the parent in collision checks before excluding it. A child
+        # alias of its branch ID must never become a DELETE target.
+        seen_ids.add(branch_id)
+        seen_refs.add(ref)
+        seen_names.add(name)
+        if ref == expected_parent_ref:
+            continue
+        # LIST identities come only from top-level rows, never nested metadata.
+        branch = _branch_identity_from_row(raw_row)
         branches.append(branch)
     return branches
 
@@ -3675,6 +3688,8 @@ def valid_project_ref(value):
     )
 
 def parse_preview_branch_list(value):
+    if not valid_project_ref({self.args.parent_project_ref!r}):
+        raise WatchdogFenceError("branch_list_parent_ref_invalid")
     if (
         not isinstance(value, dict)
         or set(value) != {{"branches", "message"}}
@@ -3684,7 +3699,9 @@ def parse_preview_branch_list(value):
         raise WatchdogFenceError("branch_list_shape_invalid")
     raw_rows = value["branches"]
     rows = []
-    seen = set()
+    seen_ids = set()
+    seen_refs = set()
+    seen_names = set()
     for row in raw_rows:
         if not isinstance(row, dict):
             raise WatchdogFenceError("branch_list_row_invalid")
@@ -3703,14 +3720,20 @@ def parse_preview_branch_list(value):
             raise WatchdogFenceError("branch_list_identity_invalid")
         if parent_ref != {self.args.parent_project_ref!r}:
             raise WatchdogFenceError("branch_list_parent_fence_mismatch")
-        if ref == {self.args.parent_project_ref!r}:
-            raise WatchdogFenceError("branch_list_parent_row_invalid")
-        if type(row.get("is_default")) is not bool or row["is_default"]:
+        if type(row.get("is_default")) is not bool:
             raise WatchdogFenceError("branch_list_default_fence_invalid")
-        identity = (branch_id, ref)
-        if identity in seen:
+        if ref == {self.args.parent_project_ref!r}:
+            if row["is_default"] is not True or name != "main":
+                raise WatchdogFenceError("branch_list_parent_row_invalid")
+        elif row["is_default"] is not False or name == "main":
+            raise WatchdogFenceError("branch_list_default_fence_invalid")
+        if branch_id in seen_ids or ref in seen_refs or name in seen_names:
             raise WatchdogFenceError("branch_list_duplicate_identity")
-        seen.add(identity)
+        seen_ids.add(branch_id)
+        seen_refs.add(ref)
+        seen_names.add(name)
+        if ref == {self.args.parent_project_ref!r}:
+            continue
         rows.append(row)
     return rows
 

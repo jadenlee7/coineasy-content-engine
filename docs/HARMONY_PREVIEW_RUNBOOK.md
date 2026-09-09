@@ -238,7 +238,7 @@ invocation claim -> runner Popen`입니다. Probe가 실패하면 PAT 생성, ke
 claim, Popen은 모두 0회여야 합니다. 이 순서 강제는 operator wrapper의 계약이며,
 probe 단독 실행이 향후 wrapper의 순서를 기계적으로 증명하지는 않습니다.
 
-현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@11`입니다. CLI에서
+현재 runner의 outer receipt는 `harmony-preview-one-shot-proof@12`입니다. CLI에서
 `direct` 또는 `supavisor-session`을 반드시 하나 명시하고, exact child credential과
 선택한 route를 결속한 뒤 SQL 적용 전에 secret-free `SELECT 1` connectivity
 preflight를 실행합니다. Management API client도 환경 proxy를 끄고 redirect를
@@ -379,18 +379,31 @@ Child가 ready 직후 일시적으로 404/429/5xx, transport 실패 또는 compu
 미노출 상태인 경우에만 기존 readiness deadline 안에서 GET을 재시도하며,
 branch를 수리하거나 다시 생성하지 않습니다.
 
-CLI 2.116의 authoritative branch LIST는 Production/main 행이 아니라 Preview child
-행만 반환하는 계약입니다. runner와 watchdog은 exact
-`{"branches": [...], "message": ""}` wrapper만 허용하고, 모든 행의
-`parent_project_ref`가 exact parent와
-일치하며 `project_ref != parent_project_ref`, `is_default=false`, 유효하고 중복 없는
-child identity임을 확인합니다. exact-parent billing preflight 뒤 exit 0과 유효 JSON으로
-검증된 빈 배열은 “현재 Preview child 없음”의 authoritative readback입니다. malformed
-행, parent 불일치, default/Production 행, 중복 identity는 해당 LIST가 후속
-create/delete를 authorize하지 못하게 fail-closed합니다. CREATE 뒤 readiness/cleanup에서
-처음 관측되면 foreground는 중단되고 scoped cleanup/watchdog이 exact-name child를
-담당합니다. legacy `-o json` bare array나 예전 main-row heuristic으로 후퇴하지
-않습니다.
+`@12`의 branch LIST 계약은 CLI 2.116의 exact
+`{"branches": [...], "message": ""}` wrapper를 검증합니다. 2026-09-07 기존 CLI
+인증의 읽기 전용 관측에서는 원본 `main` 행도 포함됐습니다. 신규 scoped PAT에서
+같은 응답이 나온다는 증거는 아니며, 빈 배열과 child-only 목록도 계속 허용합니다.
+
+모든 행은 유효한 ID·이름·project ref와 exact `parent_project_ref`, 실제 boolean
+`is_default`를 가져야 합니다. 선택적인 원본 행은
+`project_ref=parent_project_ref=승인된 parent`, `is_default=true`, `name=main`이
+모두 일치하는 1행만 허용합니다. 원본도 ID·ref·이름 중복 검사에 포함한 다음
+Preview 결과에서 제외하므로 create/readiness/delete 대상이 될 수 없습니다.
+Child는 `project_ref != parent`, `is_default=false`, `name != main`이어야 합니다.
+행 사이 ID·ref·이름 중 하나라도 중복되거나 원본 식별이 모순되면 전체 목록을
+거부합니다. 중첩 metadata에서 별도 branch identity를 찾아내지 않습니다.
+
+Foreground와 watchdog 모두 목록 전체를 검증한 뒤 후속 작업을 판단합니다.
+원본 뒤/앞에 잘못된 행이 섞여도 일부 정상 행만으로 create/delete하지 않습니다.
+exact-parent billing preflight 뒤 exit 0과 유효 JSON으로 검증된 빈 배열 또는
+원본만 있는 목록은 현재 Preview child 부재의 readback입니다. 원본 행 존재는
+billing preflight·관리 권한·실행 승인이나 child deletion의 증거를 대체하지 않습니다.
+CREATE 후 목록이 모호해지면 foreground는 중단합니다. 기존 cleanup은 CREATE 등에서
+이미 검증해 결속한 child identity에 한해 삭제를 시도할 수 있으나, 잘못된 LIST에서
+새 삭제 대상을 얻거나 부재 확인을 주장하지 않습니다. Identity가 없거나 watchdog이
+삭제 대상을 찾을 때는 새로 검증된 exact-name child 목록이 필요합니다. 모호함이
+지속되면 수동 cleanup이 필요하며 정리 성공을 주장하지 않습니다. legacy `-o json` bare
+array는 허용하지 않습니다. CREATE 응답의 parent/default 거부 계약은 유지합니다.
 
 Watchdog은 DELETE exit code를 authoritative absence로 간주하지 않습니다. DELETE가
 성공, nonzero, timeout 중 어느 결과여도 다음 authoritative LIST에서 같은 exact child
@@ -556,7 +569,7 @@ receipt가 아닙니다.
 - `Preview only`, `max_cost_microusd=0`, `max_external_actions=0`
 
 현재 outer terminal receipt 계약은
-`schema_version=harmony-preview-one-shot-proof@11`입니다. 역사적 exact-SHA
+`schema_version=harmony-preview-one-shot-proof@12`입니다. 역사적 exact-SHA
 one-shot은 `@4`, `@5`, `@6`, `@7`, `@8` receipt로 각각 실패했으며 어느 것도 성공
 receipt가 아닙니다. `@6`은 `branch_pooler_default_pool_size_insufficient`에서 SQL 시작 전에
 중단됐고, 당시 receipt는 nullable `null`과 정수 1을 구분하지 못했습니다. Exact
@@ -573,8 +586,10 @@ child 3회 부재와 scoped PAT 삭제는 확인됐고 실제 청구액은 미�
 `77274f1509e862648aba0754154bced20c6ede5e`의 결과는 `42P01`, input line 549이며,
 해당 줄은 source-binding SQL 함수의 statement 끝입니다. 어떤 relation이 없었는지는
 기록되지 않았으므로 추론과 구분합니다. 두 실행 모두 child/PAT 정리가 확인됐고
-재실행 권한은 없습니다. 현재 `@11`은 child baseline metadata 검사를 추가하는
-로컬 후보이며 새 hosted 실행 승인을 뜻하지 않습니다. `@8`의 capacity 계약을
+재실행 권한은 없습니다. `@11`은 child baseline metadata 검사를 추가했고 Draft PR #167의
+`d36735d7c1d70ef6cef582b87d681611b1ec5561`에서 CI 12개가 통과했습니다.
+Hosted 실행 전 읽기 전용 목록 점검에서 원본 행 계약 충돌로 보류됐습니다.
+현재 `@12`는 위 목록 호환성 수정의 로컬 후보이며 새 hosted 실행 승인을 뜻하지 않습니다. `@8`의 capacity 계약을
 유지해 정수 1을 terminal failure로 처리하고, 정수 2 이상은 Management API 값으로
 target을 정합니다.
 `null`은 configured capacity로 기록하지 않으며 runtime lower bound 2를 두 nested
@@ -784,7 +799,7 @@ secret을 메모리로 한 번 읽고 raw 응답을 즉시 비웁니다. 필요�
 ## 관측 가능한 성공 기준
 
 다음 조건을 **모두** 하나의
-`harmony-preview-one-shot-proof@11` redacted receipt에 기록하고 위 canonical
+`harmony-preview-one-shot-proof@12` redacted receipt에 기록하고 위 canonical
 `receipt_sha256`로 결속해야 성공입니다.
 
 Session route에서는 `database_backend_target_selection.runtime_verified=true`여야

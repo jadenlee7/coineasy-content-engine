@@ -1982,7 +1982,7 @@ def test_one_shot_order_secret_hygiene_and_final_deletion(
 
     assert exit_code == 0
     assert receipt["ok"] is True
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@11"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@12"
     assert receipt["database_transport"] == "direct"
     assert receipt["database_transport_selection"] == "explicit"
     assert receipt["database_pooler_capacity"] is None
@@ -4455,7 +4455,7 @@ def test_compute_readback_http_failure_deletes_child_without_credentials(
     ).run()
 
     assert exit_code == 1
-    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@11"
+    assert receipt["schema_version"] == "harmony-preview-one-shot-proof@12"
     assert receipt["failure_code"] == (
         "supabase_billing_addons_get_authorization_failed"
     )
@@ -6185,7 +6185,10 @@ raise SystemExit(2)
 
     monkeypatch.setattr(RUNNER, "WATCHDOG_SECONDS", 0)
     monkeypatch.setattr(RUNNER, "WATCHDOG_RECONCILE_SECONDS", 10)
-    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 1)
+    # A loaded full suite can exceed one second launching the read-only fixture.
+    # Keep the DELETE timeout short to exercise descendant reaping, but do not
+    # turn an unrelated LIST startup timeout into the failure under test.
+    monkeypatch.setattr(RUNNER, "WATCHDOG_READ_TIMEOUT_SECONDS", 5)
     # Leave enough startup time for the nested Python fixture on a loaded CI
     # host; the timeout case still blocks forever after writing its PID fence.
     monkeypatch.setattr(RUNNER, "WATCHDOG_MUTATION_TIMEOUT_SECONDS", 1.0)

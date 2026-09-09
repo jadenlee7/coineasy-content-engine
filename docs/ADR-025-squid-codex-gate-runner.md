@@ -129,7 +129,7 @@ requires zero occurrences of every later step. This ordering remains an
 operator-wrapper contract: the probe alone cannot prove that a future wrapper
 obeyed it.
 
-The current outer receipt is `harmony-preview-one-shot-proof@11`. The runner
+The current outer receipt is `harmony-preview-one-shot-proof@12`. The runner
 requires an explicit `direct` or `supavisor-session` route before any paid child
 creation and records that choice. It never switches routes on failure. The
 session route first validates read-only parent pooler access, then binds the
@@ -262,17 +262,35 @@ child, and only inside the bounded reconciliation window. This also covers
 eventual-consistency lag after a successful DELETE. It is a cleanup retry, not
 child repair or replacement.
 
-For Supabase CLI 2.116, an authoritative LIST is the successful exact
+In `@12`, an authoritative LIST is the successful exact
 `{"branches": [...], "message": ""}` response produced by
-`--output-format json`. Every row must bind to the exact
-Production parent through `parent_project_ref`, must not be the parent/default
-row, and must have a unique valid child identity. An empty validated response is
-authoritative only after the exact-parent Management API billing preflight.
-Malformed, wrong-parent, default, equal-parent, or duplicate rows cannot
-authorize a subsequent create or delete. If first observed after CREATE, the
-foreground fails closed and the scoped cleanup/watchdog remains responsible for
-the exact-name child. Neither component accepts the legacy `-o json` bare array
-or expects a fabricated main row in this child-only contract.
+`--output-format json`. A read-only 2026-09-07 observation with existing CLI
+credentials included the default/main parent row; this is not a fresh scoped-PAT
+observation. Empty and child-only inventories remain supported.
+
+Every row must have a nonempty ID/name, valid project refs, exact
+`parent_project_ref`, and a literal boolean `is_default`. An optional parent row
+is accepted only when its project ref equals the expected parent, its name is
+`main`, and `is_default` is true. Children must have a different project ref,
+`is_default=false`, and a name other than `main`. IDs, refs and names must each be
+unique across the entire inventory, including the parent. Only after those
+checks is the parent excluded from the child projection. Nested metadata never
+supplies an additional branch identity. The separate CREATE-response parent and
+default rejection remains unchanged.
+
+Foreground and the generated watchdog validate the entire inventory before
+acting; parity and subprocess tests cover parent-only, mixed, duplicate and
+conflicting identities. A valid parent is never a CREATE/readiness/DELETE target.
+An empty or parent-only response is authoritative child absence only after the
+exact-parent Management API billing preflight, and does not itself establish
+management authority or execution approval. Invalid rows anywhere reject the
+whole LIST, even after a valid target. Existing foreground cleanup may still
+attempt deletion of an already bound child identity from CREATE; invalid LIST
+cannot supply a new target or prove absence. Resolving an unknown identity and
+each watchdog deletion require a validated list. Unresolved ambiguity requires
+manual cleanup, not a success claim. No legacy
+`-o json` bare array is accepted. This local compatibility change grants no new
+hosted invocation, credential, paid resource, retry, merge or deployment authority.
 
 The 6,983-second estimate is not a server-side budget lock. If the Management
 API, Supabase CLI, process fence, immediate deletion, or required absence checks
