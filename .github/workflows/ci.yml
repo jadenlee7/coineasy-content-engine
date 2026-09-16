@@ -35,6 +35,62 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
 
+  daily-review-image:
+    name: Private daily review image (OFF, no delivery)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the private review courier with a synthetic stamp
+        run: >-
+          docker build --file Dockerfile.content-ops-review
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-daily-review-ci .
+      - name: Prove default-OFF without credentials or network
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges coineasy-daily-review-ci)"
+          jq -e '. == {"ok":true,"mode":"run","enabled":false,"claimed":0}' <<< "$output"
+      - name: Validate synthetic canary configuration with zero external I/O
+        shell: bash
+        run: |
+          docker run --rm -i --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python coineasy-daily-review-ci - <<'PY'
+          import json, sys
+          from scripts.run_content_ops_review import run
+          def no_io(event, args):
+              if event in ('socket.connect', 'socket.bind', 'sqlite3.connect'):
+                  raise AssertionError('external_io_forbidden')
+          sys.addaudithook(no_io)
+          # Synthetic test values only; no GitHub secrets or live bot config.
+          env = {
+              'CONTENT_OPS_REVIEW_ENABLED': 'false',
+              'CONTENT_OPS_REVIEW_MODE': 'canary',
+              'CONTENT_OPS_REVIEW_PACKET_MODE': 'link_card',
+              'CONTENT_OPS_REVIEW_CANARY_VERSION_ID': '44444444-4444-4444-8444-444444444444',
+              'CONTENT_OPS_GATEWAY_URL': 'https://coineasy-newscard.netlify.app',
+              'CONTENT_OPS_STUDIO_URL': 'https://coineasy-newscard.netlify.app',
+              'CONTENT_OPS_GATEWAY_TOKEN': 'synthetic_gateway_' + 'b' * 40,
+              'TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN': '123456789:' + 'a' * 35,
+              'TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID': '-' + '1001234567890',
+              'CONTENT_OPS_REVIEW_RELEASE_SHA': 'a' * 40,
+              'RAILWAY_GIT_COMMIT_SHA': 'a' * 40,
+          }
+          result = run(validate_only=True, environ=env)
+          assert result['ok'] is True
+          assert all(result[k] is False for k in ('network_calls', 'database_calls', 'telegram_calls'))
+          env['RAILWAY_GIT_COMMIT_SHA'] = 'b' * 40
+          assert run(validate_only=True, environ=env)['ok'] is False
+          print(json.dumps({'synthetic_validation_passed': True, 'mismatched_sha_rejected': True,
+                            'external_sends': 0, 'production_proof': False}))
+          PY
+
   automation-image:
     runs-on: ubuntu-latest
     steps:
@@ -517,6 +573,13 @@ jobs:
           for migration in supabase/migrations/*.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$migration"
           done
+      - name: Verify private review outbox on disposable full schema
+        run: |
+          psql -X -v ON_ERROR_STOP=1 <<'SQL'
+          create function auth.role() returns text language sql stable as
+          $$select current_setting('request.jwt.claim.role', true)$$;
+          SQL
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
       - name: Run transactional SQL security smoke tests
         run: |
           for smoke in supabase/tests/*_security.sql \
