@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+WORKDIR /app
+RUN pip install --no-cache-dir httpx==0.28.1 uvicorn==0.31.0
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN test -n "$RAILWAY_GIT_COMMIT_SHA" && \
+    test "${#RAILWAY_GIT_COMMIT_SHA}" -eq 40 && \
+    echo "$RAILWAY_GIT_COMMIT_SHA" | grep -Eq '^[a-f0-9]{40}$' && \
+    printf '%s' "$RAILWAY_GIT_COMMIT_SHA" > /app/content-ops-confirmation-build-sha
+RUN groupadd --gid 10001 relay && useradd --uid 10001 --gid relay --no-create-home relay
+COPY core/__init__.py ./core/__init__.py
+COPY core/content_ops ./core/content_ops
+COPY scripts/run_content_ops_confirmation.py ./scripts/run_content_ops_confirmation.py
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 CONTENT_OPS_CONFIRMATION_ENABLED=false CONTENT_OPS_REVIEW_ENABLED=false
+USER 10001:10001
+CMD ["python", "-m", "scripts.run_content_ops_confirmation"]
