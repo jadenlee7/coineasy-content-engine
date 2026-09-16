@@ -83,6 +83,10 @@ try {
   run('createdb', [...pg, db]);
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql', db);
   sql(migration, db);
+  sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql', db);
+  phase = 'production-shaped producer binding';
+  sql('supabase/tests/content_ops_review_producer_binding.sql', db);
+  console.log(JSON.stringify({ productionShapedProducerBindingPassed: true, hostedProof: false }));
   phase = 'synthetic rollback smoke';
   sql('supabase/tests/content_ops_review_outbox.sql', db);
   check(query('select count(*) from public.workspaces') === '0', 'smoke fixtures rolled back');
