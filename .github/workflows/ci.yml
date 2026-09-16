@@ -586,6 +586,15 @@ jobs:
                        supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
+      - name: Verify production-shaped private review producer bindings
+        run: |
+          createdb content_ops_producer_binding
+          export PGDATABASE=content_ops_producer_binding
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.bootstrap.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260906100000_content_ops_review_outbox.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260916190000_content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake
