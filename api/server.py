@@ -832,7 +832,13 @@ async def notify_telegram_review(
     config = telegram_review_config()
     if config is None:
         raise HTTPException(503, "telegram_review_not_configured")
-    collaboration_config = telegram_content_ops_relay_config(config)
+    queue_owns_relay = os.environ.get("CONTENT_OPS_REVIEW_QUEUE_OWNS_RELAY", "false")
+    if queue_owns_relay not in {"true", "false"}:
+        raise HTTPException(503, "content_ops_relay_ownership_invalid")
+    collaboration_config = (
+        None if queue_owns_relay == "true"
+        else telegram_content_ops_relay_config(config)
+    )
     result = await send_telegram_review(
         config=config,
         collaboration_config=collaboration_config,

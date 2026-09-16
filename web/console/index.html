@@ -1240,6 +1240,9 @@
       const TELEGRAM_PUBLICATION_POLL_INTERVAL_MS = 1_250;
       const reviewNotificationVersions = new Set();
       const initialQuery = new URLSearchParams(window.location.search);
+      const initialReviewVersionId = initialQuery.has("version")
+        ? initialQuery.get("version").toLowerCase()
+        : null;
       const initialReviewContentId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initialQuery.get("content") || "")
         ? initialQuery.get("content").toLowerCase()
         : "";
@@ -2459,6 +2462,15 @@
         libraryDetail.hidden = false;
       }
 
+      function reviewLinkVersionMatches(contentId, detail, expectedItemId, expectedVersionId) {
+        if (expectedVersionId === null || contentId !== expectedItemId) return true;
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        return typeof expectedVersionId === "string" && uuid.test(expectedVersionId)
+          && detail !== null && typeof detail === "object" && !Array.isArray(detail)
+          && detail.content_item_id === expectedItemId
+          && detail.current_version_id === expectedVersionId;
+      }
+
       async function loadLibraryDetail(contentId) {
         const requestId = ++libraryState.detailRequest;
         const requestSessionEpoch = state.sessionEpoch;
@@ -2492,6 +2504,12 @@
           if (requestSessionEpoch !== state.sessionEpoch || requestId !== libraryState.detailRequest) return;
           if (handleStudioAccessResponse(response, payload)) return;
           if (!response.ok) throw new Error("library_detail_failed");
+          if (!batchJobId && !reviewLinkVersionMatches(contentId, payload.item || payload, initialReviewContentId, initialReviewVersionId)) {
+            libraryDetailState.textContent = "이 검수 카드의 버전이 현재 버전과 다릅니다. 오래된 카드는 사용하지 말고 새 검수 카드를 확인해 주세요.";
+            libraryDetailState.className = "library-state error";
+            libraryDetailState.hidden = false;
+            return;
+          }
           if (batchJobId) renderBatchReviewDetail(payload.item || payload);
           else renderLibraryDetail(payload.item || payload);
         } catch {

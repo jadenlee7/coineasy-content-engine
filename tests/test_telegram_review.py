@@ -326,6 +326,33 @@ def test_review_relay_is_admin_only_and_validates_targets(api_client, monkeypatc
     assert calls[0]["image_data_url"] == IMAGE_DATA_URL
 
 
+@pytest.mark.parametrize("ownership", ["true", "false", "TRUE"])
+def test_durable_queue_ownership_prevents_parallel_team_delivery(api_client, monkeypatch, ownership):
+    from api import server
+
+    monkeypatch.setenv("CONTENT_OPS_REVIEW_QUEUE_OWNS_RELAY", ownership)
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN", RELAY_BOT_TOKEN)
+    monkeypatch.setenv("TELEGRAM_CONTENT_OPS_RELAY_CHAT_ID", COLLABORATION_CHAT_ID)
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return {"sent": True, "photo_sent": True, "text_sent": True}
+
+    monkeypatch.setattr(server, "send_telegram_review", fake_send)
+    response = api_client.post(
+        "/review-notifications/telegram",
+        headers={"x-api-key": ADMIN_KEY}, json=notification_payload(),
+    )
+    if ownership == "TRUE":
+        assert response.status_code == 503
+        assert calls == []
+    else:
+        assert response.status_code == 200
+        assert calls[0]["config"] == TelegramReviewConfig(BOT_TOKEN, CHAT_ID)
+        assert (calls[0]["collaboration_config"] is None) == (ownership == "true")
+
+
 def test_grok_qa_message_is_bounded_escaped_and_explicitly_advisory():
     message = build_telegram_grok_qa_message(
         client_id="squid",
