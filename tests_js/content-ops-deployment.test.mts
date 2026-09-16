@@ -4,6 +4,31 @@ import test from "node:test";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+test("confirmation CI builds its own image and invokes the isolated real-container harness", () => {
+  const workflow = read(".github/workflows/ci.yml");
+  const job = workflow.split("  confirmation-image:\n")[1]?.split("\n  automation-image:")[0];
+  assert.ok(job, "dedicated confirmation image job must exist");
+  assert.match(job, /runs-on: ubuntu-latest/);
+  assert.match(job, /timeout-minutes: 10/);
+  assert.match(job, /contents: read/);
+  assert.match(job, /persist-credentials: false/);
+  assert.match(job, /--file Dockerfile\.content-ops-confirmation/);
+  assert.match(job, /--build-arg RAILWAY_GIT_COMMIT_SHA=a{40}\n/);
+  assert.match(job, /--build-arg RAILWAY_GIT_COMMIT_SHA=invalid/);
+  assert.match(job, /grep -F 'test -n'/);
+  assert.match(job, /grep -F 'exit code: 1'/);
+  assert.match(job, /python scripts\/verify_confirmation_image_local\.py\n\s+--local-only --image coineasy-confirmation-ci/);
+  assert.match(job, /synthetic SHA, not deployment proof/);
+  assert.doesNotMatch(job, /secrets\.|docker (?:push|login)|railway (?:up|deploy)|netlify deploy|pull_request_target/);
+  const harness = read("scripts/verify_confirmation_image_local.py");
+  for (const flag of ["--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges"]) {
+    assert.ok(harness.includes(flag), flag);
+  }
+  assert.match(harness, /response\.code == 503/);
+  assert.match(harness, /'wrong_sha'/);
+  assert.match(harness, /'missing_sha'/);
+});
+
 test("confirmation deployment stays an inert, unscheduled validate-only template", () => {
   const config = JSON.parse(read("ops/content-ops/confirmation-railway.json"));
   assert.deepEqual(config.build, { builder: "DOCKERFILE", dockerfilePath: "Dockerfile.content-ops-confirmation" });

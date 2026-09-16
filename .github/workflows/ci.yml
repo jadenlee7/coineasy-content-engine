@@ -35,6 +35,47 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
 
+  confirmation-image:
+    name: Private confirmation image (synthetic SHA, not deployment proof)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build a disposable confirmation image with a synthetic stamp
+        run: >-
+          docker build
+          --file Dockerfile.content-ops-confirmation
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-confirmation-ci
+          .
+      - name: Reject a malformed build stamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          if docker build --progress=plain \
+            --file Dockerfile.content-ops-confirmation \
+            --build-arg RAILWAY_GIT_COMMIT_SHA=invalid \
+            --tag coineasy-confirmation-ci-invalid . >"$log" 2>&1; then
+            echo "Malformed build stamp was accepted"
+            exit 1
+          fi
+          # An unrelated pull/network failure is not a successful negative test.
+          grep -F 'test -n' "$log"
+          grep -F 'exit code: 1' "$log"
+      - name: Prove default-OFF HTTP and release rejection without external I/O
+        run: >-
+          python scripts/verify_confirmation_image_local.py
+          --local-only --image coineasy-confirmation-ci
+
   automation-image:
     runs-on: ubuntu-latest
     steps:
