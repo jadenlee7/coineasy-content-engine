@@ -29,16 +29,21 @@ All delivery configuration remains default-OFF; no service is added to active Ia
 ## Verification, 2026-09-16
 
 - Python: 4055 passed; two existing FastAPI deprecation warnings.
-- JavaScript: 504 passed, three existing opt-in skips, zero failures.
+- JavaScript after dependency patch: 505 passed, three existing opt-in skips,
+  zero failures. Relevant Python rerun: 36 passed, two existing warnings.
+  Initial sandboxed JS run hit localhost listen EPERM; the scoped local-server
+  rerun passed. No production or provider endpoints were used.
 - Disposable PostgreSQL 16: all 56 migrations and full-schema ACL smoke passed;
   synthetic behavior, eight-way claim/send-start races and unknown-delivery
   restart fencing passed. See DAILY_REVIEW_MVP_ACCEPTANCE.md for limits.
 - Local Docker image: default-OFF zero-claim output and synthetic validate-only
   succeeded with runtime networking disabled. Wrong runtime SHA was rejected.
   These are not hosted deployment or actual-delivery proofs.
-- npm audit reported one existing high-severity direct sharp vulnerability.
-  No dependency or lockfile was changed; dependency remediation remains a
-  production-readiness follow-up, not silently ignored by green feature tests.
+- Follow-up dependency remediation: sharp minimum/lock updated to 0.35.4,
+  including prebuilt libheif 1.23.2. npm audit now reports zero vulnerabilities.
+  A regression test checks both locked and actually loaded native versions.
+  This patches this branch only, not the currently deployed production image.
+  Advisory: https://github.com/advisories/GHSA-rgj7-g3m4-5g8c
 
 ## Controlled rollout (separate authority required)
 
