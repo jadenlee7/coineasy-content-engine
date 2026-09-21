@@ -73,10 +73,21 @@ begin
     select * into action from private.content_ops_button_actions
         where review_id=review.id and idempotency_key=receipt.edit_action_key;
     if not found or action.actor_id is distinct from actor or action.epoch is distinct from receipt.epoch
-        or action.action not in ('edit_telegram','edit_x') or action.result_status<>'edit_requested'
+        or action.action not in ('edit_telegram','edit_x','edit_banner') or action.result_status<>'edit_requested'
         or action.version_fingerprint is distinct from review.version_fingerprint
         or receipt.delivered_at<action.created_at then
         raise exception 'button_prompt_action_ineligible' using errcode='23514';end if;
+    -- Banner feedback never uses the historical fixture-only unreserved path.
+    if action.action='edit_banner' and not exists (
+        select 1 from private.content_ops_button_prompt_attempts a
+        join private.content_ops_button_cards c on c.id=a.card_id
+        where a.review_id=review.id and a.epoch=receipt.epoch
+          and a.edit_action_key=receipt.edit_action_key and a.actor_id=actor
+          and a.human_binding=verified_human_binding and c.active
+          and a.bot_binding=receipt.bot_binding and a.room_binding=receipt.room_binding
+          and a.expires_at=receipt.reservation_expires_at
+          and a.started_at<=receipt.delivered_at and a.expires_at>observed
+    ) then raise exception 'button_prompt_action_ineligible' using errcode='23514';end if;
     current_state:=private.content_ops_button_check_state(review.id,actor);
     if current_state->>'status' is distinct from 'edit_requested' then
         raise exception 'button_prompt_version_ineligible' using errcode='23514';end if;

@@ -20,7 +20,14 @@ def test_registration_reads_owner_receipt_not_user_success_claim():
     assert 'outcome' not in signature and 'receipt_sha256' not in signature
     for marker in ("receipt.outcome is distinct from 'sent'", 'receipt.delivered_at is null',
                    'receipt.delivered_at<action.created_at', 'receipt.recorded_at>observed',
-                   'expiry<=observed', "action.action not in ('edit_telegram','edit_x')"):
+                   'expiry<=observed', "action.action not in ('edit_telegram','edit_x','edit_banner')"):
+        assert marker in SQL
+
+
+def test_banner_registration_never_uses_unreserved_fixture_compatibility():
+    assert "action.action='edit_banner' and not exists" in SQL
+    for marker in ('private.content_ops_button_prompt_attempts a', 'and c.active',
+                   'a.human_binding=verified_human_binding', 'a.expires_at=receipt.reservation_expires_at'):
         assert marker in SQL
 
 

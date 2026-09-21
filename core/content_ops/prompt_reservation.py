@@ -87,7 +87,7 @@ def load_reserved_attempt(review, card, attempt, *, bindings, bot_id, chat_id,
         _require(parent == b['parent_binding'] == attempt['parent_binding_sha256'])
         _require(attempt['expected_text_sha256'] in {
             hashlib.sha256(prompt_instruction(action).encode()).hexdigest()
-            for action in ('edit_telegram', 'edit_x')})
+            for action in ('edit_telegram', 'edit_x', 'edit_banner')})
         started, expires = _time(attempt['started_at']), _time(attempt['expires_at'])
         observed, now = _time(observed_at), _time(db_now)
         _require(_time(card['delivered_at']) <= started <= observed < expires <= _time(card['expires_at'])

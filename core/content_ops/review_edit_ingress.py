@@ -53,6 +53,9 @@ class VerifiedEditReply:
     actor_id: str
     replacement_text: str
     operation_key: str
+    thread_id: int | None = None
+    message_date: int | None = None
+    prompt_date: int | None = None
 
 
 def _message(message, policy, now):
@@ -91,6 +94,16 @@ def handle_edit_reply_webhook(*, enabled=False, raw_body=None, headers=(),
                               policy=None, bindings=None, owner=None, now=None):
     if enabled is not True:
         return {"status": "disabled", "public_send_attempted": False}
+    event = verified_edit_reply(raw_body=raw_body, headers=headers, policy=policy,
+                                bindings=bindings, now=now)
+    try:
+        return _receipt(owner.save_edit_reply(event))
+    except Exception:
+        raise ReviewIngressError("review_edit_outcome_unknown") from None
+
+
+def verified_edit_reply(*, raw_body, headers, policy, bindings, now):
+    """Shared authenticated parsing, never action selection or mutation authority."""
     update = _authenticated_update(raw_body, headers, policy, now)
     _require(set(update) == {"update_id", "message"}, "review_edit_update_invalid")
     _require(type(bindings) is EditBindings, "review_edit_key_invalid")
@@ -130,13 +143,11 @@ def handle_edit_reply_webhook(*, enabled=False, raw_body=None, headers=(),
         bindings.digest("human", policy.bot_id, actor["id"]),
         dict(policy.reviewers)[actor["id"]], text,
         bindings.digest("reply", policy.bot_id, policy.chat_id, message["message_id"]),
+        message.get("message_thread_id"), message["date"], prompt["date"],
     )
     # Message identity (not update_id) is the replay key. DB checks exact body,
     # prompt, actor, expiry and version under locks. Never retry a lost commit ACK.
-    try:
-        return _receipt(owner.save_edit_reply(event))
-    except Exception:
-        raise ReviewIngressError("review_edit_outcome_unknown") from None
+    return event
 
 
 class PostgresEditReplyOwner:

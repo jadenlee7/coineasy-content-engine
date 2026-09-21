@@ -139,11 +139,13 @@ def _authenticated_update(raw_body, headers, policy, now):
     return update
 
 
-def _parse_callback(raw_body, headers, policy, now):
+def _parse_callback(raw_body, headers, policy, now, *, private_only=False):
     update = _authenticated_update(raw_body, headers, policy, now)
     _require(set(update) == {"update_id", "callback_query"})
     query = update["callback_query"]
     _require(type(query) is dict and not ({"inline_message_id", "game_short_name"} & query.keys()))
+    if private_only and type(query.get("data")) is str and query["data"].startswith("ce1:"):
+        query["data"] = query["data"][4:]
     actor, message = query.get("from"), query.get("message")
     _require(type(actor) is dict and type(message) is dict)
     _require(_positive_int(actor.get("id")) and actor.get("is_bot") is False
@@ -171,7 +173,7 @@ def _parse_callback(raw_body, headers, policy, now):
 
 
 def handle_review_webhook(*, enabled=False, raw_body=None, headers=(), policy=None,
-                          signer=None, owner=None, now=None):
+                          signer=None, owner=None, now=None, private_only=False):
     """Validate an update and delegate one action; never send/acknowledge here.
 
     The existing owner must persist idempotency by callback query ID in the same
@@ -182,7 +184,8 @@ def handle_review_webhook(*, enabled=False, raw_body=None, headers=(), policy=No
     """
     if enabled is not True:
         return {"status": "disabled", "public_send_attempted": False}
-    query, actor_id = _parse_callback(raw_body, headers, policy, now)
+    _require(type(private_only) is bool, "review_ingress_policy_invalid")
+    query, actor_id = _parse_callback(raw_body, headers, policy, now, private_only=private_only)
     try:
         binding = owner.resolve_review_message(bot_id=policy.bot_id, chat_id=policy.chat_id,
             message_id=query["message"]["message_id"], room_binding=policy.room_binding)
@@ -194,7 +197,7 @@ def handle_review_webhook(*, enabled=False, raw_body=None, headers=(), policy=No
     try:
         return handle_review_callback(event, enabled=True, signer=signer, owner=owner,
             allowed_reviewers=frozenset(actor for _, actor in policy.reviewers),
-            room_binding=policy.room_binding, now=now)
+            room_binding=policy.room_binding, now=now, private_only=private_only)
     except ButtonReviewError:
         # Includes stale buttons and potentially lost/invalid owner readback.
         # Conservatively avoid claiming that no owner mutation occurred.
