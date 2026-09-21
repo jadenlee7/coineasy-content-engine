@@ -49,7 +49,7 @@ from core.content_ops.cancellation_control_receipt_owner import (  # noqa: E402
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--local-socket', required=True)
-    parser.add_argument('--phase', choices=('initial', 'cancellation', 'guard', 'authority', 'confirmation', 'restart'), required=True)
+    parser.add_argument('--phase', choices=('initial', 'callbacks', 'banner', 'cancellation', 'guard', 'authority', 'confirmation', 'restart'), required=True)
     args = parser.parse_args()
     path = Path(args.local_socket)
     if (not re.fullmatch(r'/private/tmp/coineasy-button-review-[A-Za-z0-9]+', str(path))
@@ -371,6 +371,17 @@ def main():
             assert str(exc) == 'review_edit_outcome_unknown'
         else:
             raise AssertionError('expected refusal or unknown')
+
+    if args.phase == 'banner':
+        from scripts.verify_banner_revision_owner_local import run
+        print(json.dumps(run(connect,card_fixture,record_card,binding,
+                             reserve_attempt,validate_prompt_fixture,persist_prompt)))
+        return
+
+    if args.phase == 'callbacks':
+        from scripts.verify_private_review_owner_local import run
+        print(json.dumps(run(connect,card_fixture,record_card,binding)))
+        return
 
     if args.phase == 'restart':
         assert read("select count(*) from private.content_ops_button_markup_attempts where status='response_matched'")==12

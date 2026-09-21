@@ -194,7 +194,7 @@ begin
     select * into a from private.content_ops_button_actions
         where review_id=r.id and idempotency_key=target_action_key for share;
     if not found or a.actor_id is distinct from actor or a.epoch is distinct from r.epoch
-        or a.action not in ('edit_telegram','edit_x') or a.result_status is distinct from 'edit_requested'
+        or a.action not in ('edit_telegram','edit_x','edit_banner') or a.result_status is distinct from 'edit_requested'
         or a.version_fingerprint is distinct from r.version_fingerprint
         or a.created_at<c.delivered_at then
         raise exception 'button_attempt_action_ineligible' using errcode='23514';end if;
@@ -208,7 +208,8 @@ begin
         raise exception 'button_attempt_ineligible' using errcode='23514';end if;
     text_hash:=encode(sha256(convert_to(case a.action when 'edit_telegram' then
         '수정할 Telegram 공지 전문을 이 메시지에 답장해주세요. 저장 후 다시 검수하며, 자동 게시되지 않습니다.'
-        else '수정할 X 게시글 전문을 이 메시지에 답장해주세요. 저장 후 다시 검수하며, 자동 게시되지 않습니다.' end,'UTF8')),'hex');
+        when 'edit_x' then '수정할 X 게시글 전문을 이 메시지에 답장해주세요. 저장 후 다시 검수하며, 자동 게시되지 않습니다.'
+        else '배너에서 바꿀 디자인을 이 메시지에 답장해주세요(600자 이내). 원문·로고는 유지하며, 재제작 후 다시 검수합니다. 자동 게시되지 않습니다.' end,'UTF8')),'hex');
     select * into prior from private.content_ops_button_prompt_attempts where review_id=r.id and epoch=r.epoch;
     if found then
         if prior.id is distinct from target_attempt_id or prior.card_id is distinct from c.id
@@ -306,7 +307,7 @@ begin
         where review_id=r.id and idempotency_key=a.edit_action_key for share;
     if not found or act.actor_id is distinct from a.actor_id or act.epoch is distinct from a.epoch
         or act.version_fingerprint is distinct from a.version_fingerprint
-        or act.action not in ('edit_telegram','edit_x') or act.result_status is distinct from 'edit_requested'
+        or act.action not in ('edit_telegram','edit_x','edit_banner') or act.result_status is distinct from 'edit_requested'
         or act.created_at<c.delivered_at or act.created_at>a.started_at then
         raise exception 'button_prompt_card_lineage_invalid' using errcode='23514';end if;
     observed:=clock_timestamp();

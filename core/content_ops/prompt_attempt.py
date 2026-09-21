@@ -77,6 +77,8 @@ class RegisteredControlCard:
 
 
 def prompt_instruction(action):
+    if type(action) is str and action == 'edit_banner':
+        return '배너에서 바꿀 디자인을 이 메시지에 답장해주세요(600자 이내). 원문·로고는 유지하며, 재제작 후 다시 검수합니다. 자동 게시되지 않습니다.'
     """Fixed plain text only; changing a template requires a new pinned attempt."""
     if type(action) is str and action == 'edit_telegram':
         return '수정할 Telegram 공지 전문을 이 메시지에 답장해주세요. 저장 후 다시 검수하며, 자동 게시되지 않습니다.'

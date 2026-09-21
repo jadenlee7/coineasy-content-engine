@@ -123,7 +123,7 @@ class ButtonSigner:
         return ACTIONS[action]
 
 
-def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now):
+def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now, private_only=False):
     """Request-shaped text parts only. Existing courier owns actual delivery.
 
     Bind buttons to the review-control message receipt after all three parts
@@ -131,6 +131,7 @@ def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now):
     Never put buttons on a partially delivered or uncertain bundle.
     """
     snapshot.validate()
+    _check(type(private_only) is bool)
     from core.publications.handoff import CLIENT_TARGETS
     tg, x, _ = CLIENT_TARGETS[snapshot.client_id]
     def button(action):
@@ -143,12 +144,27 @@ def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now):
                 f"버전: {snapshot.content_version_id}\n"
                 "원문 사실과 최종 문안·배너를 각각 확인한 뒤 두 채널 게시를 승인하세요.\n"
                 "수정하면 이전 확인·승인이 초기화됩니다. 버튼은 30분 후 만료됩니다.")
+    if private_only:
+        controls = (f"{snapshot.client_id.upper()} · 비공개 제작·검수\n"
+                    f"공식 원문: {snapshot.source_url}\n공식 게시: {snapshot.source_published_at}\n"
+                    f"버전: {snapshot.content_version_id}\n"
+                    "수정·재제작은 새 검토본을 만듭니다. 공식 채널 게시 승인이 아닙니다.\n"
+                    "버튼은 30분 후 만료됩니다.")
+    rows = [[button("t"), button("x")], [button("b"), button("h")],
+            [button("s"), button("c")]]
+    if private_only:
+        rows[1][0]["text"] = "🎨 배너 다시 만들기"
+        # Reserved routing namespace for the existing shared polling owner.
+        # The signed 51-byte token remains unchanged inside this 55-byte value.
+        for row in rows:
+            for item in row:
+                item["callback_data"] = "ce1:" + item["callback_data"]
+    else:
+        rows.append([button("a")])
     return {
         "telegram": {"text": "[Telegram 공지 전문]\n" + snapshot.telegram_copy},
         "x": {"text": "[X 게시글 전문]\n" + snapshot.x_copy},
-        "controls": {"text": controls, "reply_markup": {"inline_keyboard": [
-            [button("t"), button("x")], [button("b"), button("h")],
-            [button("s"), button("c")], [button("a")]]}},
+        "controls": {"text": controls, "reply_markup": {"inline_keyboard": rows}},
         "snapshot_sha256": snapshot.digest(),
     }
 
@@ -182,15 +198,20 @@ class ReviewActionOwner(Protocol):
 
 def handle_review_callback(event: VerifiedCallback, *, enabled: bool, signer,
                            owner: ReviewActionOwner, allowed_reviewers: frozenset,
-                           room_binding: str, now: int):
+                           room_binding: str, now: int, private_only=False):
     if enabled is not True:
         return {"status": "disabled", "public_send_attempted": False}
+    _check(type(private_only) is bool)
     _check(type(event) is VerifiedCallback and event.actor_is_bot is False
            and event.room_binding == room_binding
            and event.actor_id in allowed_reviewers, "review_actor_forbidden")
     _check(type(event.callback_id) is str and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", event.callback_id)))
     snapshot = owner.read_review(event.room_binding, event.message_binding)
     action = signer.verify(event.token, snapshot, room_binding, now=now)
+    # Hiding the button alone is insufficient: old signed publication callbacks
+    # must also fail BEFORE any owner write when serving the private workflow.
+    _check(not (private_only and action == "approve_and_publish"),
+           "review_private_publication_forbidden")
     if action == "approve_and_publish":
         _check(snapshot.eligibility == "daily_ready", "review_source_requires_separate_approval")
     result = owner.apply_review_action(snapshot_sha256=snapshot.digest(),

@@ -1,4 +1,4 @@
-"""Squid-only private review payloads, not an approval or a second send engine.
+"""Private review payloads, not an approval or a second send engine.
 
 The existing worker/gateway/outbox owns delivery. All three parts are validated
 before its one-shot begin; full copy is never silently truncated or rewritten.
@@ -49,7 +49,15 @@ class SquidBundle:
 
 
 def build_squid_bundle(claim: ReviewClaim, detail: object, origin: str, now: datetime) -> SquidBundle:
-    _check(claim.client_id == "squid" and type(detail) is dict
+    # Keep the existing transport's Squid-only boundary unchanged.
+    _check(claim.client_id == "squid")
+    return build_client_bundle(claim, detail, origin, now)
+
+
+def build_client_bundle(claim: ReviewClaim, detail: object, origin: str, now: datetime) -> SquidBundle:
+    """Four-client rendering only; does not widen worker/gateway send scopes."""
+    names = {"squid": "Squid", "yellow": "Yellow", "babylon": "Babylon", "origintrail": "OriginTrail"}
+    _check(claim.client_id in names and type(detail) is dict
            and set(detail) == {"claim", "asset", "snapshot_sha256"})
     current = ReviewClaim.parse(detail["claim"], now)
     # Legacy claim copy/title may be shortened. Every identity/source/hash must
@@ -66,13 +74,14 @@ def build_squid_bundle(claim: ReviewClaim, detail: object, origin: str, now: dat
            and asset["width"] + asset["height"] <= 10000
            and max(asset["width"], asset["height"]) / min(asset["width"], asset["height"]) <= 20)
     review_url = build_packet(current, origin, now).review_url
-    caption = ("Squid 데일리 뉴스 · 팀 검수용 (승인·공개 게시 아님)\n"
+    name = names[claim.client_id]
+    caption = (f"{name} 데일리 뉴스 · 팀 검수용 (승인·공개 게시 아님)\n"
                f"공식 원문: {current.source_url}\n검수: {review_url}\n"
                f"버전: {current.content_version_id}\n"
                "이미지·Telegram·X 세 부분을 모두 확인해주세요.")
     texts = (caption,
-             f"[Squid · Telegram 공지 전문]\n버전: {current.content_version_id}\n\n{current.telegram_copy}",
-             f"[Squid · X 게시글 전문]\n버전: {current.content_version_id}\n\n{current.x_copy}")
+             f"[{name} · Telegram 공지 전문]\n버전: {current.content_version_id}\n\n{current.telegram_copy}",
+             f"[{name} · X 게시글 전문]\n버전: {current.content_version_id}\n\n{current.x_copy}")
     parts = []
     for index, (kind, text) in enumerate(zip(KINDS, texts)):
         # Plain text avoids HTML entity expansion and preserves original copy.

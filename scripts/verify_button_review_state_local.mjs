@@ -38,6 +38,7 @@ const confirmationSourceProposal = 'supabase/proposals/content_ops_button_confir
 const confirmationSendProposal = 'supabase/proposals/content_ops_button_confirmation_send_permission.sql';
 const confirmationSendEventProposal = 'supabase/proposals/content_ops_button_confirmation_send_event.sql';
 const confirmationDispatchProposal = 'supabase/proposals/content_ops_button_confirmation_dispatch.sql';
+const bannerProposal = 'supabase/proposals/content_ops_banner_revision.sql';
 const driverPython = env.BUTTON_EDIT_TEST_PYTHON;
 function driverTest(phase) {
   if (!driverPython) return;
@@ -87,7 +88,9 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.content_ops_button_confirmation_deliveries','private.content_ops_button_confirmation_sources',
       'private.content_ops_button_confirmation_send_permissions',
       'private.content_ops_button_confirmation_send_events',
-      'private.content_ops_button_confirmation_dispatches'] loop
+      'private.content_ops_button_confirmation_dispatches',
+      'private.content_ops_banner_requests','private.content_ops_banner_results',
+      'private.content_ops_banner_briefs','private.content_ops_banner_feedback'] loop
       if has_table_privilege(r,t,'SELECT,INSERT,UPDATE,DELETE') then raise exception 'runtime table ACL leaked';end if;
     end loop;
   end loop;
@@ -99,9 +102,11 @@ try {
   query("create function auth.role() returns text language sql stable as $$select current_setting('request.jwt.claim.role',true)$$;", 'postgres');
   const migrations = readdirSync('supabase/migrations').filter(p => p.endsWith('.sql')).sort();
   for (const p of migrations) sql('supabase/migrations/' + p);
-  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); query(acl, 'postgres');
+  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
   console.log(JSON.stringify({ fullLocalMigrationFiles: migrations.length, proposalApplied: true, runtimeAclDenied: true, hostedProof: false }));
   driverTest('initial');
+  driverTest('callbacks');
+  driverTest('banner');
   driverTest('cancellation');
   driverTest('guard');
   driverTest('authority');
@@ -124,6 +129,7 @@ try {
   sql(confirmationSendProposal, 'synthetic_buttons');
   sql(confirmationSendEventProposal, 'synthetic_buttons');
   sql(confirmationDispatchProposal, 'synthetic_buttons');
+  sql(bannerProposal, 'synthetic_buttons');
   query(acl);
   sql('supabase/tests/content_ops_button_review_state.sql', 'synthetic_buttons');
   sql('supabase/tests/content_ops_button_edit_reply.sql', 'synthetic_buttons');

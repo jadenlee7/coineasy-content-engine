@@ -170,7 +170,7 @@ def test_reservation_requires_exact_edit_action_and_immediate_successor_epoch():
     for condition in (
         "idempotency_key=target_action_key for share",
         "a.actor_id is distinct from actor", "a.epoch is distinct from r.epoch",
-        "a.action not in ('edit_telegram','edit_x')", "a.result_status is distinct from 'edit_requested'",
+        "a.action not in ('edit_telegram','edit_x','edit_banner')", "a.result_status is distinct from 'edit_requested'",
         "a.version_fingerprint is distinct from r.version_fingerprint",
         "a.created_at<c.delivered_at", "a.created_at>observed",
         "r.epoch<>c.epoch+1", "not c.active", "r.state is distinct from 'edit_requested'",
@@ -194,11 +194,12 @@ def test_sql_fixed_korean_instruction_hashes_match_python_templates():
     case = re.search(
         r"text_hash\s*:=\s*encode\s*\(\s*sha256\s*\(\s*convert_to\s*\(\s*case\s+a\.action"
         r"\s+when\s+'edit_telegram'\s+then\s+'((?:''|[^'])*)'"
+        r"\s+when\s+'edit_x'\s+then\s+'((?:''|[^'])*)'"
         r"\s+else\s+'((?:''|[^'])*)'\s+end\s*,\s*'UTF8'\s*\)\s*\)\s*,\s*'hex'\s*\)",
         CODE, re.I | re.S,
     )
     assert case, "Expected UTF8 SHA-256 over fixed channel instruction literals"
-    for action, literal in zip(("edit_telegram", "edit_x"), case.groups()):
+    for action, literal in zip(("edit_telegram", "edit_x", "edit_banner"), case.groups()):
         sql_text = literal.replace("''", "'")
         expected = prompt_instruction(action)
         assert sql_text == expected

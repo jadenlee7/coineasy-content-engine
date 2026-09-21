@@ -165,6 +165,21 @@ class ReviewIngressTest(unittest.TestCase):
         self.assertTrue(self.run_update(self.update('a'))['reused'])
         self.assertEqual(len(self.owner.outbox), 2)
 
+    def test_private_ingress_rejects_old_publish_after_valid_checks(self):
+        self.run_update(self.update('s'), private_only=True)
+        self.run_update(self.update('c'), private_only=True)
+        applies = self.owner.applies
+        with self.assertRaisesRegex(ReviewIngressError, 'action_unconfirmed'):
+            self.run_update(self.update('a'), private_only=True)
+        self.assertEqual(self.owner.applies, applies)
+        self.assertFalse(self.owner.outbox)
+
+    def test_invalid_private_mode_rejects_before_any_io(self):
+        for value in (None, 'true', 1):
+            with self.assertRaisesRegex(ReviewIngressError, 'policy_invalid'):
+                self.run_update(private_only=value)
+        self.assert_no_io()
+
     def test_approve_without_human_checks_does_not_queue(self):
         with self.assertRaisesRegex(ReviewIngressError, 'action_unconfirmed'):
             self.run_update(self.update('a'))

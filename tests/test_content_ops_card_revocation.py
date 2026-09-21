@@ -169,7 +169,7 @@ def test_helper_checks_historical_action_not_only_live_edit_requested_state():
     for condition in (
         "act.actor_id is distinct from a.actor_id", "act.epoch is distinct from a.epoch",
         "act.version_fingerprint is distinct from a.version_fingerprint",
-        "act.action not in ('edit_telegram','edit_x')",
+        "act.action not in ('edit_telegram','edit_x','edit_banner')",
         "act.result_status is distinct from 'edit_requested'",
         "act.created_at<c.delivered_at", "act.created_at>a.started_at",
     ):

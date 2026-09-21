@@ -173,7 +173,8 @@ def test_full_harness_runs_both_bounded_phases_before_restart_without_timeout_in
     assert "'--phase', phase], { encoding: 'utf8', env, timeout: 60000 }" in harness
     assert 'sql(markupProposal)' in harness and "sql(markupProposal, 'synthetic_buttons')" in harness
     driver=(root/'scripts/verify_button_edit_driver_local.py').read_text()
-    assert "choices=('initial', 'cancellation', 'guard', 'authority', 'confirmation', 'restart')" in driver
+    assert "choices=('initial', 'callbacks', 'banner', 'cancellation', 'guard', 'authority', 'confirmation', 'restart')" in driver
+    assert harness.index("driverTest('initial')") < harness.index("driverTest('callbacks')") < harness.index("driverTest('cancellation')")
     assert harness.index("driverTest('authority')") < harness.index("driverTest('confirmation')") < harness.index("driverTest('restart')")
     assert harness.index("driverTest('cancellation')") < harness.index("driverTest('guard')") < harness.index("driverTest('restart')")
     assert harness.index("driverTest('guard')") < harness.index("driverTest('authority')") < harness.index("driverTest('restart')")

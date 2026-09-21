@@ -56,7 +56,7 @@ def test_default_off_does_not_read_inputs(enabled):
 
 
 @pytest.mark.parametrize("client", ["yellow", "babylon", "squid", "origintrail"])
-@pytest.mark.parametrize("action", ["edit_telegram", "edit_x"])
+@pytest.mark.parametrize("action", ["edit_telegram", "edit_x", "edit_banner"])
 def test_four_clients_and_both_channels_produce_exact_pinned_attempt(client, action):
     args = inputs(client, action)
     attempt = plan_prompt_attempt(**args)
