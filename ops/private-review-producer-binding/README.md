@@ -16,6 +16,9 @@ requires `legacy_no_history` before any apply and `corrected_exact_history`
 afterward; unknown bodies and partial/mismatched history fail closed. Its
 current SHA-256 is
 `6e96c59a7b338698459d7f8212e78e88c0e816bf5ec35a2136e05bc8c5945c71`.
+The exact contract also returned `legacy_no_history` through the official
+production read-only query endpoint on 2026-09-23; see the
+[readback receipt](../../docs/PRIVATE_REVIEW_PRODUCER_BINDING_READBACK_20260923.md).
 
 `atomic-apply-sql.mjs` is an offline builder for a single transactional SQL
 statement set. It accepts only those exact migration bytes, strips that file's

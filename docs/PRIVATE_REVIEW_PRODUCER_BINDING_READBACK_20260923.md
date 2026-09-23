@@ -11,6 +11,13 @@ history columns `version`, `statements`, `name`, `created_by`,
 `idempotency_key`, and `rollback`. The target migration history row was absent.
 These observations do **not** authorize a write.
 
+At approximately 14:49 UTC, the proposed runner's official Supabase
+`/database/query/read-only` transport was exercised directly with this exact
+SQL. It returned an array containing `legacy_no_history`, `read_only=true`,
+`changes=0`, and `provider_calls=0`. No write endpoint was called. This proves
+the hosted read-only endpoint accepts the contract shape; the result still
+must be refreshed immediately before any separately authorized application.
+
 The hosted legacy candidate function body SHA-256 was
 `5de6d755095e63f3f7e03eb9f53db5d7fdada0911e222237fd459f12eaa98ffb`.
 The checked-in corrected body SHA-256 is
