@@ -183,7 +183,9 @@ courier factory can run once after a non-reused committed edit action; a reused
 action or uncertain courier result returns `prompt_status_unknown` and cannot
 claim delivery. `compose_private_prompt_factory` builds a fresh DB owner and
 send-only Telegram adapter without connecting or sending; it returns `None`
-without inspecting dependencies when OFF. The bot has matching receipt/unknown
+without inspecting dependencies when OFF. A signed-callback synthetic test
+covers the one-shot prompt receipt and duplicate-update no-resend boundary,
+without a real DB or Telegram call. The bot has matching receipt/unknown
 notices, but its current
 SHA-pinned vendored engine and runtime composition do not mount this factory;
 therefore the current packaged bot still does not invoke the courier, and no
