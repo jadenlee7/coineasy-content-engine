@@ -24,11 +24,11 @@ function docker(args, { allowFailure = false } = {}) {
   return result;
 }
 
-function sql(file) {
+function sql(file, { allowFailure = false } = {}) {
   phase = file;
-  docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-q',
+  return docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-q',
     '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
-    '-d', 'postgres', '-f', `/repo/${file}`]);
+    '-d', 'postgres', '-f', `/repo/${file}`], { allowFailure });
 }
 
 function query(statement) {
@@ -61,6 +61,7 @@ try {
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql');
   sql('supabase/migrations/20260906100000_content_ops_review_outbox.sql');
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
+  sql('supabase/proposals/content_ops_button_card_preapply_readonly.sql');
   query(`create table auth.users(id uuid primary key);
     alter table public.content_versions add column locale text default 'ko-KR',
       add column content jsonb default '{}', add column qa jsonb default '{}',
@@ -72,6 +73,12 @@ try {
   sql('supabase/proposals/content_ops_button_durable_attempt.sql');
   sql('supabase/proposals/content_ops_button_card_send_ledger.sql');
   sql('supabase/proposals/content_ops_button_card_owner_gateway.sql');
+  const secondPreapply = sql('supabase/proposals/content_ops_button_card_preapply_readonly.sql',
+    { allowFailure: true });
+  if (secondPreapply.status === 0
+      || !String(secondPreapply.stderr).includes('button_card_preapply_state_conflict')) {
+    throw Error('pre-apply check accepted a partially installed owner');
+  }
   sql('supabase/proposals/content_ops_button_card_readonly_preflight.sql');
   query(`do $$ declare r text; f text; begin
     foreach r in array array['anon','authenticated','service_role'] loop

@@ -74,6 +74,11 @@ hosted deployment, production ACL check or provider receipt is implied.
 post-apply, read-only catalog/ACL check for the proposed tables and RPCs. It
 currently passes only in the disposable test database; it has not been run on
 production and cannot establish pre-apply hosted-version compatibility.
+The companion `content_ops_button_card_preapply_readonly.sql` checks the
+existing outbox, asset/Storage columns, exact base RPC signatures and absence
+of a partially installed button-card owner before any proposal is applied.
+It also currently passes only in the disposable local database; a hosted
+readback remains required before turning the proposals into migrations.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
