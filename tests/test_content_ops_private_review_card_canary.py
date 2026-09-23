@@ -5,12 +5,17 @@ import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from core.content_ops.private_review_card_canary import CanonicalPng, PrivateCardCanary
+import pytest
+
+from core.content_ops.private_review_card_canary import (
+    CanonicalPng, PrivateCardCanary, PrivateCardCanaryError,
+)
 from core.content_ops.private_review_card_courier import PrivateCardCourier
+from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
 from core.content_ops.private_review_card_receipt import ObservedSend
 from core.content_ops.review_buttons import ButtonSigner
 from core.content_ops.review_edit_ingress import EditBindings
-from core.content_ops.worker import ReviewClaim
+from core.content_ops.worker import APP_ORIGIN, ReviewClaim
 
 
 NOW = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc)
@@ -170,6 +175,25 @@ def test_default_off_and_empty_queue_have_no_send():
     empty, _, _, sender, events = setup(empty=True)
     assert asyncio.run(empty.run(enabled=True))["status"] == "no_candidate"
     assert events == ["reconcile"] and sender.sent == 0
+
+
+def test_concrete_gateway_must_also_be_the_image_reader():
+    events = []
+    owner, sender = Owner(events), Sender(events)
+    signer, bindings = ButtonSigner(b"s" * 32), EditBindings(b"e" * 32)
+    courier = PrivateCardCourier(owner, sender, signer, bindings, clock=lambda: EPOCH)
+    gateway = ButtonCanaryGateway(origin=APP_ORIGIN,
+        gateway_token="test_only_button_card_gateway_token_123456",
+        release_sha="a" * 40, content_version_id=V)
+    args = dict(workspace_id=W, content_version_id=V, bot_id=BOT, chat_id=ROOM,
+        gateway=gateway, owner=owner, courier=courier, signer=signer,
+        bindings=bindings)
+    with pytest.raises(PrivateCardCanaryError, match="configuration_invalid"):
+        PrivateCardCanary(**args, png_reader=Reader(events))
+    runner = PrivateCardCanary(**args, png_reader=gateway)
+    assert asyncio.run(runner.run()) == {"status": "disabled",
+                                        "public_send_attempted": False}
+    assert events == []
 
 
 def test_one_claimed_outbox_precedes_four_durable_private_parts():

@@ -83,8 +83,8 @@ preparation, and never sends after an uncertain begin acknowledgement. Its
 synthetic tests use an injected fake reader. The local-only DB image locator,
 Netlify byte-verifying endpoint and one-shot Python reader now form an
 authenticated reader proposal; **they are not hosted, mounted or wired to a
-runtime**. The runner must receive the same one-shot gateway instance as both
-claim/begin client and PNG reader. No credential, schedule, runtime entrypoint
+runtime**. The runner rejects a concrete one-shot gateway unless that same
+instance is also the PNG reader for claim/image/begin. No credential, schedule, runtime entrypoint
 or Telegram send was added by this runner.
 
 The pure receipt module has no network, database or polling code. Its response parser is

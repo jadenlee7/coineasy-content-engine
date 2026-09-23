@@ -63,7 +63,9 @@ preview is a send authorization.
    client with synthetic denied/mismatch tests.
 2. [ ] Prove the SQL against the actual hosted schema and service-role/Storage
    privileges without sending, then validate exact release fences.
-3. [ ] Mount one single owner with the same gateway object for claim/read/begin
-   only after separate production authorization and a default-OFF rollout.
-4. [ ] Obtain distinct operator approval for any private-room canary; public
+3. [x] Enforce the same concrete gateway object for claim/read/begin in the
+   unmounted canary runner.
+4. [ ] Mount one single owner only after separate production authorization and
+   a default-OFF rollout.
+5. [ ] Obtain distinct operator approval for any private-room canary; public
    Telegram or X publication remains separately gated.
