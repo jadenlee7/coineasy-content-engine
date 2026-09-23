@@ -206,8 +206,9 @@ restricted bot login. It grants EXECUTE only on two narrow functions while
 retaining direct INSERT and underlying owner-function denial. The response
 wrapper atomically persists the validated receipt and registers the prompt;
 conflict or changed lineage rolls back both. The local Python owner now names
-those wrappers. This is not compiled against the hosted schema, migration-ready,
-granted, deployed or enabled. The old durable-attempt proposal also has an
+those wrappers. The wrappers have not been compiled or run on the hosted schema,
+and are not migration-ready, granted, deployed or enabled. The old
+durable-attempt proposal also has an
 `auth.users` actor FK, whereas the hosted signup-free schema uses
 `private.content_ops_review_principals`; the old file must not be applied as-is.
 The proposal compiled and passed privilege-shape checks in disposable,
@@ -217,7 +218,21 @@ synthetic reserve/register transaction through the restricted runtime role. It
 checks wrong-actor and direct-table/base-function denial, recycled message
 rejection, exact replay, conflicting receipt rollback, and zero approvals or
 publications. Both local versions passed with zero provider or production calls.
-This fixture is not the exact hosted catalog or a deployable migration; hosted
-schema compatibility and production E2E remain unverified. The separate host
+This fixture is not a hosted runtime transaction or a deployable migration.
+The hosted pre-apply catalog gate below passed, but wrapper execution and
+production E2E remain unverified. The separate host
 full-schema Python driver was not completed on 2026-09-23 because `initdb`
 failed before schema setup with an OS shared-memory allocation error.
+
+`supabase/proposals/content_ops_button_prompt_preapply_readonly.sql` is a
+separate, read-only catalog gate for the proposed runtime capabilities. It
+checks the signup-free principal and all eight actor FKs, both scoped composite
+FKs, required table columns and RLS, the two existing base-function contracts,
+their body SHA-256 values from the 2026-09-23 schema-only hosted snapshot,
+restricted role read/execute grants, direct INSERT denial, and absence of a
+partially installed wrapper. Disposable PostgreSQL 16.13 and 17.6 tests pass
+the intact fixture and reject a missing composite FK, missing read grant and
+already-installed wrapper. The exact-hash gate passed on the hosted production
+catalog at 2026-09-23 13:49 UTC; see the
+[read-only receipt](PRIVATE_REVIEW_PROMPT_PREAPPLY_RECEIPT_20260923.md). This
+does not authorize applying the proposal or enabling the bot.

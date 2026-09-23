@@ -3,10 +3,11 @@
 -- legacy card-ledger tests have rolled back their synthetic rows.
 begin;
 create table private.content_ops_review_principals(
-    id uuid primary key,
+    id uuid primary key check(id<>'00000000-0000-0000-0000-000000000000'::uuid),
     workspace_id uuid not null references public.workspaces(id),
-    bot_binding text not null,
-    human_binding text not null,
+    bot_binding text not null check(bot_binding ~ '^[a-f0-9]{64}$'),
+    human_binding text not null check(human_binding ~ '^[a-f0-9]{64}$'),
+    created_at timestamptz not null default statement_timestamp(),
     unique(workspace_id,id),
     unique(workspace_id,bot_binding,human_binding,id)
 );
@@ -14,6 +15,7 @@ do $$
 declare target_table text; old_constraint text;
 begin
     foreach target_table in array array[
+        'content_ops_banner_requests',
         'content_ops_button_reviewers','content_ops_button_checks',
         'content_ops_button_actions','content_ops_button_identities',
         'content_ops_button_edit_prompts','content_ops_button_prompt_receipts',
@@ -38,4 +40,26 @@ alter table private.content_ops_button_identities
     foreign key(workspace_id,bot_binding,human_binding,actor_id)
     references private.content_ops_review_principals(
         workspace_id,bot_binding,human_binding,id);
+alter table private.content_ops_review_principals
+    enable row level security;
+alter table private.content_ops_review_principals
+    force row level security;
+alter table private.content_ops_button_prompt_attempts
+    enable row level security;
+alter table private.content_ops_button_prompt_receipts
+    enable row level security;
+alter table private.content_ops_button_edit_prompts
+    enable row level security;
+grant select on private.content_ops_button_prompt_attempts,
+    private.content_ops_button_prompt_receipts,
+    private.content_ops_button_edit_prompts to coineasy_private_review;
+create policy synthetic_prompt_attempt_insert_cap
+    on private.content_ops_button_prompt_attempts as restrictive
+    for insert to coineasy_private_review with check(false);
+create policy synthetic_prompt_receipt_insert_cap
+    on private.content_ops_button_prompt_receipts as restrictive
+    for insert to coineasy_private_review with check(false);
+create policy synthetic_edit_prompt_insert_cap
+    on private.content_ops_button_edit_prompts as restrictive
+    for insert to coineasy_private_review with check(false);
 commit;
