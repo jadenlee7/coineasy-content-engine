@@ -191,9 +191,10 @@ role's existing source-item SELECT; the production ACL readback showed no feed
 SELECT or candidate-function EXECUTE. Feed activation and poll recency are
 therefore still proved at card reservation/registration, not by this callback
 check. This private check is not publication readiness or a reason to enable
-the route. The local fake-transaction test covers a newer-source denial; the
-full host PostgreSQL driver remains unrun when macOS shared-memory allocation
-fails before schema setup.
+the route. The local fake-transaction test covers a newer-source denial. The
+host PostgreSQL driver could not start on macOS because shared-memory slots
+were exhausted; the same full-schema driver subsequently passed in an isolated
+PostgreSQL 16 container with a real local Python/SQL transaction path.
 
 This is **not** a working staff edit button yet. The trusted DB reservation
 reader/writer now exists locally as `PostgresPrivatePromptOwner`: it derives
@@ -241,10 +242,15 @@ checks wrong-actor and direct-table/base-function denial, recycled message
 rejection, exact replay, conflicting receipt rollback, and zero approvals or
 publications. Both local versions passed with zero provider or production calls.
 This fixture is not a hosted runtime transaction or a deployable migration.
-The hosted pre-apply catalog gate below passed, but wrapper execution and
-production E2E remain unverified. The separate host
-full-schema Python driver was not completed on 2026-09-23 because `initdb`
-failed before schema setup with an OS shared-memory allocation error.
+The hosted pre-apply catalog gate below passed, but wrapper execution on the
+hosted schema and production E2E remain unverified. On 2026-09-23 the
+full-schema Python driver passed inside a disposable, network-isolated
+PostgreSQL 16 container after the host `initdb` failed for lack of OS
+shared-memory slots. It covered callbacks, banner revisions, cancellation,
+send guards, stored authority, confirmation, races, rollback, lost-ACK
+readback and restart deduplication; synthetic approvals and publications
+remained zero. CI now runs this container driver on each PR. This is local
+functional evidence only, not hosted compatibility or activation authority.
 
 `supabase/proposals/content_ops_button_prompt_preapply_readonly.sql` is a
 separate, read-only catalog gate for the proposed runtime capabilities. It

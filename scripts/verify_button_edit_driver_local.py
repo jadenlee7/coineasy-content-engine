@@ -1190,7 +1190,9 @@ def main():
 
         # A real transaction with fault injection only at the receipt/ACK boundary.
         class FaultConnection:
-            def __init__(self, fault): self.real=connect(); self.fault=fault
+            def __init__(self, fault, *, prompt_runtime=False):
+                self.real=(connect_prompt_runtime if prompt_runtime else connect)()
+                self.fault=fault
             @property
             def autocommit(self): return self.real.autocommit
             def __enter__(self): self.real.__enter__(); return self
@@ -1263,14 +1265,18 @@ def main():
             contenders.append(contender)
         distinct_barrier = Barrier(8)
         distinct_sqlstates = []
-        class DiagnosticConnection(FaultConnection):
+        class DiagnosticConnection:
             # Test-only capture before the adapter deliberately sanitizes DB errors.
             # A deadlock/timeout must not masquerade as an expected conflict loser.
-            def __init__(self): super().__init__('none')
+            def __init__(self): self.real = connect_prompt_runtime()
+            @property
+            def autocommit(self): return self.real.autocommit
+            def __enter__(self): self.real.__enter__(); return self
             def __exit__(self, *args):
                 if args[1] is not None:
                     distinct_sqlstates.append(getattr(args[1], 'sqlstate', None))
-                return super().__exit__(*args)
+                return self.real.__exit__(*args)
+            def cursor(self): return self.real.cursor()
         def distinct_prompt_race(contender):
             distinct_barrier.wait(timeout=10)
             try:
@@ -1281,7 +1287,9 @@ def main():
         with ThreadPoolExecutor(max_workers=8) as pool:
             distinct_results = list(pool.map(distinct_prompt_race, contenders))
         winners = [result for result in distinct_results if result is not None]
-        assert len(winners) == 1 and winners[0]['reused'] is False
+        assert len(winners) == 1 and winners[0]['reused'] is False, (
+            f'distinct_prompt_winners={len(winners)} '
+            f'loser_sqlstates={sorted(str(code) for code in distinct_sqlstates)}')
         assert winners[0]['execution_authorized'] is False
         assert len(distinct_sqlstates) == 7
         assert not ({'40P01','55P03','57014'} & set(distinct_sqlstates)), 'unexpected deadlock/timeout'
@@ -1323,7 +1331,9 @@ def main():
 
         for fault, expected in (('prompt_receipt',0),('commit_ack',1)):
             ctx = seed_validated_prompt(); calls = []
-            def prompt_factory(): calls.append(1); return FaultConnection(fault)
+            def prompt_factory():
+                calls.append(1)
+                return FaultConnection(fault,prompt_runtime=True)
             prompt_unknown(ctx, owner=PostgresPromptReceiptOwner(prompt_factory))
             assert calls == [1]
             # Independent reads reconcile committed state; never retry unknown sends.

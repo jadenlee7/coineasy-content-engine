@@ -180,6 +180,23 @@ jobs:
       - name: Verify isolated prompt capability on PostgreSQL 17
         run: node scripts/verify_private_card_ledger_docker_local.mjs --local-postgres17
 
+  private-review-button-driver:
+    name: Disposable full-schema button review driver (no network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build synthetic PostgreSQL and Python driver
+        run: docker build --file Dockerfile.button-review-driver --tag coineasy-button-review-driver-ci .
+      - name: Verify full-schema callback, banner, cancellation and restart behavior
+        run: >-
+          docker run --rm --network none --cap-drop ALL
+          --security-opt no-new-privileges coineasy-button-review-driver-ci
+
   automation-image:
     runs-on: ubuntu-latest
     steps:

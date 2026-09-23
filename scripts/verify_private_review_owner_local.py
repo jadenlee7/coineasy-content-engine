@@ -70,8 +70,9 @@ def run(connect, card_fixture, record_card, binding):
     for client in CLIENT_TARGETS:
         for action in ('s','c','t','x','b','h'):
             ctx = setup(client,action)
-            assert callback(ctx) == {'status':'action_recorded','execution_authorized':False}
-            assert callback(ctx)['status']=='action_recorded'
+            expected = 'edit_requested' if action in ('t','x','b') else 'action_recorded'
+            assert callback(ctx) == {'status':expected,'execution_authorized':False}
+            assert callback(ctx)['status']==expected
             assert count(ctx)==1
             cases += 1
 
