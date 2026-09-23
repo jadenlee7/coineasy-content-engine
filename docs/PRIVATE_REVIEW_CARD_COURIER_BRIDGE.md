@@ -178,7 +178,9 @@ reservation RPC to return a new attempt, re-reads the committed row and uses
 the prior receipt owner for confirmation. Fake-transaction and mock-HTTP tests
 cover the one-shot chain and uncertain commit behavior. The owner is **not
 mounted**, its SQL/ACL proposal has not been checked on the hosted schema, the
-existing bot does not invoke the courier after `edit_requested`, and no
+the local polling adapter now preserves `edit_requested` and the existing bot
+acknowledges it without claiming a prompt was sent. The bot still does not
+invoke the courier after `edit_requested`, and no
 production role or Telegram credential has been added. Until those exact
 gates and a private canary are verified, the button must not claim that a
 reply prompt was sent.

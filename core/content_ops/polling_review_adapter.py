@@ -78,7 +78,10 @@ class PollingReviewAdapter:
             policy=self.policy, signer=self.signer, now=now, **options)
         if result.get("status") not in {"checked", "edit_requested", "held"}:
             raise ReviewIngressError("review_ingress_action_unconfirmed")
-        return {"status": "action_recorded", "execution_authorized": False}
+        # The existing poller needs this one durable outcome to distinguish an
+        # edit request from a check/hold. It does not imply a prompt was sent.
+        status = "edit_requested" if result["status"] == "edit_requested" else "action_recorded"
+        return {"status": status, "execution_authorized": False}
 
     async def handle_edit_reply(self, update, *, now):
         if not self.enabled:

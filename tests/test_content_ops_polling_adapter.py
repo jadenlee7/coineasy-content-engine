@@ -35,11 +35,12 @@ def test_private_card_namespace_reaches_actual_signed_controller(action):
     u = case.update(action)
     u["callback_query"]["data"] = "ce1:" + u["callback_query"]["data"]
     original = copy.deepcopy(u)
+    expected = "edit_requested" if action in {"x", "b", "t"} else "action_recorded"
     assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
-        "status": "action_recorded", "execution_authorized": False}
+        "status": expected, "execution_authorized": False}
     assert u == original
     assert case.owner.applies == 1 and not case.owner.outbox
-    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "action_recorded"
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == expected
     assert len(case.owner.operations) == 1
 
 
