@@ -197,3 +197,19 @@ therefore the current packaged bot still does not invoke the courier, and no
 production role or Telegram credential has been added. Until those exact
 gates and a private canary are verified, the button must not claim that a
 reply prompt was sent.
+
+A separate **local-only** `content_ops_button_prompt_runtime_capability.sql`
+proposal now wraps the existing reservation and registration checks for the
+restricted bot login. It grants EXECUTE only on two narrow functions while
+retaining direct INSERT and underlying owner-function denial. The response
+wrapper atomically persists the validated receipt and registers the prompt;
+conflict or changed lineage rolls back both. The local Python owner now names
+those wrappers. This is not compiled against the hosted schema, migration-ready,
+granted, deployed or enabled. The old durable-attempt proposal also has an
+`auth.users` actor FK, whereas the hosted signup-free schema uses
+`private.content_ops_review_principals`; the old file must not be applied as-is.
+The new SQL compiled and passed privilege-shape checks in disposable,
+network-isolated PostgreSQL 16.13. Its local full-schema Python driver was
+not completed on 2026-09-23 because host `initdb` failed before schema setup
+with an OS shared-memory allocation error. Neither result establishes hosted
+PostgreSQL 17 compatibility or a successful capability transaction.

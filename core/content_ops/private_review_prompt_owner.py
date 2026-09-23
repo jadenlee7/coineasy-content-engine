@@ -2,9 +2,10 @@
 
 The injected connection factory must use a dedicated least-privilege role.
 This module never discovers a DSN, grants a role, starts a poller or sends a
-message. Named reservation/registration functions are present on the hosted
-schema, but the restricted runtime role lacks the required write/execute ACLs.
-Their exact compatibility with this local owner is not established.
+message. The hosted schema has the underlying reservation/registration
+functions, but the restricted runtime role cannot execute them. This owner
+calls two proposed narrow capability wrappers that are not hosted yet; their
+exact compatibility with the hosted functions is not established.
 """
 from __future__ import annotations
 
@@ -135,7 +136,7 @@ class PostgresPrivatePromptOwner:
                     actor_id, review_id, card_id, action = rows[0]
                     _require(all(canonical_uuid(v) for v in (actor_id, review_id, card_id)))
                     cursor.execute("""with reserved as materialized (
-                        select private.reserve_content_ops_button_prompt_attempt(
+                        select private.reserve_content_ops_button_prompt_for_runtime(
                             %s::uuid,%s::uuid,%s::uuid,%s,%s) as result
                     ) select result,clock_timestamp() from reserved""",
                         (card_id, command.attempt_id, actor_id, human, action_key))

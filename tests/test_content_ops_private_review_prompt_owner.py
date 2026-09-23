@@ -139,7 +139,7 @@ def test_exact_committed_reservation_projects_one_attempt():
     assert result.receipt["reused"] is False
     assert calls == [1] and connection.exit_kind is None
     assert len(connection.statements) == 3
-    assert "reserve_content_ops_button_prompt_attempt" in connection.statements[1][0]
+    assert "reserve_content_ops_button_prompt_for_runtime" in connection.statements[1][0]
     with pytest.raises(PromptOwnerError, match="replay_denied"):
         asyncio.run(owner.reserve_prompt(command=command(), action_key=ACTION_KEY))
     assert calls == [1]

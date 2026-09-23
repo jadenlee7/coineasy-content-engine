@@ -71,6 +71,48 @@ try {
   sql('supabase/proposals/content_ops_button_edit_reply.sql');
   sql('supabase/proposals/content_ops_button_prompt_registration.sql');
   sql('supabase/proposals/content_ops_button_durable_attempt.sql');
+  query('create role coineasy_private_review login; grant usage on schema private to coineasy_private_review;');
+  sql('supabase/proposals/content_ops_button_prompt_runtime_capability.sql');
+  query(`do $$ begin
+    if not has_function_privilege('coineasy_private_review',
+        'private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)', 'EXECUTE')
+       or not has_function_privilege('coineasy_private_review',
+        'private.register_content_ops_button_prompt_response_for_runtime(uuid,text,text,text,text,timestamptz)', 'EXECUTE')
+       or has_function_privilege('coineasy_private_review',
+        'private.reserve_content_ops_button_prompt_attempt(uuid,uuid,uuid,text,text)', 'EXECUTE')
+       or has_function_privilege('coineasy_private_review',
+        'private.register_content_ops_button_edit_prompt(uuid,text)', 'EXECUTE')
+       or has_table_privilege('coineasy_private_review',
+        'private.content_ops_button_prompt_attempts', 'INSERT')
+       or has_table_privilege('coineasy_private_review',
+        'private.content_ops_button_prompt_receipts', 'INSERT')
+       or has_table_privilege('coineasy_private_review',
+        'private.content_ops_button_edit_prompts', 'INSERT') then
+      raise exception 'prompt runtime capability ACL mismatch';
+    end if;
+    if exists (
+      select 1 from pg_proc p
+      where p.oid in (
+        'private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)'::regprocedure,
+        'private.register_content_ops_button_prompt_response_for_runtime(uuid,text,text,text,text,timestamptz)'::regprocedure)
+        and (not p.prosecdef or not coalesce(
+          p.proconfig @> array['search_path=""']::text[], false))
+    ) then
+      raise exception 'prompt runtime capability owner boundary mismatch';
+    end if;
+    if has_function_privilege('anon',
+        'private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)', 'EXECUTE')
+       or has_function_privilege('authenticated',
+        'private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)', 'EXECUTE')
+       or has_function_privilege('service_role',
+        'private.register_content_ops_button_prompt_response_for_runtime(uuid,text,text,text,text,timestamptz)', 'EXECUTE') then
+      raise exception 'prompt runtime capability broad grant';
+    end if;
+    begin
+      perform private.reserve_content_ops_button_prompt_for_runtime(null,null,null,null,null);
+      raise exception 'prompt runtime accepted wrong session owner';
+    exception when insufficient_privilege then null; end;
+  end $$;`);
   sql('supabase/proposals/content_ops_button_card_send_ledger.sql');
   sql('supabase/proposals/content_ops_button_card_owner_gateway.sql');
   const secondPreapply = sql('supabase/proposals/content_ops_button_card_preapply_readonly.sql',
@@ -138,6 +180,7 @@ try {
   }
   console.log(JSON.stringify({ localPostgres: '16.13', syntheticLedgerPassed: true,
     rolledBack: true, forceRls: true, runtimeAclDenied: true,
+    promptCapabilityAclVerified: true, promptRuntimeExecuted: false,
     providerCalls: 0, productionCalls: 0 }));
 } finally {
   if (started) docker(['stop', '--time', '1', name], { allowFailure: true });

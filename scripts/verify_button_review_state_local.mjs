@@ -30,6 +30,7 @@ const proposal = 'supabase/proposals/content_ops_button_review_state.sql';
 const editProposal = 'supabase/proposals/content_ops_button_edit_reply.sql';
 const registrationProposal = 'supabase/proposals/content_ops_button_prompt_registration.sql';
 const durableProposal = 'supabase/proposals/content_ops_button_durable_attempt.sql';
+const promptRuntimeProposal = 'supabase/proposals/content_ops_button_prompt_runtime_capability.sql';
 const cardSendLedgerProposal = 'supabase/proposals/content_ops_button_card_send_ledger.sql';
 const markupProposal = 'supabase/proposals/content_ops_button_markup_attempt.sql';
 const authorityProposal = 'supabase/proposals/content_ops_button_markup_authority.sql';
@@ -40,6 +41,13 @@ const confirmationSendProposal = 'supabase/proposals/content_ops_button_confirma
 const confirmationSendEventProposal = 'supabase/proposals/content_ops_button_confirmation_send_event.sql';
 const confirmationDispatchProposal = 'supabase/proposals/content_ops_button_confirmation_dispatch.sql';
 const bannerProposal = 'supabase/proposals/content_ops_banner_revision.sql';
+const promptFixtureAcl = `grant usage on schema private,public to coineasy_private_review;
+  grant select,update on public.content_items,
+    private.content_ops_button_reviews,private.content_ops_button_actions,
+    private.content_ops_button_cards,private.content_ops_button_prompt_attempts,
+    private.content_ops_button_identities to coineasy_private_review;
+  grant select on private.content_ops_button_prompt_receipts,
+    private.content_ops_button_edit_prompts to coineasy_private_review;`;
 const driverPython = env.BUTTON_EDIT_TEST_PYTHON;
 function driverTest(phase) {
   if (!driverPython) return;
@@ -113,7 +121,10 @@ try {
   query("create function auth.role() returns text language sql stable as $$select current_setting('request.jwt.claim.role',true)$$;", 'postgres');
   const migrations = readdirSync('supabase/migrations').filter(p => p.endsWith('.sql')).sort();
   for (const p of migrations) sql('supabase/migrations/' + p);
-  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(cardSendLedgerProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
+  // This disposable role bypasses RLS ONLY in this functional fixture. It has
+  // no direct INSERT on prompt tables. Production uses scoped RLS instead.
+  query('create role coineasy_private_review login bypassrls;', 'postgres');
+  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(promptRuntimeProposal); query(promptFixtureAcl, 'postgres'); sql(cardSendLedgerProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
   console.log(JSON.stringify({ fullLocalMigrationFiles: migrations.length, proposalApplied: true, runtimeAclDenied: true, hostedProof: false }));
   driverTest('initial');
   driverTest('callbacks');
@@ -134,6 +145,8 @@ try {
   sql(editProposal, 'synthetic_buttons');
   sql(registrationProposal, 'synthetic_buttons');
   sql(durableProposal, 'synthetic_buttons');
+  sql(promptRuntimeProposal, 'synthetic_buttons');
+  query(promptFixtureAcl);
   sql(cardSendLedgerProposal, 'synthetic_buttons');
   sql(markupProposal, 'synthetic_buttons');
   sql(authorityProposal, 'synthetic_buttons');

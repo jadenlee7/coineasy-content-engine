@@ -66,6 +66,15 @@ def main():
             dbname='postgres', connect_timeout=5, sslmode='disable',
             options='-c statement_timeout=10000 -c lock_timeout=5000')
 
+    def connect_prompt_runtime():
+        # Disposable fixture role only. The local harness grants broad reads
+        # to focus this phase on the capability transaction; production ACLs
+        # are assessed separately and must never reuse these fixture grants.
+        return psycopg.connect(host=str(path), port=65439,
+            user='coineasy_private_review', password='', dbname='postgres',
+            connect_timeout=5, sslmode='disable',
+            options='-c statement_timeout=10000 -c lock_timeout=5000')
+
     def read(sql, params=()):
         with connect() as c:
             return c.execute(sql, params).fetchone()[0]
@@ -171,7 +180,7 @@ def main():
     def persist_prompt(ctx, owner=None, observed_at=None, human_id=None, attempt_id=None):
         # The fixture stores the ORIGINAL precise observation across retries;
         # retry-time wall clock must never refresh a provider delivery receipt.
-        return (owner or PostgresPromptReceiptOwner(connect)).record_prompt_response(
+        return (owner or PostgresPromptReceiptOwner(connect_prompt_runtime)).record_prompt_response(
             enabled=True, attempt_id=attempt_id or ctx['attempt'], bindings=binding,
             bot_id=bot, chat_id=room, human_id=human_id or human, thread_id=None,
             http_status=200, raw_response=json.dumps(ctx['provider_response']).encode(),
