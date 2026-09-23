@@ -30,8 +30,19 @@ gate, then passed after the checked-in producer-binding correction. An altered
 body was also rejected. Both full synthetic verifier runs finished with zero
 provider and production calls and removed their containers.
 
+At 2026-09-23 14:03 UTC, the separate
+`content_ops_review_producer_binding_contract_readonly.sql` pre/post gate
+(SHA-256 `bf90178ae04722e37d153431b7797bea55bebcf8bde396d96aadfca438714c4f`)
+classified production as `legacy`, with `read_only=true` and `changes=0`.
+Its disposable PostgreSQL 16.13 and 17.6 runs classify the old migration as
+`legacy`, the checked-in correction as `corrected`, and reject an unknown body
+or a nonnullable `jobs.content_item_id`. It has **not** produced a production
+`corrected` receipt; the migration remains unapplied.
+
 **Decision: BLOCK for the button-card owner path.** The unapplied correction
 must receive separate exact production migration authorization. After any
 application, re-run this read-only gate against the then-current hosted catalog
 and continue the remaining owner/Storage/Telegram private-canary checks. This
 receipt neither authorizes applying the migration nor enables or sends a card.
+The observed local/remote migration histories diverge, so generic `db push`
+or an unrestricted migration-up command is not a scoped apply method here.

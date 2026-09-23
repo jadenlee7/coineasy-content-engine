@@ -35,12 +35,20 @@ The [2026-09-23 read-only production readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECE
 found the earlier candidate-reader body still hosted and no remote applied
 `20260916190000` migration entry. A strengthened function-body gate therefore
 blocks the proposed button-card owner path pending that correction.
+The same receipt includes a separate read-only pre/post contract that
+classifies the current production helper as `legacy`. A future `corrected`
+readback must be observed after any separately authorized migration apply.
 
 ## Rollout boundary
 
 The deployed service remains OFF. Merge and application of this one new
 migration require their own production authority. The helper is resolved at
 runtime by existing RPCs; applying the fix does not require a worker redeploy.
+The observed production migration list has both local-only and remote-only
+entries. Do **not** use a generic `supabase db push` or unrestricted migration
+up: it could apply unrelated files. A future apply must bind the exact
+`20260916190000` file bytes and reconcile its history entry under a separate,
+reviewed one-migration plan; ambiguous outcomes require readback, not retry.
 Before any canary, select a newly eligible exact immutable version, configure
 the dedicated relay and exclusive ownership, then verify the private message
 receipt. Do not widen article/date/source eligibility to force a test card.

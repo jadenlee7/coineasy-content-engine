@@ -68,6 +68,20 @@ try {
   if (legacyCandidateHash !== '5de6d755095e63f3f7e03eb9f53db5d7fdada0911e222237fd459f12eaa98ffb') {
     throw Error('local legacy candidate body does not match hosted readback');
   }
+  const legacyContract = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"legacy"/.test(legacyContract.stdout)) {
+    throw Error('producer-binding pre-apply contract did not classify legacy body');
+  }
+  query('alter table public.jobs alter column content_item_id set not null');
+  const nonnullableJobLink = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (nonnullableJobLink.status === 0
+      || !String(nonnullableJobLink.stderr).includes('producer_binding_contract_job_column_mismatch')) {
+    throw Error('producer-binding contract accepted a nonnullable job link');
+  }
+  query('alter table public.jobs alter column content_item_id drop not null');
   const legacyCandidate = sql(
     'supabase/proposals/content_ops_button_card_preapply_readonly.sql',
     { allowFailure: true });
@@ -76,10 +90,22 @@ try {
     throw Error('card pre-apply accepted the hosted legacy candidate function');
   }
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
+  const correctedContract = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"corrected"/.test(correctedContract.stdout)) {
+    throw Error('producer-binding post-apply contract did not classify corrected body');
+  }
   query(`create or replace function private.content_ops_review_candidate(
     target_workspace_id uuid, target_content_item_id uuid,
     target_content_version_id uuid) returns jsonb language plpgsql volatile security definer
     set search_path='' as $$begin return null; end$$`);
+  const driftedContract = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (driftedContract.status === 0
+      || !String(driftedContract.stderr).includes('producer_binding_contract_function_mismatch')) {
+    throw Error('producer-binding contract accepted an unknown function body');
+  }
   const driftedCandidate = sql(
     'supabase/proposals/content_ops_button_card_preapply_readonly.sql',
     { allowFailure: true });
@@ -242,6 +268,7 @@ try {
     rolledBack: true, forceRls: true, runtimeAclDenied: true,
     promptCapabilityAclVerified: true, promptRuntimeExecuted: true,
     promptPreapplyCatalogVerified: true,
+    producerBindingContractVerified: true,
     syntheticSignupFreePrincipal: true,
     providerCalls: 0, productionCalls: 0 }));
 } finally {
