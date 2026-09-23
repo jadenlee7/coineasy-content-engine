@@ -32,14 +32,16 @@ The durable DB owner is not deployed or mounted, so the courier cannot run live.
 `core/content_ops/private_review_card_owner.py` now sketch the missing durable
 side: default-OFF, one DB transaction per outbox binding/reservation/confirmation, and a
 guarded registration wrapper comparing all four payload, message and response
-hashes. This SQL is deliberately a **proposal**, not an applied migration; the
+hashes and the four directly validated message IDs. Registration and the
+existing outbox's `sent` transition are one local DB transaction; its exact
+terminal readback never grants a send. This SQL is deliberately a **proposal**, not an applied migration; the
 owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
 and fake-transaction tests do not establish hosted PostgreSQL compatibility.
 The disposable, network-isolated PostgreSQL 16 verifier in
 `scripts/verify_private_card_ledger_docker_local.mjs --local-only` additionally
 checks the old outbox's exclusive claim/begin, exact-version binding,
-four-part reservation/confirmation, duplicate rejection, terminal-outbox
-denial, rollback and runtime-role ACL denial. It is still synthetic local evidence, not production
+four-part reservation/confirmation, duplicate rejection, atomic finish
+rollback, exact terminal readback and runtime-role ACL denial. It is still synthetic local evidence, not production
 schema compatibility or a delivery receipt.
 
 The local ledger proposal now requires an exact `sending` row in the existing
@@ -49,7 +51,7 @@ is one-shot, so the old link-card path cannot begin the same outbox twice.
 The courier requires a committed binding receipt before the first provider
 call and checks that the existing outbox's packet SHA-256 covers the exact
 four rendered payload hashes, review ID and card ID. This is **not** a live ownership switch: no production migration, runtime
-role/grant, claim/begin caller, review-row creator, finish/readback bridge or
+role/grant, claim/begin caller, review-row creator or
 entrypoint exists. The current deployed worker must not be run alongside a
 new button-card dispatcher until a single owner is selected for that run.
 
@@ -64,12 +66,12 @@ Before enabling or sending even one card, the remaining owner path must:
 1. Re-read the exact current version, active official source and fresh poll,
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
-2. Complete the exclusive existing-outbox claim/begin/finish integration and
+2. Complete an exclusive existing-outbox claim/begin caller and
    live-validate the `CardOwner` path: create one short-lived
    button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
-   complete card once. Finish the same outbox using the verified controls
-   message ID. Keep this owner's DB authority
+   complete card once. The local atomic registration finishes the same outbox
+   using the verified controls message ID. Keep this owner's DB authority
    separate from the callback bot's restricted role.
 3. Package and validate the `CardSender` with the already-deployed bot token
    for **send-only** calls. Do not start a second `getUpdates` consumer or
@@ -79,8 +81,8 @@ Before enabling or sending even one card, the remaining owner path must:
    exact-room/bot response. Send controls only after all three are confirmed.
    On rejection, timeout or unknown commit, stop with no automatic retry.
 5. Call the guarded card-registration wrapper once with the validated
-   four-response evidence, then read the committed exact card and release-fence state. An
-   uncertain DB commit is reconciled read-only by the original IDs, never
+   four-response evidence, then read the committed exact card, terminal outbox
+   and release-fence state. An uncertain DB commit is reconciled read-only by the original IDs, never
    retried with a new card or provider send.
 6. Only after a default-OFF deployment, validate-only checks and separate
    operator authorization may staff activation and a single private canary be

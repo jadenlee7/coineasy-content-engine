@@ -85,8 +85,9 @@ try {
         'private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text)',
         'private.content_ops_button_card_outbox_owned(uuid)',
         'private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)',
-        'private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,text,text,timestamptz)',
-        'private.register_content_ops_button_card_from_sends(uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz)'
+        'private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,bigint,text,text,timestamptz)',
+        'private.register_content_ops_button_card_from_sends(uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz)',
+        'private.read_content_ops_button_card_terminal(uuid,uuid,uuid)'
       ] loop
         if has_function_privilege(r,f,'EXECUTE') then
           raise exception 'runtime card-send function ACL leaked';

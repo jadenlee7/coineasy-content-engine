@@ -62,8 +62,10 @@ class Connection:
     ("reserve_part", dict(review_id=R, card_id=C, part_index=0,
                           payload_sha256=SHA)),
     ("confirm_part", dict(review_id=R, card_id=C, part_index=0,
-                          payload_sha256=SHA, message_binding=SHA,
+                          payload_sha256=SHA, message_id=123,
+                          message_binding=SHA,
                           response_sha256=SHA, observed_at=AT)),
+    ("read_terminal", dict(review_id=R, card_id=C, outbox_id=O)),
     ("register_card", dict(evidence={
         "target_review_id": R, "target_card_id": C,
         "expected_fingerprint": SHA, "target_epoch": 0,
@@ -103,7 +105,8 @@ def test_reserve_and_confirm_use_separate_committed_transactions():
         reserved = await owner.reserve_part(review_id=R, card_id=C,
             part_index=0, payload_sha256=SHA)
         confirmed = await owner.confirm_part(review_id=R, card_id=C,
-            part_index=0, payload_sha256=SHA, message_binding=SHA,
+            part_index=0, payload_sha256=SHA, message_id=123,
+            message_binding=SHA,
             response_sha256=SHA, observed_at=AT)
         return reserved, confirmed
 
@@ -112,6 +115,7 @@ def test_reserve_and_confirm_use_separate_committed_transactions():
     assert "reserve_content_ops_button_card_send" in connections[0].cursor_value.statements[1][0]
     assert "confirm_content_ops_button_card_send" in connections[1].cursor_value.statements[1][0]
     assert connections[0].cursor_value.statements[1][1] == (R, C, 0, SHA)
+    assert connections[1].cursor_value.statements[1][1][4] == 123
 
 
 def test_outbox_bind_requires_exact_owner_and_committed_receipt():
@@ -146,6 +150,18 @@ def test_register_uses_guarded_wrapper_and_fourth_payload_hash():
     assert "record_content_ops_button_card(" not in sql
     assert args[6] == SHA
     assert args[7] == '["' + SHA + '","' + SHA + '","' + SHA + '","' + SHA + '"]'
+
+
+def test_terminal_readback_is_bounded_and_never_grants_send():
+    receipt = {"status": "sent", "card_id": C, "outbox_id": O,
+               "execution_authorized": False}
+    conn = Connection(receipt)
+    owner = PostgresPrivateCardOwner(lambda: conn, enabled=True)
+    assert asyncio.run(owner.read_terminal(review_id=R, card_id=C,
+        outbox_id=O)) == receipt
+    sql, args = conn.cursor_value.statements[1]
+    assert "read_content_ops_button_card_terminal" in sql
+    assert args == (R, C, O)
 
 
 def test_unknown_commit_and_bad_arguments_never_become_send_permission():

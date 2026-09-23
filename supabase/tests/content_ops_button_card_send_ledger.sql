@@ -5,6 +5,14 @@ returns void language plpgsql as $$
 begin
     if ok is not true then raise exception 'card send ledger test: %', label; end if;
 end $$;
+create function pg_temp.block_card_outbox_finish()
+returns trigger language plpgsql as $$
+begin
+    if new.status = 'sent' then
+        raise exception 'synthetic outbox finish rejection' using errcode = '23514';
+    end if;
+    return new;
+end $$;
 
 do $$
 declare
@@ -89,11 +97,13 @@ begin
                 'next reservation');
         end if;
         result := private.confirm_content_ops_button_card_send(
-            rid,cid,n::smallint,payloads[n+1],messages[n+1],responses[n+1],clock_timestamp());
+            rid,cid,n::smallint,payloads[n+1],(101+n)::bigint,
+            messages[n+1],responses[n+1],clock_timestamp());
         perform pg_temp.check_card_send(result->'new_confirmation'='true'::jsonb,
             'first confirmation');
         result := private.confirm_content_ops_button_card_send(
-            rid,cid,n::smallint,payloads[n+1],messages[n+1],responses[n+1],clock_timestamp());
+            rid,cid,n::smallint,payloads[n+1],(101+n)::bigint,
+            messages[n+1],responses[n+1],clock_timestamp());
         perform pg_temp.check_card_send(result->'new_confirmation'='false'::jsonb,
             'repeated confirmation cannot advance');
         if n < 3 then
@@ -106,6 +116,12 @@ begin
     perform pg_temp.check_card_send((select count(*)=4
         from private.content_ops_button_card_send_attempts where review_id=rid),
         'one row per part');
+    begin
+        perform private.confirm_content_ops_button_card_send(
+            rid,cid,3::smallint,payloads[4],999::bigint,
+            messages[4],responses[4],clock_timestamp());
+        raise exception 'expected message ID confirmation conflict';
+    exception when unique_violation then null; end;
 
     bindings := jsonb_build_object('bot',repeat('d',64),'room',repeat('e',64),
         'message',messages[4],'packet_receipt',repeat('f',64),
@@ -124,15 +140,41 @@ begin
     perform pg_temp.check_card_send((select count(*)=0
         from private.content_ops_button_cards where review_id=rid),
         'mismatch creates no card');
+    execute 'create trigger synthetic_block_card_outbox_finish before update
+        on private.content_ops_review_outbox for each row
+        execute function pg_temp.block_card_outbox_finish()';
+    begin
+        perform private.register_content_ops_button_card_from_sends(
+            rid,cid,fp,0,bindings,parts,payloads[4],to_jsonb(responses),delivered,expiry);
+        raise exception 'expected atomic finish rejection';
+    exception when check_violation then null; end;
+    execute 'drop trigger synthetic_block_card_outbox_finish
+        on private.content_ops_review_outbox';
+    perform pg_temp.check_card_send((select count(*)=0
+        from private.content_ops_button_cards where review_id=rid)
+        and (select status='sending' and message_id is null
+            from private.content_ops_review_outbox where outbox_id=outbox),
+        'failed finish rolls back card registration');
     result := private.register_content_ops_button_card_from_sends(
         rid,cid,fp,0,bindings,parts,payloads[4],to_jsonb(responses),delivered,expiry);
     perform pg_temp.check_card_send(result->>'status'='card_recorded'
-        and result->'reused'='false'::jsonb and result->>'card_id'=cid::text,
-        'exact four-part card recorded once');
-    result := private.register_content_ops_button_card_from_sends(
-        rid,cid,fp,0,bindings,parts,payloads[4],to_jsonb(responses),delivered,expiry);
-    perform pg_temp.check_card_send(result->'reused'='true'::jsonb,
-        'registration replay is readback only');
+        and result->'reused'='false'::jsonb and result->>'card_id'=cid::text
+        and (select status='sent' and message_id=104
+            from private.content_ops_review_outbox where outbox_id=outbox),
+        'exact card and original outbox commit atomically');
+    result := private.read_content_ops_button_card_terminal(rid,cid,outbox);
+    perform pg_temp.check_card_send(result->>'status'='sent'
+        and result->>'card_id'=cid::text and result->>'outbox_id'=outbox::text
+        and result->'execution_authorized'='false'::jsonb,
+        'exact terminal readback has no send authority');
+    result := private.read_content_ops_button_card_terminal(rid,gen_random_uuid(),outbox);
+    perform pg_temp.check_card_send(result->>'status'='not_confirmed',
+        'wrong card has no terminal receipt');
+    begin
+        perform private.register_content_ops_button_card_from_sends(
+            rid,cid,fp,0,bindings,parts,payloads[4],to_jsonb(responses),delivered,expiry);
+        raise exception 'expected registration replay rejection';
+    exception when check_violation then null; end;
     begin
         perform private.reserve_content_ops_button_card_send(rid,cid,0::smallint,payloads[1]);
         raise exception 'expected post-card reservation denial';
@@ -142,9 +184,9 @@ begin
         and (select count(*)=0 from public.publications
         where workspace_id=w and content_item_id=i),
         'no approval or publication');
-    result := public.content_ops_finish_review_send(w,outbox,token,'sent',123,v);
-    perform pg_temp.check_card_send(result->'accepted'='true'::jsonb
+    result := public.content_ops_finish_review_send(w,outbox,token,'sent',999,v);
+    perform pg_temp.check_card_send(result->'accepted'='false'::jsonb
         and private.content_ops_button_card_outbox_owned(rid) is not true,
-        'terminal outbox cannot authorize any further button-card send');
+        'legacy finish cannot replace terminal controls message');
 end $$;
 rollback;

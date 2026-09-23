@@ -86,6 +86,7 @@ create table private.content_ops_button_card_send_attempts (
     part_index smallint not null check (part_index between 0 and 3),
     payload_sha256 text not null check (payload_sha256 ~ '^[a-f0-9]{64}$'),
     state text not null default 'reserved' check (state in ('reserved','confirmed')),
+    message_id bigint check (message_id between 1 and 9007199254740991),
     message_binding text check (message_binding ~ '^[a-f0-9]{64}$'),
     response_sha256 text check (response_sha256 ~ '^[a-f0-9]{64}$'),
     reserved_at timestamptz not null default clock_timestamp(),
@@ -93,9 +94,10 @@ create table private.content_ops_button_card_send_attempts (
     primary key (review_id, part_index),
     unique (card_id, part_index),
     unique (message_binding),
-    check ((state = 'reserved' and message_binding is null and response_sha256 is null
+    check ((state = 'reserved' and message_id is null
+            and message_binding is null and response_sha256 is null
             and confirmed_at is null)
-        or (state = 'confirmed' and message_binding is not null
+        or (state = 'confirmed' and message_id is not null and message_binding is not null
             and response_sha256 is not null and confirmed_at is not null
             and confirmed_at >= reserved_at))
 );
@@ -110,9 +112,10 @@ create function private.guard_content_ops_button_card_send_attempt()
 returns trigger language plpgsql security invoker set search_path = '' as $$
 begin
     if tg_op = 'UPDATE' and old.state = 'reserved' and new.state = 'confirmed'
-       and (to_jsonb(old) - 'state' - 'message_binding' - 'response_sha256' - 'confirmed_at')
-           = (to_jsonb(new) - 'state' - 'message_binding' - 'response_sha256' - 'confirmed_at')
-       and new.message_binding is not null and new.response_sha256 is not null
+       and (to_jsonb(old) - 'state' - 'message_id' - 'message_binding' - 'response_sha256' - 'confirmed_at')
+           = (to_jsonb(new) - 'state' - 'message_id' - 'message_binding' - 'response_sha256' - 'confirmed_at')
+       and new.message_id is not null and new.message_binding is not null
+       and new.response_sha256 is not null
        and new.confirmed_at >= old.reserved_at then
         return new;
     end if;
@@ -199,7 +202,8 @@ end $$;
 
 create function private.confirm_content_ops_button_card_send(
     target_review_id uuid, target_card_id uuid, target_part_index smallint,
-    expected_payload_sha256 text, verified_message_binding text,
+    expected_payload_sha256 text, verified_message_id bigint,
+    verified_message_binding text,
     verified_response_sha256 text, observed_at timestamptz
 ) returns jsonb language plpgsql volatile security invoker set search_path = '' as $$
 declare
@@ -212,6 +216,8 @@ begin
     if target_review_id is null or target_card_id is null
        or target_part_index is null or target_part_index not between 0 and 3
        or expected_payload_sha256 is null or expected_payload_sha256 !~ '^[a-f0-9]{64}$'
+       or verified_message_id is null
+       or verified_message_id not between 1 and 9007199254740991
        or verified_message_binding is null or verified_message_binding !~ '^[a-f0-9]{64}$'
        or verified_response_sha256 is null or verified_response_sha256 !~ '^[a-f0-9]{64}$'
        or observed_at is null or not isfinite(observed_at) then
@@ -249,7 +255,8 @@ begin
         raise exception 'button_card_send_ineligible' using errcode = '23514';
     end if;
     if a.state = 'confirmed' then
-        if a.message_binding is distinct from verified_message_binding
+        if a.message_id is distinct from verified_message_id
+           or a.message_binding is distinct from verified_message_binding
            or a.response_sha256 is distinct from verified_response_sha256 then
             raise exception 'button_card_send_conflict' using errcode = '23505';
         end if;
@@ -260,7 +267,8 @@ begin
         raise exception 'button_card_send_ineligible' using errcode = '23514';
     end if;
     update private.content_ops_button_card_send_attempts
-        set state = 'confirmed', message_binding = verified_message_binding,
+        set state = 'confirmed', message_id = verified_message_id,
+            message_binding = verified_message_binding,
             response_sha256 = verified_response_sha256,
             confirmed_at = decision_now
         where review_id = r.id and part_index = target_part_index;
@@ -282,6 +290,10 @@ declare
     a private.content_ops_button_card_send_attempts;
     candidate jsonb;
     n integer;
+    controls_message_id bigint;
+    owner_outbox_id uuid;
+    receipt jsonb;
+    affected_rows integer;
 begin
     if target_review_id is null or target_card_id is null
        or controls_payload_sha256 is null
@@ -337,18 +349,87 @@ begin
                or a.message_binding is distinct from target_bindings->>'message')) then
             raise exception 'button_card_send_incomplete' using errcode = '23514';
         end if;
+        if n = 3 then controls_message_id := a.message_id; end if;
     end loop;
-    return private.record_content_ops_button_card(target_review_id, target_card_id,
+    receipt := private.record_content_ops_button_card(target_review_id, target_card_id,
         expected_fingerprint, target_epoch, target_bindings, target_parts,
         delivered, expires);
+    if receipt->>'status' is distinct from 'card_recorded'
+       or receipt->'reused' is distinct from 'false'::jsonb
+       or controls_message_id is null then
+        raise exception 'button_card_send_incomplete' using errcode = '23514';
+    end if;
+    select outbox_id into owner_outbox_id
+        from private.content_ops_button_card_outbox_owners
+        where review_id = target_review_id;
+    update private.content_ops_review_outbox
+        set status = 'sent', message_id = controls_message_id,
+            finished_at = clock_timestamp()
+        where outbox_id = owner_outbox_id and status = 'sending'
+          and lease_expires_at > clock_timestamp();
+    get diagnostics affected_rows = row_count;
+    if affected_rows <> 1 then
+        raise exception 'button_card_outbox_not_owned' using errcode = '23514';
+    end if;
+    return receipt;
+end $$;
+
+-- Read-only reconciliation after a lost registration commit ACK. A positive
+-- receipt proves the exact card and outbox committed together; it never
+-- authorizes another provider call or registration retry.
+create function private.read_content_ops_button_card_terminal(
+    target_review_id uuid, target_card_id uuid, target_outbox_id uuid
+) returns jsonb language plpgsql stable security invoker set search_path = '' as $$
+declare
+    b private.content_ops_button_card_outbox_owners;
+    q private.content_ops_review_outbox;
+    r private.content_ops_button_reviews;
+    c private.content_ops_button_cards;
+    controls private.content_ops_button_card_send_attempts;
+begin
+    if target_review_id is null or target_card_id is null or target_outbox_id is null then
+        raise exception 'button_card_terminal_arguments_invalid' using errcode = '22023';
+    end if;
+    select * into b from private.content_ops_button_card_outbox_owners
+        where review_id = target_review_id and outbox_id = target_outbox_id;
+    if not found then
+        return jsonb_build_object('status','not_confirmed','card_id',null,
+            'outbox_id',null,'execution_authorized',false);
+    end if;
+    select * into q from private.content_ops_review_outbox
+        where outbox_id = b.outbox_id;
+    select * into r from private.content_ops_button_reviews
+        where id = target_review_id;
+    select * into c from private.content_ops_button_cards
+        where id = target_card_id and review_id = target_review_id;
+    select * into controls from private.content_ops_button_card_send_attempts
+        where review_id = target_review_id and card_id = target_card_id
+          and part_index = 3 and state = 'confirmed';
+    if q.status is distinct from 'sent' or q.message_id is null
+       or q.message_id is distinct from controls.message_id
+       or q.claim_token is distinct from b.claim_token
+       or q.packet_sha256 is distinct from b.packet_sha256
+       or q.workspace_id is distinct from r.workspace_id
+       or q.content_version_id is distinct from r.content_version_id
+       or c.id is distinct from target_card_id
+       or c.bindings->>'message' is distinct from controls.message_binding
+       or (select count(*) from private.content_ops_button_card_send_attempts
+           where review_id = target_review_id and card_id = target_card_id
+             and state = 'confirmed') <> 4 then
+        return jsonb_build_object('status','not_confirmed','card_id',null,
+            'outbox_id',null,'execution_authorized',false);
+    end if;
+    return jsonb_build_object('status','sent','card_id',target_card_id,
+        'outbox_id',target_outbox_id,'execution_authorized',false);
 end $$;
 
 revoke all on function private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text),
     private.content_ops_button_card_outbox_owned(uuid),
     private.guard_content_ops_button_card_send_attempt(),
     private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text),
-    private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,text,text,timestamptz),
+    private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,bigint,text,text,timestamptz),
     private.register_content_ops_button_card_from_sends(
-        uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz)
+        uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz),
+    private.read_content_ops_button_card_terminal(uuid,uuid,uuid)
     from public, anon, authenticated, service_role;
 commit;

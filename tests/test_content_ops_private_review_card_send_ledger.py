@@ -29,6 +29,7 @@ def test_proposal_is_unapplied_and_has_no_runtime_grants():
     assert re.search(r"alter table private\.content_ops_button_card_send_attempts"
                      r" force row level security", CODE, re.I)
     assert "revoke all on private.content_ops_button_card_send_attempts" in CODE
+    assert "revoke all on private.content_ops_button_card_outbox_owners" in CODE
     assert re.sub(r"\s+", " ", CODE).strip().lower().endswith("commit;")
 
 
@@ -79,14 +80,31 @@ def test_registration_matches_all_four_confirmed_parts_and_existing_card_gate():
     assert "a.payload_sha256 is distinct from controls_payload_sha256" in register
     assert "a.message_binding is distinct from target_bindings->>'message'" in register
     assert "a.response_sha256 is distinct from target_response_sha256s->>n" in register
-    assert "return private.record_content_ops_button_card(" in register
+    assert "controls_message_id := a.message_id" in register
+    assert "receipt := private.record_content_ops_button_card(" in register
+    assert "set status = 'sent', message_id = controls_message_id" in register
+    assert register.index("receipt := private.record_content_ops_button_card(") < \
+        register.index("set status = 'sent', message_id = controls_message_id")
+    assert "get diagnostics affected_rows = row_count" in register
+
+
+def test_exact_terminal_readback_cannot_grant_a_new_send():
+    readback = body("read_content_ops_button_card_terminal")
+    assert "q.status is distinct from 'sent'" in readback
+    assert "q.message_id is distinct from controls.message_id" in readback
+    assert "c.bindings->>'message' is distinct from controls.message_binding" in readback
+    assert "'execution_authorized',false" in readback
+    assert "insert into" not in readback and "update " not in readback
 
 
 def test_all_new_functions_are_invoker_only_and_not_granted_to_runtime_roles():
-    names = ("guard_content_ops_button_card_send_attempt",
+    names = ("bind_content_ops_button_card_outbox",
+             "content_ops_button_card_outbox_owned",
+             "guard_content_ops_button_card_send_attempt",
              "reserve_content_ops_button_card_send",
              "confirm_content_ops_button_card_send",
-             "register_content_ops_button_card_from_sends")
+             "register_content_ops_button_card_from_sends",
+             "read_content_ops_button_card_terminal")
     for name in names:
         declaration = re.search(rf"create\s+function\s+private\.{name}\s*\(.*?"
                                 r"\)\s*returns\b.*?\bas\s*\$\$", CODE, re.I | re.S)

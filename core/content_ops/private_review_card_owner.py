@@ -98,19 +98,30 @@ class PostgresPrivateCardOwner:
             expected_keys={"status", "new_attempt", "execution_authorized"})
 
     async def confirm_part(self, *, review_id, card_id, part_index,
-                           payload_sha256, message_binding, response_sha256,
+                           payload_sha256, message_id, message_binding, response_sha256,
                            observed_at):
         if not (_uuid(review_id) and _uuid(card_id)
                 and type(part_index) is int and 0 <= part_index <= 3
+                and type(message_id) is int and 0 < message_id < 2**53
                 and _sha(payload_sha256) and _sha(message_binding)
                 and _sha(response_sha256) and _stamp(observed_at)):
             raise PrivateCardOwnerError("private_card_owner_arguments_invalid")
         return await asyncio.to_thread(self._call,
             "select private.confirm_content_ops_button_card_send("
-            "%s::uuid,%s::uuid,%s::smallint,%s,%s,%s,%s::timestamptz)",
-            (review_id, card_id, part_index, payload_sha256,
+            "%s::uuid,%s::uuid,%s::smallint,%s,%s::bigint,%s,%s,%s::timestamptz)",
+            (review_id, card_id, part_index, payload_sha256, message_id,
              message_binding, response_sha256, observed_at),
             expected_keys={"status", "new_confirmation", "execution_authorized"})
+
+    async def read_terminal(self, *, review_id, card_id, outbox_id):
+        if not (_uuid(review_id) and _uuid(card_id) and _uuid(outbox_id)):
+            raise PrivateCardOwnerError("private_card_owner_arguments_invalid")
+        return await asyncio.to_thread(self._call,
+            "select private.read_content_ops_button_card_terminal("
+            "%s::uuid,%s::uuid,%s::uuid)",
+            (review_id, card_id, outbox_id),
+            expected_keys={"status", "card_id", "outbox_id",
+                           "execution_authorized"})
 
     async def register_card(self, evidence):
         required = {"target_review_id", "target_card_id", "expected_fingerprint",

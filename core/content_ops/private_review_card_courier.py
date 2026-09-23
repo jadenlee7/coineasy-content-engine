@@ -59,10 +59,14 @@ class CardOwner(Protocol):
                            payload_sha256: str) -> dict: ...
 
     async def confirm_part(self, *, review_id: str, card_id: str, part_index: int,
-                           payload_sha256: str, message_binding: str,
+                           payload_sha256: str, message_id: int,
+                           message_binding: str,
                            response_sha256: str, observed_at: str) -> dict: ...
 
     async def register_card(self, evidence: dict) -> dict: ...
+
+    async def read_terminal(self, *, review_id: str, card_id: str,
+                            outbox_id: str) -> dict: ...
 
 
 class CardSender(Protocol):
@@ -152,6 +156,7 @@ class PrivateCardCourier:
                 confirmed = await self._owner.confirm_part(
                     review_id=prepared.review["id"], card_id=prepared.card_id,
                     part_index=index, payload_sha256=payload_sha,
+                    message_id=message_id,
                     message_binding=self._bindings.digest("card-message@2",
                         prepared.bot_id, prepared.chat_id, message_id),
                     response_sha256=response_sha,
@@ -168,10 +173,23 @@ class PrivateCardCourier:
                 chat_id=prepared.chat_id, thread_id=prepared.thread_id,
                 now=prepared.now, banner_sha256=banner_sha256,
                 observations=observations)
-            receipt = await self._owner.register_card(evidence)
-            if receipt != {"status": "card_recorded", "card_id": prepared.card_id,
-                           "reused": False, "execution_authorized": False}:
+            try:
+                receipt = await self._owner.register_card(evidence)
+            except Exception:
+                # A lost commit ACK never retries registration. Read only the
+                # original card/outbox identities to resolve it if possible.
+                receipt = None
+            if receipt is not None and receipt != {
+                    "status": "card_recorded", "card_id": prepared.card_id,
+                    "reused": False, "execution_authorized": False}:
                 raise CardCourierError("private_card_registration_unknown")
+            terminal = await self._owner.read_terminal(
+                review_id=prepared.review["id"], card_id=prepared.card_id,
+                outbox_id=prepared.outbox_id)
+            if terminal != {"status": "sent", "card_id": prepared.card_id,
+                            "outbox_id": prepared.outbox_id,
+                            "execution_authorized": False}:
+                raise CardCourierError("private_card_terminal_unknown")
             return {"status": "card_recorded", "confirmed_parts": confirmed_parts,
                     "public_send_attempted": False}
         except Exception:

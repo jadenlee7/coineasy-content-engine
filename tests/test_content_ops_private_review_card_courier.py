@@ -51,6 +51,8 @@ class Owner:
         self.reserved = []
         self.confirmed = []
         self.registered = []
+        self.terminal_reads = []
+        self.terminal_sent = not fail_register
 
     async def bind_outbox(self, **values):
         self.bound.append(values)
@@ -79,6 +81,14 @@ class Owner:
             raise OSError("uncertain commit")
         return {"status": "card_recorded", "card_id": evidence["target_card_id"],
                 "reused": False, "execution_authorized": False}
+
+    async def read_terminal(self, **values):
+        self.terminal_reads.append(values)
+        if self.terminal_sent:
+            return {"status": "sent", "card_id": values["card_id"],
+                    "outbox_id": values["outbox_id"], "execution_authorized": False}
+        return {"status": "not_confirmed", "card_id": None,
+                "outbox_id": None, "execution_authorized": False}
 
 
 class Sender:
@@ -138,6 +148,8 @@ class CardCourierTest(unittest.TestCase):
         self.assertIs(self.sender.calls[0][1], PNG)
         self.assertTrue(all(png is None for _, png in self.sender.calls[1:]))
         self.assertEqual(len(self.owner.registered), 1)
+        self.assertEqual(self.owner.terminal_reads,
+            [{"review_id": R, "card_id": C, "outbox_id": O}])
         self.assertEqual([r["payload_sha256"] for r in self.owner.reserved[:3]],
             [p["payload_sha256"] for p in self.owner.registered[0]["target_parts"]])
         self.assertEqual([r["message_binding"] for r in self.owner.confirmed[:3]],
@@ -184,8 +196,18 @@ class CardCourierTest(unittest.TestCase):
 
     def test_uncertain_registration_not_retried(self):
         self.owner.fail_register = True
+        self.owner.terminal_sent = False
         self.assertEqual(self.run_card(enabled=True)["status"], "delivery_unknown")
         self.assertEqual(len(self.owner.registered), 1)
+        self.assertEqual(len(self.owner.terminal_reads), 1)
+        self.assertEqual(len(self.sender.calls), 4)
+
+    def test_lost_registration_ack_resolves_only_by_exact_terminal_readback(self):
+        self.owner.fail_register = True
+        self.owner.terminal_sent = True
+        self.assertEqual(self.run_card(enabled=True)["status"], "card_recorded")
+        self.assertEqual(len(self.owner.registered), 1)
+        self.assertEqual(len(self.owner.terminal_reads), 1)
         self.assertEqual(len(self.sender.calls), 4)
 
     def test_same_card_cannot_be_rerun_even_with_naive_owner(self):

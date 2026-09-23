@@ -220,6 +220,10 @@ class TelegramSenderTest(unittest.TestCase):
                 return {"status": "card_recorded",
                         "card_id": evidence["target_card_id"], "reused": False,
                         "execution_authorized": False}
+            async def read_terminal(self, **values):
+                return {"status": "sent", "card_id": values["card_id"],
+                        "outbox_id": values["outbox_id"],
+                        "execution_authorized": False}
 
         sender = self.sender(handler, clock=lambda: datetime.fromtimestamp(
             NOW + 3, timezone.utc))
