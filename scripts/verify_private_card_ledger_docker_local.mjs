@@ -72,6 +72,7 @@ try {
   sql('supabase/proposals/content_ops_button_durable_attempt.sql');
   sql('supabase/proposals/content_ops_button_card_send_ledger.sql');
   sql('supabase/proposals/content_ops_button_card_owner_gateway.sql');
+  sql('supabase/proposals/content_ops_button_card_readonly_preflight.sql');
   query(`do $$ declare r text; f text; begin
     foreach r in array array['anon','authenticated','service_role'] loop
       if has_table_privilege(r,'private.content_ops_button_card_send_attempts',

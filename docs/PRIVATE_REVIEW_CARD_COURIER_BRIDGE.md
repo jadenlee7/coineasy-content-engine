@@ -70,6 +70,10 @@ its default-OFF and validate-only paths without networking, rejects mismatched
 SHA and a broad DB credential, and separately replays the button-card owner
 ledger in disposable PostgreSQL. These checks are local/CI evidence only; no
 hosted deployment, production ACL check or provider receipt is implied.
+`supabase/proposals/content_ops_button_card_readonly_preflight.sql` is a
+post-apply, read-only catalog/ACL check for the proposed tables and RPCs. It
+currently passes only in the disposable test database; it has not been run on
+production and cannot establish pre-apply hosted-version compatibility.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
