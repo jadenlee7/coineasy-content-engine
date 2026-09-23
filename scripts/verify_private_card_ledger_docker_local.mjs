@@ -1,7 +1,9 @@
 /** Disposable local Docker PostgreSQL. No host port, existing DB or provider I/O. */
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { buildAtomicProducerBindingSql, CORRECTED_BODY_SHA256 } from
+  '../ops/private-review-producer-binding/atomic-apply-sql.mjs';
 
 if (process.argv.length !== 3
     || !['--local-only', '--local-postgres17'].includes(process.argv[2])
@@ -15,9 +17,9 @@ const env = { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C' };
 let started = false;
 let phase = 'start';
 
-function docker(args, { allowFailure = false } = {}) {
+function docker(args, { allowFailure = false, input } = {}) {
   const result = spawnSync('docker', args, {
-    env, encoding: 'utf8', timeout: 90_000,
+    env, encoding: 'utf8', timeout: 90_000, input,
   });
   if (!allowFailure && result.status !== 0) {
     const detail = String(result.stderr ?? '').slice(-1600);
@@ -31,6 +33,20 @@ function sql(file, { allowFailure = false } = {}) {
   return docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-q',
     '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
     '-d', 'postgres', '-f', `/repo/${file}`], { allowFailure });
+}
+
+function sqlIn(database, file, { allowFailure = false } = {}) {
+  phase = file;
+  return docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-q',
+    '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
+    '-d', database, '-f', `/repo/${file}`], { allowFailure });
+}
+
+function sqlTextIn(database, statement, { allowFailure = false } = {}) {
+  phase = 'isolated atomic producer apply';
+  return docker(['exec', '-i', '-u', 'postgres', name, 'psql', '-X', '-qAt',
+    '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
+    '-d', database], { allowFailure, input: statement });
 }
 
 function query(statement) {
@@ -61,6 +77,10 @@ try {
   if (!ready) throw Error('disposable PostgreSQL readiness unknown');
 
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql');
+  query(`create schema supabase_migrations;
+    create table supabase_migrations.schema_migrations(
+      version text primary key,statements text[],name text,created_by text,
+      idempotency_key text unique,rollback text[])`);
   sql('supabase/migrations/20260906100000_content_ops_review_outbox.sql');
   const legacyCandidateHash = query(`select encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')
     from pg_proc p where p.oid=
@@ -70,9 +90,29 @@ try {
   }
   const legacyContract = sql(
     'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
-  if (!/"producer_binding_contract"\s*:\s*"legacy"/.test(legacyContract.stdout)) {
+  if (!/"producer_binding_contract"\s*:\s*"legacy_no_history"/.test(legacyContract.stdout)) {
     throw Error('producer-binding pre-apply contract did not classify legacy body');
   }
+  query('alter table supabase_migrations.schema_migrations add column unsafe_required text not null');
+  const mandatoryHistoryColumn = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (mandatoryHistoryColumn.status === 0
+      || !String(mandatoryHistoryColumn.stderr).includes('producer_binding_contract_history_column_mismatch')) {
+    throw Error('producer-binding contract accepted an unfillable history column');
+  }
+  query('alter table supabase_migrations.schema_migrations drop column unsafe_required');
+  query(`insert into supabase_migrations.schema_migrations(version,name,statements)
+    values('20260916190000','content_ops_review_producer_binding',array[
+      pg_read_file('/repo/supabase/migrations/20260916190000_content_ops_review_producer_binding.sql')])`);
+  const legacyWithHistory = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (legacyWithHistory.status === 0
+      || !String(legacyWithHistory.stderr).includes('producer_binding_contract_history_mismatch')) {
+    throw Error('producer-binding contract accepted legacy body with applied history');
+  }
+  query("delete from supabase_migrations.schema_migrations where version='20260916190000'");
   query('alter table public.jobs alter column content_item_id set not null');
   const nonnullableJobLink = sql(
     'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
@@ -90,10 +130,97 @@ try {
     throw Error('card pre-apply accepted the hosted legacy candidate function');
   }
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
+  const absentHistory = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (absentHistory.status === 0
+      || !String(absentHistory.stderr).includes('producer_binding_contract_history_mismatch')) {
+    throw Error('producer-binding contract accepted an unregistered correction');
+  }
+  query(`insert into supabase_migrations.schema_migrations(version,name,statements)
+    values('20260916190000','content_ops_review_producer_binding',array['tampered'])`);
+  const wrongHistory = sql(
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
+    { allowFailure: true });
+  if (wrongHistory.status === 0
+      || !String(wrongHistory.stderr).includes('producer_binding_contract_history_mismatch')) {
+    throw Error('producer-binding contract accepted mismatched history bytes');
+  }
+  query(`update supabase_migrations.schema_migrations set statements=array[
+    pg_read_file('/repo/supabase/migrations/20260916190000_content_ops_review_producer_binding.sql')]
+    where version='20260916190000'`);
   const correctedContract = sql(
     'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
-  if (!/"producer_binding_contract"\s*:\s*"corrected"/.test(correctedContract.stdout)) {
+  if (!/"producer_binding_contract"\s*:\s*"corrected_exact_history"/.test(correctedContract.stdout)) {
     throw Error('producer-binding post-apply contract did not classify corrected body');
+  }
+  query('create database synthetic_atomic_producer');
+  sqlIn('synthetic_atomic_producer', 'supabase/tests/content_ops_review_outbox.bootstrap.sql');
+  sqlTextIn('synthetic_atomic_producer', `create schema supabase_migrations;
+    create table supabase_migrations.schema_migrations(
+      version text primary key,statements text[],name text,created_by text,
+      idempotency_key text unique,rollback text[]);`);
+  sqlIn('synthetic_atomic_producer',
+    'supabase/migrations/20260906100000_content_ops_review_outbox.sql');
+  const atomicBefore = sqlIn('synthetic_atomic_producer',
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"legacy_no_history"/.test(atomicBefore.stdout)) {
+    throw Error('atomic fixture was not at exact legacy/no-history state');
+  }
+  const atomicSource = readFileSync(
+    'supabase/migrations/20260916190000_content_ops_review_producer_binding.sql', 'utf8');
+  const atomicSql = buildAtomicProducerBindingSql(atomicSource);
+  sqlTextIn('synthetic_atomic_producer',
+    'alter table supabase_migrations.schema_migrations add column unsafe_required text not null;');
+  const unsafeHistoryApply = sqlTextIn('synthetic_atomic_producer', atomicSql,
+    { allowFailure: true });
+  if (unsafeHistoryApply.status === 0
+      || !String(unsafeHistoryApply.stderr).includes('producer_binding_apply_precondition_mismatch')) {
+    throw Error('atomic apply accepted an unfillable history column');
+  }
+  sqlTextIn('synthetic_atomic_producer',
+    'alter table supabase_migrations.schema_migrations drop column unsafe_required;');
+  const brokenHistorySql = atomicSql.replace(
+    'insert into supabase_migrations.schema_migrations(version,name,statements)',
+    'insert into supabase_migrations.absent_table(version,name,statements)');
+  if (brokenHistorySql === atomicSql) throw Error('atomic history failure fixture missing');
+  const brokenHistory = sqlTextIn('synthetic_atomic_producer', brokenHistorySql,
+    { allowFailure: true });
+  if (brokenHistory.status === 0) {
+    throw Error('atomic fixture accepted a failed history registration');
+  }
+  const afterFailedHistory = sqlIn('synthetic_atomic_producer',
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"legacy_no_history"/.test(afterFailedHistory.stdout)) {
+    throw Error('failed history registration did not roll back function replacement');
+  }
+  const brokenPostSql = atomicSql.replace(CORRECTED_BODY_SHA256, '0'.repeat(64));
+  if (brokenPostSql === atomicSql) throw Error('atomic postcondition failure fixture missing');
+  const brokenPost = sqlTextIn('synthetic_atomic_producer', brokenPostSql,
+    { allowFailure: true });
+  if (brokenPost.status === 0
+      || !String(brokenPost.stderr).includes('producer_binding_apply_postcondition_mismatch')) {
+    throw Error('atomic fixture accepted a failed postcondition');
+  }
+  const afterFailedPost = sqlIn('synthetic_atomic_producer',
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"legacy_no_history"/.test(afterFailedPost.stdout)) {
+    throw Error('failed postcondition did not roll back function and history');
+  }
+  const atomicApplied = sqlTextIn('synthetic_atomic_producer', atomicSql);
+  if (!/"producer_binding_apply"\s*:\s*"committed"/.test(atomicApplied.stdout)) {
+    throw Error('atomic fixture lacked a committed one-migration receipt');
+  }
+  const atomicAfter = sqlIn('synthetic_atomic_producer',
+    'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql');
+  if (!/"producer_binding_contract"\s*:\s*"corrected_exact_history"/.test(atomicAfter.stdout)) {
+    throw Error('atomic fixture lacked exact corrected function and history');
+  }
+  const atomicReplay = sqlTextIn('synthetic_atomic_producer', atomicSql,
+    { allowFailure: true });
+  if (atomicReplay.status === 0
+      || !String(atomicReplay.stderr).includes('producer_binding_apply_precondition_mismatch')) {
+    throw Error('atomic producer apply accepted a second execution');
   }
   query(`create or replace function private.content_ops_review_candidate(
     target_workspace_id uuid, target_content_item_id uuid,
@@ -269,6 +396,7 @@ try {
     promptCapabilityAclVerified: true, promptRuntimeExecuted: true,
     promptPreapplyCatalogVerified: true,
     producerBindingContractVerified: true,
+    atomicProducerMigrationVerified: true,
     syntheticSignupFreePrincipal: true,
     providerCalls: 0, productionCalls: 0 }));
 } finally {

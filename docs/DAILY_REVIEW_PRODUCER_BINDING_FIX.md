@@ -35,9 +35,11 @@ The [2026-09-23 read-only production readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECE
 found the earlier candidate-reader body still hosted and no remote applied
 `20260916190000` migration entry. A strengthened function-body gate therefore
 blocks the proposed button-card owner path pending that correction.
-The same receipt includes a separate read-only pre/post contract that
-classifies the current production helper as `legacy`. A future `corrected`
-readback must be observed after any separately authorized migration apply.
+The same receipt includes a separate read-only function-plus-history contract
+that classifies production as `legacy_no_history`. A future
+`corrected_exact_history` readback must be observed after any separately
+authorized migration apply. An offline one-transaction SQL builder has only
+been tested in disposable databases; it is not a production apply runner.
 
 ## Rollout boundary
 

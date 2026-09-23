@@ -34,10 +34,29 @@ At 2026-09-23 14:03 UTC, the separate
 `content_ops_review_producer_binding_contract_readonly.sql` pre/post gate
 (SHA-256 `bf90178ae04722e37d153431b7797bea55bebcf8bde396d96aadfca438714c4f`)
 classified production as `legacy`, with `read_only=true` and `changes=0`.
-Its disposable PostgreSQL 16.13 and 17.6 runs classify the old migration as
-`legacy`, the checked-in correction as `corrected`, and reject an unknown body
-or a nonnullable `jobs.content_item_id`. It has **not** produced a production
-`corrected` receipt; the migration remains unapplied.
+That initial classification is superseded by the stronger function-plus-history
+gate (SHA-256 `3ec505b7c0250ffd3364b928e031f938ba8f8f113a13cd49db1a34d3a10afe85`),
+which returned `legacy_no_history`, `read_only=true`, `changes=0` on production
+at 2026-09-23 14:08 UTC. Disposable PostgreSQL 16.13 and 17.6 classify the
+old function/no history as `legacy_no_history`, the corrected function/exact
+one-element source history as `corrected_exact_history`, and reject mismatched
+function, nonnullable job link or partial/wrong history. It has **not**
+produced a production `corrected_exact_history` receipt.
+
+At 2026-09-23 14:19 UTC, the final strengthened gate (SHA-256
+`6e96c59a7b338698459d7f8212e78e88c0e816bf5ec35a2136e05bc8c5945c71`)
+again returned `legacy_no_history`, `read_only=true`, `changes=0` on
+production. A separate read-only catalog check observed the six migration
+history columns, primary key on `version`, and an optional unique
+`idempotency_key`; the SQL surface reported `current_user=session_user=postgres`.
+The local atomic fixture mirrors that history shape and rejects an unexpected
+mandatory column. This remains pre-apply evidence only.
+
+The [offline one-migration builder](../ops/private-review-producer-binding/README.md)
+locally proved that the function replacement and exact history registration
+can commit together. Failed history insertion and failed postcondition each
+rolled both back; a second execution was denied. No production executor or
+network apply was created, and no migration was applied.
 
 **Decision: BLOCK for the button-card owner path.** The unapplied correction
 must receive separate exact production migration authorization. After any
