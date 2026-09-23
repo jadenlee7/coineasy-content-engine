@@ -76,6 +76,9 @@ class CardReceiptTest(unittest.TestCase):
                 self.assertEqual([p["kind"] for p in result["target_parts"]],
                                  ["image", "telegram", "x"])
                 self.assertTrue(all(p["outcome"] == "sent" for p in result["target_parts"]))
+                self.assertEqual(len(result["response_sha256s"]), 4)
+                self.assertTrue(all(len(digest) == 64 for digest in result["response_sha256s"]))
+                self.assertEqual(len(result["controls_payload_sha256"]), 64)
                 card = {"id": C, "review_id": R, "epoch": 0,
                         "version_fingerprint": "b" * 64,
                         "bindings": result["target_bindings"], "parts": result["target_parts"],

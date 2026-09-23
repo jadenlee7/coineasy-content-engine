@@ -176,12 +176,14 @@ def _validate_candidate(review, snapshot, card_id, *, now):
 def card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
                                room_binding, bot_id, chat_id, thread_id, now,
                                banner_sha256, observations):
-    """Build exact arguments for ``record_content_ops_button_card``.
+    """Build exact registration evidence for the guarded DB wrapper.
 
     The caller must prove the review was owner-created, source/current version
     remain eligible, the image bytes match ``banner_sha256``, all four sends
     were durably reserved, and each response came from its own Telegram POST.
     This pure validator cannot establish any of those transport/DB facts.
+    Response hashes and the fourth controls payload hash are included so the
+    wrapper can match all four durable send confirmations before recording.
     """
     try:
         return _card_registration_evidence(review=review, snapshot=snapshot, card_id=card_id,
@@ -247,4 +249,6 @@ def _card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
             "expected_fingerprint": review["version_fingerprint"],
             "target_epoch": review["epoch"], "target_bindings": target_bindings,
             "target_parts": parts, "delivered": card["delivered_at"],
-            "expires": card["expires_at"]}
+            "expires": card["expires_at"],
+            "controls_payload_sha256": part_payload_sha256(packet[3], banner_sha256),
+            "response_sha256s": [item[2] for item in validated]}

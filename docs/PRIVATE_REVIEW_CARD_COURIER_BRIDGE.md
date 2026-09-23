@@ -26,9 +26,17 @@ send denial, strict part order and provider-error redaction. It targets the
 private room's main timeline; topic/thread delivery remains unsupported. It
 does **not** call `getUpdates`,
 install a webhook or discover a token. It is not configured or deployed.
-The durable DB `CardOwner` remains missing, so the courier cannot run live.
+The durable DB owner is not deployed or mounted, so the courier cannot run live.
 
-The module has no network, database or polling code. Its response parser is
+`supabase/proposals/content_ops_button_card_send_ledger.sql` and
+`core/content_ops/private_review_card_owner.py` now sketch the missing durable
+side: default-OFF, one DB transaction per reservation/confirmation, and a
+guarded registration wrapper comparing all four payload, message and response
+hashes. This SQL is deliberately a **proposal**, not an applied migration; the
+owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
+and fake-transaction tests do not establish hosted PostgreSQL compatibility.
+
+The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
 review-bot token and the HTTP call, pass its *own* response bytes, and ensure
 the exact PNG bytes match the immutable version hash. It must never accept
@@ -39,8 +47,8 @@ Before enabling or sending even one card, the remaining owner path must:
 1. Re-read the exact current version, active official source and fresh poll,
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
-2. Implement the `CardOwner` adapter: create one short-lived button-review row,
-   **durably reserve each send attempt before** the corresponding Telegram
+2. Complete and live-validate the `CardOwner` path: create one short-lived
+   button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
    complete card once. Keep this owner's DB authority
    separate from the callback bot's restricted role.
@@ -51,8 +59,8 @@ Before enabling or sending even one card, the remaining owner path must:
 4. Send image, Telegram copy and X copy in order, recording each authenticated
    exact-room/bot response. Send controls only after all three are confirmed.
    On rejection, timeout or unknown commit, stop with no automatic retry.
-5. Call `record_content_ops_button_card` once with the validated four-response
-   evidence, then read the committed exact card and release-fence state. An
+5. Call the guarded card-registration wrapper once with the validated
+   four-response evidence, then read the committed exact card and release-fence state. An
    uncertain DB commit is reconciled read-only by the original IDs, never
    retried with a new card or provider send.
 6. Only after a default-OFF deployment, validate-only checks and separate
