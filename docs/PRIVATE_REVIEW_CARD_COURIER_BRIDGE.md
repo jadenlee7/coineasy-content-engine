@@ -177,7 +177,12 @@ the exact action/card/actor from the committed callback, requires the existing
 reservation RPC to return a new attempt, re-reads the committed row and uses
 the prior receipt owner for confirmation. Fake-transaction and mock-HTTP tests
 cover the one-shot chain and uncertain commit behavior. The owner is **not
-mounted**, and its SQL/ACL proposal has not been checked on the hosted schema.
+mounted**. A read-only hosted schema inventory on 2026-09-23 found the named
+reservation/registration functions and prompt tables, but the restricted
+`coineasy_private_review` role has no execute grants for those functions or
+INSERT grants for the prompt tables; a restrictive INSERT policy on attempts
+also has `WITH CHECK(false)`. Function-name presence does not establish exact
+compatibility. No production migration, grant, or prompt activation followed.
 The local polling adapter now preserves `edit_requested`. An optional injected
 courier factory can run once after a non-reused committed edit action; a reused
 action or uncertain courier result returns `prompt_status_unknown` and cannot

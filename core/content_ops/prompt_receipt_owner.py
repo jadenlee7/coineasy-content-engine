@@ -3,8 +3,9 @@
 The injected owner must authenticate the provider transport. This adapter reads
 an existing locked reservation and checks keyed packet/control-card lineage;
 neither those hashes nor caller-supplied response bytes prove transport origin.
-Those live integrations are NOT implemented here. Runtime roles have no grants; never use
-an admin/service-role credential as a fallback. No retries, sends or enrollment.
+Those live integrations are NOT implemented here. The restricted runtime role
+lacks the needed prompt write/execute grants; never use an admin/service-role
+credential as a fallback. No retries, sends or enrollment.
 """
 from __future__ import annotations
 

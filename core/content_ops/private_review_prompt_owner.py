@@ -2,7 +2,9 @@
 
 The injected connection factory must use a dedicated least-privilege role.
 This module never discovers a DSN, grants a role, starts a poller or sends a
-message. The durable SQL is still a local proposal, not a hosted migration.
+message. Named reservation/registration functions are present on the hosted
+schema, but the restricted runtime role lacks the required write/execute ACLs.
+Their exact compatibility with this local owner is not established.
 """
 from __future__ import annotations
 
