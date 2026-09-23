@@ -3,7 +3,7 @@
 No scheduler, polling, callback consumer, public publisher or database key.
 Validate-only performs no network, database or Telegram calls. A real private
 send still requires a separately authorized default-OFF deployment and exact
-version enablement; this script is not referenced by any current Dockerfile.
+version enablement; the proposed Dockerfile.private-review-card is not deployed.
 """
 from __future__ import annotations
 

@@ -142,6 +142,12 @@ begin
             rid,outbox,token,repeat('d',64));
         raise exception 'expected duplicate binding rejection';
     exception when unique_violation then null; end;
+    begin
+        perform public.content_ops_button_card_owner_step(w,v,'bind',
+            jsonb_build_object('review_id',rid,'outbox_id',outbox,
+                'claim_token',token,'packet_sha256',repeat('d',64)));
+        raise exception 'expected public gateway duplicate binding rejection';
+    exception when unique_violation then null; end;
 
     begin
         perform public.content_ops_button_card_owner_step(w,gen_random_uuid(),'reserve',

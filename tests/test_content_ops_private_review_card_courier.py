@@ -119,6 +119,27 @@ class Sender:
             datetime.fromtimestamp(NOW + self.clock_delta + index, timezone.utc))
 
 
+class DurableOwner(Owner):
+    """Model the database's one-time bind and persisted send reservations."""
+
+    def __init__(self):
+        super().__init__()
+        self.attempts = set()
+
+    async def bind_outbox(self, **values):
+        if self.bound:
+            raise OSError("outbox already bound")
+        return await super().bind_outbox(**values)
+
+    async def reserve_part(self, **values):
+        index = values["part_index"]
+        if index in self.attempts:
+            return {"status": "reserved", "new_attempt": False,
+                    "execution_authorized": False}
+        self.attempts.add(index)
+        return await super().reserve_part(**values)
+
+
 class CardCourierTest(unittest.TestCase):
     def setUp(self):
         self.owner = Owner()
@@ -194,6 +215,25 @@ class CardCourierTest(unittest.TestCase):
         self.assertEqual(self.run_card(enabled=True)["status"], "delivery_unknown")
         self.assertEqual(len(self.sender.calls), 3)
         self.assertEqual(self.owner.registered, [])
+
+    def test_fresh_process_cannot_resend_after_unknown_provider_response(self):
+        owner = DurableOwner()
+        first_sender = Sender(fail_at=2)
+        first = PrivateCardCourier(owner, first_sender, ButtonSigner(b"s" * 32),
+            EditBindings(b"e" * 32), clock=lambda: NOW)
+        self.assertEqual(asyncio.run(first.run(prepared(), enabled=True))["status"],
+                         "delivery_unknown")
+        self.assertEqual(owner.attempts, {0, 1, 2})
+        self.assertEqual(len(first_sender.calls), 3)
+
+        second_sender = Sender()
+        second = PrivateCardCourier(owner, second_sender, ButtonSigner(b"s" * 32),
+            EditBindings(b"e" * 32), clock=lambda: NOW)
+        self.assertEqual(asyncio.run(second.run(prepared(), enabled=True))["status"],
+                         "blocked")
+        self.assertEqual(second_sender.calls, [])
+        self.assertEqual(owner.attempts, {0, 1, 2})
+        self.assertEqual(owner.registered, [])
 
     def test_unknown_confirmation_never_sends_next_part(self):
         self.owner.fail_confirm_at = 1
