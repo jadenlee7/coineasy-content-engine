@@ -52,6 +52,7 @@ class PrivateCardCanary:
         # The concrete one-shot HTTP gateway must own claim, image and begin
         # together. Synthetic tests may inject separate fake contracts only.
         from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
+        from core.content_ops.private_review_card_owner_gateway import GatewayPrivateCardOwner
 
         if (not _uuid(workspace_id) or not _uuid(content_version_id)
             or type(bot_id) is not int or bot_id <= 0
@@ -60,7 +61,11 @@ class PrivateCardCanary:
             or type(courier) is not PrivateCardCourier
             or type(signer) is not ButtonSigner
             or type(bindings) is not EditBindings
-            or (isinstance(gateway, ButtonCanaryGateway) and png_reader is not gateway)):
+            or (isinstance(gateway, ButtonCanaryGateway)
+                and (png_reader is not gateway
+                    or type(owner) is not GatewayPrivateCardOwner
+                    or owner.gateway is not gateway
+                    or courier._owner is not owner))):
             raise PrivateCardCanaryError("private_card_canary_configuration_invalid")
         self._workspace_id, self._version_id = workspace_id, content_version_id
         self._bot_id, self._chat_id = bot_id, chat_id

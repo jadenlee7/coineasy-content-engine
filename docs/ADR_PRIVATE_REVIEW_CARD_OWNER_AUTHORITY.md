@@ -26,9 +26,10 @@ private-function execute right to a courier role. Netlify accepts an `owner`
 request only in `button_card_v1`, validates exact argument and receipt shapes,
 and makes one bounded RPC call. Provider errors and SQL details are redacted.
 
-The SQL remains in `supabase/proposals/`, not migrations. The current Python
-`PostgresPrivateCardOwner` remains an unmounted local contract; a one-shot HTTP
-owner adapter and complete runtime wiring are still required. This decision
+The SQL remains in `supabase/proposals/`, not migrations. The existing Python
+`PostgresPrivateCardOwner` remains an unmounted local contract; the new
+default-OFF `GatewayPrivateCardOwner` uses the same one-shot gateway as claim,
+image and begin. Complete production runtime wiring is still required. This decision
 does not authorize a hosted grant, deployment, private-room send, approval or
 publication.
 
@@ -68,7 +69,8 @@ must be proved on the actual Supabase version before migration.
    actions and no direct table grants.
 2. [x] Add bounded Netlify owner routing, exact receipt projection, synthetic
    PostgreSQL/ACL and gateway tests.
-3. [ ] Add a one-shot Python HTTP owner adapter and test the complete
-   claim/image/prepare/begin/reserve/confirm/register/readback chain locally.
+3. [x] Add a one-shot Python HTTP owner adapter and test the complete
+   claim/image/prepare/begin/reserve/confirm/register/readback chain with
+   synthetic database and Telegram responses.
 4. [ ] Validate the proposal against hosted schema and ACLs before requesting
    production migration, deployment or a private-room canary.

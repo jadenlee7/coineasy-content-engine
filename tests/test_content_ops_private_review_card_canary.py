@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from core.content_ops.private_review_card_canary import (
@@ -12,6 +13,7 @@ from core.content_ops.private_review_card_canary import (
 )
 from core.content_ops.private_review_card_courier import PrivateCardCourier
 from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
+from core.content_ops.private_review_card_owner_gateway import GatewayPrivateCardOwner
 from core.content_ops.private_review_card_receipt import ObservedSend
 from core.content_ops.review_buttons import ButtonSigner
 from core.content_ops.review_edit_ingress import EditBindings
@@ -179,12 +181,13 @@ def test_default_off_and_empty_queue_have_no_send():
 
 def test_concrete_gateway_must_also_be_the_image_reader():
     events = []
-    owner, sender = Owner(events), Sender(events)
+    sender = Sender(events)
     signer, bindings = ButtonSigner(b"s" * 32), EditBindings(b"e" * 32)
-    courier = PrivateCardCourier(owner, sender, signer, bindings, clock=lambda: EPOCH)
     gateway = ButtonCanaryGateway(origin=APP_ORIGIN,
         gateway_token="test_only_button_card_gateway_token_123456",
         release_sha="a" * 40, content_version_id=V)
+    owner = GatewayPrivateCardOwner(gateway)
+    courier = PrivateCardCourier(owner, sender, signer, bindings, clock=lambda: EPOCH)
     args = dict(workspace_id=W, content_version_id=V, bot_id=BOT, chat_id=ROOM,
         gateway=gateway, owner=owner, courier=courier, signer=signer,
         bindings=bindings)
@@ -194,6 +197,85 @@ def test_concrete_gateway_must_also_be_the_image_reader():
     assert asyncio.run(runner.run()) == {"status": "disabled",
                                         "public_send_attempted": False}
     assert events == []
+
+
+def test_concrete_gateway_owner_and_courier_complete_synthetic_private_card():
+    network, events = [], []
+    release = "a" * 40
+    scope = {"mode": "canary", "content_version_id": V,
+             "packet_mode": "button_card_v1"}
+
+    def handler(request):
+        body = json.loads(request.content)
+        action = body["action"]
+        step = body.get("step")
+        network.append((action, step))
+        if action == "owner" and step == "register":
+            assert len(request.content) <= 8192
+        if action == "image":
+            return httpx.Response(200, content=PNG, headers={
+                "Content-Type": "image/png", "Content-Length": str(len(PNG)),
+                "X-Content-Ops-Release-Sha": release,
+                "X-Content-Ops-Outbox-Id": O,
+                "X-Content-Ops-Item-Id": I,
+                "X-Content-Ops-Version-Id": V,
+                "X-Content-Ops-Banner-Sha256": SHA})
+        if action == "reconcile":
+            key, value = "queued", 1
+        elif action == "claim":
+            key, value = "claim", {**claimed(T).__dict__,
+                "source_published_at": "2026-09-23T08:00:00Z"}
+        elif action == "begin":
+            key, value = "accepted", True
+        else:
+            assert action == "owner"
+            key = "owner"
+            if step == "prepare":
+                value = {"status": "review_prepared", "review_id": R,
+                    "version_fingerprint": "a" * 64, "epoch": 0,
+                    "state": "active", "expires_at": "2026-09-23T09:30:00Z",
+                    "execution_authorized": False}
+            elif step == "bind":
+                value = {"status": "bound", "execution_authorized": False}
+            elif step == "reserve":
+                value = {"status": "reserved", "new_attempt": True,
+                    "execution_authorized": False}
+            elif step == "confirm":
+                value = {"status": "confirmed", "new_confirmation": True,
+                    "execution_authorized": False}
+            elif step == "register":
+                value = {"status": "card_recorded", "card_id": C,
+                    "reused": False, "execution_authorized": False}
+            else:
+                assert step == "terminal"
+                value = {"status": "sent", "card_id": C, "outbox_id": O,
+                    "execution_authorized": False}
+        return httpx.Response(200, json={"ok": True, "release_sha": release,
+            "scope": scope, key: value})
+
+    gateway = ButtonCanaryGateway(origin=APP_ORIGIN,
+        gateway_token="test_only_button_card_gateway_token_123456",
+        release_sha=release, content_version_id=V, enabled=True,
+        transport=httpx.MockTransport(handler), clock=lambda: NOW)
+    owner = GatewayPrivateCardOwner(gateway, enabled=True)
+    sender = Sender(events)
+    signer, bindings = ButtonSigner(b"s" * 32), EditBindings(b"e" * 32)
+    courier = PrivateCardCourier(owner, sender, signer, bindings, clock=lambda: EPOCH)
+    ids = iter((T, R, C))
+    runner = PrivateCardCanary(workspace_id=W, content_version_id=V,
+        bot_id=BOT, chat_id=ROOM, gateway=gateway, owner=owner,
+        png_reader=gateway, courier=courier, signer=signer, bindings=bindings,
+        clock=lambda: NOW, uuid_factory=lambda: next(ids))
+    assert asyncio.run(runner.run(enabled=True)) == {
+        "status": "card_recorded", "confirmed_parts": 4,
+        "public_send_attempted": False}
+    assert sender.sent == 4
+    assert network == [("reconcile", None), ("claim", None), ("image", None),
+        ("owner", "prepare"), ("begin", None), ("owner", "bind"),
+        *[("owner", step) for _ in range(4)
+          for step in ("reserve", "confirm")],
+        ("owner", "register"), ("owner", "terminal")]
+    assert asyncio.run(runner.run(enabled=True))["status"] == "replay_denied"
 
 
 def test_one_claimed_outbox_precedes_four_durable_private_parts():

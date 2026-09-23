@@ -22,6 +22,7 @@ _SHA40 = re.compile(r"[a-f0-9]{40}\Z")
 _SHA64 = re.compile(r"[a-f0-9]{64}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,256}\Z")
 _SCOPE = "button_card_v1"
+_OWNER_STEPS = frozenset({"prepare", "bind", "reserve", "confirm", "register", "terminal"})
 
 
 class PrivateCardGatewayError(RuntimeError):
@@ -56,6 +57,10 @@ class ButtonCanaryGateway:
         self._image_attempted = False
         self._image_verified = False
         self._begin_attempted = False
+
+    @property
+    def content_version_id(self):
+        return self._version
 
     def _headers(self):
         return {"Authorization": "Bearer " + self._token,
@@ -172,3 +177,9 @@ class ButtonCanaryGateway:
             raise PrivateCardGatewayError("private_card_gateway_begin_denied")
         return {"status": "begun", "outbox_id": claim.outbox_id,
                 "execution_authorized": False}
+
+    async def owner_step(self, step, args):
+        """One authenticated owner RPC transport; the owner adapter enforces order."""
+        if type(step) is not str or step not in _OWNER_STEPS or type(args) is not dict:
+            raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
+        return await self._post({"action": "owner", "step": step, "args": args}, "owner")

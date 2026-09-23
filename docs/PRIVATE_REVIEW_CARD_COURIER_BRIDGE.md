@@ -50,8 +50,11 @@ The local `content_ops_button_card_owner_gateway.sql` proposal and Netlify
 `owner` route now provide a narrower alternative to a new direct DB login:
 six exact owner actions, server-pinned workspace/version, service-role-only
 PostgREST access, and bounded response projection under the separate
-button-card canary flag. The SQL is not a migration and the Python courier has
-no HTTP owner adapter yet. No production role, grant or service was changed.
+button-card canary flag. `GatewayPrivateCardOwner` now consumes those six
+actions once, and a synthetic full-chain test covers claim through terminal
+readback with zero DB/provider I/O. The SQL is not a migration; the adapter is
+unmounted and has no production credential. No production role, grant or
+service was changed.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
