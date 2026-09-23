@@ -54,6 +54,70 @@ begin
         'expires_at',review.expires_at,'execution_authorized',false);
 end $$;
 
+-- Service-role-only locator for a claimed, exact-version private PNG. This
+-- returns no signed URL or bytes; the gateway checks the direct Storage GET
+-- against this immutable asset row. No delivery/approval state is changed.
+create function public.content_ops_button_card_image_locator(
+    target_workspace_id uuid, target_outbox_id uuid, target_claim_token uuid,
+    target_content_version_id uuid
+) returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+    q private.content_ops_review_outbox;
+    candidate jsonb;
+    banner public.assets;
+begin
+    if (select auth.role()) is distinct from 'service_role' then
+        raise exception 'button_card_image_service_role_required' using errcode = '42501';
+    end if;
+    if target_workspace_id is null or target_outbox_id is null
+       or target_claim_token is null or target_content_version_id is null then
+        raise exception 'button_card_image_arguments_invalid' using errcode = '22023';
+    end if;
+    select * into q from private.content_ops_review_outbox
+        where workspace_id = target_workspace_id and outbox_id = target_outbox_id
+        for share;
+    if not found or q.status is distinct from 'claimed'
+       or q.claim_token is distinct from target_claim_token
+       or q.content_version_id is distinct from target_content_version_id
+       or q.lease_expires_at <= clock_timestamp()
+       or q.packet_sha256 is not null or q.send_started_at is not null
+       or q.finished_at is not null then
+        return null;
+    end if;
+    candidate := private.content_ops_review_candidate(q.workspace_id,
+        q.content_item_id, q.content_version_id);
+    if private.content_ops_review_matches(candidate, q) is not true then
+        return null;
+    end if;
+    select asset.* into banner from public.assets as asset
+        join storage.objects as stored on stored.bucket_id = asset.storage_bucket
+            and stored.name = asset.storage_path
+        where asset.id = q.banner_asset_id
+          and asset.workspace_id = q.workspace_id
+          and asset.content_item_id = q.content_item_id
+          and asset.content_version_id = q.content_version_id
+          and asset.asset_kind = 'png' and asset.mime_type = 'image/png'
+          and asset.storage_bucket = 'content-studio'
+          and asset.metadata ->> 'filename' = 'news-card.png'
+          and asset.storage_path = q.workspace_id::text || '/' || q.client_id
+                || '/' || asset.id::text || '/news-card.png'
+          and asset.sha256 = q.banner_sha256
+          and asset.byte_size between 9 and 10000000
+          and asset.width > 0 and asset.height > 0
+        for share of asset, stored;
+    if not found then return null; end if;
+    return jsonb_build_object('status','ready','outbox_id',q.outbox_id,
+        'client_id',q.client_id,'content_item_id',q.content_item_id,
+        'content_version_id',q.content_version_id,'asset_id',banner.id,
+        'bucket',banner.storage_bucket,'path',banner.storage_path,
+        'sha256',banner.sha256,'byte_size',banner.byte_size,
+        'execution_authorized',false);
+end $$;
+revoke all on function public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)
+    from public, anon, authenticated, service_role;
+grant execute on function public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)
+    to service_role;
+
 -- The existing review outbox, not this ledger, owns the room delivery. A
 -- button review cannot reserve a provider call until its exact outbox has
 -- been claimed and begun once by the same courier. The old link-card worker

@@ -1,5 +1,6 @@
 """Synthetic HTTP only: no production gateway or Telegram calls."""
 import asyncio
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -21,6 +22,8 @@ OUTBOX = "11111111-1111-4111-8111-111111111111"
 NOW = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc)
 SCOPE = {"mode": "canary", "content_version_id": VERSION,
          "packet_mode": "button_card_v1"}
+PNG = b"\x89PNG\r\n\x1a\nsynthetic-image"
+PNG_SHA = hashlib.sha256(PNG).hexdigest()
 
 
 def claim():
@@ -30,7 +33,7 @@ def claim():
             "content_version_id": VERSION,
             "source_item_id": "55555555-5555-4555-8555-555555555555",
             "generate_job_id": "66666666-6666-4666-8666-666666666666",
-            "banner_sha256": "c" * 64, "title": "검수용 제목",
+            "banner_sha256": PNG_SHA, "title": "검수용 제목",
             "telegram_copy": "검수용 Telegram 전문", "x_copy": "검수용 X 전문",
             "source_url": "https://x.com/yellow/status/123456789",
             "source_published_at": "2026-09-23T08:00:00Z"}
@@ -38,6 +41,17 @@ def claim():
 
 def receipt(key, value):
     return {"ok": True, "release_sha": SHA, "scope": SCOPE, key: value}
+
+
+def image_response(*, data=PNG, banner_sha=PNG_SHA):
+    return httpx.Response(200, content=data, headers={
+        "Content-Type": "image/png", "Content-Length": str(len(data)),
+        "X-Content-Ops-Release-Sha": SHA,
+        "X-Content-Ops-Outbox-Id": OUTBOX,
+        "X-Content-Ops-Item-Id": "33333333-3333-4333-8333-333333333333",
+        "X-Content-Ops-Version-Id": VERSION,
+        "X-Content-Ops-Banner-Sha256": banner_sha,
+    })
 
 
 def gateway(responses, *, enabled=True):
@@ -74,12 +88,14 @@ def test_default_off_and_invalid_scope_do_no_network_io():
 
 def test_exact_one_shot_reconcile_claim_begin_has_no_finish_or_publish():
     client, calls = gateway([receipt("queued", 1), receipt("claim", claim()),
-                             receipt("accepted", True)])
+                             image_response(), receipt("accepted", True)])
 
     async def run():
         assert await client.reconcile() == 1
         candidate = await client.claim(CLAIM_TOKEN)
         assert candidate.content_version_id == VERSION
+        image = await client.load_png(candidate)
+        assert image.data == PNG and image.sha256 == PNG_SHA
         assert await client.begin(candidate, PACKET) == {
             "status": "begun", "outbox_id": OUTBOX,
             "execution_authorized": False}
@@ -89,7 +105,7 @@ def test_exact_one_shot_reconcile_claim_begin_has_no_finish_or_publish():
             await client.claim(CLAIM_TOKEN)
 
     asyncio.run(run())
-    assert len(calls) == 3
+    assert len(calls) == 4
     for request in calls:
         assert str(request.url) == APP_ORIGIN + GATEWAY_PATH
         assert request.headers["x-content-ops-mode"] == "canary"
@@ -97,7 +113,7 @@ def test_exact_one_shot_reconcile_claim_begin_has_no_finish_or_publish():
         assert request.headers["x-content-ops-packet-mode"] == "button_card_v1"
         assert request.headers["x-content-ops-expected-release-sha"] == SHA
     assert [json.loads(request.read())["action"] for request in calls] == [
-        "reconcile", "claim", "begin"]
+        "reconcile", "claim", "image", "begin"]
     assert not hasattr(client, "finish")
     assert not hasattr(client, "publish")
 
@@ -143,18 +159,20 @@ def test_bad_claim_cannot_begin(bad):
 
 def test_lost_begin_ack_is_terminal_and_never_retries():
     client, calls = gateway([receipt("queued", 1), receipt("claim", claim()),
+                             image_response(),
                              httpx.Response(503, text="sensitive provider response")])
 
     async def run():
         await client.reconcile()
         candidate = await client.claim(CLAIM_TOKEN)
+        await client.load_png(candidate)
         with pytest.raises(PrivateCardGatewayError, match="outcome_unknown"):
             await client.begin(candidate, PACKET)
         with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
             await client.begin(candidate, PACKET)
 
     asyncio.run(run())
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_no_claim_or_denied_begin_cannot_create_another_attempt():
@@ -169,15 +187,37 @@ def test_no_claim_or_denied_begin_cannot_create_another_attempt():
     asyncio.run(no_claim())
     assert len(empty_calls) == 2
     denied, denied_calls = gateway([receipt("queued", 1), receipt("claim", claim()),
+                                    image_response(),
                                     receipt("accepted", False)])
 
     async def denied_begin():
         await denied.reconcile()
         candidate = await denied.claim(CLAIM_TOKEN)
+        await denied.load_png(candidate)
         with pytest.raises(PrivateCardGatewayError, match="begin_denied"):
             await denied.begin(candidate, PACKET)
         with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
             await denied.begin(candidate, PACKET)
 
     asyncio.run(denied_begin())
-    assert len(denied_calls) == 3
+    assert len(denied_calls) == 4
+
+
+def test_image_requires_original_claim_and_exact_verified_bytes_before_begin():
+    client, calls = gateway([receipt("queued", 1), receipt("claim", claim()),
+                             image_response(data=PNG + b"changed")])
+
+    async def run():
+        await client.reconcile()
+        candidate = await client.claim(CLAIM_TOKEN)
+        with pytest.raises(PrivateCardGatewayError, match="arguments_invalid"):
+            await client.load_png(claim())
+        with pytest.raises(PrivateCardGatewayError, match="image_unknown"):
+            await client.load_png(candidate)
+        with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
+            await client.load_png(candidate)
+        with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
+            await client.begin(candidate, PACKET)
+
+    asyncio.run(run())
+    assert len(calls) == 3

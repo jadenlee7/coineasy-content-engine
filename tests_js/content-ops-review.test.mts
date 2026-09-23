@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
 
@@ -253,6 +254,90 @@ test("button-card gateway exposes claim and one-shot begin but no alternate acti
     assert.equal((await begun.handler(makeRequest({ action }))).status, 400);
   }
   assert.equal(begun.calls.length, 1);
+});
+
+test("button-card image needs an exact claimed locator and returns verified bytes only", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    1, 2, 3, 4, 5, 6]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const locator = { status: "ready", outbox_id: ID, client_id: "yellow",
+    content_item_id: ID, content_version_id: ID, asset_id: ID,
+    bucket: "content-studio", path: `${ID}/yellow/${ID}/news-card.png`,
+    sha256: hash, byte_size: bytes.byteLength, execution_authorized: false };
+  const body = { action: "image", outbox_id: ID, claim_token: ID };
+  const imageRequest = () => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const handler = createContentOpsReviewHandler({
+    getEnv: (name) => env[name], releaseSha: () => SHA,
+    fetcher: async (url, init) => {
+      calls.push({ url: String(url), init: init! });
+      return calls.length === 1 ? Response.json(locator)
+        : new Response(bytes, { headers: { "Content-Type": "image/png",
+            "Content-Length": String(bytes.byteLength) } });
+    },
+  });
+  const response = await handler(imageRequest());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "image/png");
+  assert.equal(response.headers.get("x-content-ops-banner-sha256"), hash);
+  assert.equal(response.headers.get("x-content-ops-version-id"), ID);
+  assert.equal(response.headers.get("x-content-ops-outbox-id"), ID);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /\/rpc\/content_ops_button_card_image_locator$/);
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    target_workspace_id: ID, target_outbox_id: ID,
+    target_claim_token: ID, target_content_version_id: ID });
+  assert.equal(calls[1].url,
+    `https://example.supabase.co/storage/v1/object/content-studio/${ID}/yellow/${ID}/news-card.png`);
+  assert.equal(calls[1].init.redirect, "error");
+
+  const link = harness(ENV);
+  assert.equal((await link.handler(request(body))).status, 400);
+  assert.equal(link.calls.length, 0);
+});
+
+test("button-card image fails closed on locator or Storage mismatch without leaking paths", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const body = { action: "image", outbox_id: ID, claim_token: ID };
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+  const locator = { status: "ready", outbox_id: ID, client_id: "yellow",
+    content_item_id: ID, content_version_id: ID, asset_id: ID,
+    bucket: "content-studio", path: `${ID}/yellow/${ID}/news-card.png`,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    byte_size: bytes.byteLength, execution_authorized: false };
+  for (const invalid of [null, { ...locator, path: "other/private.png" },
+    { ...locator, content_version_id: "22222222-2222-4222-8222-222222222222" },
+    { ...locator, provider_response: "never relay" }]) {
+    let calls = 0;
+    const handler = createContentOpsReviewHandler({ getEnv: (name) => env[name],
+      releaseSha: () => SHA, fetcher: async () => { calls++; return Response.json(invalid); } });
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    const response = await handler(req);
+    assert.equal(response.status, 503);
+    assert.equal(calls, 1);
+    assert.doesNotMatch(await response.text(), /private\.png|never relay/);
+  }
+  let calls = 0;
+  const handler = createContentOpsReviewHandler({ getEnv: (name) => env[name],
+    releaseSha: () => SHA, fetcher: async () => {
+      calls++;
+      return calls === 1 ? Response.json(locator)
+        : new Response(bytes, { headers: { "Content-Type": "image/png",
+            "Content-Length": "10000001" } });
+    } });
+  const req = canaryRequest(body);
+  req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.equal((await handler(req)).status, 503);
+  assert.equal(calls, 2);
 });
 
 test("worker cannot widen scope or proceed after operator scope changes", async () => {

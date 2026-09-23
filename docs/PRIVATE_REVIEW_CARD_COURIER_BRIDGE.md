@@ -61,13 +61,14 @@ The existing Netlify review gateway has a local-only `button_card_v1` scope
 proposal. It requires its existing gateway flag plus a separate
 `CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED=true`, an exact canary version and a
 matching packet-mode header. This scope permits only reconcile, claim and
-one-shot begin; the legacy `finish` endpoint is denied because atomic card
+one-shot begin, plus a claim-bound read of the exact private PNG; the legacy `finish` endpoint is denied because atomic card
 registration owns finalization. The default link-card scope is unchanged.
 This code is not deployed or configured, and no owner credential is wired to
 it. The unmounted, default-OFF
 `core/content_ops/private_review_card_gateway.py` is its one-shot client: it
-validates the exact release/scope, fresh official-source claim and single
-begin receipt without exposing `finish`, approval or publication. A lost claim
+validates the exact release/scope, fresh official-source claim, one authenticated
+PNG read with byte/hash verification, and single begin receipt without exposing
+`finish`, approval or publication. A lost claim
 or begin acknowledgement is terminal in that client. There is no automatic
 trigger.
 
@@ -79,9 +80,12 @@ the four-part packet hash. The unmounted, default-OFF
 → claim → injected canonical-PNG read → review preparation → begin → courier.
 It stops before `begin` on a stale claim, mismatched PNG or uncertain review
 preparation, and never sends after an uncertain begin acknowledgement. Its
-synthetic test uses an injected fake reader; **a production authenticated
-immutable-PNG reader does not exist yet**. No credential, schedule, runtime
-entrypoint or Telegram send was added by this runner.
+synthetic tests use an injected fake reader. The local-only DB image locator,
+Netlify byte-verifying endpoint and one-shot Python reader now form an
+authenticated reader proposal; **they are not hosted, mounted or wired to a
+runtime**. The runner must receive the same one-shot gateway instance as both
+claim/begin client and PNG reader. No credential, schedule, runtime entrypoint
+or Telegram send was added by this runner.
 
 The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
@@ -99,7 +103,9 @@ Before enabling or sending even one card, the remaining owner path must:
    button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
    complete card once. The local atomic registration finishes the same outbox
-   using the verified controls message ID. Keep this owner's DB authority
+   using the verified controls message ID. Validate the proposed claim-bound
+   image locator and Storage-byte verifier on the hosted schema as part of
+   this cutover. Keep this owner's DB authority
    separate from the callback bot's restricted role.
 3. Package and validate the `CardSender` with the already-deployed bot token
    for **send-only** calls. Do not start a second `getUpdates` consumer or

@@ -6,6 +6,7 @@ import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_BODY_BYTES = 2048;
+const MAX_IMAGE_BYTES = 10_000_000;
 const OTHER_PRINCIPALS = [
   "API_SECRET", "STUDIO_ACCESS_TOKEN", "STUDIO_AUTOMATION_TOKEN",
   "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_CONTENT_QA_KEY", "SUPABASE_BUZZ_DELIVERY_KEY",
@@ -136,6 +137,95 @@ function claimProjection(value: unknown, claimToken: unknown): Json | null {
   return Object.fromEntries(CLAIM_KEYS.map((key) => [key, value[key]]));
 }
 
+async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array | null> {
+  if (!response.body) return null;
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maximum)) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximum) { await reader.cancel(); return null; }
+      chunks.push(next.value);
+    }
+    if (declared !== null && Number(declared) !== total) return null;
+    return Buffer.concat(chunks, total);
+  } catch { return null; }
+  finally { reader.releaseLock(); }
+}
+
+async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
+                           release: string, fetcher: typeof fetch): Promise<Response> {
+  if (scope.packet_mode !== "button_card_v1"
+    || !exact(body, ["action", "outbox_id", "claim_token"])
+    || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
+    return json({ error: "invalid_request" }, 400);
+  }
+  try {
+    const located = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_image_locator`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
+        "Content-Type": "application/json" },
+      body: JSON.stringify({ target_workspace_id: cfg.workspaceId,
+        target_outbox_id: body.outbox_id, target_claim_token: body.claim_token,
+        target_content_version_id: scope.content_version_id }),
+    });
+    if (!located.ok || located.redirected
+      || (located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const locatorBytes = await boundedBytes(located, 4096);
+    if (!locatorBytes) return json({ error: "content_ops_image_unavailable" }, 503);
+    const value: unknown = JSON.parse(Buffer.from(locatorBytes).toString("utf8"));
+    const keys = ["status", "outbox_id", "client_id", "content_item_id",
+      "content_version_id", "asset_id", "bucket", "path", "sha256",
+      "byte_size", "execution_authorized"];
+    if (!record(value) || !exact(value, keys)
+      || value.status !== "ready" || value.execution_authorized !== false
+      || value.outbox_id !== body.outbox_id
+      || value.content_version_id !== scope.content_version_id
+      || !isCatalogUuid(value.content_item_id) || !isCatalogUuid(value.asset_id)
+      || typeof value.client_id !== "string" || !Object.hasOwn(HANDLES, value.client_id)
+      || value.bucket !== "content-studio"
+      || value.path !== `${cfg.workspaceId}/${value.client_id}/${value.asset_id}/news-card.png`
+      || typeof value.sha256 !== "string" || !HASH.test(value.sha256)
+      || !Number.isSafeInteger(value.byte_size) || Number(value.byte_size) < 9
+      || Number(value.byte_size) > MAX_IMAGE_BYTES) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
+      method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
+        "Accept-Encoding": "identity" },
+    });
+    if (image.status !== 200 || image.redirected
+      || (image.headers.get("content-type") || "").split(";", 1)[0] !== "image/png"
+      || (image.headers.get("content-encoding") || "identity") !== "identity"
+      || image.headers.has("content-range")) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const imageBytes = await boundedBytes(image, MAX_IMAGE_BYTES);
+    if (!imageBytes || imageBytes.byteLength !== value.byte_size
+      || !Buffer.from(imageBytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      || createHash("sha256").update(imageBytes).digest("hex") !== value.sha256) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    return new Response(imageBytes, { status: 200, headers: {
+      "Content-Type": "image/png", "Content-Length": String(imageBytes.byteLength),
+      "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      "X-Content-Ops-Release-Sha": release,
+      "X-Content-Ops-Outbox-Id": String(value.outbox_id),
+      "X-Content-Ops-Item-Id": String(value.content_item_id),
+      "X-Content-Ops-Version-Id": String(value.content_version_id),
+      "X-Content-Ops-Banner-Sha256": String(value.sha256),
+    } });
+  } catch { return json({ error: "content_ops_image_unavailable" }, 503); }
+}
+
 export function createContentOpsReviewHandler(deps: Dependencies) {
   return async (req: Request): Promise<Response> => {
     if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -174,6 +264,7 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!body) return json({ error: "invalid_request" }, 400);
     const cfg = contentCatalogConfig(deps.getEnv);
     if (!cfg) return json({ error: "content_ops_database_not_configured" }, 503);
+    if (body.action === "image") return buttonImage(body, scope, cfg, release, deps.fetcher || fetch);
     const rpc = rpcRequest(body, cfg.workspaceId, scope);
     if (!rpc) return json({ error: "invalid_request" }, 400);
     try {

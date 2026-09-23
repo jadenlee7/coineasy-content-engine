@@ -1,8 +1,9 @@
 """Unmounted, default-OFF one-shot private card canary coordinator.
 
 The image reader is deliberately injected: no storage credential, discovery,
-schedule, bot listener or provider call exists here. A real reader must prove
-the exact immutable canonical PNG; fake readers are only for local tests.
+schedule, bot listener or provider call exists here. The local gateway reader
+proposal proves the exact immutable canonical PNG; fake readers are only for
+local tests. Neither reader is mounted in a production runtime.
 """
 from __future__ import annotations
 

@@ -95,6 +95,14 @@ try {
         end if;
       end loop;
     end loop;
+    if has_function_privilege('anon',
+        'public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)','EXECUTE')
+       or has_function_privilege('authenticated',
+        'public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)','EXECUTE')
+       or not has_function_privilege('service_role',
+        'public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)','EXECUTE') then
+      raise exception 'image locator ACL mismatch';
+    end if;
   end $$;`);
   sql('supabase/tests/content_ops_button_card_send_ledger.sql');
   const readback = query(`select jsonb_build_object(

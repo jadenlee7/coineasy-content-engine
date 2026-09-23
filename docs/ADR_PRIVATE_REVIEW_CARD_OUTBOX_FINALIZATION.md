@@ -61,6 +61,7 @@ cross-system repair procedure for a split terminal state.
 3. [ ] Validate the local single claim/begin/review-row runner against the
    hosted schema and complete read-only recovery; ensure the old worker and
    new courier cannot both own one version at runtime. The local runner is
-   default-OFF and has no authenticated canonical-PNG reader yet.
+   default-OFF; its proposed authenticated canonical-PNG reader remains
+   unhosted and unmounted.
 4. [ ] Obtain separate authorization before any hosted migration, deployment,
    private-room canary, activation or public publication.

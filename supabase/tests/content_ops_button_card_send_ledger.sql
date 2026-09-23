@@ -37,6 +37,26 @@ begin
     outbox := (claim->>'outbox_id')::uuid;
     perform pg_temp.check_card_send(outbox is not null
         and claim->>'content_version_id'=v::text,'exact-version outbox claimed');
+    perform set_config('request.jwt.claim.role','authenticated',true);
+    begin
+        perform public.content_ops_button_card_image_locator(w,outbox,token,v);
+        raise exception 'expected image locator role rejection';
+    exception when insufficient_privilege then null; end;
+    perform set_config('request.jwt.claim.role','service_role',true);
+    perform pg_temp.check_card_send(
+        public.content_ops_button_card_image_locator(w,outbox,gen_random_uuid(),v) is null
+        and public.content_ops_button_card_image_locator(w,outbox,token,gen_random_uuid()) is null,
+        'wrong token or version cannot locate private image');
+    result := public.content_ops_button_card_image_locator(w,outbox,token,v);
+    perform pg_temp.check_card_send(result->>'status'='ready'
+        and result->>'outbox_id'=outbox::text
+        and result->>'content_item_id'=i::text
+        and result->>'content_version_id'=v::text
+        and result->>'sha256'=claim->>'banner_sha256'
+        and result->>'bucket'='content-studio'
+        and result->>'path'=w::text || '/yellow/' || (result->>'asset_id') || '/news-card.png'
+        and result->'execution_authorized'='false'::jsonb,
+        'exact claimed image locator is bounded and read-only');
     begin
         perform private.prepare_content_ops_button_review_from_claim(
             w,outbox,gen_random_uuid(),v,rid);
@@ -66,6 +86,9 @@ begin
     result := public.content_ops_begin_review_send(w,outbox,token,repeat('d',64),v);
     perform pg_temp.check_card_send(result->'accepted'='true'::jsonb,
         'existing outbox begins once');
+    perform pg_temp.check_card_send(
+        public.content_ops_button_card_image_locator(w,outbox,token,v) is null,
+        'image locator closes immediately after begin');
     result := public.content_ops_begin_review_send(w,outbox,token,repeat('d',64),v);
     perform pg_temp.check_card_send(result->'accepted'='false'::jsonb,
         'old link-card path cannot begin same outbox again');

@@ -7,12 +7,14 @@ An uncertain HTTP acknowledgement is never retried by this client.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
 
+from core.content_ops.private_review_card_canary import CanonicalPng
 from core.content_ops.worker import APP_ORIGIN, GATEWAY_PATH, ReviewClaim
 
 
@@ -51,7 +53,17 @@ class ButtonCanaryGateway:
         self._reconciled = False
         self._claim_attempted = False
         self._claimed = None
+        self._image_attempted = False
+        self._image_verified = False
         self._begin_attempted = False
+
+    def _headers(self):
+        return {"Authorization": "Bearer " + self._token,
+                "x-content-ops-expected-release-sha": self._release,
+                "x-content-ops-mode": "canary",
+                "x-content-ops-version-id": self._version,
+                "x-content-ops-packet-mode": _SCOPE,
+                "Accept": "application/json"}
 
     async def _post(self, body, result_key):
         if not self._enabled:
@@ -60,12 +72,7 @@ class ButtonCanaryGateway:
             async with httpx.AsyncClient(timeout=20, follow_redirects=False,
                     trust_env=False, transport=self._transport) as client:
                 response = await client.post(self._origin + GATEWAY_PATH,
-                    headers={"Authorization": "Bearer " + self._token,
-                             "x-content-ops-expected-release-sha": self._release,
-                             "x-content-ops-mode": "canary",
-                             "x-content-ops-version-id": self._version,
-                             "x-content-ops-packet-mode": _SCOPE,
-                             "Accept": "application/json"}, json=body)
+                    headers=self._headers(), json=body)
             if (response.status_code != 200 or len(response.content) > 16_384
                 or response.headers.get("content-type", "").split(";", 1)[0] != "application/json"):
                 raise PrivateCardGatewayError("private_card_gateway_outcome_unknown")
@@ -109,11 +116,54 @@ class ButtonCanaryGateway:
         self._claimed = claim
         return claim
 
+    async def load_png(self, claim):
+        if claim is not self._claimed or claim is None:
+            raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
+        if self._image_attempted or self._begin_attempted:
+            raise PrivateCardGatewayError("private_card_gateway_replay_denied")
+        self._image_attempted = True
+        if not self._enabled:
+            raise PrivateCardGatewayError("private_card_gateway_disabled")
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False,
+                    trust_env=False, transport=self._transport) as client:
+                async with client.stream("POST", self._origin + GATEWAY_PATH,
+                    headers={**self._headers(), "Accept": "image/png",
+                             "Accept-Encoding": "identity"},
+                    json={"action": "image", "outbox_id": claim.outbox_id,
+                          "claim_token": claim.claim_token}) as response:
+                    declared = response.headers.get("content-length", "")
+                    if (response.status_code != 200 or response.is_redirect
+                        or response.headers.get("content-type") != "image/png"
+                        or response.headers.get("content-encoding", "identity") != "identity"
+                        or "content-range" in response.headers
+                        or response.headers.get("x-content-ops-release-sha") != self._release
+                        or response.headers.get("x-content-ops-outbox-id") != claim.outbox_id
+                        or response.headers.get("x-content-ops-item-id") != claim.content_item_id
+                        or response.headers.get("x-content-ops-version-id") != claim.content_version_id
+                        or response.headers.get("x-content-ops-banner-sha256") != claim.banner_sha256
+                        or not declared.isdecimal() or not 8 < int(declared) <= 10_000_000):
+                        raise PrivateCardGatewayError("private_card_gateway_image_unknown")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(data) + len(chunk) > 10_000_000:
+                            raise PrivateCardGatewayError("private_card_gateway_image_unknown")
+                        data.extend(chunk)
+                    if (len(data) != int(declared)
+                        or not data.startswith(b"\x89PNG\r\n\x1a\n")
+                        or hashlib.sha256(data).hexdigest() != claim.banner_sha256):
+                        raise PrivateCardGatewayError("private_card_gateway_image_unknown")
+            self._image_verified = True
+            return CanonicalPng(claim.content_item_id, claim.content_version_id,
+                                claim.banner_sha256, bytes(data))
+        except Exception:
+            raise PrivateCardGatewayError("private_card_gateway_image_unknown") from None
+
     async def begin(self, claim, packet_sha256):
         if (claim is not self._claimed or claim is None
             or type(packet_sha256) is not str or _SHA64.fullmatch(packet_sha256) is None):
             raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
-        if self._begin_attempted:
+        if self._begin_attempted or not self._image_verified:
             raise PrivateCardGatewayError("private_card_gateway_replay_denied")
         self._begin_attempted = True
         accepted = await self._post({"action": "begin", "claim_token": claim.claim_token,

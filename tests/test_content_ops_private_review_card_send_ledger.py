@@ -19,13 +19,16 @@ def body(name):
     return re.sub(r"\s+", " ", match.group(1)).lower()
 
 
-def test_proposal_is_unapplied_and_has_no_runtime_grants():
+def test_proposal_is_unapplied_and_only_locator_has_narrow_runtime_grant():
     assert PROPOSAL.parent == ROOT / "supabase/proposals"
     assert "LOCAL PROPOSAL ONLY" in SQL
     assert not list((ROOT / "supabase/migrations").glob(
         "*content_ops_button_card_send_ledger.sql"))
-    assert not re.search(r"\bgrant\s+|security\s+definer|disable\s+row\s+level",
-                         CODE, re.I)
+    assert not re.search(r"disable\s+row\s+level", CODE, re.I)
+    assert len(re.findall(r"security\s+definer", CODE, re.I)) == 1
+    assert len(re.findall(r"\bgrant\s+execute", CODE, re.I)) == 1
+    assert re.search(r"grant execute on function public\.content_ops_button_card_image_locator"
+                     r"\(uuid,uuid,uuid,uuid\)\s+to service_role", CODE, re.I)
     assert re.search(r"alter table private\.content_ops_button_card_send_attempts"
                      r" force row level security", CODE, re.I)
     assert "revoke all on private.content_ops_button_card_send_attempts" in CODE
@@ -56,6 +59,27 @@ def test_review_creation_requires_exact_existing_claim_and_fresh_candidate():
     assert "private.content_ops_button_version_fingerprint(" in prepare
     assert "insert into private.content_ops_button_reviews" in prepare
     assert "'execution_authorized',false" in prepare
+
+
+def test_image_locator_requires_service_role_exact_claim_and_private_asset():
+    match = re.search(
+        r"create\s+function\s+public\.content_ops_button_card_image_locator\s*\(.*?\)"
+        r"\s*returns\b.*?\bas\s*\$\$(.*?)\$\$\s*;", CODE, re.I | re.S)
+    assert match
+    locator = re.sub(r"\s+", " ", match.group(1)).lower()
+    for value in ("auth.role()", "'service_role'", "q.status is distinct from 'claimed'",
+                  "q.claim_token is distinct from target_claim_token",
+                  "q.content_version_id is distinct from target_content_version_id",
+                  "q.lease_expires_at <= clock_timestamp()",
+                  "private.content_ops_review_candidate(",
+                  "private.content_ops_review_matches(candidate, q) is not true",
+                  "asset.id = q.banner_asset_id", "asset.sha256 = q.banner_sha256",
+                  "asset.storage_bucket = 'content-studio'",
+                  "stored.bucket_id = asset.storage_bucket",
+                  "asset.byte_size between 9 and 10000000",
+                  "'execution_authorized',false"):
+        assert value in locator
+    assert "insert into" not in locator and "update " not in locator
 
 
 def test_every_send_transition_rechecks_current_official_candidate():
