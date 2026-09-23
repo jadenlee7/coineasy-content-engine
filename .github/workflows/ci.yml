@@ -539,6 +539,29 @@ jobs:
             echo '- activation_evidence=false'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  producer-binding-one-migration:
+    name: Private producer-binding one-migration proof (no production I/O)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Validate exact source, approval, and fail-closed one-shot runner
+        run: >-
+          node --test
+          ops/private-review-producer-binding/atomic-apply-sql.test.mjs
+          ops/private-review-producer-binding/production-apply.test.mjs
+      - name: Verify isolated PostgreSQL 16 atomic commit and rollback
+        run: node ops/private-review-producer-binding/verify-docker-local.mjs --pg16
+      - name: Verify isolated PostgreSQL 17 atomic commit and rollback
+        run: node ops/private-review-producer-binding/verify-docker-local.mjs --pg17
+
   postgres:
     runs-on: ubuntu-latest
     services:
