@@ -122,7 +122,10 @@ async def test_dry_run_makes_no_http_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_post_hits_correct_url(monkeypatch):
-    fake = _FakeAsyncClient([_FakeResponse(200, {"id": "draft_abc"})])
+    fake = _FakeAsyncClient([_FakeResponse(
+        201, {"id": 123, "social_set_id": 254669,
+              "status": "draft", "private_url": "private"},
+    )])
     monkeypatch.setattr(
         "core.publishers.typefully.httpx.AsyncClient",
         lambda *a, **kw: fake,
@@ -139,20 +142,14 @@ async def test_real_post_hits_correct_url(monkeypatch):
     assert len(body["platforms"]["x"]["posts"]) == 1
     assert "draft_title" in body
     assert body["draft_title"].startswith("Daily News - yellow - ")
-    assert "publish_at" in body
+    assert body["publish_at"] is None
+    assert result["response"] == {"id": 123, "status": "draft"}
+    assert "private_url" not in str(result)
 
 
 @pytest.mark.asyncio
-async def test_429_retries_three_times_then_fails(monkeypatch):
-    sleeps: list[float] = []
-
-    async def _fake_sleep(s):
-        sleeps.append(s)
-
-    monkeypatch.setattr("core.publishers.typefully.asyncio.sleep", _fake_sleep)
+async def test_429_stops_without_reposting(monkeypatch):
     fake = _FakeAsyncClient([
-        _FakeResponse(429, {"error": "rate"}),
-        _FakeResponse(429, {"error": "rate"}),
         _FakeResponse(429, {"error": "rate"}),
     ])
     monkeypatch.setattr(
@@ -162,10 +159,8 @@ async def test_429_retries_three_times_then_fails(monkeypatch):
     publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
     result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=False)
     assert result["ok"] is False
-    assert "429" in result["error"]
-    assert len(fake.calls) == 3
-    # Two backoff sleeps between attempt 1→2 and 2→3
-    assert sleeps == [1, 2]
+    assert result["error"] == "typefully_delivery_unknown"
+    assert len(fake.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -178,20 +173,15 @@ async def test_401_does_not_retry(monkeypatch):
     publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="bad")
     result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=False)
     assert result["ok"] is False
-    assert "401" in result["error"]
+    assert result["error"] == "typefully_request_rejected"
     assert len(fake.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_timeout_retries(monkeypatch):
-    sleeps: list[float] = []
-
-    async def _fake_sleep(s):
-        sleeps.append(s)
-
-    monkeypatch.setattr("core.publishers.typefully.asyncio.sleep", _fake_sleep)
-
+async def test_timeout_is_unknown_without_retry_or_error_body(monkeypatch):
     class _TimeoutClient:
+        calls = 0
+
         async def __aenter__(self):
             return self
 
@@ -199,16 +189,44 @@ async def test_timeout_retries(monkeypatch):
             return False
 
         async def post(self, *a, **kw):
-            raise httpx.ReadTimeout("timeout")
+            self.calls += 1
+            raise httpx.ReadTimeout("private URL and key")
 
+    fake = _TimeoutClient()
     monkeypatch.setattr(
         "core.publishers.typefully.httpx.AsyncClient",
-        lambda *a, **kw: _TimeoutClient(),
+        lambda *a, **kw: fake,
     )
     publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
     result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=False)
     assert result["ok"] is False
-    assert sleeps == [1, 2]
+    assert result["error"] == "typefully_delivery_unknown"
+    assert fake.calls == 1
+    assert "private URL" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_scheduling_is_refused_before_http(monkeypatch):
+    fake = _FakeAsyncClient([])
+    monkeypatch.setattr("core.publishers.typefully.httpx.AsyncClient", lambda *a, **kw: fake)
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=False, publish_at="now")
+    assert result["ok"] is False
+    assert result["error"] == "typefully_draft_only"
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_created_reply_stops_as_unknown(monkeypatch):
+    fake = _FakeAsyncClient([_FakeResponse(201, {
+        "id": 123, "social_set_id": 999999, "status": "draft",
+    })])
+    monkeypatch.setattr("core.publishers.typefully.httpx.AsyncClient", lambda *a, **kw: fake)
+    publisher = TypefullyPublisher(social_set_id=254669, client_id="yellow", api_key="k")
+    result = await publisher.publish(SAMPLE_PAYLOAD, dry_run=False)
+    assert result["ok"] is False
+    assert result["error"] == "typefully_delivery_unknown"
+    assert len(fake.calls) == 1
 
 
 @pytest.mark.asyncio

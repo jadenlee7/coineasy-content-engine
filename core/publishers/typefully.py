@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import Any, Optional
 
@@ -12,8 +11,6 @@ from core.publishers.base import Publisher
 TYPEFULLY_API_BASE = "https://api.typefully.com/v2"
 X_POST_LIMIT = 280
 TIMEOUT_SECONDS = 30.0
-RETRY_STATUS = {429, 500, 502, 503, 504}
-MAX_ATTEMPTS = 3
 
 
 def _normalize_newlines(text: str) -> str:
@@ -61,7 +58,7 @@ def _build_x_post(payload: dict[str, Any]) -> str:
 
 
 class TypefullyPublisher(Publisher):
-    """Creates a draft (or schedules a post) on Typefully via Public API v2."""
+    """Legacy draft-only Typefully client; never retries a create request."""
 
     name = "typefully"
 
@@ -91,6 +88,8 @@ class TypefullyPublisher(Publisher):
         payload: dict[str, Any],
         publish_at: Optional[str],
     ) -> dict[str, Any]:
+        if publish_at is not None:
+            raise ValueError("typefully_draft_only")
         text = _build_x_post(payload)
         body: dict[str, Any] = {
             "platforms": {
@@ -101,10 +100,7 @@ class TypefullyPublisher(Publisher):
             },
             "draft_title": self._draft_title(payload),
         }
-        if publish_at is not None:
-            body["publish_at"] = publish_at
-        else:
-            body["publish_at"] = None
+        body["publish_at"] = None
         return body
 
     async def publish(
@@ -127,6 +123,19 @@ class TypefullyPublisher(Publisher):
                 "skipped_reason": None,
             }
 
+        # This legacy publisher has no exact-version owner or durable attempt
+        # fence. It may only create an inert draft; scheduling/publication must
+        # use a separately approved exact-version path.
+        if publish_at is not None:
+            return {
+                "ok": False,
+                "channel": self.name,
+                "dry_run": False,
+                "response": None,
+                "error": "typefully_draft_only",
+                "skipped_reason": None,
+            }
+
         if not self.api_key:
             return {
                 "ok": False,
@@ -140,64 +149,52 @@ class TypefullyPublisher(Publisher):
         url = f"{TYPEFULLY_API_BASE}/social-sets/{self.social_set_id}/drafts"
         body = self._build_request_body(payload, publish_at)
 
-        last_error: Optional[str] = None
-        last_status: Optional[int] = None
-        last_response_body: Any = None
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+                r = await client.post(url, headers=self._headers(), json=body)
+        except (httpx.TimeoutException, httpx.TransportError):
+            # A lost response does not prove that the draft was not created.
+            # Reconciliation must use the original attempt, never another POST.
+            return {
+                "ok": False, "channel": self.name, "dry_run": False,
+                "response": None, "error": "typefully_delivery_unknown",
+                "skipped_reason": None,
+            }
+        except Exception:
+            return {
+                "ok": False, "channel": self.name, "dry_run": False,
+                "response": None, "error": "typefully_delivery_unknown",
+                "skipped_reason": None,
+            }
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        if r.status_code == 201:
             try:
-                async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-                    r = await client.post(url, headers=self._headers(), json=body)
-                last_status = r.status_code
-                try:
-                    last_response_body = r.json()
-                except Exception:
-                    last_response_body = {"text": r.text[:500]}
-
-                if 200 <= r.status_code < 300:
-                    return {
-                        "ok": True,
-                        "channel": self.name,
-                        "dry_run": False,
-                        "response": last_response_body,
-                        "status_code": r.status_code,
-                        "posted_text": text,
-                        "error": None,
-                        "skipped_reason": None,
-                    }
-
-                if r.status_code in {401, 403, 404}:
-                    return {
-                        "ok": False,
-                        "channel": self.name,
-                        "dry_run": False,
-                        "response": last_response_body,
-                        "status_code": r.status_code,
-                        "error": f"Typefully {r.status_code}",
-                        "skipped_reason": None,
-                    }
-
-                if r.status_code in RETRY_STATUS and attempt < MAX_ATTEMPTS:
-                    last_error = f"Typefully {r.status_code}"
-                    await asyncio.sleep(2 ** (attempt - 1))
-                    continue
-
-                last_error = f"Typefully {r.status_code}"
-            except (httpx.TimeoutException, httpx.TransportError) as e:
-                last_error = f"{type(e).__name__}: {e}"
-                if attempt < MAX_ATTEMPTS:
-                    await asyncio.sleep(2 ** (attempt - 1))
-                    continue
-            except Exception as e:
-                last_error = f"{type(e).__name__}: {e}"
-                break
-
+                response_body = r.json()
+            except Exception:
+                response_body = None
+            if (
+                isinstance(response_body, dict)
+                and response_body.get("status") == "draft"
+                and type(response_body.get("id")) is int
+                and response_body.get("social_set_id") == self.social_set_id
+            ):
+                return {
+                    "ok": True, "channel": self.name, "dry_run": False,
+                    "response": {"id": response_body["id"], "status": "draft"},
+                    "status_code": 201, "posted_text": text,
+                    "error": None, "skipped_reason": None,
+                }
+            return {
+                "ok": False, "channel": self.name, "dry_run": False,
+                "response": None, "status_code": 201,
+                "error": "typefully_delivery_unknown", "skipped_reason": None,
+            }
+        # Any non-201 response, including throttling and server errors, is
+        # terminal for this attempt. Never re-POST a non-idempotent draft.
         return {
-            "ok": False,
-            "channel": self.name,
-            "dry_run": False,
-            "response": last_response_body,
-            "status_code": last_status,
-            "error": last_error or "unknown_error",
+            "ok": False, "channel": self.name, "dry_run": False,
+            "response": None, "status_code": r.status_code,
+            "error": "typefully_request_rejected" if r.status_code in {400, 401, 402, 403, 404, 422}
+                     else "typefully_delivery_unknown",
             "skipped_reason": None,
         }
