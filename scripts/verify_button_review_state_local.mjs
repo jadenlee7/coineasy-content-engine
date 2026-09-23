@@ -66,6 +66,7 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.guard_content_ops_button_durable_record()',
       'private.record_content_ops_button_card(uuid,uuid,text,bigint,jsonb,jsonb,timestamptz,timestamptz)',
       'private.guard_content_ops_button_card_send_attempt()',
+      'private.prepare_content_ops_button_review_from_claim(uuid,uuid,uuid,uuid,uuid)',
       'private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text)',
       'private.content_ops_button_card_outbox_owned(uuid)',
       'private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)',

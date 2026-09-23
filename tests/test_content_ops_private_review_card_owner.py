@@ -9,6 +9,8 @@ from core.content_ops.private_review_card_owner import (
 )
 
 
+W = "11111111-1111-4111-8111-111111111111"
+V = "33333333-3333-4333-8333-333333333333"
 R = "44444444-4444-4444-8444-444444444444"
 C = "55555555-5555-4555-8555-555555555555"
 O = "66666666-6666-4666-8666-666666666666"
@@ -57,6 +59,8 @@ class Connection:
 
 
 @pytest.mark.parametrize("method,kwargs", [
+    ("prepare_review", dict(workspace_id=W, outbox_id=O, claim_token=T,
+                            content_version_id=V, review_id=R)),
     ("bind_outbox", dict(review_id=R, outbox_id=O, claim_token=T,
                          packet_sha256=SHA)),
     ("reserve_part", dict(review_id=R, card_id=C, part_index=0,
@@ -127,6 +131,36 @@ def test_outbox_bind_requires_exact_owner_and_committed_receipt():
     sql, args = conn.cursor_value.statements[1]
     assert "bind_content_ops_button_card_outbox" in sql
     assert args == (R, O, T, SHA)
+
+
+def test_claimed_outbox_prepares_exact_review_in_one_committed_transaction():
+    receipt = {"status": "review_prepared", "review_id": R,
+               "version_fingerprint": SHA, "expires_at": AT,
+               "execution_authorized": False}
+    conn = Connection(receipt)
+    owner = PostgresPrivateCardOwner(lambda: conn, enabled=True)
+    assert asyncio.run(owner.prepare_review(workspace_id=W, outbox_id=O,
+        claim_token=T, content_version_id=V, review_id=R)) == receipt
+    sql, args = conn.cursor_value.statements[1]
+    assert "prepare_content_ops_button_review_from_claim" in sql
+    assert args == (W, O, T, V, R)
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "reused"},
+    {"review_id": C},
+    {"version_fingerprint": "bad"},
+    {"expires_at": "2026-09-23T07:00:03"},
+])
+def test_prepared_review_receipt_must_match_exact_identity_and_shape(change):
+    receipt = {"status": "review_prepared", "review_id": R,
+               "version_fingerprint": SHA, "expires_at": AT,
+               "execution_authorized": False}
+    receipt.update(change)
+    owner = PostgresPrivateCardOwner(lambda: Connection(receipt), enabled=True)
+    with pytest.raises(PrivateCardOwnerError, match="private_card_owner_outcome_unknown"):
+        asyncio.run(owner.prepare_review(workspace_id=W, outbox_id=O,
+            claim_token=T, content_version_id=V, review_id=R))
 
 
 def test_register_uses_guarded_wrapper_and_fourth_payload_hash():

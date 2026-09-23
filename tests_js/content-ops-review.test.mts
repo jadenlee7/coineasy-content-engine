@@ -185,6 +185,76 @@ test("this gateway supports link cards only, never bundle delivery", async () =>
   }
 });
 
+test("button-card gateway is default OFF, canary-only and exact-version fenced", async () => {
+  const buttonEnv = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1" };
+  for (const env of [buttonEnv,
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "TRUE" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true", CONTENT_OPS_REVIEW_MODE: "daily" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true", CONTENT_OPS_REVIEW_CANARY_VERSION_ID: "" },
+  ]) {
+    const { handler, calls } = harness(env);
+    const req = canaryRequest();
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    assert.equal((await handler(req)).status, 503);
+    assert.equal(calls.length, 0);
+  }
+  const active = { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  for (const wrongHeader of [null, "link_card", "squid_bundle_v1", "BUTTON_CARD_V1"]) {
+    const { handler, calls } = harness(active);
+    const req = canaryRequest();
+    if (wrongHeader !== null) req.headers.set("x-content-ops-packet-mode", wrongHeader);
+    assert.equal((await handler(req)).status, 409);
+    assert.equal(calls.length, 0);
+  }
+  const { handler, calls } = harness(active, 1);
+  const req = canaryRequest();
+  req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.deepEqual(await (await handler(req)).json(), {
+    ok: true, release_sha: SHA,
+    scope: { mode: "canary", content_version_id: ID, packet_mode: "button_card_v1" },
+    queued: 1,
+  });
+  assert.deepEqual(calls[0].body, { target_workspace_id: ID, target_content_version_id: ID });
+  const finish = canaryRequest({ action: "finish", claim_token: ID, outbox_id: ID,
+    outcome: "sent", message_id: 123 });
+  finish.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.equal((await handler(finish)).status, 400);
+  assert.equal(calls.length, 1);
+});
+
+test("button-card gateway exposes claim and one-shot begin but no alternate actions", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const claim = {
+    outbox_id: ID, claim_token: ID, client_id: "yellow", kst_date: "2026-09-06",
+    content_item_id: ID, content_version_id: ID, source_item_id: ID, generate_job_id: ID,
+    banner_sha256: "a".repeat(64), title: "Review", telegram_copy: "Draft", x_copy: "Draft",
+    source_url: "https://x.com/Yellow/status/123", source_published_at: "2026-09-06T00:00:00Z",
+  };
+  const makeRequest = (body: unknown) => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const claimed = harness(env, claim);
+  assert.deepEqual((await (await claimed.handler(makeRequest({ action: "claim", claim_token: ID }))).json()).claim, claim);
+  assert.equal(claimed.calls.length, 1);
+  const begun = harness(env, { accepted: true, private_data: "never expose" });
+  assert.deepEqual(await (await begun.handler(makeRequest({ action: "begin", claim_token: ID,
+    outbox_id: ID, packet_sha256: "b".repeat(64) }))).json(), {
+      ok: true, release_sha: SHA,
+      scope: { mode: "canary", content_version_id: ID, packet_mode: "button_card_v1" },
+      accepted: true,
+    });
+  assert.equal(begun.calls.length, 1);
+  assert.equal(begun.calls[0].body.target_packet_sha256, "b".repeat(64));
+  for (const action of ["prepare", "bind", "approve", "publish", "bundle_image"]) {
+    assert.equal((await begun.handler(makeRequest({ action }))).status, 400);
+  }
+  assert.equal(begun.calls.length, 1);
+});
+
 test("worker cannot widen scope or proceed after operator scope changes", async () => {
   const canary = harness(CANARY_ENV);
   for (const req of [request(), canaryRequest()]) {

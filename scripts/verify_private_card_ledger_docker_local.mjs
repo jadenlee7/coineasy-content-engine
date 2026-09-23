@@ -82,6 +82,7 @@ try {
         raise exception 'runtime outbox-owner ACL leaked';
       end if;
       foreach f in array array[
+        'private.prepare_content_ops_button_review_from_claim(uuid,uuid,uuid,uuid,uuid)',
         'private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text)',
         'private.content_ops_button_card_outbox_owned(uuid)',
         'private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)',

@@ -30,15 +30,6 @@ begin
     perform pg_temp.check_card_send(
         private.content_ops_review_candidate(w,i,v) is not null,
         'candidate must be current and fresh');
-    fp := private.content_ops_button_version_fingerprint(w,i,v);
-    insert into private.content_ops_button_reviews
-        (id,workspace_id,client_id,content_item_id,content_version_id,version_fingerprint)
-        values(rid,w,'yellow',i,v,fp);
-
-    begin
-        perform private.reserve_content_ops_button_card_send(rid,cid,0::smallint,payloads[1]);
-        raise exception 'expected unbound outbox rejection';
-    exception when check_violation then null; end;
     perform set_config('request.jwt.claim.role','service_role',true);
     perform pg_temp.check_card_send(public.content_ops_reconcile_daily(w) = 4,
         'existing outbox reconciles one row per client');
@@ -46,12 +37,42 @@ begin
     outbox := (claim->>'outbox_id')::uuid;
     perform pg_temp.check_card_send(outbox is not null
         and claim->>'content_version_id'=v::text,'exact-version outbox claimed');
+    begin
+        perform private.prepare_content_ops_button_review_from_claim(
+            w,outbox,gen_random_uuid(),v,rid);
+        raise exception 'expected wrong claim token rejection';
+    exception when check_violation then null; end;
+    begin
+        perform private.prepare_content_ops_button_review_from_claim(
+            w,outbox,token,gen_random_uuid(),rid);
+        raise exception 'expected wrong version rejection';
+    exception when check_violation then null; end;
+    result := private.prepare_content_ops_button_review_from_claim(w,outbox,token,v,rid);
+    fp := result->>'version_fingerprint';
+    perform pg_temp.check_card_send(result->>'status'='review_prepared'
+        and result->>'review_id'=rid::text
+        and fp=private.content_ops_button_version_fingerprint(w,i,v)
+        and (select count(*)=1 from private.content_ops_button_reviews where id=rid),
+        'exact claimed outbox creates one button review');
+    begin
+        perform private.prepare_content_ops_button_review_from_claim(w,outbox,token,v,rid);
+        raise exception 'expected duplicate review rejection';
+    exception when unique_violation then null; end;
+    begin
+        perform private.reserve_content_ops_button_card_send(rid,cid,0::smallint,payloads[1]);
+        raise exception 'expected unbound outbox rejection';
+    exception when check_violation then null; end;
     result := public.content_ops_begin_review_send(w,outbox,token,repeat('d',64),v);
     perform pg_temp.check_card_send(result->'accepted'='true'::jsonb,
         'existing outbox begins once');
     result := public.content_ops_begin_review_send(w,outbox,token,repeat('d',64),v);
     perform pg_temp.check_card_send(result->'accepted'='false'::jsonb,
         'old link-card path cannot begin same outbox again');
+    begin
+        perform private.prepare_content_ops_button_review_from_claim(
+            w,outbox,token,v,gen_random_uuid());
+        raise exception 'expected post-begin review creation rejection';
+    exception when check_violation then null; end;
     begin
         perform private.bind_content_ops_button_card_outbox(
             rid,outbox,gen_random_uuid(),repeat('d',64));

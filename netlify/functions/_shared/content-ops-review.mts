@@ -26,7 +26,8 @@ const CLAIM_KEYS = [
 ];
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
-type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null };
+type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null;
+  packet_mode?: "button_card_v1" };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch };
 
 const json = (value: Json, status = 200) => Response.json(value, {
@@ -43,8 +44,16 @@ function configuredScope(getEnv: Env): ReviewScope | null {
   const mode = getEnv("CONTENT_OPS_REVIEW_MODE");
   const version = getEnv("CONTENT_OPS_REVIEW_CANARY_VERSION_ID");
   const packetMode = getEnv("CONTENT_OPS_REVIEW_PACKET_MODE") ?? "link_card";
-  // This first daily-review release exposes link cards only. Bundle delivery
-  // and Telegram approval remain separate, unmounted integration work.
+  // Button cards are a separate default-OFF, exact-version canary. This
+  // does not activate the sender, callback owner, approval or publication.
+  if (packetMode === "button_card_v1") {
+    return getEnv("CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED") === "true"
+      && mode === "canary" && isCatalogUuid(version)
+      && version === version.toLowerCase()
+      ? { mode, content_version_id: version, packet_mode: "button_card_v1" }
+      : null;
+  }
+  // The existing daily-review release exposes link cards only.
   if (packetMode !== "link_card") return null;
   if (mode === "daily" && (version === undefined || version === "")) {
     return { mode, content_version_id: null };
@@ -95,7 +104,7 @@ function rpcRequest(body: Json, workspaceId: string, scope: ReviewScope): { name
     params.target_packet_sha256 = body.packet_sha256;
     return { name: "content_ops_begin_review_send", params };
   }
-  if (body.action === "finish" && exact(body, ["action", "outbox_id", "claim_token", "outcome", "message_id"])
+  if (!scope.packet_mode && body.action === "finish" && exact(body, ["action", "outbox_id", "claim_token", "outcome", "message_id"])
     && ["sent", "rejected", "delivery_unknown"].includes(String(body.outcome))
     && (body.outcome === "sent"
       ? Number.isSafeInteger(body.message_id) && Number(body.message_id) > 0
@@ -155,7 +164,7 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!scope) return json({ error: "content_ops_scope_not_configured" }, 503);
     if (req.headers.get("x-content-ops-mode") !== scope.mode
       || req.headers.get("x-content-ops-version-id") !== scope.content_version_id
-      || req.headers.get("x-content-ops-packet-mode") !== null) {
+      || req.headers.get("x-content-ops-packet-mode") !== (scope.packet_mode ?? null)) {
       return json({ error: "content_ops_scope_mismatch" }, 409);
     }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") || "")) {

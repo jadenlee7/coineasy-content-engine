@@ -4,6 +4,55 @@
 -- and the deployed private.content_ops_review_candidate function.
 begin;
 
+-- A claimed existing outbox is the only source of a new button review row.
+-- This prepares state; it does not begin delivery or authorize a send.
+create function private.prepare_content_ops_button_review_from_claim(
+    target_workspace_id uuid, target_outbox_id uuid, target_claim_token uuid,
+    target_content_version_id uuid, target_review_id uuid
+) returns jsonb language plpgsql volatile security invoker set search_path = '' as $$
+declare
+    q private.content_ops_review_outbox;
+    candidate jsonb;
+    review private.content_ops_button_reviews;
+    fingerprint text;
+begin
+    if target_workspace_id is null or target_outbox_id is null
+       or target_claim_token is null or target_content_version_id is null
+       or target_review_id is null
+       or target_review_id = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception 'button_review_claim_arguments_invalid' using errcode = '22023';
+    end if;
+    select * into q from private.content_ops_review_outbox
+        where workspace_id = target_workspace_id and outbox_id = target_outbox_id
+        for update;
+    if not found or q.status is distinct from 'claimed'
+       or q.claim_token is distinct from target_claim_token
+       or q.content_version_id is distinct from target_content_version_id
+       or q.lease_expires_at <= clock_timestamp()
+       or q.send_started_at is not null or q.packet_sha256 is not null
+       or q.finished_at is not null then
+        raise exception 'button_review_claim_not_owned' using errcode = '23514';
+    end if;
+    candidate := private.content_ops_review_candidate(q.workspace_id,
+        q.content_item_id, q.content_version_id);
+    if private.content_ops_review_matches(candidate, q) is not true then
+        raise exception 'button_review_claim_ineligible' using errcode = '23514';
+    end if;
+    fingerprint := private.content_ops_button_version_fingerprint(
+        q.workspace_id, q.content_item_id, q.content_version_id);
+    if fingerprint is null or fingerprint !~ '^[a-f0-9]{64}$' then
+        raise exception 'button_review_claim_ineligible' using errcode = '23514';
+    end if;
+    insert into private.content_ops_button_reviews
+        (id,workspace_id,client_id,content_item_id,content_version_id,version_fingerprint)
+        values (target_review_id,q.workspace_id,q.client_id,q.content_item_id,
+            q.content_version_id,fingerprint)
+        returning * into review;
+    return jsonb_build_object('status','review_prepared','review_id',review.id,
+        'version_fingerprint',review.version_fingerprint,
+        'expires_at',review.expires_at,'execution_authorized',false);
+end $$;
+
 -- The existing review outbox, not this ledger, owns the room delivery. A
 -- button review cannot reserve a provider call until its exact outbox has
 -- been claimed and begun once by the same courier. The old link-card worker
@@ -423,7 +472,8 @@ begin
         'outbox_id',target_outbox_id,'execution_authorized',false);
 end $$;
 
-revoke all on function private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text),
+revoke all on function private.prepare_content_ops_button_review_from_claim(uuid,uuid,uuid,uuid,uuid),
+    private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text),
     private.content_ops_button_card_outbox_owned(uuid),
     private.guard_content_ops_button_card_send_attempt(),
     private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text),

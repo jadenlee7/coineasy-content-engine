@@ -46,6 +46,18 @@ def test_one_review_part_and_one_card_part_cannot_be_reserved_twice():
     assert "a.part_index = target_part_index - 1 and a.state = 'confirmed'" in reserve
 
 
+def test_review_creation_requires_exact_existing_claim_and_fresh_candidate():
+    prepare = body("prepare_content_ops_button_review_from_claim")
+    assert "q.status is distinct from 'claimed'" in prepare
+    assert "q.claim_token is distinct from target_claim_token" in prepare
+    assert "q.content_version_id is distinct from target_content_version_id" in prepare
+    assert "q.lease_expires_at <= clock_timestamp()" in prepare
+    assert "private.content_ops_review_matches(candidate, q) is not true" in prepare
+    assert "private.content_ops_button_version_fingerprint(" in prepare
+    assert "insert into private.content_ops_button_reviews" in prepare
+    assert "'execution_authorized',false" in prepare
+
+
 def test_every_send_transition_rechecks_current_official_candidate():
     for name in ("reserve_content_ops_button_card_send",
                  "confirm_content_ops_button_card_send",
@@ -98,7 +110,8 @@ def test_exact_terminal_readback_cannot_grant_a_new_send():
 
 
 def test_all_new_functions_are_invoker_only_and_not_granted_to_runtime_roles():
-    names = ("bind_content_ops_button_card_outbox",
+    names = ("prepare_content_ops_button_review_from_claim",
+             "bind_content_ops_button_card_outbox",
              "content_ops_button_card_outbox_owned",
              "guard_content_ops_button_card_send_attempt",
              "reserve_content_ops_button_card_send",

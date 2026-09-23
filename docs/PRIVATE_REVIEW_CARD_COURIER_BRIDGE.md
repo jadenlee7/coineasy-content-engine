@@ -30,7 +30,8 @@ The durable DB owner is not deployed or mounted, so the courier cannot run live.
 
 `supabase/proposals/content_ops_button_card_send_ledger.sql` and
 `core/content_ops/private_review_card_owner.py` now sketch the missing durable
-side: default-OFF, one DB transaction per outbox binding/reservation/confirmation, and a
+side: default-OFF, one DB transaction per claimed-outbox review preparation,
+outbox binding, reservation and confirmation, and a
 guarded registration wrapper comparing all four payload, message and response
 hashes and the four directly validated message IDs. Registration and the
 existing outbox's `sent` transition are one local DB transaction; its exact
@@ -39,7 +40,8 @@ owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
 and fake-transaction tests do not establish hosted PostgreSQL compatibility.
 The disposable, network-isolated PostgreSQL 16 verifier in
 `scripts/verify_private_card_ledger_docker_local.mjs --local-only` additionally
-checks the old outbox's exclusive claim/begin, exact-version binding,
+checks the old outbox's exclusive claim/begin, claimed-outbox-only review
+preparation, exact-version binding,
 four-part reservation/confirmation, duplicate rejection, atomic finish
 rollback, exact terminal readback and runtime-role ACL denial. It is still synthetic local evidence, not production
 schema compatibility or a delivery receipt.
@@ -51,9 +53,18 @@ is one-shot, so the old link-card path cannot begin the same outbox twice.
 The courier requires a committed binding receipt before the first provider
 call and checks that the existing outbox's packet SHA-256 covers the exact
 four rendered payload hashes, review ID and card ID. This is **not** a live ownership switch: no production migration, runtime
-role/grant, claim/begin caller, review-row creator or
+role/grant, claim/begin caller or mounted
 entrypoint exists. The current deployed worker must not be run alongside a
 new button-card dispatcher until a single owner is selected for that run.
+
+The existing Netlify review gateway has a local-only `button_card_v1` scope
+proposal. It requires its existing gateway flag plus a separate
+`CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED=true`, an exact canary version and a
+matching packet-mode header. This scope permits only reconcile, claim and
+one-shot begin; the legacy `finish` endpoint is denied because atomic card
+registration owns finalization. The default link-card scope is unchanged.
+This code is not deployed or configured, and no button-card caller or owner
+credential is wired to it.
 
 The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
@@ -67,7 +78,7 @@ Before enabling or sending even one card, the remaining owner path must:
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
 2. Complete an exclusive existing-outbox claim/begin caller and
-   live-validate the `CardOwner` path: create one short-lived
+   live-validate the `CardOwner` path: prepare one short-lived
    button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
    complete card once. The local atomic registration finishes the same outbox

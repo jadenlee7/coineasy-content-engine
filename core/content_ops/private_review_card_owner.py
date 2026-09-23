@@ -74,6 +74,26 @@ class PostgresPrivateCardOwner:
         except Exception:
             raise PrivateCardOwnerError("private_card_owner_outcome_unknown") from None
 
+    async def prepare_review(self, *, workspace_id, outbox_id, claim_token,
+                             content_version_id, review_id):
+        if not all(_uuid(value) for value in (
+                workspace_id, outbox_id, claim_token, content_version_id,
+                review_id)):
+            raise PrivateCardOwnerError("private_card_owner_arguments_invalid")
+        receipt = await asyncio.to_thread(self._call,
+            "select private.prepare_content_ops_button_review_from_claim("
+            "%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s::uuid)",
+            (workspace_id, outbox_id, claim_token, content_version_id,
+             review_id),
+            expected_keys={"status", "review_id", "version_fingerprint",
+                           "expires_at", "execution_authorized"})
+        if (receipt["status"] != "review_prepared"
+            or receipt["review_id"] != review_id
+            or not _sha(receipt["version_fingerprint"])
+            or not _stamp(receipt["expires_at"])):
+            raise PrivateCardOwnerError("private_card_owner_outcome_unknown")
+        return receipt
+
     async def bind_outbox(self, *, review_id, outbox_id, claim_token,
                           packet_sha256):
         if not (_uuid(review_id) and _uuid(outbox_id) and _uuid(claim_token)
