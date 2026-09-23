@@ -16,8 +16,17 @@ before **each** provider call and a separately committed exact-response
 confirmation is required before the next part. A reused/unknown reservation,
 provider result, confirmation or registration acknowledgement stops the sequence; controls cannot be sent
 after an incomplete image/copy packet. The local guard also rejects a second
-run with the same card ID in one process. Neither adapter is implemented or
-mounted, so this is not a live delivery path.
+run with the same card ID in one process. The orchestration is not mounted,
+so this is not a live delivery path.
+
+`core/content_ops/private_review_card_sender.py` now implements the isolated
+send-only Telegram side. Its mock-HTTP tests cover the existing bot username,
+exact private supergroup/member preflight, four bounded card sends, duplicate
+send denial, strict part order and provider-error redaction. It targets the
+private room's main timeline; topic/thread delivery remains unsupported. It
+does **not** call `getUpdates`,
+install a webhook or discover a token. It is not configured or deployed.
+The durable DB `CardOwner` remains missing, so the courier cannot run live.
 
 The module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
@@ -35,9 +44,10 @@ Before enabling or sending even one card, the remaining owner path must:
    call, confirm its direct response before the next call, and register the
    complete card once. Keep this owner's DB authority
    separate from the callback bot's restricted role.
-3. Implement `CardSender` using the already-deployed bot token for **send-only** calls. Do not start a
-   second `getUpdates` consumer or webhook; keep the existing bot's private
-   callback route OFF until a complete card is registered.
+3. Package and validate the `CardSender` with the already-deployed bot token
+   for **send-only** calls. Do not start a second `getUpdates` consumer or
+   webhook; keep the existing bot's private callback route OFF until a
+   complete card is registered.
 4. Send image, Telegram copy and X copy in order, recording each authenticated
    exact-room/bot response. Send controls only after all three are confirmed.
    On rejection, timeout or unknown commit, stop with no automatic retry.

@@ -75,6 +75,10 @@ class PrivateCardCourier:
         try:
             if type(prepared) is not PreparedCard:
                 raise CardCourierError("private_card_candidate_invalid")
+            if prepared.thread_id is not None:
+                # This sender is scoped to the private room's main timeline;
+                # topic routing needs a separately verified room binding.
+                raise CardCourierError("private_card_topic_unsupported")
             actual_now = self._clock()
             if type(actual_now) is not int or type(prepared.now) is not int or abs(actual_now - prepared.now) > 5:
                 raise CardCourierError("private_card_clock_mismatch")
