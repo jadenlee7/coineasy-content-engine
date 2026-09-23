@@ -8,6 +8,7 @@ declare
     before_count bigint;
 begin
     foreach relation_name in array array[
+        'private.typefully_media_allocation_attempts',
         'private.typefully_media_upload_receipts',
         'private.typefully_draft_attempts'
     ] loop
@@ -24,13 +25,18 @@ begin
         end loop;
     end loop;
     foreach function_name in array array[
-        'private.record_typefully_media_upload(uuid,uuid,uuid,uuid,text,bigint,uuid)',
+        'private.reserve_typefully_media_allocation_once(uuid,uuid,uuid,uuid,bigint,text,timestamptz)',
+        'private.mark_typefully_media_upload_intent(uuid,bigint,uuid)',
+        'private.record_typefully_media_upload(uuid,uuid,uuid,uuid,uuid,text,bigint,uuid)',
         'private.reserve_typefully_draft_once(uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)',
         'private.confirm_typefully_draft_once(uuid,bigint,bigint,text)',
-        'public.record_typefully_media_upload(uuid,uuid,uuid,uuid,text,bigint,uuid)',
+        'public.reserve_typefully_media_allocation_once(uuid,uuid,uuid,uuid,bigint,text,timestamptz)',
+        'public.mark_typefully_media_upload_intent(uuid,bigint,uuid)',
+        'public.record_typefully_media_upload(uuid,uuid,uuid,uuid,uuid,text,bigint,uuid)',
         'public.reserve_typefully_draft_once(uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)',
         'public.confirm_typefully_draft_once(uuid,bigint,bigint,text)',
         'public.get_typefully_draft_attempt(uuid,uuid)',
+        'public.get_typefully_media_allocation_attempt(uuid,uuid)',
         'public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)',
         'public.get_typefully_media_upload_receipt(uuid,uuid,bigint)'
     ] loop
@@ -58,6 +64,13 @@ begin
     begin
         perform public.get_typefully_draft_attempt(gen_random_uuid(),gen_random_uuid());
         raise exception 'typefully_nonservice_read_accepted';
+    exception when insufficient_privilege then
+        if sqlerrm <> 'typefully_service_role_required' then raise; end if;
+    end;
+    begin
+        perform public.get_typefully_media_allocation_attempt(
+            gen_random_uuid(),gen_random_uuid());
+        raise exception 'typefully_nonservice_media_read_accepted';
     exception when insufficient_privilege then
         if sqlerrm <> 'typefully_service_role_required' then raise; end if;
     end;
@@ -94,6 +107,8 @@ declare
     newer_source_id uuid := gen_random_uuid();
     approval_id uuid := gen_random_uuid();
     media_id uuid := gen_random_uuid();
+    allocation_attempt_id uuid;
+    allocation jsonb;
     media_receipt_id uuid;
     attempt jsonb;
     attempt_id uuid;
@@ -196,21 +211,99 @@ begin
         workspace_id,item_id,version_id,gen_random_uuid()) is not null then
         raise exception 'typefully_candidate_projection_invalid';
     end if;
+    update public.source_feeds set last_polled_at=statement_timestamp()-interval '31 minutes'
+    where id=feed_id;
+    begin
+        perform public.reserve_typefully_media_allocation_once(
+            workspace_id,item_id,version_id,approval_id,1234,
+            'squidkorea',statement_timestamp());
+        raise exception 'typefully_stale_feed_allocation_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_allocation_candidate_invalid' then raise; end if;
+    end;
+    update public.source_feeds set last_polled_at=statement_timestamp()
+    where id=feed_id;
+    begin
+        perform public.reserve_typefully_media_allocation_once(
+            workspace_id,item_id,version_id,approval_id,1234,
+            'wrong_account',statement_timestamp());
+        raise exception 'typefully_wrong_allocation_account_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_allocation_account_invalid' then raise; end if;
+    end;
+    allocation := public.reserve_typefully_media_allocation_once(
+        workspace_id,item_id,version_id,approval_id,1234,
+        'squidkorea',statement_timestamp());
+    allocation_attempt_id := (allocation->>'attempt_id')::uuid;
+    if allocation->>'status' <> 'allocation_unknown'
+       or public.get_typefully_media_allocation_attempt(workspace_id,item_id)
+            ->>'status' <> 'allocation_unknown' then
+        raise exception 'typefully_allocation_reservation_missing';
+    end if;
+    begin
+        perform public.reserve_typefully_media_allocation_once(
+            workspace_id,item_id,version_id,approval_id,1234,
+            'squidkorea',statement_timestamp());
+        raise exception 'typefully_second_allocation_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_allocation_already_reserved' then raise; end if;
+    end;
     begin
         perform public.record_typefully_media_upload(
-            workspace_id,item_id,version_id,asset_id,repeat('f',64),1234,media_id);
+            allocation_attempt_id,workspace_id,item_id,version_id,
+            asset_id,banner_hash,1234,media_id);
+        raise exception 'typefully_receipt_without_upload_intent_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_allocation_owner_mismatch' then raise; end if;
+    end;
+    begin
+        perform public.mark_typefully_media_upload_intent(
+            allocation_attempt_id,1235,media_id);
+        raise exception 'typefully_wrong_social_set_intent_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_upload_intent_invalid' then raise; end if;
+    end;
+    allocation := public.mark_typefully_media_upload_intent(
+        allocation_attempt_id,1234,media_id);
+    if allocation->>'status' <> 'upload_unknown'
+       or public.get_typefully_media_allocation_attempt(workspace_id,item_id)
+            ->>'media_id' <> media_id::text then
+        raise exception 'typefully_upload_intent_missing';
+    end if;
+    begin
+        perform public.mark_typefully_media_upload_intent(
+            allocation_attempt_id,1234,media_id);
+        raise exception 'typefully_second_upload_intent_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_upload_intent_invalid' then raise; end if;
+    end;
+    begin
+        perform public.record_typefully_media_upload(
+            allocation_attempt_id,workspace_id,item_id,version_id,
+            asset_id,repeat('f',64),1234,media_id);
         raise exception 'typefully_wrong_uploaded_bytes_accepted';
     exception when check_violation then
-        if sqlerrm <> 'typefully_canonical_png_mismatch' then raise; end if;
+        if sqlerrm <> 'typefully_allocation_owner_mismatch' then raise; end if;
     end;
     media_receipt_id := public.record_typefully_media_upload(
-        workspace_id,item_id,version_id,asset_id,banner_hash,1234,media_id);
+        allocation_attempt_id,workspace_id,item_id,version_id,
+        asset_id,banner_hash,1234,media_id);
     if public.get_typefully_media_upload_receipt(workspace_id,item_id,1234)
             ->>'media_receipt_id' <> media_receipt_id::text
        or public.get_typefully_media_upload_receipt(workspace_id,item_id,1235)
-            is not null then
+            is not null
+       or public.get_typefully_media_allocation_attempt(workspace_id,item_id)
+            ->>'status' <> 'uploaded' then
         raise exception 'typefully_media_receipt_readback_invalid';
     end if;
+    begin
+        perform public.record_typefully_media_upload(
+            allocation_attempt_id,workspace_id,item_id,version_id,
+            asset_id,banner_hash,1234,media_id);
+        raise exception 'typefully_second_media_receipt_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_allocation_owner_mismatch' then raise; end if;
+    end;
     update public.source_items set published_at=statement_timestamp()-interval '25 hours'
     where id=source_id;
     begin

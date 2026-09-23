@@ -98,7 +98,12 @@ media-status GET calls and discards profile URLs and raw provider bodies. Its
 ready-media result alone cannot prove the uploaded bytes or version: a durable
 owner upload record must bind it to the canonical PNG before preparation. The
 Draft-only `20260923120000_typefully_draft_once.sql` migration stages private
-media-upload receipts and a unique per-content-item attempt ledger. Its
+media-allocation attempts, media-upload receipts, and a unique per-content-item
+draft attempt ledger. The media reservation commits `allocation_unknown` before
+the Typefully POST. After a successful allocation response, the exact media ID
+must be durably marked `upload_unknown` before the sole S3 PUT. Only a known
+successful PUT can record the owner-bound receipt; no unknown state is reopened
+for automatic retry. Its draft
 service-role reservation rechecks the current approved version, latest human
 fact-check approval, stored canonical PNG, primary official source, account,
 and fresh media readback; it commits `delivery_unknown` before any provider
@@ -112,10 +117,15 @@ needed to prove exact ownership or reconcile an uncertain reservation. Both
 candidate lookup and reservation require the currently latest official tweet,
 publication within 24 hours, and an active 15-minute feed polled within 30
 minutes. The reservation repeats mutable checks under a content-item lock.
-The new media adapter follows Typefully's documented allocation + raw S3 PUT
-flow for exact PNG bytes, with a strict presigned-host check and no automatic
-retry or URL/credential echo. Its output is not a ready-media receipt: the
-owner must perform the authenticated media GET and persist the upload receipt.
+The media adapter follows Typefully's documented allocation + raw S3 PUT flow
+for exact PNG bytes, with a strict presigned-host check and no automatic retry
+or URL/credential echo. It requires a durable upload-intent callback before
+PUT. The local `typefully_media_once` worker is default OFF and requires an
+exact runtime/pinned release SHA, exact identifiers, the current approved
+candidate, a fresh authenticated account GET, and re-downloaded canonical PNG
+bytes. It then reserves, allocates, durably marks upload intent, makes one PUT,
+and records a bounded receipt. It does not retry uncertain POST, PUT, or DB
+responses. The later authenticated media GET is still required before a draft.
 The local `typefully_draft_once` worker is default OFF. It requires the exact
 workspace, client, item, current version, approval, and social-set identifiers;
 literal `TYPEFULLY_DRAFT_ENABLED=true`; and a matching 40-character runtime Git
@@ -126,8 +136,8 @@ Typefully X account and ready media. Only the matching DB reservation body
 can authorize one draft POST with `publish_at: null`. A missing/ambiguous POST
 response or confirmation is not retried; the attempt requires readback and
 manual reconciliation because the provider or DB may already have committed.
-It is not a daily scheduler or a media uploader. This
-migration and worker are not deployed or enabled in production. The legacy
+It is not a daily scheduler or a media uploader. This migration and both
+workers are not deployed or enabled in production. The legacy
 Typefully client must not be used as a substitute owner. No public X posting
 path or scheduling authorization is supplied.
 

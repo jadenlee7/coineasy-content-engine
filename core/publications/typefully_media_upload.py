@@ -1,7 +1,8 @@
 """One Typefully media allocation and raw PNG upload; no draft or publication.
 
-The caller must obtain canonical Storage bytes itself and durably attest the
-returned media ID through the exact-version owner RPC. An upload response is
+The caller must obtain canonical Storage bytes itself and durably persist the
+allocated media ID through the exact-version owner RPC before the raw PUT.
+An upload response is
 not a ready-media result: use an authenticated GET before draft reservation.
 This module never retries an uncertain POST or PUT and never returns/logs the
 presigned URL or a provider response body.
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from typing import Awaitable, Callable
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -63,18 +65,22 @@ def _safe_upload_url(value: object) -> str:
 async def upload_typefully_png_once(
     *, social_set_id: int, api_key: str, png_bytes: bytes,
     expected_sha256: str,
+    persist_upload_intent: Callable[[str], Awaitable[None]],
     api_transport: httpx.AsyncBaseTransport | None = None,
     upload_transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, object]:
     """Allocate one media ID then PUT exact bytes once to an allowlisted S3 URL.
 
-    No automatic retry follows an ambiguous response. A later ready-media GET
-    and the durable owner RPC are required before any draft reservation.
+    The caller must persist upload intent before PUT. No automatic retry
+    follows an ambiguous response. A later ready-media GET and the durable
+    owner receipt are required before any draft reservation.
     """
     try:
         set_id, key = _id(social_set_id), _key(api_key)
     except ValueError:
         _fail("typefully_media_upload_input_invalid")
+    if not callable(persist_upload_intent):
+        _fail("typefully_media_intent_required")
     if (type(png_bytes) is not bytes or not 24 <= len(png_bytes) <= _MAX_PNG_BYTES
         or not png_bytes.startswith(_PNG_SIGNATURE)
         or png_bytes[12:16] != b"IHDR"
@@ -105,6 +111,12 @@ async def upload_typefully_png_once(
         raise
     except Exception:
         _fail("typefully_media_allocation_unavailable")
+    try:
+        # The caller must durably mark this exact media ID as upload-unknown
+        # before the raw PUT. A lost acknowledgement forbids the PUT.
+        await persist_upload_intent(media_id)
+    except Exception:
+        _fail("typefully_media_intent_unknown", media_id=media_id)
     try:
         # A separate client ensures the Typefully Bearer token is never sent to
         # the presigned S3 endpoint. Do not add Content-Type to the raw PUT.

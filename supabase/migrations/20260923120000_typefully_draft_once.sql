@@ -4,8 +4,39 @@
 -- perform authenticated Typefully account/media readbacks before using these RPCs.
 begin;
 
+create table private.typefully_media_allocation_attempts (
+    id uuid primary key default gen_random_uuid(),
+    workspace_id uuid not null,
+    client_id text not null check (client_id in ('yellow', 'origintrail', 'squid', 'babylon')),
+    content_item_id uuid not null,
+    content_version_id uuid not null,
+    approval_id uuid not null references public.approvals(id) on delete restrict,
+    asset_id uuid not null references public.assets(id) on delete restrict,
+    asset_sha256 text not null check (asset_sha256 ~ '^[a-f0-9]{64}$'),
+    social_set_id bigint not null check (social_set_id > 0),
+    -- Unknown is durable before the provider POST and before the S3 PUT.
+    -- Neither state is a license to repeat the external operation.
+    status text not null default 'allocation_unknown'
+        check (status in ('allocation_unknown', 'upload_unknown', 'uploaded')),
+    media_id uuid,
+    reserved_at timestamptz not null default statement_timestamp(),
+    upload_intent_at timestamptz,
+    uploaded_at timestamptz,
+    unique (workspace_id, content_item_id),
+    unique (social_set_id, media_id),
+    foreign key (workspace_id, client_id, content_item_id)
+        references public.content_items(workspace_id, client_id, id) on delete restrict,
+    foreign key (workspace_id, content_item_id, content_version_id)
+        references public.content_versions(workspace_id, content_item_id, id) on delete restrict,
+    check ((status = 'allocation_unknown') = (media_id is null)),
+    check ((status = 'allocation_unknown') = (upload_intent_at is null)),
+    check ((status = 'uploaded') = (uploaded_at is not null))
+);
+
 create table private.typefully_media_upload_receipts (
     id uuid primary key default gen_random_uuid(),
+    allocation_attempt_id uuid not null unique
+        references private.typefully_media_allocation_attempts(id) on delete restrict,
     workspace_id uuid not null,
     client_id text not null check (client_id in ('yellow', 'origintrail', 'squid', 'babylon')),
     content_item_id uuid not null,
@@ -51,17 +82,121 @@ create table private.typefully_draft_attempts (
     check ((status = 'draft_created') = (confirmed_at is not null))
 );
 
+alter table private.typefully_media_allocation_attempts enable row level security;
+alter table private.typefully_media_allocation_attempts force row level security;
 alter table private.typefully_media_upload_receipts enable row level security;
 alter table private.typefully_media_upload_receipts force row level security;
 alter table private.typefully_draft_attempts enable row level security;
 alter table private.typefully_draft_attempts force row level security;
-revoke all on table private.typefully_media_upload_receipts,
+revoke all on table private.typefully_media_allocation_attempts,
+    private.typefully_media_upload_receipts,
     private.typefully_draft_attempts from public, anon, authenticated, service_role;
 
 -- An attestation, not an upload implementation. The trusted caller must pass
 -- the hash of bytes actually sent to Typefully, not a copied database value.
-create function private.record_typefully_media_upload(
+create function private.reserve_typefully_media_allocation_once(
     target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid, target_approval_id uuid,
+    expected_social_set_id bigint, observed_x_username text,
+    account_observed_at timestamptz
+)
+returns jsonb
+language plpgsql security definer set search_path = ''
+as $$
+declare
+    item public.content_items%rowtype;
+    candidate jsonb;
+    attempt_id uuid;
+    expected_handle text;
+    decision_now timestamptz := statement_timestamp();
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select source.* into item from public.content_items as source
+    where source.workspace_id = target_workspace_id
+      and source.id = target_content_item_id for update;
+    if not found or expected_social_set_id is null or expected_social_set_id <= 0 then
+        raise exception 'typefully_allocation_candidate_invalid' using errcode = '23514';
+    end if;
+    if exists (select 1 from private.typefully_media_allocation_attempts as prior
+        where prior.workspace_id = target_workspace_id
+          and prior.content_item_id = target_content_item_id)
+       or exists (select 1 from private.typefully_media_upload_receipts as receipt
+        where receipt.workspace_id = target_workspace_id
+          and receipt.content_item_id = target_content_item_id) then
+        raise exception 'typefully_allocation_already_reserved' using errcode = '23514';
+    end if;
+    candidate := public.get_typefully_draft_candidate(
+        target_workspace_id, target_content_item_id,
+        target_content_version_id, target_approval_id);
+    if candidate is null or candidate->>'client_id' is distinct from item.client_id then
+        raise exception 'typefully_allocation_candidate_invalid' using errcode = '23514';
+    end if;
+    expected_handle := case item.client_id
+        when 'yellow' then 'yellow__korea'
+        when 'origintrail' then 'origin_trail_kr'
+        when 'squid' then 'squidkorea'
+        when 'babylon' then 'babylonkorean' end;
+    if observed_x_username is distinct from expected_handle
+       or account_observed_at is null or account_observed_at > decision_now
+       or account_observed_at < decision_now - interval '15 minutes' then
+        raise exception 'typefully_allocation_account_invalid' using errcode = '23514';
+    end if;
+    insert into private.typefully_media_allocation_attempts (
+        workspace_id, client_id, content_item_id, content_version_id,
+        approval_id, asset_id, asset_sha256, social_set_id
+    ) values (
+        target_workspace_id, item.client_id, item.id, target_content_version_id,
+        target_approval_id, (candidate->>'asset_id')::uuid,
+        candidate->>'asset_sha256', expected_social_set_id
+    ) returning id into attempt_id;
+    return jsonb_build_object(
+        'attempt_id', attempt_id, 'status', 'allocation_unknown',
+        'content_version_id', target_content_version_id,
+        'approval_id', target_approval_id,
+        'asset_id', candidate->>'asset_id',
+        'asset_sha256', candidate->>'asset_sha256',
+        'social_set_id', expected_social_set_id
+    );
+end;
+$$;
+
+-- The caller persists the allocated ID before the single raw PUT. A timeout
+-- after this RPC is unknown and forbids PUT; only readback may reconcile it.
+create function private.mark_typefully_media_upload_intent(
+    target_attempt_id uuid, observed_social_set_id bigint,
+    observed_media_id uuid
+)
+returns jsonb
+language plpgsql security definer set search_path = ''
+as $$
+declare
+    attempt private.typefully_media_allocation_attempts%rowtype;
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select source.* into attempt from private.typefully_media_allocation_attempts as source
+    where source.id = target_attempt_id for update;
+    if not found or attempt.status is distinct from 'allocation_unknown'
+       or observed_social_set_id is distinct from attempt.social_set_id
+       or observed_media_id is null
+       or observed_media_id = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception 'typefully_upload_intent_invalid' using errcode = '23514';
+    end if;
+    update private.typefully_media_allocation_attempts
+    set status = 'upload_unknown', media_id = observed_media_id,
+        upload_intent_at = statement_timestamp()
+    where id = attempt.id;
+    return jsonb_build_object('attempt_id', attempt.id, 'status', 'upload_unknown',
+        'social_set_id', attempt.social_set_id, 'media_id', observed_media_id);
+end;
+$$;
+
+create function private.record_typefully_media_upload(
+    target_allocation_attempt_id uuid, target_workspace_id uuid,
+    target_content_item_id uuid,
     target_content_version_id uuid, target_asset_id uuid,
     target_uploaded_bytes_sha256 text, target_social_set_id bigint,
     target_media_id uuid
@@ -71,6 +206,7 @@ language plpgsql security definer set search_path = ''
 as $$
 declare
     item public.content_items%rowtype;
+    allocation private.typefully_media_allocation_attempts%rowtype;
     banner public.assets%rowtype;
     receipt_id uuid;
 begin
@@ -89,6 +225,20 @@ begin
        or target_uploaded_bytes_sha256 is null
        or target_uploaded_bytes_sha256 !~ '^[a-f0-9]{64}$' then
         raise exception 'typefully_media_owner_invalid' using errcode = '23514';
+    end if;
+    select source.* into allocation
+    from private.typefully_media_allocation_attempts as source
+    where source.id = target_allocation_attempt_id for update;
+    if not found or allocation.status is distinct from 'upload_unknown'
+       or allocation.workspace_id is distinct from target_workspace_id
+       or allocation.client_id is distinct from item.client_id
+       or allocation.content_item_id is distinct from target_content_item_id
+       or allocation.content_version_id is distinct from target_content_version_id
+       or allocation.asset_id is distinct from target_asset_id
+       or allocation.asset_sha256 is distinct from target_uploaded_bytes_sha256
+       or allocation.social_set_id is distinct from target_social_set_id
+       or allocation.media_id is distinct from target_media_id then
+        raise exception 'typefully_allocation_owner_mismatch' using errcode = '23514';
     end if;
     select candidate.* into banner from public.assets as candidate
     join public.content_versions as version
@@ -115,13 +265,16 @@ begin
         raise exception 'typefully_canonical_png_mismatch' using errcode = '23514';
     end if;
     insert into private.typefully_media_upload_receipts (
-        workspace_id, client_id, content_item_id, content_version_id,
+        allocation_attempt_id, workspace_id, client_id, content_item_id, content_version_id,
         asset_id, asset_sha256, uploaded_bytes_sha256, social_set_id, media_id
     ) values (
-        target_workspace_id, item.client_id, item.id, target_content_version_id,
+        allocation.id, target_workspace_id, item.client_id, item.id, target_content_version_id,
         banner.id, banner.sha256, target_uploaded_bytes_sha256,
         target_social_set_id, target_media_id
     ) returning id into receipt_id;
+    update private.typefully_media_allocation_attempts
+    set status = 'uploaded', uploaded_at = statement_timestamp()
+    where id = allocation.id;
     return receipt_id;
 end;
 $$;
@@ -350,10 +503,36 @@ begin
 end;
 $$;
 
--- PostgREST exposes public RPCs, not the private schema. These wrappers expose
--- only the three bounded operations; the ledger tables stay unreadable.
-create function public.record_typefully_media_upload(
+-- PostgREST exposes bounded public RPCs, not the private schema.
+create function public.reserve_typefully_media_allocation_once(
     target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid, target_approval_id uuid,
+    expected_social_set_id bigint, observed_x_username text,
+    account_observed_at timestamptz
+)
+returns jsonb
+language sql security definer set search_path = ''
+as $$
+    select private.reserve_typefully_media_allocation_once(
+        target_workspace_id, target_content_item_id,
+        target_content_version_id, target_approval_id,
+        expected_social_set_id, observed_x_username, account_observed_at)
+$$;
+
+create function public.mark_typefully_media_upload_intent(
+    target_attempt_id uuid, observed_social_set_id bigint,
+    observed_media_id uuid
+)
+returns jsonb
+language sql security definer set search_path = ''
+as $$
+    select private.mark_typefully_media_upload_intent(
+        target_attempt_id, observed_social_set_id, observed_media_id)
+$$;
+
+create function public.record_typefully_media_upload(
+    target_allocation_attempt_id uuid, target_workspace_id uuid,
+    target_content_item_id uuid,
     target_content_version_id uuid, target_asset_id uuid,
     target_uploaded_bytes_sha256 text, target_social_set_id bigint,
     target_media_id uuid
@@ -362,9 +541,39 @@ returns uuid
 language sql security definer set search_path = ''
 as $$
     select private.record_typefully_media_upload(
-        target_workspace_id, target_content_item_id, target_content_version_id,
+        target_allocation_attempt_id, target_workspace_id,
+        target_content_item_id, target_content_version_id,
         target_asset_id, target_uploaded_bytes_sha256, target_social_set_id,
         target_media_id)
+$$;
+
+-- Readback is reconciliation only. It never authorizes another POST or PUT.
+create function public.get_typefully_media_allocation_attempt(
+    target_workspace_id uuid, target_content_item_id uuid
+)
+returns jsonb
+language plpgsql stable security definer set search_path = ''
+as $$
+declare
+    attempt private.typefully_media_allocation_attempts%rowtype;
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select source.* into attempt from private.typefully_media_allocation_attempts as source
+    where source.workspace_id = target_workspace_id
+      and source.content_item_id = target_content_item_id;
+    if not found then return null; end if;
+    return jsonb_build_object(
+        'attempt_id', attempt.id, 'content_version_id', attempt.content_version_id,
+        'approval_id', attempt.approval_id, 'asset_id', attempt.asset_id,
+        'asset_sha256', attempt.asset_sha256,
+        'social_set_id', attempt.social_set_id, 'status', attempt.status,
+        'media_id', attempt.media_id, 'reserved_at', attempt.reserved_at,
+        'upload_intent_at', attempt.upload_intent_at,
+        'uploaded_at', attempt.uploaded_at
+    );
+end;
 $$;
 
 create function public.reserve_typefully_draft_once(
@@ -582,22 +791,37 @@ begin
 end;
 $$;
 
+revoke all on function private.reserve_typefully_media_allocation_once(
+    uuid,uuid,uuid,uuid,bigint,text,timestamptz)
+    from public, anon, authenticated, service_role;
+revoke all on function private.mark_typefully_media_upload_intent(uuid,bigint,uuid)
+    from public, anon, authenticated, service_role;
 revoke all on function private.record_typefully_media_upload(
-    uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
+    uuid,uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
 revoke all on function private.reserve_typefully_draft_once(
     uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)
     from public, anon, authenticated, service_role;
 revoke all on function private.confirm_typefully_draft_once(uuid,bigint,bigint,text)
     from public, anon, authenticated, service_role;
+grant execute on function private.reserve_typefully_media_allocation_once(
+    uuid,uuid,uuid,uuid,bigint,text,timestamptz) to service_role;
+grant execute on function private.mark_typefully_media_upload_intent(uuid,bigint,uuid)
+    to service_role;
 grant execute on function private.record_typefully_media_upload(
-    uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
+    uuid,uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
 grant execute on function private.reserve_typefully_draft_once(
     uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text) to service_role;
 grant execute on function private.confirm_typefully_draft_once(uuid,bigint,bigint,text)
     to service_role;
 
+revoke all on function public.reserve_typefully_media_allocation_once(
+    uuid,uuid,uuid,uuid,bigint,text,timestamptz)
+    from public, anon, authenticated, service_role;
+revoke all on function public.mark_typefully_media_upload_intent(uuid,bigint,uuid)
+    from public, anon, authenticated, service_role;
 revoke all on function public.record_typefully_media_upload(
-    uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
+    uuid,uuid,uuid,uuid,uuid,text,bigint,uuid)
+    from public, anon, authenticated, service_role;
 revoke all on function public.reserve_typefully_draft_once(
     uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)
     from public, anon, authenticated, service_role;
@@ -605,17 +829,25 @@ revoke all on function public.confirm_typefully_draft_once(uuid,bigint,bigint,te
     from public, anon, authenticated, service_role;
 revoke all on function public.get_typefully_draft_attempt(uuid,uuid)
     from public, anon, authenticated, service_role;
+revoke all on function public.get_typefully_media_allocation_attempt(uuid,uuid)
+    from public, anon, authenticated, service_role;
 revoke all on function public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)
     from public, anon, authenticated, service_role;
 revoke all on function public.get_typefully_media_upload_receipt(uuid,uuid,bigint)
     from public, anon, authenticated, service_role;
+grant execute on function public.reserve_typefully_media_allocation_once(
+    uuid,uuid,uuid,uuid,bigint,text,timestamptz) to service_role;
+grant execute on function public.mark_typefully_media_upload_intent(uuid,bigint,uuid)
+    to service_role;
 grant execute on function public.record_typefully_media_upload(
-    uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
+    uuid,uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
 grant execute on function public.reserve_typefully_draft_once(
     uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text) to service_role;
 grant execute on function public.confirm_typefully_draft_once(uuid,bigint,bigint,text)
     to service_role;
 grant execute on function public.get_typefully_draft_attempt(uuid,uuid)
+    to service_role;
+grant execute on function public.get_typefully_media_allocation_attempt(uuid,uuid)
     to service_role;
 grant execute on function public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)
     to service_role;

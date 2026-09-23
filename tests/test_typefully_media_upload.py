@@ -21,6 +21,10 @@ UPLOAD_URL = ("https://synthetic-bucket.s3.us-east-1.amazonaws.com/news-card.png
               "&X-Amz-Credential=test%2Fscope&X-Amz-Signature=" + "a" * 64)
 
 
+async def acknowledge(_media_id):
+    return None
+
+
 class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_png_upload_never_leaks_typefully_key_to_s3(self):
         api_calls, put_calls = [], []
@@ -37,6 +41,7 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
 
         result = await upload_typefully_png_once(
             social_set_id=12345, api_key=KEY, png_bytes=PNG, expected_sha256=SHA,
+            persist_upload_intent=acknowledge,
             api_transport=httpx.MockTransport(api),
             upload_transport=httpx.MockTransport(storage),
         )
@@ -70,10 +75,27 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
                           {"social_set_id": True},
                           {"api_key": "short"}):
             inputs = dict(social_set_id=12345, api_key=KEY, png_bytes=PNG,
-                          expected_sha256=SHA, api_transport=httpx.MockTransport(api))
+                          expected_sha256=SHA, persist_upload_intent=acknowledge,
+                          api_transport=httpx.MockTransport(api))
             inputs.update(overrides)
             with self.subTest(overrides=overrides), self.assertRaises(TypefullyMediaUploadError):
                 await upload_typefully_png_once(**inputs)
+        self.assertEqual(calls, [])
+
+    async def test_upload_intent_callback_is_required_before_provider(self):
+        calls = []
+
+        def api(request):
+            calls.append(request)
+            return httpx.Response(201, json={})
+
+        with self.assertRaisesRegex(TypefullyMediaUploadError,
+                                    "typefully_media_intent_required"):
+            await upload_typefully_png_once(
+                social_set_id=12345, api_key=KEY, png_bytes=PNG,
+                expected_sha256=SHA, persist_upload_intent=None,
+                api_transport=httpx.MockTransport(api),
+            )
         self.assertEqual(calls, [])
 
     async def test_untrusted_presigned_url_never_receives_png(self):
@@ -97,7 +119,8 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await upload_typefully_png_once(
                     social_set_id=12345, api_key=KEY, png_bytes=PNG,
-                    expected_sha256=SHA, api_transport=httpx.MockTransport(api),
+                    expected_sha256=SHA, persist_upload_intent=acknowledge,
+                    api_transport=httpx.MockTransport(api),
                     upload_transport=httpx.MockTransport(storage),
                 )
             self.assertEqual(put_calls, [])
@@ -118,7 +141,8 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
                                     "typefully_media_put_unknown") as caught:
             await upload_typefully_png_once(
                 social_set_id=12345, api_key=KEY, png_bytes=PNG,
-                expected_sha256=SHA, api_transport=httpx.MockTransport(api),
+                expected_sha256=SHA, persist_upload_intent=acknowledge,
+                api_transport=httpx.MockTransport(api),
                 upload_transport=httpx.MockTransport(storage),
             )
         self.assertEqual(len(api_calls), 1)
@@ -137,11 +161,39 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
                                     "typefully_media_allocation_unavailable") as caught:
             await upload_typefully_png_once(
                 social_set_id=12345, api_key=KEY, png_bytes=PNG,
-                expected_sha256=SHA, api_transport=httpx.MockTransport(rate_limited),
+                expected_sha256=SHA, persist_upload_intent=acknowledge,
+                api_transport=httpx.MockTransport(rate_limited),
                 upload_transport=httpx.MockTransport(storage),
             )
         self.assertEqual(len(denied), 1)
         self.assertNotIn("never echo", str(caught.exception))
+
+    async def test_lost_intent_acknowledgement_never_puts(self):
+        api_calls, put_calls = [], []
+
+        def api(request):
+            api_calls.append(request)
+            return httpx.Response(201, json={"media_id": MEDIA_ID,
+                                             "upload_url": UPLOAD_URL})
+
+        def storage(request):
+            put_calls.append(request)
+            return httpx.Response(204)
+
+        async def lost_ack(_media_id):
+            raise TimeoutError("lost database acknowledgement")
+
+        with self.assertRaisesRegex(TypefullyMediaUploadError,
+                                    "typefully_media_intent_unknown") as caught:
+            await upload_typefully_png_once(
+                social_set_id=12345, api_key=KEY, png_bytes=PNG,
+                expected_sha256=SHA, persist_upload_intent=lost_ack,
+                api_transport=httpx.MockTransport(api),
+                upload_transport=httpx.MockTransport(storage),
+            )
+        self.assertEqual(len(api_calls), 1)
+        self.assertEqual(put_calls, [])
+        self.assertEqual(caught.exception.media_id, MEDIA_ID)
 
 
 if __name__ == "__main__":
