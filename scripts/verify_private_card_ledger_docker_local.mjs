@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-if (process.argv.length !== 3 || process.argv[2] !== '--local-only'
+if (process.argv.length !== 3
+    || !['--local-only', '--local-postgres17'].includes(process.argv[2])
     || !existsSync('supabase/tests/content_ops_button_card_send_ledger.sql')) {
-  throw Error('explicit --local-only from repository root required');
+  throw Error('explicit local-only mode from repository root required');
 }
+const postgresVersion = process.argv[2] === '--local-postgres17' ? '17.6' : '16.13';
 
 const name = `coineasy-card-ledger-${randomUUID().slice(0, 12)}`;
 const env = { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C' };
@@ -42,7 +44,7 @@ try {
   const mount = `type=bind,source=${process.cwd()},target=/repo,readonly`;
   docker(['run', '--detach', '--rm', '--network', 'none', '--name', name,
     '--mount', mount, '-e', 'POSTGRES_HOST_AUTH_METHOD=trust',
-    '-e', 'POSTGRES_INITDB_ARGS=--no-locale -E UTF8', 'postgres:16.13']);
+    '-e', 'POSTGRES_INITDB_ARGS=--no-locale -E UTF8', `postgres:${postgresVersion}`]);
   started = true;
   let ready = false;
   for (let attempt = 0; attempt < 60; attempt++) {
@@ -178,9 +180,12 @@ try {
       || parsed.force_rls !== true) {
     throw Error('disposable SQL rollback or access guard failed');
   }
-  console.log(JSON.stringify({ localPostgres: '16.13', syntheticLedgerPassed: true,
+  sql('supabase/tests/content_ops_button_principal_rebind_fixture.sql');
+  sql('supabase/tests/content_ops_button_prompt_runtime_capability.sql');
+  console.log(JSON.stringify({ localPostgres: postgresVersion, syntheticLedgerPassed: true,
     rolledBack: true, forceRls: true, runtimeAclDenied: true,
-    promptCapabilityAclVerified: true, promptRuntimeExecuted: false,
+    promptCapabilityAclVerified: true, promptRuntimeExecuted: true,
+    syntheticSignupFreePrincipal: true,
     providerCalls: 0, productionCalls: 0 }));
 } finally {
   if (started) docker(['stop', '--time', '1', name], { allowFailure: true });

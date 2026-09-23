@@ -38,12 +38,14 @@ existing outbox's `sent` transition are one local DB transaction; its exact
 terminal readback never grants a send. This SQL is deliberately a **proposal**, not an applied migration; the
 owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
 and fake-transaction tests do not establish hosted PostgreSQL compatibility.
-The disposable, network-isolated PostgreSQL 16 verifier in
-`scripts/verify_private_card_ledger_docker_local.mjs --local-only` additionally
+The disposable, network-isolated PostgreSQL 16 and 17 verifier in
+`scripts/verify_private_card_ledger_docker_local.mjs` additionally
 checks the old outbox's exclusive claim/begin, claimed-outbox-only review
 preparation, exact-version binding,
 four-part reservation/confirmation, duplicate rejection, atomic finish
-rollback, exact terminal readback and runtime-role ACL denial. It is still synthetic local evidence, not production
+rollback, exact terminal readback and runtime-role ACL denial. It also tests the
+restricted prompt capability transaction with a signup-free principal fixture.
+It is still synthetic local evidence, not production
 schema compatibility or a delivery receipt.
 
 The local `content_ops_button_card_owner_gateway.sql` proposal and Netlify
@@ -208,8 +210,14 @@ those wrappers. This is not compiled against the hosted schema, migration-ready,
 granted, deployed or enabled. The old durable-attempt proposal also has an
 `auth.users` actor FK, whereas the hosted signup-free schema uses
 `private.content_ops_review_principals`; the old file must not be applied as-is.
-The new SQL compiled and passed privilege-shape checks in disposable,
-network-isolated PostgreSQL 16.13. Its local full-schema Python driver was
-not completed on 2026-09-23 because host `initdb` failed before schema setup
-with an OS shared-memory allocation error. Neither result establishes hosted
-PostgreSQL 17 compatibility or a successful capability transaction.
+The proposal compiled and passed privilege-shape checks in disposable,
+network-isolated PostgreSQL 16.13 and 17.6. The Docker verifier also runs a
+test-only `content_ops_review_principals` FK-rebind fixture, then completes one
+synthetic reserve/register transaction through the restricted runtime role. It
+checks wrong-actor and direct-table/base-function denial, recycled message
+rejection, exact replay, conflicting receipt rollback, and zero approvals or
+publications. Both local versions passed with zero provider or production calls.
+This fixture is not the exact hosted catalog or a deployable migration; hosted
+schema compatibility and production E2E remain unverified. The separate host
+full-schema Python driver was not completed on 2026-09-23 because `initdb`
+failed before schema setup with an OS shared-memory allocation error.
