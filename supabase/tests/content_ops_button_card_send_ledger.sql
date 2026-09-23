@@ -57,6 +57,28 @@ begin
         and result->>'path'=w::text || '/yellow/' || (result->>'asset_id') || '/news-card.png'
         and result->'execution_authorized'='false'::jsonb,
         'exact claimed image locator is bounded and read-only');
+    perform set_config('request.jwt.claim.role','authenticated',true);
+    begin
+        perform public.content_ops_button_card_owner_step(w,v,'prepare',
+            jsonb_build_object('outbox_id',outbox,'claim_token',token,'review_id',rid));
+        raise exception 'expected owner gateway role rejection';
+    exception when insufficient_privilege then null; end;
+    perform set_config('request.jwt.claim.role','service_role',true);
+    begin
+        perform public.content_ops_button_card_owner_step(w,v,'publish','{}'::jsonb);
+        raise exception 'expected owner gateway action rejection';
+    exception when invalid_parameter_value then null; end;
+    begin
+        perform public.content_ops_button_card_owner_step(w,v,'prepare',
+            jsonb_build_object('outbox_id',outbox,'claim_token',token,
+                'review_id',rid,'provider_payload','forbidden'));
+        raise exception 'expected owner gateway extra field rejection';
+    exception when invalid_parameter_value then null; end;
+    begin
+        perform public.content_ops_button_card_owner_step(w,gen_random_uuid(),'prepare',
+            jsonb_build_object('outbox_id',outbox,'claim_token',token,'review_id',rid));
+        raise exception 'expected owner gateway version rejection';
+    exception when check_violation then null; end;
     begin
         perform private.prepare_content_ops_button_review_from_claim(
             w,outbox,gen_random_uuid(),v,rid);
@@ -67,7 +89,8 @@ begin
             w,outbox,token,gen_random_uuid(),rid);
         raise exception 'expected wrong version rejection';
     exception when check_violation then null; end;
-    result := private.prepare_content_ops_button_review_from_claim(w,outbox,token,v,rid);
+    result := public.content_ops_button_card_owner_step(w,v,'prepare',
+        jsonb_build_object('outbox_id',outbox,'claim_token',token,'review_id',rid));
     fp := result->>'version_fingerprint';
     perform pg_temp.check_card_send(result->>'status'='review_prepared'
         and result->>'review_id'=rid::text
@@ -107,8 +130,9 @@ begin
             rid,outbox,token,repeat('e',64));
         raise exception 'expected packet hash mismatch rejection';
     exception when check_violation then null; end;
-    result := private.bind_content_ops_button_card_outbox(
-        rid,outbox,token,repeat('d',64));
+    result := public.content_ops_button_card_owner_step(w,v,'bind',
+        jsonb_build_object('review_id',rid,'outbox_id',outbox,
+            'claim_token',token,'packet_sha256',repeat('d',64)));
     perform pg_temp.check_card_send(result->>'status'='bound'
         and (select count(*)=1 from private.content_ops_button_card_outbox_owners
             where review_id=rid and outbox_id=outbox),
@@ -119,7 +143,15 @@ begin
         raise exception 'expected duplicate binding rejection';
     exception when unique_violation then null; end;
 
-    result := private.reserve_content_ops_button_card_send(rid,cid,0::smallint,payloads[1]);
+    begin
+        perform public.content_ops_button_card_owner_step(w,gen_random_uuid(),'reserve',
+            jsonb_build_object('review_id',rid,'card_id',cid,
+                'part_index',0,'payload_sha256',payloads[1]));
+        raise exception 'expected owner gateway scope rejection';
+    exception when check_violation then null; end;
+    result := public.content_ops_button_card_owner_step(w,v,'reserve',
+        jsonb_build_object('review_id',rid,'card_id',cid,
+            'part_index',0,'payload_sha256',payloads[1]));
     perform pg_temp.check_card_send(result = jsonb_build_object('status','reserved',
         'new_attempt',true,'execution_authorized',false),'first reservation');
     result := private.reserve_content_ops_button_card_send(rid,cid,0::smallint,payloads[1]);
@@ -136,14 +168,18 @@ begin
 
     for n in 0..3 loop
         if n > 0 then
-            result := private.reserve_content_ops_button_card_send(
-                rid,cid,n::smallint,payloads[n+1]);
+            result := public.content_ops_button_card_owner_step(w,v,'reserve',
+                jsonb_build_object('review_id',rid,'card_id',cid,
+                    'part_index',n,'payload_sha256',payloads[n+1]));
             perform pg_temp.check_card_send(result->'new_attempt'='true'::jsonb,
                 'next reservation');
         end if;
-        result := private.confirm_content_ops_button_card_send(
-            rid,cid,n::smallint,payloads[n+1],(101+n)::bigint,
-            messages[n+1],responses[n+1],clock_timestamp());
+        result := public.content_ops_button_card_owner_step(w,v,'confirm',
+            jsonb_build_object('review_id',rid,'card_id',cid,'part_index',n,
+                'payload_sha256',payloads[n+1],'message_id',101+n,
+                'message_binding',messages[n+1],
+                'response_sha256',responses[n+1],
+                'observed_at',clock_timestamp()));
         perform pg_temp.check_card_send(result->'new_confirmation'='true'::jsonb,
             'first confirmation');
         result := private.confirm_content_ops_button_card_send(
@@ -200,14 +236,19 @@ begin
         and (select status='sending' and message_id is null
             from private.content_ops_review_outbox where outbox_id=outbox),
         'failed finish rolls back card registration');
-    result := private.register_content_ops_button_card_from_sends(
-        rid,cid,fp,0,bindings,parts,payloads[4],to_jsonb(responses),delivered,expiry);
+    result := public.content_ops_button_card_owner_step(w,v,'register',
+        jsonb_build_object('review_id',rid,'card_id',cid,
+            'expected_fingerprint',fp,'epoch',0,'bindings',bindings,
+            'parts',parts,'controls_payload_sha256',payloads[4],
+            'response_sha256s',to_jsonb(responses),'delivered',delivered,
+            'expires',expiry));
     perform pg_temp.check_card_send(result->>'status'='card_recorded'
         and result->'reused'='false'::jsonb and result->>'card_id'=cid::text
         and (select status='sent' and message_id=104
             from private.content_ops_review_outbox where outbox_id=outbox),
         'exact card and original outbox commit atomically');
-    result := private.read_content_ops_button_card_terminal(rid,cid,outbox);
+    result := public.content_ops_button_card_owner_step(w,v,'terminal',
+        jsonb_build_object('review_id',rid,'card_id',cid,'outbox_id',outbox));
     perform pg_temp.check_card_send(result->>'status'='sent'
         and result->>'card_id'=cid::text and result->>'outbox_id'=outbox::text
         and result->'execution_authorized'='false'::jsonb,

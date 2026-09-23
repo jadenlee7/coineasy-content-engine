@@ -71,6 +71,7 @@ try {
   sql('supabase/proposals/content_ops_button_prompt_registration.sql');
   sql('supabase/proposals/content_ops_button_durable_attempt.sql');
   sql('supabase/proposals/content_ops_button_card_send_ledger.sql');
+  sql('supabase/proposals/content_ops_button_card_owner_gateway.sql');
   query(`do $$ declare r text; f text; begin
     foreach r in array array['anon','authenticated','service_role'] loop
       if has_table_privilege(r,'private.content_ops_button_card_send_attempts',
@@ -102,6 +103,14 @@ try {
        or not has_function_privilege('service_role',
         'public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)','EXECUTE') then
       raise exception 'image locator ACL mismatch';
+    end if;
+    if has_function_privilege('anon',
+        'public.content_ops_button_card_owner_step(uuid,uuid,text,jsonb)','EXECUTE')
+       or has_function_privilege('authenticated',
+        'public.content_ops_button_card_owner_step(uuid,uuid,text,jsonb)','EXECUTE')
+       or not has_function_privilege('service_role',
+        'public.content_ops_button_card_owner_step(uuid,uuid,text,jsonb)','EXECUTE') then
+      raise exception 'owner gateway ACL mismatch';
     end if;
   end $$;`);
   sql('supabase/tests/content_ops_button_card_send_ledger.sql');

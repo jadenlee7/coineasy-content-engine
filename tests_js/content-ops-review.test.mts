@@ -340,6 +340,77 @@ test("button-card image fails closed on locator or Storage mismatch without leak
   assert.equal(calls, 2);
 });
 
+test("button-card owner gateway pins server scope and permits one exact owner step", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const makeRequest = (body: unknown) => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const args = { outbox_id: ID, claim_token: ID, review_id: ID };
+  const result = { status: "review_prepared", review_id: ID,
+    version_fingerprint: "b".repeat(64), epoch: 0, state: "active",
+    expires_at: "2026-09-23T09:30:00Z", execution_authorized: false };
+  const good = harness(env, result);
+  const response = await good.handler(makeRequest({ action: "owner", step: "prepare", args }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).owner, result);
+  assert.equal(good.calls.length, 1);
+  assert.match(good.calls[0].url, /\/rpc\/content_ops_button_card_owner_step$/);
+  assert.deepEqual(good.calls[0].body, { target_workspace_id: ID,
+    target_content_version_id: ID, target_action: "prepare", target_args: args });
+
+  const link = harness(ENV, result);
+  assert.equal((await link.handler(request({ action: "owner", step: "prepare", args }))).status, 400);
+  assert.equal(link.calls.length, 0);
+  for (const invalid of [
+    { action: "owner", step: "publish", args },
+    { action: "owner", step: "prepare", args: { ...args, workspace_id: ID } },
+    { action: "owner", step: "prepare", args: { ...args, review_id: "bad" } },
+    { action: "owner", step: "prepare", args, release_sha: SHA },
+    { action: "owner", step: "register", args: { ...args } },
+  ]) assert.equal((await good.handler(makeRequest(invalid))).status, 400);
+  assert.equal(good.calls.length, 1);
+});
+
+test("owner registration accepts only bounded four-part evidence and redacts bad RPC receipts", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const hashes = ["1", "2", "3", "4"].map((value) => value.repeat(64));
+  const bindings = { bot: hashes[0], room: hashes[1], message: hashes[2],
+    packet_receipt: hashes[3], card_receipt: hashes[0],
+    parent_binding: hashes[1], thread_id: null };
+  const parts = ["image", "telegram", "x"].map((kind, index) => ({
+    kind, outcome: "sent", message_binding: hashes[index],
+    payload_sha256: hashes[index] }));
+  const args = { review_id: ID, card_id: ID, expected_fingerprint: hashes[0],
+    epoch: 0, bindings, parts, controls_payload_sha256: hashes[3],
+    response_sha256s: hashes, delivered: "2026-09-23T09:10:00Z",
+    expires: "2026-09-23T09:30:00Z" };
+  const makeRequest = (value: unknown) => {
+    const req = canaryRequest(value);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const good = harness(env, { status: "card_recorded", card_id: ID,
+    reused: false, execution_authorized: false });
+  assert.equal((await good.handler(makeRequest({ action: "owner", step: "register", args }))).status, 200);
+  assert.equal(good.calls.length, 1);
+  for (const invalid of [
+    { ...args, response_sha256s: [hashes[0]] },
+    { ...args, bindings: { ...bindings, provider_response: "never relay" } },
+    { ...args, parts: [{ ...parts[0], outcome: "approved" }, ...parts.slice(1)] },
+  ]) assert.equal((await good.handler(makeRequest({ action: "owner", step: "register", args: invalid }))).status, 400);
+  assert.equal(good.calls.length, 1);
+  const bad = harness(env, { status: "card_recorded", card_id: ID,
+    reused: true, execution_authorized: false, provider_response: "never relay" });
+  const response = await bad.handler(makeRequest({ action: "owner", step: "register", args }));
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /never relay/);
+  assert.equal(bad.calls.length, 1);
+});
+
 test("worker cannot widen scope or proceed after operator scope changes", async () => {
   const canary = harness(CANARY_ENV);
   for (const req of [request(), canaryRequest()]) {

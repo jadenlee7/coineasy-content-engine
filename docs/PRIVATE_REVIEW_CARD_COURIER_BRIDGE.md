@@ -46,6 +46,13 @@ four-part reservation/confirmation, duplicate rejection, atomic finish
 rollback, exact terminal readback and runtime-role ACL denial. It is still synthetic local evidence, not production
 schema compatibility or a delivery receipt.
 
+The local `content_ops_button_card_owner_gateway.sql` proposal and Netlify
+`owner` route now provide a narrower alternative to a new direct DB login:
+six exact owner actions, server-pinned workspace/version, service-role-only
+PostgREST access, and bounded response projection under the separate
+button-card canary flag. The SQL is not a migration and the Python courier has
+no HTTP owner adapter yet. No production role, grant or service was changed.
+
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
 before a button-card part can be reserved. The existing claim/begin transition
