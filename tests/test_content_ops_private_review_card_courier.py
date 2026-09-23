@@ -94,6 +94,7 @@ class Owner:
 class Sender:
     def __init__(self, *, fail_at=None):
         self.fail_at = fail_at
+        self.clock_delta = 0
         self.preflight_calls = []
         self.calls = []
 
@@ -105,7 +106,7 @@ class Sender:
         self.calls.append((request, png))
         if index == self.fail_at:
             raise TimeoutError("unknown provider result")
-        result = {"message_id": 100 + index, "date": NOW + index,
+        result = {"message_id": 100 + index, "date": NOW + self.clock_delta + index,
                   "chat": {"id": ROOM, "type": "supergroup"},
                   "from": {"id": BOT, "is_bot": True}}
         result["caption" if index == 0 else "text"] = request["text"]
@@ -115,7 +116,7 @@ class Sender:
             result["reply_markup"] = request["reply_markup"]
         return ObservedSend(request["method"], 200,
             json.dumps({"ok": True, "result": result}, ensure_ascii=False).encode(),
-            datetime.fromtimestamp(NOW + index, timezone.utc))
+            datetime.fromtimestamp(NOW + self.clock_delta + index, timezone.utc))
 
 
 class CardCourierTest(unittest.TestCase):
@@ -154,6 +155,13 @@ class CardCourierTest(unittest.TestCase):
             [p["payload_sha256"] for p in self.owner.registered[0]["target_parts"]])
         self.assertEqual([r["message_binding"] for r in self.owner.confirmed[:3]],
             [p["message_binding"] for p in self.owner.registered[0]["target_parts"]])
+
+    def test_slow_successful_begin_can_still_send_private_card(self):
+        self.courier._clock = lambda: NOW + 20
+        self.sender.clock_delta = 20
+        self.assertEqual(self.run_card(enabled=True)["status"], "card_recorded")
+        self.assertEqual(len(self.owner.reserved), 4)
+        self.assertEqual(len(self.sender.calls), 4)
 
     def test_reused_reservation_stops_before_provider_call(self):
         self.owner.deny_at = 2
@@ -244,7 +252,14 @@ class CardCourierTest(unittest.TestCase):
         candidate = prepared()
         candidate = PreparedCard(candidate.review, candidate.snapshot, candidate.card_id,
             candidate.png, candidate.bot_id, candidate.chat_id,
-            candidate.thread_id, candidate.room_binding, NOW - 10)
+            candidate.thread_id, candidate.room_binding, NOW - 61)
+        result = asyncio.run(self.courier.run(candidate, enabled=True))
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(self.sender.preflight_calls, [])
+        self.assertEqual(self.owner.reserved, [])
+
+    def test_future_prepared_clock_stops_before_preflight_or_reservation(self):
+        candidate = replace(prepared(), now=NOW + 1)
         result = asyncio.run(self.courier.run(candidate, enabled=True))
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(self.sender.preflight_calls, [])

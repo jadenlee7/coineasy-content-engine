@@ -26,6 +26,9 @@ class CardCourierError(RuntimeError):
     """Fixed, non-sensitive status code only."""
 
 
+_START_WINDOW_SECONDS = 60  # Allows the preceding 20-second begin request to complete.
+
+
 def _valid_uuid(value):
     try:
         return type(value) is str and str(UUID(value)) == value and UUID(value).int != 0
@@ -99,7 +102,8 @@ class PrivateCardCourier:
                 # topic routing needs a separately verified room binding.
                 raise CardCourierError("private_card_topic_unsupported")
             actual_now = self._clock()
-            if type(actual_now) is not int or type(prepared.now) is not int or abs(actual_now - prepared.now) > 5:
+            if (type(actual_now) is not int or type(prepared.now) is not int
+                or not 0 <= actual_now - prepared.now <= _START_WINDOW_SECONDS):
                 raise CardCourierError("private_card_clock_mismatch")
             if type(prepared.png) is not bytes or not prepared.png.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise CardCourierError("private_card_candidate_invalid")
