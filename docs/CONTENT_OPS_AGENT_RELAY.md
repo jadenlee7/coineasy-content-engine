@@ -105,10 +105,17 @@ and fresh media readback; it commits `delivery_unknown` before any provider
 POST. Only a matching draft receipt may move it to `draft_created`, and no RPC
 releases an unknown row for retry. The actual uploaded-bytes hash and provider
 GET evidence remain trusted-caller attestations: the database cannot perform
-those network checks. This migration is not applied to production, and no
-hosted owner/worker is connected to it yet. The legacy Typefully client still
-has no durable owner and must not be used as that worker. No public X posting
-path or scheduling authorization is supplied.
+those network checks. Service-role-only `public` RPC wrappers expose this
+private ledger to a future PostgREST owner without granting direct table
+access; a bounded readback reports whether an uncertain reservation committed.
+The new media adapter follows Typefully's documented allocation + raw S3 PUT
+flow for exact PNG bytes, with a strict presigned-host check and no automatic
+retry or URL/credential echo. Its output is not a ready-media receipt: the
+owner must perform the authenticated media GET and persist the upload receipt.
+This migration is not applied to production, and no hosted owner/worker is
+connected to it yet. The legacy Typefully client still has no durable owner
+and must not be used as that worker. No public X posting path or scheduling
+authorization is supplied.
 
 ## Dedicated relay configuration
 

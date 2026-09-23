@@ -26,7 +26,11 @@ begin
     foreach function_name in array array[
         'private.record_typefully_media_upload(uuid,uuid,uuid,uuid,text,bigint,uuid)',
         'private.reserve_typefully_draft_once(uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)',
-        'private.confirm_typefully_draft_once(uuid,bigint,bigint,text)'
+        'private.confirm_typefully_draft_once(uuid,bigint,bigint,text)',
+        'public.record_typefully_media_upload(uuid,uuid,uuid,uuid,text,bigint,uuid)',
+        'public.reserve_typefully_draft_once(uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)',
+        'public.confirm_typefully_draft_once(uuid,bigint,bigint,text)',
+        'public.get_typefully_draft_attempt(uuid,uuid)'
     ] loop
         if to_regprocedure(function_name) is null
            or not has_function_privilege('service_role', function_name, 'EXECUTE')
@@ -41,7 +45,7 @@ begin
     select count(*) into before_count from private.typefully_draft_attempts;
     perform set_config('request.jwt.claim.role', 'anon', true);
     begin
-        perform private.reserve_typefully_draft_once(
+        perform public.reserve_typefully_draft_once(
             gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
             gen_random_uuid(), gen_random_uuid(), 1, 'squidkorea',
             statement_timestamp(), statement_timestamp(), 'ready');
@@ -49,9 +53,15 @@ begin
     exception when insufficient_privilege then
         if sqlerrm <> 'typefully_service_role_required' then raise; end if;
     end;
+    begin
+        perform public.get_typefully_draft_attempt(gen_random_uuid(),gen_random_uuid());
+        raise exception 'typefully_nonservice_read_accepted';
+    exception when insufficient_privilege then
+        if sqlerrm <> 'typefully_service_role_required' then raise; end if;
+    end;
     perform set_config('request.jwt.claim.role', 'service_role', true);
     begin
-        perform private.reserve_typefully_draft_once(
+        perform public.reserve_typefully_draft_once(
             gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
             gen_random_uuid(), gen_random_uuid(), 1, 'squidkorea',
             statement_timestamp(), statement_timestamp(), 'ready');
@@ -142,26 +152,32 @@ begin
         approval_id,workspace_id,'squid',item_id,version_id,
         'studio_session','approved','double-fact-check@1',true,true);
     begin
-        perform private.record_typefully_media_upload(
+        perform public.record_typefully_media_upload(
             workspace_id,item_id,version_id,asset_id,repeat('f',64),1234,media_id);
         raise exception 'typefully_wrong_uploaded_bytes_accepted';
     exception when check_violation then
         if sqlerrm <> 'typefully_canonical_png_mismatch' then raise; end if;
     end;
-    media_receipt_id := private.record_typefully_media_upload(
+    media_receipt_id := public.record_typefully_media_upload(
         workspace_id,item_id,version_id,asset_id,banner_hash,1234,media_id);
     begin
-        perform private.reserve_typefully_draft_once(
+        perform public.reserve_typefully_draft_once(
             workspace_id,item_id,version_id,approval_id,media_receipt_id,
             1234,'wrong_account',statement_timestamp(),statement_timestamp(),'ready');
         raise exception 'typefully_wrong_account_accepted';
     exception when check_violation then
         if sqlerrm <> 'typefully_live_readback_required' then raise; end if;
     end;
-    attempt := private.reserve_typefully_draft_once(
+    attempt := public.reserve_typefully_draft_once(
         workspace_id,item_id,version_id,approval_id,media_receipt_id,
         1234,'squidkorea',statement_timestamp(),statement_timestamp(),'ready');
     attempt_id := (attempt->>'attempt_id')::uuid;
+    if public.get_typefully_draft_attempt(workspace_id,item_id)->>'status'
+            <> 'delivery_unknown'
+       or public.get_typefully_draft_attempt(workspace_id,item_id) ?| array[
+            'request_body','x_copy','media_url','upload_url','secret'] then
+        raise exception 'typefully_unknown_readback_missing';
+    end if;
     if attempt->>'status' <> 'delivery_unknown'
        or attempt->'request_body'->>'publish_at' is not null
        or jsonb_typeof(attempt->'request_body'->'publish_at') <> 'null'
@@ -170,7 +186,7 @@ begin
         raise exception 'typefully_reserved_draft_body_invalid';
     end if;
     begin
-        perform private.reserve_typefully_draft_once(
+        perform public.reserve_typefully_draft_once(
             workspace_id,item_id,version_id,approval_id,media_receipt_id,
             1234,'squidkorea',statement_timestamp(),statement_timestamp(),'ready');
         raise exception 'typefully_second_attempt_accepted';
@@ -178,13 +194,15 @@ begin
         if sqlerrm <> 'typefully_attempt_already_reserved' then raise; end if;
     end;
     begin
-        perform private.confirm_typefully_draft_once(attempt_id,1234,5678,'published');
+        perform public.confirm_typefully_draft_once(attempt_id,1234,5678,'published');
         raise exception 'typefully_published_receipt_accepted';
     exception when check_violation then
         if sqlerrm <> 'typefully_draft_receipt_invalid' then raise; end if;
     end;
-    confirmation := private.confirm_typefully_draft_once(attempt_id,1234,5678,'draft');
+    confirmation := public.confirm_typefully_draft_once(attempt_id,1234,5678,'draft');
     if confirmation->>'status' <> 'draft_created'
+       or public.get_typefully_draft_attempt(workspace_id,item_id)->>'provider_draft_id'
+            <> '5678'
        or (select count(*) from private.typefully_draft_attempts as stored_attempt
             where stored_attempt.workspace_id=fixture.workspace_id
               and stored_attempt.content_item_id=fixture.item_id) <> 1
@@ -192,12 +210,12 @@ begin
             where publication.content_item_id=fixture.item_id) then
         raise exception 'typefully_confirmation_boundary_invalid';
     end if;
-    confirmation := private.confirm_typefully_draft_once(attempt_id,1234,5678,'draft');
+    confirmation := public.confirm_typefully_draft_once(attempt_id,1234,5678,'draft');
     if confirmation->>'reused' <> 'true' then
         raise exception 'typefully_exact_confirmation_replay_rejected';
     end if;
     begin
-        perform private.confirm_typefully_draft_once(attempt_id,1234,5679,'draft');
+        perform public.confirm_typefully_draft_once(attempt_id,1234,5679,'draft');
         raise exception 'typefully_changed_confirmation_accepted';
     exception when check_violation then
         if sqlerrm <> 'typefully_draft_receipt_invalid' then raise; end if;

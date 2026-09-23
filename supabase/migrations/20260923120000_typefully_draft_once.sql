@@ -329,6 +329,80 @@ begin
 end;
 $$;
 
+-- PostgREST exposes public RPCs, not the private schema. These wrappers expose
+-- only the three bounded operations; the ledger tables stay unreadable.
+create function public.record_typefully_media_upload(
+    target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid, target_asset_id uuid,
+    target_uploaded_bytes_sha256 text, target_social_set_id bigint,
+    target_media_id uuid
+)
+returns uuid
+language sql security definer set search_path = ''
+as $$
+    select private.record_typefully_media_upload(
+        target_workspace_id, target_content_item_id, target_content_version_id,
+        target_asset_id, target_uploaded_bytes_sha256, target_social_set_id,
+        target_media_id)
+$$;
+
+create function public.reserve_typefully_draft_once(
+    target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid, target_approval_id uuid,
+    target_media_receipt_id uuid, expected_social_set_id bigint,
+    observed_x_username text, account_observed_at timestamptz,
+    media_observed_at timestamptz, observed_media_status text
+)
+returns jsonb
+language sql security definer set search_path = ''
+as $$
+    select private.reserve_typefully_draft_once(
+        target_workspace_id, target_content_item_id, target_content_version_id,
+        target_approval_id, target_media_receipt_id, expected_social_set_id,
+        observed_x_username, account_observed_at, media_observed_at,
+        observed_media_status)
+$$;
+
+create function public.confirm_typefully_draft_once(
+    target_attempt_id uuid, observed_social_set_id bigint,
+    observed_provider_draft_id bigint, observed_status text
+)
+returns jsonb
+language sql security definer set search_path = ''
+as $$
+    select private.confirm_typefully_draft_once(
+        target_attempt_id, observed_social_set_id,
+        observed_provider_draft_id, observed_status)
+$$;
+
+-- A lost reservation response is reconciled by exact item ID. This read never
+-- authorizes another POST and does not expose copy, media URLs, or credentials.
+create function public.get_typefully_draft_attempt(
+    target_workspace_id uuid, target_content_item_id uuid
+)
+returns jsonb
+language plpgsql stable security definer set search_path = ''
+as $$
+declare
+    attempt private.typefully_draft_attempts%rowtype;
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select candidate.* into attempt from private.typefully_draft_attempts as candidate
+    where candidate.workspace_id = target_workspace_id
+      and candidate.content_item_id = target_content_item_id;
+    if not found then return null; end if;
+    return jsonb_build_object(
+        'attempt_id', attempt.id, 'content_version_id', attempt.content_version_id,
+        'approval_id', attempt.approval_id, 'media_receipt_id', attempt.media_receipt_id,
+        'social_set_id', attempt.social_set_id, 'status', attempt.status,
+        'provider_draft_id', attempt.provider_draft_id,
+        'reserved_at', attempt.reserved_at, 'confirmed_at', attempt.confirmed_at
+    );
+end;
+$$;
+
 revoke all on function private.record_typefully_media_upload(
     uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
 revoke all on function private.reserve_typefully_draft_once(
@@ -341,6 +415,24 @@ grant execute on function private.record_typefully_media_upload(
 grant execute on function private.reserve_typefully_draft_once(
     uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text) to service_role;
 grant execute on function private.confirm_typefully_draft_once(uuid,bigint,bigint,text)
+    to service_role;
+
+revoke all on function public.record_typefully_media_upload(
+    uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
+revoke all on function public.reserve_typefully_draft_once(
+    uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)
+    from public, anon, authenticated, service_role;
+revoke all on function public.confirm_typefully_draft_once(uuid,bigint,bigint,text)
+    from public, anon, authenticated, service_role;
+revoke all on function public.get_typefully_draft_attempt(uuid,uuid)
+    from public, anon, authenticated, service_role;
+grant execute on function public.record_typefully_media_upload(
+    uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
+grant execute on function public.reserve_typefully_draft_once(
+    uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text) to service_role;
+grant execute on function public.confirm_typefully_draft_once(uuid,bigint,bigint,text)
+    to service_role;
+grant execute on function public.get_typefully_draft_attempt(uuid,uuid)
     to service_role;
 
 commit;
