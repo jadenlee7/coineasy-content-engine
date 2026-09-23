@@ -56,6 +56,16 @@ readback with zero DB/provider I/O. The SQL is not a migration; the adapter is
 unmounted and has no production credential. No production role, grant or
 service was changed.
 
+`scripts/run_private_review_card_canary.py` now assembles this exact one-shot
+chain. It returns disabled before reading credentials unless the separate
+`CONTENT_OPS_BUTTON_CARD_ENABLED=true` flag is set. Its validate-only mode
+checks the exact build/runtime/gateway release SHA, one immutable version,
+private destination, distinct signing keys and absence of broad DB/publisher
+secrets without network I/O. A separate Dockerfile and Railway manifest are
+local deployment proposals, default OFF with no cron and no restart; they are
+not attached to an existing Railway service. Neither `--validate-only` nor a
+synthetic canary proves hosted schema compatibility or a real Telegram send.
+
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
 before a button-card part can be reserved. The existing claim/begin transition

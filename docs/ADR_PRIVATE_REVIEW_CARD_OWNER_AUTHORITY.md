@@ -29,7 +29,8 @@ and makes one bounded RPC call. Provider errors and SQL details are redacted.
 The SQL remains in `supabase/proposals/`, not migrations. The existing Python
 `PostgresPrivateCardOwner` remains an unmounted local contract; the new
 default-OFF `GatewayPrivateCardOwner` uses the same one-shot gateway as claim,
-image and begin. Complete production runtime wiring is still required. This decision
+image and begin. A separate default-OFF one-shot runtime and service manifest
+are prepared locally but have not been deployed. This decision
 does not authorize a hosted grant, deployment, private-room send, approval or
 publication.
 
@@ -74,3 +75,5 @@ must be proved on the actual Supabase version before migration.
    synthetic database and Telegram responses.
 4. [ ] Validate the proposal against hosted schema and ACLs before requesting
    production migration, deployment or a private-room canary.
+5. [x] Prepare an unmounted, default-OFF one-shot runtime and validate-only
+   service manifest with no cron or automatic retry.
