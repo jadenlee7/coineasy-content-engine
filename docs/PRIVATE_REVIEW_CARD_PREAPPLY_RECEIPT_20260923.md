@@ -69,6 +69,19 @@ At approximately 2026-09-23 14:28 UTC, the same read-only production SQL
 contract again returned `legacy_no_history`, `read_only=true`, `changes=0`,
 `provider_calls=0`. It did not invoke the apply runner.
 
+At approximately 2026-09-23 14:56 UTC, a separate read-only partial gate
+(`content_ops_button_card_remaining_preapply_readonly.sql`, SHA-256
+`731864daf29e2a64c2b93aebc7eecb74af1181c2cb4326973555a1eb00f3fc91`)
+passed through the official Supabase read-only query endpoint. It checks the
+four existing service-role RPC ACLs, outbox ACL/FORCE RLS and absence of a
+partially installed button-card owner. The bounded result was
+`remaining_preapply_contract=pass`, `producer_binding_checked=false`,
+`overall_ready=false`, `read_only=true`, `changes=0`, `provider_calls=0`.
+Disposable PostgreSQL 16.13/17.6 also passed and rejected a missing base RPC
+grant and a partially installed owner. This narrows the remaining hosted
+uncertainty; it does **not** override the failing full gate or authorize an
+owner migration.
+
 **Decision: BLOCK for the button-card owner path.** The unapplied correction
 must receive separate exact production migration authorization. After any
 application, re-run this read-only gate against the then-current hosted catalog

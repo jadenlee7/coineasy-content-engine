@@ -1,4 +1,5 @@
 /** Disposable local Docker PostgreSQL. No host port, existing DB or provider I/O. */
+import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -33,6 +34,13 @@ function sql(file, { allowFailure = false } = {}) {
   return docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-q',
     '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
     '-d', 'postgres', '-f', `/repo/${file}`], { allowFailure });
+}
+
+function sqlScalar(file) {
+  phase = file;
+  return docker(['exec', '-u', 'postgres', name, 'psql', '-X', '-qAt',
+    '-v', 'ON_ERROR_STOP=1', '-h', '/var/run/postgresql', '-U', 'postgres',
+    '-d', 'postgres', '-f', `/repo/${file}`]);
 }
 
 function sqlIn(database, file, { allowFailure = false } = {}) {
@@ -129,6 +137,21 @@ try {
       || !String(legacyCandidate.stderr).includes('button_card_preapply_function_contract_mismatch')) {
     throw Error('card pre-apply accepted the hosted legacy candidate function');
   }
+  const remaining = sqlScalar(
+    'supabase/proposals/content_ops_button_card_remaining_preapply_readonly.sql');
+  assert.deepEqual(JSON.parse(remaining.stdout), {
+    changes: 0, overall_ready: false, producer_binding_checked: false,
+    provider_calls: 0, read_only: true, remaining_preapply_contract: 'pass',
+  });
+  query('revoke execute on function public.content_ops_claim_review(uuid,uuid,uuid) from service_role');
+  const missingBaseGrant = sql(
+    'supabase/proposals/content_ops_button_card_remaining_preapply_readonly.sql',
+    { allowFailure: true });
+  if (missingBaseGrant.status === 0
+      || !String(missingBaseGrant.stderr).includes('button_card_remaining_base_rpc_acl_mismatch')) {
+    throw Error('remaining pre-apply accepted a missing base RPC grant');
+  }
+  query('grant execute on function public.content_ops_claim_review(uuid,uuid,uuid) to service_role');
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
   const absentHistory = sql(
     'supabase/proposals/content_ops_review_producer_binding_contract_readonly.sql',
@@ -260,6 +283,13 @@ try {
   if (secondPreapply.status === 0
       || !String(secondPreapply.stderr).includes('button_card_preapply_state_conflict')) {
     throw Error('pre-apply check accepted a partially installed owner');
+  }
+  const remainingInstalled = sql(
+    'supabase/proposals/content_ops_button_card_remaining_preapply_readonly.sql',
+    { allowFailure: true });
+  if (remainingInstalled.status === 0
+      || !String(remainingInstalled.stderr).includes('button_card_remaining_partial_installation')) {
+    throw Error('remaining pre-apply accepted a partially installed owner');
   }
   sql('supabase/proposals/content_ops_button_card_readonly_preflight.sql');
   query(`do $$ declare r text; f text; begin
@@ -397,6 +427,7 @@ try {
     promptPreapplyCatalogVerified: true,
     producerBindingContractVerified: true,
     atomicProducerMigrationVerified: true,
+    remainingPreapplyVerified: true,
     syntheticSignupFreePrincipal: true,
     providerCalls: 0, productionCalls: 0 }));
 } finally {

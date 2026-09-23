@@ -84,6 +84,12 @@ The strengthened gate passes in disposable PostgreSQL 16.13 and 17.6 but
 version, and migration `20260916190000` is not recorded as applied remotely.
 The earlier signature-only production pass is superseded; see the
 [read-only mismatch receipt](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md).
+An independent, explicitly partial read-only gate passed on production at
+2026-09-23 14:56 UTC for the subsequent base RPC/table ACLs, FORCE RLS and
+absence of a partial owner installation. It reports `overall_ready=false` and
+does not check or excuse the stale producer binding. The full gate remains
+BLOCK until the separately authorized producer correction is applied and
+verified.
 No button-card owner migration or live send is authorized by this evidence.
 
 The local ledger proposal now requires an exact `sending` row in the existing
