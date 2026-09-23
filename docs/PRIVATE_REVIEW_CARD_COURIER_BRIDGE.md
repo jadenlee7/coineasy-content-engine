@@ -172,7 +172,13 @@ The one-second wait handles the precise DB reservation timestamp's conservative
 provider-second projection without accepting an earlier provider message date.
 
 This is **not** a working staff edit button yet. The trusted DB reservation
-reader/writer and confirmation adapter are not mounted, the existing bot does
-not invoke this courier after `edit_requested`, and no production role or
-Telegram credential has been added. Until those exact gates and a private
-canary are verified, the button must not claim that a reply prompt was sent.
+reader/writer now exists locally as `PostgresPrivatePromptOwner`: it derives
+the exact action/card/actor from the committed callback, requires the existing
+reservation RPC to return a new attempt, re-reads the committed row and uses
+the prior receipt owner for confirmation. Fake-transaction and mock-HTTP tests
+cover the one-shot chain and uncertain commit behavior. The owner is **not
+mounted**, its SQL/ACL proposal has not been checked on the hosted schema, the
+existing bot does not invoke the courier after `edit_requested`, and no
+production role or Telegram credential has been added. Until those exact
+gates and a private canary are verified, the button must not claim that a
+reply prompt was sent.
