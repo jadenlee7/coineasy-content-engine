@@ -88,6 +88,15 @@ invalidates earlier review and publication eligibility.
 - Agent-to-agent replies use one work-item/version correlation ID and a bounded
   attempt count. Bots do not answer each other indefinitely.
 
+The local `typefully_draft_preparation` module now builds an advisory request
+body from one approved immutable-version handoff, a recent authenticated X
+account readback, and an owner-bound ready PNG upload. It preserves the exact
+approved X text and media ID, rejects mismatched accounts or versions, and sets
+`publish_at: null`. It performs no I/O and grants no attempt authority. The
+legacy Typefully client makes at most one create-draft POST and treats a lost
+response as unknown; neither module supplies the missing durable exact-version
+draft owner, hosted account/media verification, or public X publication path.
+
 ## Dedicated relay configuration
 
 Railway only:
