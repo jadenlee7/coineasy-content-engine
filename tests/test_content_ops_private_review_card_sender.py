@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 
 import httpx
 
-from core.content_ops.private_review_card_receipt import prepare_private_card, validate_part_response
+from core.content_ops.private_review_card_receipt import (
+    prepare_private_card, private_card_packet_sha256, validate_part_response,
+)
 from core.content_ops.private_review_card_courier import PreparedCard, PrivateCardCourier
 from core.content_ops.private_review_card_sender import (
     PrivateCardSenderError, TelegramPrivateCardSender,
@@ -206,6 +208,8 @@ class TelegramSenderTest(unittest.TestCase):
             return httpx.Response(200, json={"ok": True, "result": result})
 
         class Owner:
+            async def bind_outbox(self, **_fields):
+                return {"status": "bound", "execution_authorized": False}
             async def reserve_part(self, **_fields):
                 return {"status": "reserved", "new_attempt": True,
                         "execution_authorized": False}
@@ -222,7 +226,11 @@ class TelegramSenderTest(unittest.TestCase):
         courier = PrivateCardCourier(Owner(), sender, ButtonSigner(b"s" * 32),
             EditBindings(b"e" * 32), clock=lambda: NOW)
         candidate = PreparedCard(review, snapshot, card_id, PNG, BOT, ROOM,
-                                 None, "fixture-private-room", NOW)
+                                 None, "fixture-private-room", NOW,
+                                 "66666666-6666-4666-8666-666666666666",
+                                 "77777777-7777-4777-8777-777777777777",
+                                 private_card_packet_sha256(packet,
+                                     snapshot.banner_sha256, review["id"], card_id))
         result = asyncio.run(courier.run(candidate, enabled=True))
         self.assertEqual(result["status"], "card_recorded")
         self.assertEqual(result["confirmed_parts"], 4)

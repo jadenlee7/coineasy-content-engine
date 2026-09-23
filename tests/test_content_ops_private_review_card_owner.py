@@ -11,6 +11,8 @@ from core.content_ops.private_review_card_owner import (
 
 R = "44444444-4444-4444-8444-444444444444"
 C = "55555555-5555-4555-8555-555555555555"
+O = "66666666-6666-4666-8666-666666666666"
+T = "77777777-7777-4777-8777-777777777777"
 SHA = "a" * 64
 AT = "2026-09-23T07:00:03+00:00"
 
@@ -55,6 +57,8 @@ class Connection:
 
 
 @pytest.mark.parametrize("method,kwargs", [
+    ("bind_outbox", dict(review_id=R, outbox_id=O, claim_token=T,
+                         packet_sha256=SHA)),
     ("reserve_part", dict(review_id=R, card_id=C, part_index=0,
                           payload_sha256=SHA)),
     ("confirm_part", dict(review_id=R, card_id=C, part_index=0,
@@ -108,6 +112,17 @@ def test_reserve_and_confirm_use_separate_committed_transactions():
     assert "reserve_content_ops_button_card_send" in connections[0].cursor_value.statements[1][0]
     assert "confirm_content_ops_button_card_send" in connections[1].cursor_value.statements[1][0]
     assert connections[0].cursor_value.statements[1][1] == (R, C, 0, SHA)
+
+
+def test_outbox_bind_requires_exact_owner_and_committed_receipt():
+    conn = Connection({"status": "bound", "execution_authorized": False})
+    owner = PostgresPrivateCardOwner(lambda: conn, enabled=True)
+    assert asyncio.run(owner.bind_outbox(review_id=R, outbox_id=O,
+        claim_token=T, packet_sha256=SHA)) == {
+            "status": "bound", "execution_authorized": False}
+    sql, args = conn.cursor_value.statements[1]
+    assert "bind_content_ops_button_card_outbox" in sql
+    assert args == (R, O, T, SHA)
 
 
 def test_register_uses_guarded_wrapper_and_fourth_payload_hash():

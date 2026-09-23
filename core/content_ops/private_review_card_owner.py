@@ -74,6 +74,17 @@ class PostgresPrivateCardOwner:
         except Exception:
             raise PrivateCardOwnerError("private_card_owner_outcome_unknown") from None
 
+    async def bind_outbox(self, *, review_id, outbox_id, claim_token,
+                          packet_sha256):
+        if not (_uuid(review_id) and _uuid(outbox_id) and _uuid(claim_token)
+                and _sha(packet_sha256)):
+            raise PrivateCardOwnerError("private_card_owner_arguments_invalid")
+        return await asyncio.to_thread(self._call,
+            "select private.bind_content_ops_button_card_outbox("
+            "%s::uuid,%s::uuid,%s::uuid,%s)",
+            (review_id, outbox_id, claim_token, packet_sha256),
+            expected_keys={"status", "execution_authorized"})
+
     async def reserve_part(self, *, review_id, card_id, part_index,
                            payload_sha256):
         if not (_uuid(review_id) and _uuid(card_id)

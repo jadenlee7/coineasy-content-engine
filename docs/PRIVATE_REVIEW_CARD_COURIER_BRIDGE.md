@@ -30,11 +30,28 @@ The durable DB owner is not deployed or mounted, so the courier cannot run live.
 
 `supabase/proposals/content_ops_button_card_send_ledger.sql` and
 `core/content_ops/private_review_card_owner.py` now sketch the missing durable
-side: default-OFF, one DB transaction per reservation/confirmation, and a
+side: default-OFF, one DB transaction per outbox binding/reservation/confirmation, and a
 guarded registration wrapper comparing all four payload, message and response
 hashes. This SQL is deliberately a **proposal**, not an applied migration; the
 owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
 and fake-transaction tests do not establish hosted PostgreSQL compatibility.
+The disposable, network-isolated PostgreSQL 16 verifier in
+`scripts/verify_private_card_ledger_docker_local.mjs --local-only` additionally
+checks the old outbox's exclusive claim/begin, exact-version binding,
+four-part reservation/confirmation, duplicate rejection, terminal-outbox
+denial, rollback and runtime-role ACL denial. It is still synthetic local evidence, not production
+schema compatibility or a delivery receipt.
+
+The local ledger proposal now requires an exact `sending` row in the existing
+`content_ops_review_outbox`, its claim token, packet hash and unexpired lease
+before a button-card part can be reserved. The existing claim/begin transition
+is one-shot, so the old link-card path cannot begin the same outbox twice.
+The courier requires a committed binding receipt before the first provider
+call and checks that the existing outbox's packet SHA-256 covers the exact
+four rendered payload hashes, review ID and card ID. This is **not** a live ownership switch: no production migration, runtime
+role/grant, claim/begin caller, review-row creator, finish/readback bridge or
+entrypoint exists. The current deployed worker must not be run alongside a
+new button-card dispatcher until a single owner is selected for that run.
 
 The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
@@ -47,10 +64,12 @@ Before enabling or sending even one card, the remaining owner path must:
 1. Re-read the exact current version, active official source and fresh poll,
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
-2. Complete and live-validate the `CardOwner` path: create one short-lived
+2. Complete the exclusive existing-outbox claim/begin/finish integration and
+   live-validate the `CardOwner` path: create one short-lived
    button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
-   complete card once. Keep this owner's DB authority
+   complete card once. Finish the same outbox using the verified controls
+   message ID. Keep this owner's DB authority
    separate from the callback bot's restricted role.
 3. Package and validate the `CardSender` with the already-deployed bot token
    for **send-only** calls. Do not start a second `getUpdates` consumer or

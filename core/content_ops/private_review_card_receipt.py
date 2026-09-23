@@ -56,6 +56,23 @@ def part_payload_sha256(request, banner_sha256):
         separators=(",", ":")).encode())
 
 
+def private_card_packet_sha256(requests, banner_sha256, review_id, card_id):
+    """Bind the existing outbox's one-shot begin to the exact four-part card."""
+    _uuid(review_id)
+    _uuid(card_id)
+    _require(type(banner_sha256) is str and len(banner_sha256) == 64
+             and all(c in "0123456789abcdef" for c in banner_sha256))
+    _require(type(requests) is tuple and len(requests) == 4
+             and tuple(request.get("kind") if type(request) is dict else None
+                       for request in requests) == ("image", "telegram", "x", "controls"))
+    payload = {"format": "private-card-4@1", "review_id": review_id,
+               "card_id": card_id,
+               "parts": [part_payload_sha256(request, banner_sha256)
+                         for request in requests]}
+    return _sha(json.dumps(payload, sort_keys=True,
+        separators=(",", ":")).encode())
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:

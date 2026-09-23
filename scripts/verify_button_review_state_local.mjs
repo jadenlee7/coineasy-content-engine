@@ -30,6 +30,7 @@ const proposal = 'supabase/proposals/content_ops_button_review_state.sql';
 const editProposal = 'supabase/proposals/content_ops_button_edit_reply.sql';
 const registrationProposal = 'supabase/proposals/content_ops_button_prompt_registration.sql';
 const durableProposal = 'supabase/proposals/content_ops_button_durable_attempt.sql';
+const cardSendLedgerProposal = 'supabase/proposals/content_ops_button_card_send_ledger.sql';
 const markupProposal = 'supabase/proposals/content_ops_button_markup_attempt.sql';
 const authorityProposal = 'supabase/proposals/content_ops_button_markup_authority.sql';
 const confirmationProposal = 'supabase/proposals/content_ops_button_markup_confirmation.sql';
@@ -64,6 +65,12 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.register_content_ops_button_edit_prompt(uuid,text)',
       'private.guard_content_ops_button_durable_record()',
       'private.record_content_ops_button_card(uuid,uuid,text,bigint,jsonb,jsonb,timestamptz,timestamptz)',
+      'private.guard_content_ops_button_card_send_attempt()',
+      'private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text)',
+      'private.content_ops_button_card_outbox_owned(uuid)',
+      'private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)',
+      'private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,text,text,timestamptz)',
+      'private.register_content_ops_button_card_from_sends(uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz)',
       'private.reserve_content_ops_button_prompt_attempt(uuid,uuid,uuid,text,text)',
       'private.assert_content_ops_button_prompt_card_active(uuid,uuid,text)',
       'private.revoke_content_ops_button_card(uuid,uuid,text,uuid,text,text)',
@@ -83,6 +90,8 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.content_ops_button_identities','private.content_ops_button_edit_prompts',
       'private.content_ops_button_prompt_receipts','private.content_ops_button_cards',
       'private.content_ops_button_prompt_attempts','private.content_ops_button_markup_attempts',
+      'private.content_ops_button_card_send_attempts',
+      'private.content_ops_button_card_outbox_owners',
       'private.content_ops_button_control_evidence','private.content_ops_button_markup_approvals',
       'private.content_ops_button_markup_confirmations','private.content_ops_button_markup_confirmation_events',
       'private.content_ops_button_confirmation_deliveries','private.content_ops_button_confirmation_sources',
@@ -102,7 +111,7 @@ try {
   query("create function auth.role() returns text language sql stable as $$select current_setting('request.jwt.claim.role',true)$$;", 'postgres');
   const migrations = readdirSync('supabase/migrations').filter(p => p.endsWith('.sql')).sort();
   for (const p of migrations) sql('supabase/migrations/' + p);
-  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
+  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(cardSendLedgerProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
   console.log(JSON.stringify({ fullLocalMigrationFiles: migrations.length, proposalApplied: true, runtimeAclDenied: true, hostedProof: false }));
   driverTest('initial');
   driverTest('callbacks');
@@ -113,6 +122,8 @@ try {
   driverTest('confirmation');
   run('createdb', [...pg, 'synthetic_buttons']);
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql', 'synthetic_buttons');
+  sql('supabase/migrations/20260906100000_content_ops_review_outbox.sql', 'synthetic_buttons');
+  sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql', 'synthetic_buttons');
   query(`create table auth.users(id uuid primary key);
     alter table public.content_versions add column locale text default 'ko-KR',
       add column content jsonb default '{}',add column qa jsonb default '{}',add column created_by uuid;
@@ -121,6 +132,7 @@ try {
   sql(editProposal, 'synthetic_buttons');
   sql(registrationProposal, 'synthetic_buttons');
   sql(durableProposal, 'synthetic_buttons');
+  sql(cardSendLedgerProposal, 'synthetic_buttons');
   sql(markupProposal, 'synthetic_buttons');
   sql(authorityProposal, 'synthetic_buttons');
   sql(confirmationProposal, 'synthetic_buttons');
@@ -132,6 +144,7 @@ try {
   sql(bannerProposal, 'synthetic_buttons');
   query(acl);
   sql('supabase/tests/content_ops_button_review_state.sql', 'synthetic_buttons');
+  sql('supabase/tests/content_ops_button_card_send_ledger.sql', 'synthetic_buttons');
   sql('supabase/tests/content_ops_button_edit_reply.sql', 'synthetic_buttons');
 
   // Persistent synthetic fixture solely for separate-connection race/restart tests.

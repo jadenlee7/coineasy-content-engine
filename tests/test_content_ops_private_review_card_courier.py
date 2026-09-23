@@ -7,7 +7,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from core.content_ops.private_review_card_courier import PreparedCard, PrivateCardCourier
-from core.content_ops.private_review_card_receipt import ObservedSend
+from core.content_ops.private_review_card_receipt import (
+    ObservedSend, prepare_private_card, private_card_packet_sha256,
+)
 from core.content_ops.review_buttons import ButtonSigner, ReviewSnapshot
 from core.content_ops.review_edit_ingress import EditBindings
 
@@ -19,6 +21,8 @@ I = "22222222-2222-4222-8222-222222222222"
 V = "33333333-3333-4333-8333-333333333333"
 R = "44444444-4444-4444-8444-444444444444"
 C = "55555555-5555-4555-8555-555555555555"
+O = "66666666-6666-4666-8666-666666666666"
+T = "77777777-7777-4777-8777-777777777777"
 PNG = b"\x89PNG\r\n\x1a\nfixture-image-bytes"
 
 
@@ -31,17 +35,28 @@ def prepared():
               "content_item_id": I, "content_version_id": V,
               "version_fingerprint": "b" * 64, "epoch": 0, "state": "active",
               "expires_at": datetime.fromtimestamp(NOW + 1800, timezone.utc).isoformat()}
+    requests = prepare_private_card(snapshot, ButtonSigner(b"s" * 32),
+        "fixture-private-room", now=NOW)
+    packet_sha = private_card_packet_sha256(requests, sha, R, C)
     return PreparedCard(review, snapshot, C, PNG, BOT, ROOM, None,
-                        "fixture-private-room", NOW)
+                        "fixture-private-room", NOW, O, T, packet_sha)
 
 
 class Owner:
-    def __init__(self, *, deny_at=None, fail_confirm_at=None, fail_register=False):
+    def __init__(self, *, deny_at=None, fail_confirm_at=None, fail_register=False,
+                 fail_bind=False):
         self.deny_at, self.fail_confirm_at = deny_at, fail_confirm_at
-        self.fail_register = fail_register
+        self.fail_register, self.fail_bind = fail_register, fail_bind
+        self.bound = []
         self.reserved = []
         self.confirmed = []
         self.registered = []
+
+    async def bind_outbox(self, **values):
+        self.bound.append(values)
+        if self.fail_bind:
+            raise OSError("uncertain outbox bind")
+        return {"status": "bound", "execution_authorized": False}
 
     async def reserve_part(self, **values):
         self.reserved.append(values)
@@ -116,6 +131,8 @@ class CardCourierTest(unittest.TestCase):
                          {"status": "card_recorded", "confirmed_parts": 4,
                           "public_send_attempted": False})
         self.assertEqual([r["part_index"] for r in self.owner.reserved], [0, 1, 2, 3])
+        self.assertEqual(self.owner.bound, [{"review_id": R, "outbox_id": O,
+            "claim_token": T, "packet_sha256": prepared().packet_sha256}])
         self.assertEqual([r["part_index"] for r in self.owner.confirmed], [0, 1, 2, 3])
         self.assertEqual(len(self.sender.calls), 4)
         self.assertIs(self.sender.calls[0][1], PNG)
@@ -131,6 +148,26 @@ class CardCourierTest(unittest.TestCase):
         self.assertEqual(self.run_card(enabled=True)["status"], "delivery_unknown")
         self.assertEqual(len(self.sender.calls), 2)
         self.assertEqual(self.owner.registered, [])
+
+    def test_uncertain_outbox_bind_never_sends(self):
+        self.owner.fail_bind = True
+        self.assertEqual(self.run_card(enabled=True)["status"], "blocked")
+        self.assertEqual(self.sender.calls, [])
+        self.assertEqual(self.owner.reserved, [])
+
+    def test_missing_outbox_claim_never_binds_or_sends(self):
+        candidate = replace(prepared(), claim_token=None)
+        self.assertEqual(asyncio.run(self.courier.run(candidate, enabled=True))["status"],
+                         "blocked")
+        self.assertEqual(self.owner.bound, [])
+        self.assertEqual(self.sender.preflight_calls, [])
+
+    def test_packet_mismatch_never_binds_or_sends(self):
+        candidate = replace(prepared(), packet_sha256="d" * 64)
+        self.assertEqual(asyncio.run(self.courier.run(candidate, enabled=True))["status"],
+                         "blocked")
+        self.assertEqual(self.owner.bound, [])
+        self.assertEqual(self.sender.preflight_calls, [])
 
     def test_unknown_provider_delivery_never_sends_controls_or_registers(self):
         self.sender.fail_at = 2
@@ -196,7 +233,11 @@ class CardCourierTest(unittest.TestCase):
         near_expiry = replace(candidate.snapshot, source_published_at=
             datetime.fromtimestamp(NOW - 24 * 3600 + 1, timezone.utc)
             .isoformat().replace("+00:00", "Z"))
-        candidate = replace(candidate, snapshot=near_expiry)
+        requests = prepare_private_card(near_expiry, ButtonSigner(b"s" * 32),
+            candidate.room_binding, now=NOW)
+        candidate = replace(candidate, snapshot=near_expiry,
+            packet_sha256=private_card_packet_sha256(requests,
+                near_expiry.banner_sha256, R, C))
         moments = iter((NOW, NOW, NOW + 2))
         self.courier._clock = lambda: next(moments)
         result = asyncio.run(self.courier.run(candidate, enabled=True))

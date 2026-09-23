@@ -4,6 +4,82 @@
 -- and the deployed private.content_ops_review_candidate function.
 begin;
 
+-- The existing review outbox, not this ledger, owns the room delivery. A
+-- button review cannot reserve a provider call until its exact outbox has
+-- been claimed and begun once by the same courier. The old link-card worker
+-- cannot claim or begin that outbox a second time.
+create table private.content_ops_button_card_outbox_owners (
+    review_id uuid primary key references private.content_ops_button_reviews(id),
+    outbox_id uuid not null unique references private.content_ops_review_outbox(outbox_id),
+    claim_token uuid not null unique,
+    packet_sha256 text not null check (packet_sha256 ~ '^[a-f0-9]{64}$'),
+    bound_at timestamptz not null default clock_timestamp()
+);
+alter table private.content_ops_button_card_outbox_owners enable row level security;
+alter table private.content_ops_button_card_outbox_owners force row level security;
+revoke all on private.content_ops_button_card_outbox_owners
+    from public, anon, authenticated, service_role;
+
+create function private.bind_content_ops_button_card_outbox(
+    target_review_id uuid, target_outbox_id uuid, target_claim_token uuid,
+    expected_packet_sha256 text
+) returns jsonb language plpgsql volatile security invoker set search_path = '' as $$
+declare
+    q private.content_ops_review_outbox;
+    r private.content_ops_button_reviews;
+begin
+    if target_review_id is null or target_outbox_id is null or target_claim_token is null
+       or expected_packet_sha256 is null
+       or expected_packet_sha256 !~ '^[a-f0-9]{64}$' then
+        raise exception 'button_card_outbox_arguments_invalid' using errcode = '22023';
+    end if;
+    -- Match the old begin/finish lock order: outbox before item/review.
+    select * into q from private.content_ops_review_outbox
+        where outbox_id = target_outbox_id for update;
+    select * into r from private.content_ops_button_reviews
+        where id = target_review_id for update;
+    if not found or q.status is distinct from 'sending'
+       or q.claim_token is distinct from target_claim_token
+       or q.packet_sha256 is distinct from expected_packet_sha256
+       or q.lease_expires_at <= clock_timestamp()
+       or q.finished_at is not null or q.message_id is not null
+       or q.workspace_id is distinct from r.workspace_id
+       or q.client_id is distinct from r.client_id
+       or q.content_item_id is distinct from r.content_item_id
+       or q.content_version_id is distinct from r.content_version_id
+       or r.state is distinct from 'active' or r.epoch is distinct from 0
+       or r.expires_at <= clock_timestamp() then
+        raise exception 'button_card_outbox_not_owned' using errcode = '23514';
+    end if;
+    insert into private.content_ops_button_card_outbox_owners
+        (review_id,outbox_id,claim_token,packet_sha256)
+        values (target_review_id,target_outbox_id,target_claim_token,expected_packet_sha256);
+    return jsonb_build_object('status','bound','execution_authorized',false);
+end $$;
+
+create function private.content_ops_button_card_outbox_owned(target_review_id uuid)
+returns boolean language plpgsql volatile security invoker set search_path = '' as $$
+declare
+    b private.content_ops_button_card_outbox_owners;
+    q private.content_ops_review_outbox;
+    r private.content_ops_button_reviews;
+begin
+    select * into b from private.content_ops_button_card_outbox_owners
+        where review_id = target_review_id;
+    if not found then return false; end if;
+    select * into q from private.content_ops_review_outbox
+        where outbox_id = b.outbox_id for update;
+    select * into r from private.content_ops_button_reviews
+        where id = target_review_id;
+    return q.status = 'sending' and q.claim_token = b.claim_token
+        and q.packet_sha256 = b.packet_sha256
+        and q.lease_expires_at > clock_timestamp()
+        and q.finished_at is null and q.message_id is null
+        and q.workspace_id = r.workspace_id and q.client_id = r.client_id
+        and q.content_item_id = r.content_item_id
+        and q.content_version_id = r.content_version_id;
+end $$;
+
 create table private.content_ops_button_card_send_attempts (
     review_id uuid not null references private.content_ops_button_reviews(id),
     card_id uuid not null,
@@ -69,6 +145,9 @@ begin
     select * into initial from private.content_ops_button_reviews
         where id = target_review_id;
     if not found then raise exception 'button_card_review_unknown' using errcode = 'P0002'; end if;
+    if private.content_ops_button_card_outbox_owned(target_review_id) is not true then
+        raise exception 'button_card_outbox_not_owned' using errcode = '23514';
+    end if;
     -- The candidate function locks item/feed/source and checks natural producer,
     -- latest official X source, fresh poll, canonical PNG and zero publication.
     candidate := private.content_ops_review_candidate(initial.workspace_id,
@@ -141,6 +220,9 @@ begin
     select * into initial from private.content_ops_button_reviews
         where id = target_review_id;
     if not found then raise exception 'button_card_review_unknown' using errcode = 'P0002'; end if;
+    if private.content_ops_button_card_outbox_owned(target_review_id) is not true then
+        raise exception 'button_card_outbox_not_owned' using errcode = '23514';
+    end if;
     candidate := private.content_ops_review_candidate(initial.workspace_id,
         initial.content_item_id, initial.content_version_id);
     if candidate is null then
@@ -214,6 +296,9 @@ begin
     select * into initial from private.content_ops_button_reviews
         where id = target_review_id;
     if not found then raise exception 'button_card_review_unknown' using errcode = 'P0002'; end if;
+    if private.content_ops_button_card_outbox_owned(target_review_id) is not true then
+        raise exception 'button_card_outbox_not_owned' using errcode = '23514';
+    end if;
     candidate := private.content_ops_review_candidate(initial.workspace_id,
         initial.content_item_id, initial.content_version_id);
     if candidate is null then
@@ -258,7 +343,9 @@ begin
         delivered, expires);
 end $$;
 
-revoke all on function private.guard_content_ops_button_card_send_attempt(),
+revoke all on function private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text),
+    private.content_ops_button_card_outbox_owned(uuid),
+    private.guard_content_ops_button_card_send_attempt(),
     private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text),
     private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,text,text,timestamptz),
     private.register_content_ops_button_card_from_sends(

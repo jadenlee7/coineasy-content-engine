@@ -8,13 +8,15 @@ acknowledgement is terminal/unknown: this worker never retries any of them.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
+from uuid import UUID
 
 from core.content_ops.private_review_card_receipt import (
     card_registration_evidence, part_payload_sha256, prepare_private_card,
-    validate_candidate, validate_part_response,
+    private_card_packet_sha256, validate_candidate, validate_part_response,
 )
 from core.content_ops.review_buttons import ButtonSigner, ReviewSnapshot
 from core.content_ops.review_edit_ingress import EditBindings
@@ -22,6 +24,13 @@ from core.content_ops.review_edit_ingress import EditBindings
 
 class CardCourierError(RuntimeError):
     """Fixed, non-sensitive status code only."""
+
+
+def _valid_uuid(value):
+    try:
+        return type(value) is str and str(UUID(value)) == value and UUID(value).int != 0
+    except (ValueError, AttributeError):
+        return False
 
 
 @dataclass(frozen=True, repr=False)
@@ -37,9 +46,15 @@ class PreparedCard:
     thread_id: int | None
     room_binding: str
     now: int
+    outbox_id: str | None = None
+    claim_token: str | None = None
+    packet_sha256: str | None = None
 
 
 class CardOwner(Protocol):
+    async def bind_outbox(self, *, review_id: str, outbox_id: str,
+                          claim_token: str, packet_sha256: str) -> dict: ...
+
     async def reserve_part(self, *, review_id: str, card_id: str, part_index: int,
                            payload_sha256: str) -> dict: ...
 
@@ -89,16 +104,29 @@ class PrivateCardCourier:
                 raise CardCourierError("private_card_candidate_invalid")
             validate_candidate(prepared.review, prepared.snapshot,
                                prepared.card_id, now=prepared.now)
+            if not (_valid_uuid(prepared.outbox_id) and _valid_uuid(prepared.claim_token)
+                    and type(prepared.packet_sha256) is str
+                    and re.fullmatch(r"[a-f0-9]{64}", prepared.packet_sha256)):
+                raise CardCourierError("private_card_outbox_owner_invalid")
             if prepared.card_id in self._attempted_cards:
                 raise CardCourierError("private_card_replay_denied")
             requests = prepare_private_card(prepared.snapshot, self._signer,
                 prepared.room_binding, now=prepared.now)
+            if private_card_packet_sha256(requests, banner_sha256,
+                    prepared.review["id"], prepared.card_id) != prepared.packet_sha256:
+                raise CardCourierError("private_card_packet_mismatch")
             # An injected sender must authenticate the existing bot and exact
             # private room before any write or send. No second update consumer.
             await self._sender.preflight(bot_id=prepared.bot_id, chat_id=prepared.chat_id)
             # Process-local defense only; the durable owner reservation is the
             # cross-process authority. Consume before any write or send.
             self._attempted_cards.add(prepared.card_id)
+            bound = await self._owner.bind_outbox(
+                review_id=prepared.review["id"], outbox_id=prepared.outbox_id,
+                claim_token=prepared.claim_token,
+                packet_sha256=prepared.packet_sha256)
+            if bound != {"status": "bound", "execution_authorized": False}:
+                raise CardCourierError("private_card_outbox_owner_unknown")
             observations = []
             for index, request in enumerate(requests):
                 action_now = self._clock()
