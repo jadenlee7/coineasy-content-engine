@@ -31,6 +31,10 @@ calls: 0. All owned local databases were removed afterward.
 
 The regression is also wired into the existing disposable PostgreSQL CI job.
 Local evidence is not a production migration receipt or a Telegram delivery.
+The [2026-09-23 read-only production readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md)
+found the earlier candidate-reader body still hosted and no remote applied
+`20260916190000` migration entry. A strengthened function-body gate therefore
+blocks the proposed button-card owner path pending that correction.
 
 ## Rollout boundary
 

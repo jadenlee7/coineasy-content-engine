@@ -62,6 +62,31 @@ try {
 
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql');
   sql('supabase/migrations/20260906100000_content_ops_review_outbox.sql');
+  const legacyCandidateHash = query(`select encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')
+    from pg_proc p where p.oid=
+      'private.content_ops_review_candidate(uuid,uuid,uuid)'::regprocedure`);
+  if (legacyCandidateHash !== '5de6d755095e63f3f7e03eb9f53db5d7fdada0911e222237fd459f12eaa98ffb') {
+    throw Error('local legacy candidate body does not match hosted readback');
+  }
+  const legacyCandidate = sql(
+    'supabase/proposals/content_ops_button_card_preapply_readonly.sql',
+    { allowFailure: true });
+  if (legacyCandidate.status === 0
+      || !String(legacyCandidate.stderr).includes('button_card_preapply_function_contract_mismatch')) {
+    throw Error('card pre-apply accepted the hosted legacy candidate function');
+  }
+  sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
+  query(`create or replace function private.content_ops_review_candidate(
+    target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid) returns jsonb language plpgsql volatile security definer
+    set search_path='' as $$begin return null; end$$`);
+  const driftedCandidate = sql(
+    'supabase/proposals/content_ops_button_card_preapply_readonly.sql',
+    { allowFailure: true });
+  if (driftedCandidate.status === 0
+      || !String(driftedCandidate.stderr).includes('button_card_preapply_function_contract_mismatch')) {
+    throw Error('card pre-apply accepted a drifted candidate function body');
+  }
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql');
   sql('supabase/proposals/content_ops_button_card_preapply_readonly.sql');
   query(`create table auth.users(id uuid primary key);

@@ -77,10 +77,14 @@ post-apply, read-only catalog/ACL check for the proposed tables and RPCs. It
 currently passes only in the disposable test database; it has not been run on
 production and cannot establish pre-apply hosted-version compatibility.
 The companion `content_ops_button_card_preapply_readonly.sql` checks the
-existing outbox, asset/Storage columns, exact base RPC signatures and absence
+existing outbox, asset/Storage columns, exact base RPC contracts and absence
 of a partially installed button-card owner before any proposal is applied.
-It also currently passes only in the disposable local database; a hosted
-readback remains required before turning the proposals into migrations.
+The strengthened gate passes in disposable PostgreSQL 16.13 and 17.6 but
+**blocks on production**: the hosted candidate-reader body is the older
+version, and migration `20260916190000` is not recorded as applied remotely.
+The earlier signature-only production pass is superseded; see the
+[read-only mismatch receipt](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md).
+No button-card owner migration or live send is authorized by this evidence.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
