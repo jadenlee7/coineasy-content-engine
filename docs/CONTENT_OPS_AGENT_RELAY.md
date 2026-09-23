@@ -93,6 +93,10 @@ body from one approved immutable-version handoff, a recent authenticated X
 account readback, and an owner-bound ready PNG upload. It preserves the exact
 approved X text and media ID, rejects mismatched accounts or versions, and sets
 `publish_at: null`. It performs no I/O and grants no attempt authority. The
+separate Typefully readback adapter uses only authenticated social-set and
+media-status GET calls and discards profile URLs and raw provider bodies. Its
+ready-media result alone cannot prove the uploaded bytes or version: a durable
+owner upload record must bind it to the canonical PNG before preparation. The
 legacy Typefully client makes at most one create-draft POST and treats a lost
 response as unknown; neither module supplies the missing durable exact-version
 draft owner, hosted account/media verification, or public X publication path.

@@ -40,6 +40,53 @@ def _media_id(value: object) -> str:
     return value
 
 
+def bind_typefully_media(owner_upload: Mapping, provider_media: Mapping) -> dict[str, object]:
+    """Compare a trusted owner upload row with a fresh provider GET projection.
+
+    This does not authenticate the owner row; a future durable owner must read
+    it transactionally and prove it records the uploaded canonical PNG bytes.
+    """
+    owner = _record(
+        owner_upload,
+        {"source", "media_id", "social_set_id", "content_version_id",
+         "asset_sha256", "uploaded_bytes_sha256"},
+        "typefully_media_owner_invalid",
+    )
+    provider = _record(
+        provider_media,
+        {"source", "media_id", "social_set_id", "status", "observed_at"},
+        "typefully_media_readback_invalid",
+    )
+    media_id = _media_id(owner["media_id"])
+    if (owner["source"] != "durable_typefully_media_owner_v1"
+        or type(owner["social_set_id"]) is not int or owner["social_set_id"] <= 0
+        or type(owner["content_version_id"]) is not str
+        or not re.fullmatch(
+            r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}",
+            owner["content_version_id"],
+        )
+        or type(owner["asset_sha256"]) is not str
+        or not re.fullmatch(r"[a-f0-9]{64}", owner["asset_sha256"])
+        or owner["uploaded_bytes_sha256"] != owner["asset_sha256"]):
+        _reject("typefully_media_owner_invalid")
+    if (provider["source"] != "typefully_media_get_v2"
+        or provider["media_id"] != media_id
+        or type(provider["social_set_id"]) is not int
+        or provider["social_set_id"] != owner["social_set_id"]
+        or provider["status"] != "ready"):
+        _reject("typefully_media_readback_invalid")
+    observed = _time(provider["observed_at"])
+    return {
+        "source": "owner_bound_typefully_media_v2",
+        "media_id": media_id,
+        "social_set_id": owner["social_set_id"],
+        "content_version_id": owner["content_version_id"],
+        "asset_sha256": owner["asset_sha256"],
+        "status": "ready",
+        "observed_at": observed.isoformat(),
+    }
+
+
 def prepare_typefully_draft(
     snapshot: Mapping,
     *,

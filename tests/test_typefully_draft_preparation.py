@@ -10,6 +10,7 @@ from unittest.mock import patch
 from core.publications.handoff import CLIENT_TARGETS, PublicationHandoffError
 from core.publications.typefully_draft_preparation import (
     TypefullyDraftPreparationError,
+    bind_typefully_media,
     prepare_typefully_draft,
 )
 from tests.test_publication_handoff import NOW, _id, _snapshot
@@ -19,16 +20,40 @@ MEDIA_ID = "99999999-9999-4999-8999-999999999999"
 
 
 def evidence(client="squid"):
+    provider_media = {
+        "source": "typefully_media_get_v2", "media_id": MEDIA_ID,
+        "social_set_id": 12345, "status": "ready", "observed_at": NOW.isoformat(),
+    }
+    owner_upload = {
+        "source": "durable_typefully_media_owner_v1", "media_id": MEDIA_ID,
+        "social_set_id": 12345, "content_version_id": _id(3),
+        "asset_sha256": "c" * 64, "uploaded_bytes_sha256": "c" * 64,
+    }
     return (
         {"source": "typefully_social_set_get_v2", "social_set_id": 12345,
          "x_username": CLIENT_TARGETS[client][1], "observed_at": NOW.isoformat()},
-        {"source": "owner_bound_typefully_media_v2", "media_id": MEDIA_ID,
-         "social_set_id": 12345, "content_version_id": _id(3),
-         "asset_sha256": "c" * 64, "status": "ready", "observed_at": NOW.isoformat()},
+        bind_typefully_media(owner_upload, provider_media),
     )
 
 
 class TypefullyDraftPreparationTests(unittest.TestCase):
+    def test_provider_ready_does_not_override_wrong_owner_bytes(self):
+        owner = {
+            "source": "durable_typefully_media_owner_v1", "media_id": MEDIA_ID,
+            "social_set_id": 12345, "content_version_id": _id(3),
+            "asset_sha256": "c" * 64, "uploaded_bytes_sha256": "d" * 64,
+        }
+        provider = {
+            "source": "typefully_media_get_v2", "media_id": MEDIA_ID,
+            "social_set_id": 12345, "status": "ready", "observed_at": NOW.isoformat(),
+        }
+        with self.assertRaisesRegex(TypefullyDraftPreparationError, "media_owner_invalid"):
+            bind_typefully_media(owner, provider)
+        owner["uploaded_bytes_sha256"] = owner["asset_sha256"]
+        provider["media_id"] = _id(99)
+        with self.assertRaisesRegex(TypefullyDraftPreparationError, "media_readback_invalid"):
+            bind_typefully_media(owner, provider)
+
     def test_all_clients_bind_exact_copy_banner_and_inert_draft(self):
         for client in CLIENT_TARGETS:
             with self.subTest(client=client):
