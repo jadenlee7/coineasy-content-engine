@@ -16,6 +16,9 @@ requires `legacy_no_history` before any apply and `corrected_exact_history`
 afterward; unknown bodies and partial/mismatched history fail closed. Its
 current SHA-256 is
 `6e96c59a7b338698459d7f8212e78e88c0e816bf5ec35a2136e05bc8c5945c71`.
+The exact contract also returned `legacy_no_history` through the official
+production read-only query endpoint on 2026-09-23; see the
+[readback receipt](../../docs/PRIVATE_REVIEW_PRODUCER_BINDING_READBACK_20260923.md).
 
 `atomic-apply-sql.mjs` is an offline builder for a single transactional SQL
 statement set. It accepts only those exact migration bytes, strips that file's
@@ -61,10 +64,16 @@ Local checks:
 ```sh
 node --test ops/private-review-producer-binding/atomic-apply-sql.test.mjs
 node --test ops/private-review-producer-binding/production-apply.test.mjs
+node ops/private-review-producer-binding/verify-docker-local.mjs --pg16
+node ops/private-review-producer-binding/verify-docker-local.mjs --pg17
 node scripts/verify_private_card_ledger_docker_local.mjs --local-only
 node scripts/verify_private_card_ledger_docker_local.mjs --local-postgres17
 node ops/private-review-producer-binding/production-apply.mjs --template
 ```
+
+Both Docker verifiers mount this checkout read-only, disable networking and
+host ports, and remove their disposable containers. CI runs the isolated
+`producer-binding-one-migration` job and the broader private card ledger job.
 
 The template contains an invalid actor placeholder and is **not** an approval.
 Only `--validate --approval /absolute/canonical.json` is available as a
