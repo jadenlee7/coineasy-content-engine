@@ -44,6 +44,67 @@ def test_private_card_namespace_reaches_actual_signed_controller(action):
     assert len(case.owner.operations) == 1
 
 
+def test_committed_edit_hands_one_fresh_command_to_injected_courier():
+    case, _ = fixture()
+    calls = []
+
+    class Courier:
+        async def run(self, command, *, enabled):
+            calls.append((command, enabled))
+            return {"status": "prompt_registered", "private_send_attempts": 1,
+                    "public_send_attempted": False}
+
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=Courier)
+    u = case.update("x", private=True)
+    assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
+        "status": "prompt_registered", "execution_authorized": False}
+    command, enabled = calls[0]
+    assert enabled is True
+    assert (command.callback_id, command.bot_id, command.chat_id, command.human_id) == (
+        u["callback_query"]["id"], case.policy.bot_id, case.policy.chat_id, 201)
+    assert len(calls) == 1 and not case.owner.outbox
+    # Owner idempotency returns reused=True; never create a new prompt attempt.
+    assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
+        "status": "prompt_status_unknown", "execution_authorized": False}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("result", [
+    {"status": "delivery_unknown", "private_send_attempts": 1,
+     "public_send_attempted": False},
+    {"status": "prompt_registered", "private_send_attempts": 0,
+     "public_send_attempted": False},
+    None,
+])
+def test_unconfirmed_prompt_never_claims_delivery_or_retries(result):
+    case, _ = fixture()
+    calls = []
+
+    class Courier:
+        async def run(self, command, *, enabled):
+            calls.append(command)
+            return result
+
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=Courier)
+    u = case.update("b", private=True)
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "prompt_status_unknown"
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "prompt_status_unknown"
+    assert len(calls) == 1 and not case.owner.outbox
+
+
+def test_checks_never_invoke_prompt_courier():
+    case, _ = fixture()
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=lambda: (_ for _ in ()).throw(AssertionError("prompt")))
+    assert asyncio.run(adapter.handle_callback(case.update("s", private=True), now=NOW)) == {
+        "status": "action_recorded", "execution_authorized": False}
+
+
 def test_generated_private_buttons_are_55_bytes_and_webhook_compatible():
     case, _ = fixture()
     card = review_messages(case.owner.current, case.signer, case.policy.room_binding,

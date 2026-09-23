@@ -177,10 +177,13 @@ the exact action/card/actor from the committed callback, requires the existing
 reservation RPC to return a new attempt, re-reads the committed row and uses
 the prior receipt owner for confirmation. Fake-transaction and mock-HTTP tests
 cover the one-shot chain and uncertain commit behavior. The owner is **not
-mounted**, its SQL/ACL proposal has not been checked on the hosted schema, the
-the local polling adapter now preserves `edit_requested` and the existing bot
-acknowledges it without claiming a prompt was sent. The bot still does not
-invoke the courier after `edit_requested`, and no
+mounted**, and its SQL/ACL proposal has not been checked on the hosted schema.
+The local polling adapter now preserves `edit_requested`. An optional injected
+courier factory can run once after a non-reused committed edit action; a reused
+action or uncertain courier result returns `prompt_status_unknown` and cannot
+claim delivery. The bot has matching receipt/unknown notices, but its current
+SHA-pinned vendored engine and runtime composition do not mount this factory;
+therefore the current packaged bot still does not invoke the courier, and no
 production role or Telegram credential has been added. Until those exact
 gates and a private canary are verified, the button must not claim that a
 reply prompt was sent.
