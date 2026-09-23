@@ -52,11 +52,22 @@ history columns, primary key on `version`, and an optional unique
 The local atomic fixture mirrors that history shape and rejects an unexpected
 mandatory column. This remains pre-apply evidence only.
 
-The [offline one-migration builder](../ops/private-review-producer-binding/README.md)
+The [single-migration preparation pack](../ops/private-review-producer-binding/README.md)
 locally proved that the function replacement and exact history registration
 can commit together. Failed history insertion and failed postcondition each
-rolled both back; a second execution was denied. No production executor or
-network apply was created, and no migration was applied.
+rolled both back; a second execution was denied. A default-OFF, exact-main,
+approval-hash-gated one-shot runner now has mocked endpoint tests, including
+uncertain-ACK read-only reconciliation without a retry. It has not sent a
+production write or applied the migration.
+
+At 2026-09-23 14:27 UTC, the GitHub read-only connector reported `main` at
+`25e11b7046020d288ff7cc2a105cf6671523795e`. The migration file's Git blob
+SHA `86db4122957a1702f444371c28b081ccc0fb73ce` matched the local file.
+That observation is not a future apply-time exact-main check.
+
+At approximately 2026-09-23 14:28 UTC, the same read-only production SQL
+contract again returned `legacy_no_history`, `read_only=true`, `changes=0`,
+`provider_calls=0`. It did not invoke the apply runner.
 
 **Decision: BLOCK for the button-card owner path.** The unapplied correction
 must receive separate exact production migration authorization. After any

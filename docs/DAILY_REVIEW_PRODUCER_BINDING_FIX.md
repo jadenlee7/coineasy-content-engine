@@ -38,8 +38,9 @@ blocks the proposed button-card owner path pending that correction.
 The same receipt includes a separate read-only function-plus-history contract
 that classifies production as `legacy_no_history`. A future
 `corrected_exact_history` readback must be observed after any separately
-authorized migration apply. An offline one-transaction SQL builder has only
-been tested in disposable databases; it is not a production apply runner.
+authorized migration apply. The one-transaction SQL builder was tested in
+disposable databases, and a separately gated one-shot runner was tested with
+mocked endpoints. Neither has applied the migration to production.
 
 ## Rollout boundary
 
