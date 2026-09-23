@@ -58,7 +58,9 @@ cross-system repair procedure for a split terminal state.
 1. [x] Add exact message IDs and atomic finalization to the local SQL proposal.
 2. [x] Prove success, mismatch rollback, duplicate denial and terminal readback
    on disposable PostgreSQL without provider I/O.
-3. [ ] Complete a single claim/begin/review-row creator and read-only recovery
-   path; ensure the old worker and new courier cannot both own one version.
+3. [ ] Validate the local single claim/begin/review-row runner against the
+   hosted schema and complete read-only recovery; ensure the old worker and
+   new courier cannot both own one version at runtime. The local runner is
+   default-OFF and has no authenticated canonical-PNG reader yet.
 4. [ ] Obtain separate authorization before any hosted migration, deployment,
    private-room canary, activation or public publication.

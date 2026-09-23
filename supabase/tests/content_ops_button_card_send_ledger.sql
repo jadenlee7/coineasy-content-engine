@@ -52,6 +52,7 @@ begin
     perform pg_temp.check_card_send(result->>'status'='review_prepared'
         and result->>'review_id'=rid::text
         and fp=private.content_ops_button_version_fingerprint(w,i,v)
+        and result->>'epoch'='0' and result->>'state'='active'
         and (select count(*)=1 from private.content_ops_button_reviews where id=rid),
         'exact claimed outbox creates one button review');
     begin

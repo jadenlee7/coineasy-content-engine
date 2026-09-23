@@ -63,14 +63,25 @@ proposal. It requires its existing gateway flag plus a separate
 matching packet-mode header. This scope permits only reconcile, claim and
 one-shot begin; the legacy `finish` endpoint is denied because atomic card
 registration owns finalization. The default link-card scope is unchanged.
-This code is not deployed or configured, and no button-card caller or owner
-credential is wired to it. The unmounted, default-OFF
+This code is not deployed or configured, and no owner credential is wired to
+it. The unmounted, default-OFF
 `core/content_ops/private_review_card_gateway.py` is its one-shot client: it
 validates the exact release/scope, fresh official-source claim and single
 begin receipt without exposing `finish`, approval or publication. A lost claim
-or begin acknowledgement is terminal in that client. It still needs an exact
-snapshot/PNG loader and a single runner connecting claim, owner preparation,
-packet hash, begin and the courier; there is no automatic trigger.
+or begin acknowledgement is terminal in that client. There is no automatic
+trigger.
+
+The local `private_review_card_candidate.py` now canonicalizes the source
+timestamp exactly as the callback owner does, binds the claimed version, the
+DB-issued review fingerprint/expiry, immutable PNG bytes and trusted room to
+the four-part packet hash. The unmounted, default-OFF
+`private_review_card_canary.py` orders one exact-version attempt as reconcile
+→ claim → injected canonical-PNG read → review preparation → begin → courier.
+It stops before `begin` on a stale claim, mismatched PNG or uncertain review
+preparation, and never sends after an uncertain begin acknowledgement. Its
+synthetic test uses an injected fake reader; **a production authenticated
+immutable-PNG reader does not exist yet**. No credential, schedule, runtime
+entrypoint or Telegram send was added by this runner.
 
 The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
@@ -83,8 +94,8 @@ Before enabling or sending even one card, the remaining owner path must:
 1. Re-read the exact current version, active official source and fresh poll,
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
-2. Complete an exclusive existing-outbox claim/begin caller and
-   live-validate the `CardOwner` path: prepare one short-lived
+2. Validate the local exclusive claim/begin caller and `CardOwner` path on
+   the hosted schema before mounting it: prepare one short-lived
    button-review row, **durably reserve each send attempt before** the corresponding Telegram
    call, confirm its direct response before the next call, and register the
    complete card once. The local atomic registration finishes the same outbox

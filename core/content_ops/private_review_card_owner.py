@@ -86,10 +86,13 @@ class PostgresPrivateCardOwner:
             (workspace_id, outbox_id, claim_token, content_version_id,
              review_id),
             expected_keys={"status", "review_id", "version_fingerprint",
-                           "expires_at", "execution_authorized"})
+                           "epoch", "state", "expires_at",
+                           "execution_authorized"})
         if (receipt["status"] != "review_prepared"
             or receipt["review_id"] != review_id
             or not _sha(receipt["version_fingerprint"])
+            or type(receipt["epoch"]) is not int or receipt["epoch"] != 0
+            or receipt["state"] != "active"
             or not _stamp(receipt["expires_at"])):
             raise PrivateCardOwnerError("private_card_owner_outcome_unknown")
         return receipt

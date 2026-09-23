@@ -50,6 +50,7 @@ begin
         returning * into review;
     return jsonb_build_object('status','review_prepared','review_id',review.id,
         'version_fingerprint',review.version_fingerprint,
+        'epoch',review.epoch,'state',review.state,
         'expires_at',review.expires_at,'execution_authorized',false);
 end $$;
 

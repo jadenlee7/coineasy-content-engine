@@ -135,7 +135,8 @@ def test_outbox_bind_requires_exact_owner_and_committed_receipt():
 
 def test_claimed_outbox_prepares_exact_review_in_one_committed_transaction():
     receipt = {"status": "review_prepared", "review_id": R,
-               "version_fingerprint": SHA, "expires_at": AT,
+               "version_fingerprint": SHA, "epoch": 0, "state": "active",
+               "expires_at": AT,
                "execution_authorized": False}
     conn = Connection(receipt)
     owner = PostgresPrivateCardOwner(lambda: conn, enabled=True)
@@ -150,11 +151,14 @@ def test_claimed_outbox_prepares_exact_review_in_one_committed_transaction():
     {"status": "reused"},
     {"review_id": C},
     {"version_fingerprint": "bad"},
+    {"epoch": True},
+    {"state": "held"},
     {"expires_at": "2026-09-23T07:00:03"},
 ])
 def test_prepared_review_receipt_must_match_exact_identity_and_shape(change):
     receipt = {"status": "review_prepared", "review_id": R,
-               "version_fingerprint": SHA, "expires_at": AT,
+               "version_fingerprint": SHA, "epoch": 0, "state": "active",
+               "expires_at": AT,
                "execution_authorized": False}
     receipt.update(change)
     owner = PostgresPrivateCardOwner(lambda: Connection(receipt), enabled=True)
