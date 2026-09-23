@@ -181,7 +181,10 @@ mounted**, and its SQL/ACL proposal has not been checked on the hosted schema.
 The local polling adapter now preserves `edit_requested`. An optional injected
 courier factory can run once after a non-reused committed edit action; a reused
 action or uncertain courier result returns `prompt_status_unknown` and cannot
-claim delivery. The bot has matching receipt/unknown notices, but its current
+claim delivery. `compose_private_prompt_factory` builds a fresh DB owner and
+send-only Telegram adapter without connecting or sending; it returns `None`
+without inspecting dependencies when OFF. The bot has matching receipt/unknown
+notices, but its current
 SHA-pinned vendored engine and runtime composition do not mount this factory;
 therefore the current packaged bot still does not invoke the courier, and no
 production role or Telegram credential has been added. Until those exact
