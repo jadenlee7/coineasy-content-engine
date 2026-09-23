@@ -45,6 +45,17 @@ def _sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def part_payload_sha256(request, banner_sha256):
+    """One canonical payload hash for reservation, confirmation and card row."""
+    _require(type(request) is dict and request.get("kind") in
+             ("image", "telegram", "x", "controls"))
+    payload = {"kind": request["kind"], "method": request["method"],
+               "text": request["text"], "reply_markup": request.get("reply_markup"),
+               "banner_sha256": banner_sha256 if request["kind"] == "image" else None}
+    return _sha(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode())
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -121,6 +132,47 @@ def _validated_response(observation, expected, *, bot_id, chat_id, thread_id):
     return mid, observed_at, _sha(observation.raw_response)
 
 
+def validate_part_response(observation, expected, *, bot_id, chat_id, thread_id):
+    """Stop the courier after any uncertain part; never advance to controls."""
+    try:
+        return _validated_response(observation, expected, bot_id=bot_id,
+                                   chat_id=chat_id, thread_id=thread_id)
+    except Exception:
+        raise CardReceiptError("private_card_receipt_unknown") from None
+
+
+def validate_candidate(review, snapshot, card_id, *, now):
+    """Reject stale/unbound source or review before any reservation or send."""
+    try:
+        _validate_candidate(review, snapshot, card_id, now=now)
+    except Exception:
+        raise CardReceiptError("private_card_candidate_invalid") from None
+
+
+def _validate_candidate(review, snapshot, card_id, *, now):
+    _require(type(review) is dict and type(snapshot) is ReviewSnapshot)
+    snapshot.validate()
+    for field in ("id", "workspace_id", "content_item_id", "content_version_id"):
+        _uuid(review.get(field))
+    _uuid(card_id)
+    _require(review.get("workspace_id") == snapshot.workspace_id
+             and review.get("client_id") == snapshot.client_id
+             and review.get("content_item_id") == snapshot.content_item_id
+             and review.get("content_version_id") == snapshot.content_version_id
+             and type(review.get("version_fingerprint")) is str
+             and len(review["version_fingerprint"]) == 64
+             and all(c in "0123456789abcdef" for c in review["version_fingerprint"])
+             and type(review.get("epoch")) is int and review["epoch"] >= 0
+             and review.get("state") == "active"
+             and snapshot.eligibility == "blocked")
+    _require(type(now) is int and 0 < now < 2**32)
+    current = datetime.fromtimestamp(now, timezone.utc)
+    source_at = _utc(datetime.fromisoformat(snapshot.source_published_at.replace("Z", "+00:00")))
+    expires = _utc(datetime.fromisoformat(review["expires_at"].replace("Z", "+00:00")))
+    _require(timedelta(0) <= current - source_at < timedelta(hours=24)
+             and current < expires)
+
+
 def card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
                                room_binding, bot_id, chat_id, thread_id, now,
                                banner_sha256, observations):
@@ -152,22 +204,7 @@ def _card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
              and (thread_id is None or type(thread_id) is int and 0 < thread_id < 2**52)
              and type(observations) in (list, tuple) and len(observations) == 4
              and banner_sha256 == snapshot.banner_sha256)
-    for field in ("id", "workspace_id", "content_item_id", "content_version_id"):
-        _uuid(review.get(field))
-    _uuid(card_id)
-    _require(review.get("workspace_id") == snapshot.workspace_id
-             and review.get("client_id") == snapshot.client_id
-             and review.get("content_item_id") == snapshot.content_item_id
-             and review.get("content_version_id") == snapshot.content_version_id
-             and type(review.get("version_fingerprint")) is str
-             and len(review["version_fingerprint"]) == 64
-             and all(c in "0123456789abcdef" for c in review["version_fingerprint"])
-             and type(review.get("epoch")) is int and review["epoch"] >= 0
-             and review.get("state") == "active")
-    _require(type(now) is int and 0 < now < 2**32)
-    source_at = datetime.fromisoformat(snapshot.source_published_at.replace("Z", "+00:00"))
-    _require(timedelta(0) <= datetime.fromtimestamp(now, timezone.utc) - _utc(source_at)
-             < timedelta(hours=24))
+    _validate_candidate(review, snapshot, card_id, now=now)
     packet = prepare_private_card(snapshot, signer, room_binding, now=now)
     validated = tuple(_validated_response(o, p, bot_id=bot_id, chat_id=chat_id,
                                           thread_id=thread_id)
@@ -178,18 +215,17 @@ def _card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
     _require(times == sorted(times) and times[0] >= datetime.fromtimestamp(now, timezone.utc)
              and times[-1] - times[0] < timedelta(minutes=30))
     delivered = times[-1]
+    source_at = _utc(datetime.fromisoformat(snapshot.source_published_at.replace("Z", "+00:00")))
+    _require(timedelta(0) <= delivered - source_at < timedelta(hours=24))
     review_expiry = _utc(datetime.fromisoformat(review["expires_at"].replace("Z", "+00:00")))
     expiry = min(review_expiry, datetime.fromtimestamp(now + 1800, timezone.utc))
     _require(delivered < expiry)
     part_names = ("image", "telegram", "x")
     parts = []
     for index, kind in enumerate(part_names):
-        payload = {"kind": kind, "text": packet[index]["text"],
-                   "banner_sha256": banner_sha256 if kind == "image" else None}
         parts.append({"kind": kind, "outcome": "sent",
                       "message_binding": bindings.digest("card-message@2", bot_id, chat_id, ids[index]),
-                      "payload_sha256": _sha(json.dumps(payload, ensure_ascii=False,
-                          sort_keys=True, separators=(",", ":")).encode())})
+                      "payload_sha256": part_payload_sha256(packet[index], banner_sha256)})
     packet_receipt = bindings.digest("card-packet-receipt@2", card_id,
         [(p["message_binding"], item[2]) for p, item in zip(parts, validated[:3])])
     card_receipt = bindings.digest("card-controls-receipt@2", card_id, ids[3], validated[3][2])

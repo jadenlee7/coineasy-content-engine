@@ -9,6 +9,16 @@ Telegram success responses before building the argument set for
 banner, complete Telegram copy, complete X copy, then six edit/check/hold
 buttons. It contains no approval/publish control and no Studio login link.
 
+`core/content_ops/private_review_card_courier.py` now connects that validator
+to a default-OFF one-shot sequence through injected `CardOwner` and
+`CardSender` contracts. A durable `new_attempt=True` reservation is required
+before **each** provider call and a separately committed exact-response
+confirmation is required before the next part. A reused/unknown reservation,
+provider result, confirmation or registration acknowledgement stops the sequence; controls cannot be sent
+after an incomplete image/copy packet. The local guard also rejects a second
+run with the same card ID in one process. Neither adapter is implemented or
+mounted, so this is not a live delivery path.
+
 The module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
 review-bot token and the HTTP call, pass its *own* response bytes, and ensure
@@ -20,10 +30,12 @@ Before enabling or sending even one card, the remaining owner path must:
 1. Re-read the exact current version, active official source and fresh poll,
    canonical PNG and Grok QA state; reject previous approvals/publications,
    stale sources, duplicates and changed fingerprints.
-2. Create one short-lived button-review row and **durably reserve each send
-   attempt before** the corresponding Telegram call. Keep the dedicated
-   courier's DB authority separate from the callback bot's restricted role.
-3. Use the already-deployed bot token for **send-only** calls. Do not start a
+2. Implement the `CardOwner` adapter: create one short-lived button-review row,
+   **durably reserve each send attempt before** the corresponding Telegram
+   call, confirm its direct response before the next call, and register the
+   complete card once. Keep this owner's DB authority
+   separate from the callback bot's restricted role.
+3. Implement `CardSender` using the already-deployed bot token for **send-only** calls. Do not start a
    second `getUpdates` consumer or webhook; keep the existing bot's private
    callback route OFF until a complete card is registered.
 4. Send image, Telegram copy and X copy in order, recording each authenticated

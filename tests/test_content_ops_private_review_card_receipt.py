@@ -135,6 +135,23 @@ class CardReceiptTest(unittest.TestCase):
         with self.assertRaises(CardReceiptError):
             card_registration_evidence(**{**args, "observations": observations})
 
+    def test_source_crossing_24_hour_boundary_during_delivery_rejected(self):
+        args = self.evidence()
+        near_expiry = replace(args["snapshot"], source_published_at=datetime.fromtimestamp(
+            NOW - 24 * 3600 + 1, timezone.utc).isoformat().replace("+00:00", "Z"))
+        packet = prepare_private_card(near_expiry, self.signer, self.room_binding, now=NOW)
+        observations = []
+        for index, observed in enumerate(args["observations"]):
+            body = json.loads(observed.raw_response)
+            body["result"]["caption" if index == 0 else "text"] = packet[index]["text"]
+            if index == 3:
+                body["result"]["reply_markup"] = packet[index]["reply_markup"]
+            observations.append(replace(observed,
+                raw_response=json.dumps(body, ensure_ascii=False).encode()))
+        with self.assertRaises(CardReceiptError):
+            card_registration_evidence(**{**args, "snapshot": near_expiry,
+                                           "observations": observations})
+
 
 if __name__ == "__main__":
     unittest.main()
