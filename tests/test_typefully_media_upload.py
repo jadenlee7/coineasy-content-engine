@@ -1,6 +1,7 @@
 """Synthetic Typefully media allocation/upload with no external network."""
 
 import hashlib
+import json
 import unittest
 
 import httpx
@@ -47,7 +48,8 @@ class TypefullyMediaUploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(api_calls[0].url),
                          "https://api.typefully.com/v2/social-sets/12345/media/upload")
         self.assertEqual(api_calls[0].headers.get("authorization"), f"Bearer {KEY}")
-        self.assertEqual(api_calls[0].content, b'{"file_name":"news-card.png"}')
+        self.assertEqual(json.loads(api_calls[0].content),
+                         {"file_name": "news-card.png"})
         self.assertEqual(len(put_calls), 1)
         self.assertEqual(put_calls[0].method, "PUT")
         self.assertEqual(put_calls[0].content, PNG)
