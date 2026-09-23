@@ -153,6 +153,9 @@ jobs:
           env['RAILWAY_GIT_COMMIT_SHA'] = 'a' * 40
           env['SUPABASE_SERVICE_ROLE_KEY'] = 'synthetic_forbidden_' + 'g' * 40
           assert run(validate_only=True, environ=env)['ok'] is False
+          del env['SUPABASE_SERVICE_ROLE_KEY']
+          env['PGPASSWORD'] = 'synthetic_forbidden'
+          assert run(validate_only=True, environ=env)['ok'] is False
           print(json.dumps({'synthetic_validation_passed': True,
                             'release_mismatch_denied': True,
                             'broad_db_credential_denied': True,

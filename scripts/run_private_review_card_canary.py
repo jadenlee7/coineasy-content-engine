@@ -36,6 +36,10 @@ _ROOM = re.compile(r"-100[1-9][0-9]{6,12}\Z")
 _STAMP = Path("/app/content-ops-build-sha")
 _ALLOWED_SECRETS = {"CONTENT_OPS_GATEWAY_TOKEN", "TELEGRAM_REVIEW_BOT_TOKEN",
                     "CONTENT_OPS_BUTTON_SIGNING_KEY", "CONTENT_OPS_EDIT_BINDING_KEY"}
+_FORBIDDEN_LIBPQ_ENV = {"PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER",
+    "PGPASSWORD", "PGPASSFILE", "PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR",
+    "PGOPTIONS", "PGSSLMODE", "PGSSLROOTCERT", "PGSSLCRL", "PGSSLCRLDIR",
+    "PGSSLCERT", "PGSSLKEY", "PGCHANNELBINDING", "PGCONNECT_TIMEOUT"}
 
 
 def _uuid(value):
@@ -80,12 +84,16 @@ class PrivateCardRuntimeSettings:
             upper = name.upper()
             if not value or upper in _ALLOWED_SECRETS:
                 continue
-            if (upper.startswith(("SUPABASE_", "DATABASE_", "POSTGRES_", "TYPEFULLY_",
-                                   "XAI_", "OPENAI_", "TWITTER_", "X_BEARER_"))
-                or upper in {"API_SECRET", "PUBLICATION_WORKER_TOKEN"}
+            if (upper in _FORBIDDEN_LIBPQ_ENV
+                or upper.startswith(("SUPABASE_", "DATABASE_", "POSTGRES_", "DB_",
+                                   "REDIS_", "MYSQL_", "MONGO_", "MONGODB_",
+                                   "TYPEFULLY_", "XAI_", "OPENAI_", "TWITTER_",
+                                   "X_BEARER_"))
+                or upper in {"API_SECRET", "PUBLICATION_WORKER_TOKEN",
+                             "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS"}
                 or (upper.startswith("TELEGRAM_")
                     and upper not in {"TELEGRAM_REVIEW_CHAT_ID"})
-                or (upper.endswith(("_KEY", "_SECRET", "_TOKEN"))
+                or (upper.endswith(("_KEY", "_SECRET", "_TOKEN", "_PASSWORD"))
                     and upper not in _ALLOWED_SECRETS)):
                 raise ValueError("private_card_credential_boundary_invalid")
         workspace = env.get("CONTENT_STUDIO_WORKSPACE_ID", "")

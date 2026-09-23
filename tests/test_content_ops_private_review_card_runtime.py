@@ -66,6 +66,12 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
         {"CONTENT_OPS_BUTTON_SIGNING_KEY": "bad"},
         {"CONTENT_OPS_EDIT_BINDING_KEY": "1" * 64},
         {"SUPABASE_SERVICE_ROLE_KEY": "forbidden"},
+        {"PGPASSWORD": "forbidden"},
+        {"PGSERVICE": "forbidden"},
+        {"DB_PASSWORD": "forbidden"},
+        {"DB_URL": "forbidden"},
+        {"REDIS_URL": "forbidden"},
+        {"AWS_ACCESS_KEY_ID": "forbidden"},
         {"TYPEFULLY_API_KEY": "forbidden"},
     ):
         result = cli.run(validate_only=True, environ=config(**change),

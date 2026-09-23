@@ -63,7 +63,8 @@ chain. It returns disabled before reading credentials unless the separate
 `CONTENT_OPS_BUTTON_CARD_ENABLED=true` flag is set. Its validate-only mode
 checks the exact build/runtime/gateway release SHA, one immutable version,
 private destination, distinct signing keys and absence of broad DB/publisher
-secrets without network I/O. A separate Dockerfile and Railway manifest are
+secrets, including libpq `PGPASSWORD`/connection overrides, without network I/O.
+A separate Dockerfile and Railway manifest are
 local deployment proposals, default OFF with no cron and no restart; they are
 not attached to an existing Railway service. Neither `--validate-only` nor a
 synthetic canary proves hosted schema compatibility or a real Telegram send.
