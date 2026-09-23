@@ -184,6 +184,17 @@ provider or confirmation result is terminal and cannot trigger another send.
 The one-second wait handles the precise DB reservation timestamp's conservative
 provider-second projection without accepting an earlier provider message date.
 
+The private callback owner now re-reads the official feed's latest tweet ID
+before and after its durable action. A newer tweet makes an otherwise unchanged
+linked source ineligible and rolls back the action. This uses only the restricted
+role's existing source-item SELECT; the production ACL readback showed no feed
+SELECT or candidate-function EXECUTE. Feed activation and poll recency are
+therefore still proved at card reservation/registration, not by this callback
+check. This private check is not publication readiness or a reason to enable
+the route. The local fake-transaction test covers a newer-source denial; the
+full host PostgreSQL driver remains unrun when macOS shared-memory allocation
+fails before schema setup.
+
 This is **not** a working staff edit button yet. The trusted DB reservation
 reader/writer now exists locally as `PostgresPrivatePromptOwner`: it derives
 the exact action/card/actor from the committed callback, requires the existing

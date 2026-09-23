@@ -203,7 +203,7 @@ def main():
 
     def seed(client='squid', channel='x', registered=True, deferred_edit=False):
         assert not (registered and deferred_edit)
-        ids = {k: str(uuid4()) for k in ('workspace', 'actor', 'item', 'version', 'review', 'prompt', 'source', 'asset')}
+        ids = {k: str(uuid4()) for k in ('workspace', 'actor', 'item', 'version', 'review', 'prompt', 'source', 'feed', 'asset')}
         ids.update(client=client, channel=channel, text="검수용 수정 문안 ' quoted ; -- 😀")
         with connect() as c:
             ids['message'] = c.execute("select nextval('private.test_button_driver_messages')").fetchone()[0]
@@ -211,6 +211,10 @@ def main():
             c.execute('insert into auth.users(id) values(%s)', (a,))
             c.execute('insert into public.workspaces(id,name,slug) values(%s,%s,%s)', (w, 'Synthetic driver', w))
             c.execute('insert into public.workspace_clients(workspace_id,client_id,display_name) values(%s,%s,%s)', (w, client, client))
+            c.execute("""insert into public.source_feeds(id,workspace_id,client_id,provider,name,
+                handle,poll_interval_minutes,last_polled_at,active)
+                values(%s,%s,%s,'x','Synthetic official feed',%s,15,clock_timestamp(),true)""",
+                (ids['feed'],w,client,'@'+client))
             c.execute("insert into public.content_items(id,workspace_id,client_id,content_kind,status) values(%s,%s,%s,'daily_news','draft')", (i,w,client))
             c.execute("""insert into public.content_versions(id,workspace_id,content_item_id,version_number,
                 prompt_version,channel_copy,content,deliverables,generation_meta)
@@ -219,7 +223,10 @@ def main():
                 Jsonb({'primary_asset_id':ids['asset']}), Jsonb({'mock_mode':False,
                     'fact_check':{'status':'pass'}, 'brand_qa':{'status':'pass'}})))
             c.execute("insert into public.assets(id,workspace_id,content_item_id,content_version_id,asset_kind,storage_path,mime_type,sha256) values(%s,%s,%s,%s,'png',%s,'image/png',%s)", (ids['asset'],w,i,v,ids['asset']+'/synthetic-only.png','a'*64))
-            c.execute("insert into public.source_items(id,workspace_id,client_id,source_type,body,source_hash,published_at) values(%s,%s,%s,'manual','Synthetic source',%s,now())", (ids['source'],w,client,'b'*64))
+            c.execute("""insert into public.source_items(id,workspace_id,client_id,source_feed_id,
+                source_type,body,source_hash,published_at)
+                values(%s,%s,%s,%s,'manual','Synthetic source',%s,clock_timestamp()-interval '1 hour')""",
+                (ids['source'],w,client,ids['feed'],'b'*64))
             c.execute('insert into public.content_source_links(workspace_id,client_id,content_item_id,source_item_id) values(%s,%s,%s,%s)', (w,client,i,ids['source']))
             c.execute("update public.content_items set status='needs_review',current_version_id=%s where id=%s", (v,i))
             c.execute('insert into private.content_ops_button_reviewers values(%s,%s,%s,true)', (w,client,a))
