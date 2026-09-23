@@ -65,6 +65,11 @@ secrets without network I/O. A separate Dockerfile and Railway manifest are
 local deployment proposals, default OFF with no cron and no restart; they are
 not attached to an existing Railway service. Neither `--validate-only` nor a
 synthetic canary proves hosted schema compatibility or a real Telegram send.
+The proposed PR CI now builds that isolated image with a synthetic SHA, runs
+its default-OFF and validate-only paths without networking, rejects mismatched
+SHA and a broad DB credential, and separately replays the button-card owner
+ledger in disposable PostgreSQL. These checks are local/CI evidence only; no
+hosted deployment, production ACL check or provider receipt is implied.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
