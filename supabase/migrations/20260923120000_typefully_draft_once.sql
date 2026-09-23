@@ -231,17 +231,38 @@ begin
       on source.workspace_id = link.workspace_id
      and source.client_id = link.client_id
      and source.id = link.source_item_id
+    join public.source_feeds as feed
+      on feed.workspace_id = source.workspace_id
+     and feed.client_id = source.client_id
+     and feed.id = source.source_feed_id
     where link.workspace_id = target_workspace_id
       and link.client_id = item.client_id
       and link.content_item_id = item.id
       and link.position = 0 and source.source_type = 'tweet'
+      and source.author_handle = case item.client_id
+        when 'yellow' then '@Yellow'
+        when 'origintrail' then '@origin_trail'
+        when 'squid' then '@SquidRouter'
+        when 'babylon' then '@babylonlabs_io' end
+      and feed.provider = 'x' and feed.handle = source.author_handle
+      and feed.active is true and feed.poll_interval_minutes = 15
+      and feed.last_polled_at between decision_now - interval '30 minutes'
+                                  and decision_now + interval '5 minutes'
+      and source.published_at between decision_now - interval '24 hours'
+                                  and decision_now + interval '5 minutes'
       and source.published_at <= version.created_at
+      and source.id = (select latest.id from public.source_items as latest
+          where latest.workspace_id = source.workspace_id
+            and latest.client_id = source.client_id
+            and latest.source_feed_id = source.source_feed_id
+            and latest.source_type = 'tweet'
+          order by latest.published_at desc nulls last, latest.id desc limit 1)
       and source.canonical_url ~ ('^https://x\.com/' || case item.client_id
         when 'yellow' then 'Yellow'
         when 'origintrail' then 'origin_trail'
         when 'squid' then 'SquidRouter'
         when 'babylon' then 'babylonlabs_io' end || '/status/[1-9][0-9]{0,18}$')
-    for share of link, source;
+    for share of link, source, feed;
     if not found or (select count(*) from public.content_source_links as link
         where link.workspace_id = target_workspace_id
           and link.content_item_id = item.id and link.position = 0) <> 1 then
@@ -403,6 +424,164 @@ begin
 end;
 $$;
 
+-- Read-only owner candidate. Reservation repeats the mutable checks under an
+-- item row lock, so this projection is never an execution permit by itself.
+create function public.get_typefully_draft_candidate(
+    target_workspace_id uuid, target_content_item_id uuid,
+    target_content_version_id uuid, target_approval_id uuid
+)
+returns jsonb
+language plpgsql stable security definer set search_path = ''
+as $$
+declare
+    item public.content_items%rowtype;
+    version public.content_versions%rowtype;
+    approval public.approvals%rowtype;
+    banner public.assets%rowtype;
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select candidate.* into item from public.content_items as candidate
+    where candidate.workspace_id = target_workspace_id
+      and candidate.id = target_content_item_id;
+    if not found or item.client_id not in ('yellow','origintrail','squid','babylon')
+       or item.status is distinct from 'approved'
+       or item.content_kind is distinct from 'daily_news'
+       or item.current_version_id is distinct from target_content_version_id
+       or not exists (select 1 from public.workspace_clients as client
+           where client.workspace_id = target_workspace_id
+             and client.client_id = item.client_id and client.active is true)
+       or exists (select 1 from public.publications as publication
+           where publication.workspace_id = target_workspace_id
+             and publication.content_item_id = item.id) then
+        return null;
+    end if;
+    select candidate.* into version from public.content_versions as candidate
+    where candidate.workspace_id = target_workspace_id
+      and candidate.content_item_id = item.id
+      and candidate.id = target_content_version_id;
+    if not found or version.generation_meta -> 'mock_mode' is distinct from 'false'::jsonb
+       or not private.has_valid_double_fact_check_report(version.generation_meta)
+       or jsonb_typeof(version.channel_copy -> 'x') is distinct from 'string'
+       or btrim(version.channel_copy ->> 'x') = ''
+       or char_length(version.channel_copy ->> 'x') > 280 then
+        return null;
+    end if;
+    select candidate.* into approval from public.approvals as candidate
+    where candidate.workspace_id = target_workspace_id
+      and candidate.content_item_id = item.id
+    order by candidate.review_sequence desc limit 1;
+    if not found or approval.id is distinct from target_approval_id
+       or approval.content_version_id is distinct from version.id
+       or approval.decision is distinct from 'approved'
+       or approval.reviewer_source is distinct from 'studio_session'
+       or approval.fact_check_policy_version is distinct from 'double-fact-check@1'
+       or approval.source_facts_verified is not true
+       or approval.output_claims_verified is not true then
+        return null;
+    end if;
+    select candidate.* into banner from public.assets as candidate
+    join storage.objects as stored
+      on stored.bucket_id = candidate.storage_bucket
+     and stored.name = candidate.storage_path
+    where candidate.workspace_id = target_workspace_id
+      and candidate.content_item_id = item.id
+      and candidate.content_version_id = version.id
+      and candidate.id::text = version.deliverables ->> 'primary_asset_id'
+      and candidate.asset_kind = 'png' and candidate.mime_type = 'image/png'
+      and candidate.storage_bucket = 'content-studio'
+      and candidate.metadata ->> 'filename' = 'news-card.png'
+      and candidate.storage_path = target_workspace_id::text || '/' || item.client_id
+            || '/' || candidate.id::text || '/news-card.png'
+      and candidate.sha256 ~ '^[a-f0-9]{64}$'
+      and candidate.byte_size between 24 and 10485760
+      and candidate.width between 1 and 10000
+      and candidate.height between 1 and 10000;
+    if not found then return null; end if;
+    if (select count(*) from public.content_source_links as link
+        where link.workspace_id = target_workspace_id
+          and link.content_item_id = item.id and link.position = 0) <> 1
+       or not exists (select 1 from public.content_source_links as link
+           join public.source_items as source
+             on source.workspace_id = link.workspace_id
+            and source.client_id = link.client_id
+            and source.id = link.source_item_id
+           join public.source_feeds as feed
+             on feed.workspace_id = source.workspace_id
+            and feed.client_id = source.client_id
+            and feed.id = source.source_feed_id
+           where link.workspace_id = target_workspace_id
+             and link.client_id = item.client_id
+             and link.content_item_id = item.id and link.position = 0
+             and source.source_type = 'tweet'
+             and source.author_handle = case item.client_id
+               when 'yellow' then '@Yellow'
+               when 'origintrail' then '@origin_trail'
+               when 'squid' then '@SquidRouter'
+               when 'babylon' then '@babylonlabs_io' end
+             and feed.provider = 'x' and feed.handle = source.author_handle
+             and feed.active is true and feed.poll_interval_minutes = 15
+             and feed.last_polled_at between statement_timestamp() - interval '30 minutes'
+                                         and statement_timestamp() + interval '5 minutes'
+             and source.published_at between statement_timestamp() - interval '24 hours'
+                                         and statement_timestamp() + interval '5 minutes'
+             and source.published_at <= version.created_at
+             and source.id = (select latest.id from public.source_items as latest
+                 where latest.workspace_id = source.workspace_id
+                   and latest.client_id = source.client_id
+                   and latest.source_feed_id = source.source_feed_id
+                   and latest.source_type = 'tweet'
+                 order by latest.published_at desc nulls last, latest.id desc limit 1)
+             and source.canonical_url ~ ('^https://x\.com/' || case item.client_id
+               when 'yellow' then 'Yellow'
+               when 'origintrail' then 'origin_trail'
+               when 'squid' then 'SquidRouter'
+               when 'babylon' then 'babylonlabs_io' end
+               || '/status/[1-9][0-9]{0,18}$')) then
+        return null;
+    end if;
+    return jsonb_build_object(
+        'workspace_id', item.workspace_id, 'client_id', item.client_id,
+        'content_item_id', item.id, 'content_version_id', version.id,
+        'approval_id', approval.id, 'version_created_at', version.created_at,
+        'x_copy', version.channel_copy ->> 'x',
+        'asset_id', banner.id, 'asset_sha256', banner.sha256,
+        'asset_byte_size', banner.byte_size, 'asset_width', banner.width,
+        'asset_height', banner.height, 'storage_bucket', banner.storage_bucket,
+        'storage_path', banner.storage_path
+    );
+end;
+$$;
+
+create function public.get_typefully_media_upload_receipt(
+    target_workspace_id uuid, target_content_item_id uuid,
+    target_social_set_id bigint
+)
+returns jsonb
+language plpgsql stable security definer set search_path = ''
+as $$
+declare
+    receipt private.typefully_media_upload_receipts%rowtype;
+begin
+    if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+        raise exception 'typefully_service_role_required' using errcode = '42501';
+    end if;
+    select candidate.* into receipt from private.typefully_media_upload_receipts as candidate
+    where candidate.workspace_id = target_workspace_id
+      and candidate.content_item_id = target_content_item_id
+      and candidate.social_set_id = target_social_set_id;
+    if not found then return null; end if;
+    return jsonb_build_object(
+        'media_receipt_id', receipt.id,
+        'content_version_id', receipt.content_version_id,
+        'asset_id', receipt.asset_id, 'asset_sha256', receipt.asset_sha256,
+        'uploaded_bytes_sha256', receipt.uploaded_bytes_sha256,
+        'social_set_id', receipt.social_set_id, 'media_id', receipt.media_id
+    );
+end;
+$$;
+
 revoke all on function private.record_typefully_media_upload(
     uuid,uuid,uuid,uuid,text,bigint,uuid) from public, anon, authenticated, service_role;
 revoke all on function private.reserve_typefully_draft_once(
@@ -426,6 +605,10 @@ revoke all on function public.confirm_typefully_draft_once(uuid,bigint,bigint,te
     from public, anon, authenticated, service_role;
 revoke all on function public.get_typefully_draft_attempt(uuid,uuid)
     from public, anon, authenticated, service_role;
+revoke all on function public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)
+    from public, anon, authenticated, service_role;
+revoke all on function public.get_typefully_media_upload_receipt(uuid,uuid,bigint)
+    from public, anon, authenticated, service_role;
 grant execute on function public.record_typefully_media_upload(
     uuid,uuid,uuid,uuid,text,bigint,uuid) to service_role;
 grant execute on function public.reserve_typefully_draft_once(
@@ -433,6 +616,10 @@ grant execute on function public.reserve_typefully_draft_once(
 grant execute on function public.confirm_typefully_draft_once(uuid,bigint,bigint,text)
     to service_role;
 grant execute on function public.get_typefully_draft_attempt(uuid,uuid)
+    to service_role;
+grant execute on function public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)
+    to service_role;
+grant execute on function public.get_typefully_media_upload_receipt(uuid,uuid,bigint)
     to service_role;
 
 commit;

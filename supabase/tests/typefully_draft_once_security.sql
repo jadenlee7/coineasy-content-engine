@@ -30,7 +30,9 @@ begin
         'public.record_typefully_media_upload(uuid,uuid,uuid,uuid,text,bigint,uuid)',
         'public.reserve_typefully_draft_once(uuid,uuid,uuid,uuid,uuid,bigint,text,timestamptz,timestamptz,text)',
         'public.confirm_typefully_draft_once(uuid,bigint,bigint,text)',
-        'public.get_typefully_draft_attempt(uuid,uuid)'
+        'public.get_typefully_draft_attempt(uuid,uuid)',
+        'public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)',
+        'public.get_typefully_media_upload_receipt(uuid,uuid,bigint)'
     ] loop
         if to_regprocedure(function_name) is null
            or not has_function_privilege('service_role', function_name, 'EXECUTE')
@@ -87,7 +89,9 @@ declare
     item_id uuid := gen_random_uuid();
     version_id uuid := gen_random_uuid();
     asset_id uuid := gen_random_uuid();
+    feed_id uuid := gen_random_uuid();
     source_id uuid := gen_random_uuid();
+    newer_source_id uuid := gen_random_uuid();
     approval_id uuid := gen_random_uuid();
     media_id uuid := gen_random_uuid();
     media_receipt_id uuid;
@@ -134,11 +138,16 @@ begin
         'image/png',2048,banner_hash,1024,1024,'{"filename":"news-card.png"}'::jsonb);
     insert into storage.objects (bucket_id,name) values (
         'content-studio',workspace_id::text || '/squid/' || asset_id::text || '/news-card.png');
+    insert into public.source_feeds (
+        id,workspace_id,client_id,provider,name,handle,poll_interval_minutes,
+        last_polled_at,active
+    ) values (feed_id,workspace_id,'squid','x','Synthetic official feed',
+        '@SquidRouter',15,statement_timestamp(),true);
     insert into public.source_items (
-        id,workspace_id,client_id,source_type,canonical_url,author_handle,
+        id,workspace_id,client_id,source_feed_id,source_type,canonical_url,author_handle,
         published_at,body,source_hash
     ) values (
-        source_id,workspace_id,'squid','tweet',
+        source_id,workspace_id,'squid',feed_id,'tweet',
         'https://x.com/SquidRouter/status/123456789','@SquidRouter',
         statement_timestamp()-interval '1 hour','Synthetic',repeat('d',64));
     insert into public.content_source_links (
@@ -151,6 +160,42 @@ begin
     ) values (
         approval_id,workspace_id,'squid',item_id,version_id,
         'studio_session','approved','double-fact-check@1',true,true);
+    update public.source_items set published_at=statement_timestamp()-interval '25 hours'
+    where id=source_id;
+    if public.get_typefully_draft_candidate(workspace_id,item_id,version_id,approval_id)
+            is not null then
+        raise exception 'typefully_stale_source_candidate_accepted';
+    end if;
+    update public.source_items set published_at=statement_timestamp()-interval '1 hour'
+    where id=source_id;
+    insert into public.source_items (
+        id,workspace_id,client_id,source_feed_id,source_type,canonical_url,author_handle,
+        published_at,body,source_hash
+    ) values (
+        newer_source_id,workspace_id,'squid',feed_id,'tweet',
+        'https://x.com/SquidRouter/status/123456790','@SquidRouter',
+        statement_timestamp()-interval '30 minutes','Synthetic newer',repeat('e',64));
+    if public.get_typefully_draft_candidate(workspace_id,item_id,version_id,approval_id)
+            is not null then
+        raise exception 'typefully_nonlatest_source_candidate_accepted';
+    end if;
+    delete from public.source_items where id=newer_source_id;
+    update public.source_feeds set last_polled_at=statement_timestamp()-interval '31 minutes'
+    where id=feed_id;
+    if public.get_typefully_draft_candidate(workspace_id,item_id,version_id,approval_id)
+            is not null then
+        raise exception 'typefully_stale_feed_candidate_accepted';
+    end if;
+    update public.source_feeds set last_polled_at=statement_timestamp()
+    where id=feed_id;
+    if public.get_typefully_draft_candidate(
+        workspace_id,item_id,version_id,approval_id)->>'asset_id' <> asset_id::text
+       or public.get_typefully_draft_candidate(
+        workspace_id,item_id,version_id,approval_id)->>'x_copy' <> '테스트 공지'
+       or public.get_typefully_draft_candidate(
+        workspace_id,item_id,version_id,gen_random_uuid()) is not null then
+        raise exception 'typefully_candidate_projection_invalid';
+    end if;
     begin
         perform public.record_typefully_media_upload(
             workspace_id,item_id,version_id,asset_id,repeat('f',64),1234,media_id);
@@ -160,6 +205,52 @@ begin
     end;
     media_receipt_id := public.record_typefully_media_upload(
         workspace_id,item_id,version_id,asset_id,banner_hash,1234,media_id);
+    if public.get_typefully_media_upload_receipt(workspace_id,item_id,1234)
+            ->>'media_receipt_id' <> media_receipt_id::text
+       or public.get_typefully_media_upload_receipt(workspace_id,item_id,1235)
+            is not null then
+        raise exception 'typefully_media_receipt_readback_invalid';
+    end if;
+    update public.source_items set published_at=statement_timestamp()-interval '25 hours'
+    where id=source_id;
+    begin
+        perform public.reserve_typefully_draft_once(
+            workspace_id,item_id,version_id,approval_id,media_receipt_id,
+            1234,'squidkorea',statement_timestamp(),statement_timestamp(),'ready');
+        raise exception 'typefully_stale_source_reservation_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_primary_source_invalid' then raise; end if;
+    end;
+    update public.source_items set published_at=statement_timestamp()-interval '1 hour'
+    where id=source_id;
+    insert into public.source_items (
+        id,workspace_id,client_id,source_feed_id,source_type,canonical_url,author_handle,
+        published_at,body,source_hash
+    ) values (
+        newer_source_id,workspace_id,'squid',feed_id,'tweet',
+        'https://x.com/SquidRouter/status/123456790','@SquidRouter',
+        statement_timestamp()-interval '30 minutes','Synthetic newer',repeat('e',64));
+    begin
+        perform public.reserve_typefully_draft_once(
+            workspace_id,item_id,version_id,approval_id,media_receipt_id,
+            1234,'squidkorea',statement_timestamp(),statement_timestamp(),'ready');
+        raise exception 'typefully_nonlatest_source_reservation_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_primary_source_invalid' then raise; end if;
+    end;
+    delete from public.source_items where id=newer_source_id;
+    update public.source_feeds set last_polled_at=statement_timestamp()-interval '31 minutes'
+    where id=feed_id;
+    begin
+        perform public.reserve_typefully_draft_once(
+            workspace_id,item_id,version_id,approval_id,media_receipt_id,
+            1234,'squidkorea',statement_timestamp(),statement_timestamp(),'ready');
+        raise exception 'typefully_stale_feed_reservation_accepted';
+    exception when check_violation then
+        if sqlerrm <> 'typefully_primary_source_invalid' then raise; end if;
+    end;
+    update public.source_feeds set last_polled_at=statement_timestamp()
+    where id=feed_id;
     begin
         perform public.reserve_typefully_draft_once(
             workspace_id,item_id,version_id,approval_id,media_receipt_id,

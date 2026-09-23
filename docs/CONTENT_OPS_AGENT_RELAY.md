@@ -106,16 +106,30 @@ POST. Only a matching draft receipt may move it to `draft_created`, and no RPC
 releases an unknown row for retry. The actual uploaded-bytes hash and provider
 GET evidence remain trusted-caller attestations: the database cannot perform
 those network checks. Service-role-only `public` RPC wrappers expose this
-private ledger to a future PostgREST owner without granting direct table
-access; a bounded readback reports whether an uncertain reservation committed.
+private ledger to a PostgREST owner without granting direct table access;
+bounded candidate, media-receipt, and attempt readbacks expose only the fields
+needed to prove exact ownership or reconcile an uncertain reservation. Both
+candidate lookup and reservation require the currently latest official tweet,
+publication within 24 hours, and an active 15-minute feed polled within 30
+minutes. The reservation repeats mutable checks under a content-item lock.
 The new media adapter follows Typefully's documented allocation + raw S3 PUT
 flow for exact PNG bytes, with a strict presigned-host check and no automatic
 retry or URL/credential echo. Its output is not a ready-media receipt: the
 owner must perform the authenticated media GET and persist the upload receipt.
-This migration is not applied to production, and no hosted owner/worker is
-connected to it yet. The legacy Typefully client still has no durable owner
-and must not be used as that worker. No public X posting path or scheduling
-authorization is supplied.
+The local `typefully_draft_once` worker is default OFF. It requires the exact
+workspace, client, item, current version, approval, and social-set identifiers;
+literal `TYPEFULLY_DRAFT_ENABLED=true`; and a matching 40-character runtime Git
+SHA and pinned release SHA before making any network call. It requires an
+existing durable media-upload receipt, re-downloads the private canonical PNG
+and checks its bytes, dimensions, and SHA-256, then authenticates the current
+Typefully X account and ready media. Only the matching DB reservation body
+can authorize one draft POST with `publish_at: null`. A missing/ambiguous POST
+response or confirmation is not retried; the attempt requires readback and
+manual reconciliation because the provider or DB may already have committed.
+It is not a daily scheduler or a media uploader. This
+migration and worker are not deployed or enabled in production. The legacy
+Typefully client must not be used as a substitute owner. No public X posting
+path or scheduling authorization is supplied.
 
 ## Dedicated relay configuration
 
