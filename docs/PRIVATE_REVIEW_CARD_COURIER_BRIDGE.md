@@ -159,3 +159,20 @@ Before enabling or sending even one card, the remaining owner path must:
 The observed 2026-09-23 Babylon content/version IDs in the local readiness
 receipt are a snapshot, not a reservation. Re-evaluate source freshness at
 action time; do not hard-code them into a worker or production setting.
+
+## Edit-button reply prompt bridge (local only)
+
+`private_review_prompt_courier.py` now supplies a default-OFF, one-shot
+reservation → fixed instruction → direct provider-response validation →
+receipt-confirmation sequence. Its send-only adapter reuses the existing bot's
+exact private-room/member preflight and never polls updates. It sends only one
+plain-text prompt after a committed, non-reused attempt reservation; an unknown
+provider or confirmation result is terminal and cannot trigger another send.
+The one-second wait handles the precise DB reservation timestamp's conservative
+provider-second projection without accepting an earlier provider message date.
+
+This is **not** a working staff edit button yet. The trusted DB reservation
+reader/writer and confirmation adapter are not mounted, the existing bot does
+not invoke this courier after `edit_requested`, and no production role or
+Telegram credential has been added. Until those exact gates and a private
+canary are verified, the button must not claim that a reply prompt was sent.
