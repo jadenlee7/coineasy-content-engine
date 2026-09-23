@@ -64,7 +64,13 @@ matching packet-mode header. This scope permits only reconcile, claim and
 one-shot begin; the legacy `finish` endpoint is denied because atomic card
 registration owns finalization. The default link-card scope is unchanged.
 This code is not deployed or configured, and no button-card caller or owner
-credential is wired to it.
+credential is wired to it. The unmounted, default-OFF
+`core/content_ops/private_review_card_gateway.py` is its one-shot client: it
+validates the exact release/scope, fresh official-source claim and single
+begin receipt without exposing `finish`, approval or publication. A lost claim
+or begin acknowledgement is terminal in that client. It still needs an exact
+snapshot/PNG loader and a single runner connecting claim, owner preparation,
+packet hash, begin and the courier; there is no automatic trigger.
 
 The pure receipt module has no network, database or polling code. Its response parser is
 not an authentication boundary: the eventual one-shot courier must own the
