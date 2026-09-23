@@ -52,10 +52,10 @@ class PollingReviewAdapter:
             normalized = json.loads(body)
             if callback:
                 value = normalized["callback_query"]["data"]
-                if type(value) is not str:
+                if type(value) is not str or not value.startswith(PRIVATE_CALLBACK_PREFIX):
                     raise ValueError()
-                if value.startswith(PRIVATE_CALLBACK_PREFIX):
-                    normalized["callback_query"]["data"] = value[len(PRIVATE_CALLBACK_PREFIX):]
+                # The authenticated parser must see the private namespace and
+                # reject an unprefixed legacy/public button before owner I/O.
             return json.dumps(normalized, ensure_ascii=True).encode()
         except Exception:
             raise ReviewIngressError("review_ingress_body_invalid") from None

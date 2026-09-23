@@ -62,7 +62,7 @@ def test_generated_private_buttons_are_55_bytes_and_webhook_compatible():
 def test_signed_publication_action_is_rejected_even_after_checks(prefix):
     case, adapter = fixture()
     for action in ("s", "c"):
-        asyncio.run(adapter.handle_callback(case.update(action), now=NOW))
+        asyncio.run(adapter.handle_callback(case.update(action, private=True), now=NOW))
     u = case.update("a"); u["callback_query"]["data"] = prefix + u["callback_query"]["data"]
     before = case.owner.applies
     with pytest.raises(ReviewIngressError):
@@ -70,12 +70,19 @@ def test_signed_publication_action_is_rejected_even_after_checks(prefix):
     assert case.owner.applies == before and not case.owner.outbox
 
 
+def test_unprefixed_private_button_rejected_before_owner_io():
+    case, adapter = fixture()
+    with pytest.raises(ReviewIngressError):
+        asyncio.run(adapter.handle_callback(case.update("s"), now=NOW))
+    assert case.owner.lookups == case.owner.reads == case.owner.applies == 0
+
+
 @pytest.mark.parametrize("mutation", ["actor", "room", "signature", "registration"])
 def test_untrusted_context_does_not_mutate_owner(mutation):
-    case, adapter = fixture(); u = case.update()
+    case, adapter = fixture(); u = case.update(private=True)
     if mutation == "actor": u["callback_query"]["from"]["id"] = 999
     if mutation == "room": u["callback_query"]["message"]["chat"]["id"] = -999
-    if mutation == "signature": u["callback_query"]["data"] = "A" * 51
+    if mutation == "signature": u["callback_query"]["data"] = "ce1:" + "A" * 51
     if mutation == "registration": case.owner.registered = False
     with pytest.raises(ReviewIngressError):
         asyncio.run(adapter.handle_callback(u, now=NOW))
