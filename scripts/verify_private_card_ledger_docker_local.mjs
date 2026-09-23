@@ -373,6 +373,12 @@ try {
   query('grant select on private.content_ops_button_prompt_attempts to coineasy_private_review');
   sql('supabase/proposals/content_ops_button_prompt_preapply_readonly.sql');
   sql('supabase/proposals/content_ops_button_prompt_runtime_capability.sql');
+  const promptPostapply = sqlScalar(
+    'supabase/proposals/content_ops_button_prompt_postapply_readonly.sql');
+  assert.deepEqual(JSON.parse(promptPostapply.stdout), {
+    catalog_only: true, changes: 0, hosted_runtime_verified: false,
+    prompt_runtime_postapply: 'pass', provider_calls: 0, read_only: true,
+  });
   query(`do $$ begin
     if not has_function_privilege('coineasy_private_review',
         'private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)', 'EXECUTE')
@@ -421,10 +427,36 @@ try {
     throw Error('prompt pre-apply check accepted a partially installed capability');
   }
   sql('supabase/tests/content_ops_button_prompt_runtime_capability.sql');
+  query(`revoke execute on function
+    private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)
+    from coineasy_private_review`);
+  const missingPromptGrant = sql(
+    'supabase/proposals/content_ops_button_prompt_postapply_readonly.sql',
+    { allowFailure: true });
+  if (missingPromptGrant.status === 0
+      || !String(missingPromptGrant.stderr).includes('prompt_postapply_wrapper_acl_mismatch')) {
+    throw Error('prompt post-apply accepted a missing runtime grant');
+  }
+  query(`grant execute on function
+    private.reserve_content_ops_button_prompt_for_runtime(uuid,uuid,uuid,text,text)
+    to coineasy_private_review`);
+  query(`create or replace function private.reserve_content_ops_button_prompt_for_runtime(
+    target_card_id uuid,target_attempt_id uuid,target_actor_id uuid,
+    verified_human_binding text,target_action_key text)
+    returns jsonb language plpgsql volatile
+    security definer set search_path='' as $$ begin return '{}'::jsonb; end $$`);
+  const changedPromptBody = sql(
+    'supabase/proposals/content_ops_button_prompt_postapply_readonly.sql',
+    { allowFailure: true });
+  if (changedPromptBody.status === 0
+      || !String(changedPromptBody.stderr).includes('prompt_postapply_function_contract_mismatch')) {
+    throw Error('prompt post-apply accepted a changed wrapper body');
+  }
   console.log(JSON.stringify({ localPostgres: postgresVersion, syntheticLedgerPassed: true,
     rolledBack: true, forceRls: true, runtimeAclDenied: true,
     promptCapabilityAclVerified: true, promptRuntimeExecuted: true,
     promptPreapplyCatalogVerified: true,
+    promptPostapplyCatalogVerified: true,
     producerBindingContractVerified: true,
     atomicProducerMigrationVerified: true,
     remainingPreapplyVerified: true,

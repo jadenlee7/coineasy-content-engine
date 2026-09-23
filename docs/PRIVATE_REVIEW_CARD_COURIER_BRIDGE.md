@@ -246,3 +246,10 @@ already-installed wrapper. The exact-hash gate passed on the hosted production
 catalog at 2026-09-23 13:49 UTC; see the
 [read-only receipt](PRIVATE_REVIEW_PROMPT_PREAPPLY_RECEIPT_20260923.md). This
 does not authorize applying the proposal or enabling the bot.
+The companion `content_ops_button_prompt_postapply_readonly.sql` is an
+explicitly catalog-only check for the two exact wrapper bodies, owner/security
+mode, restricted EXECUTE grants, underlying-function denial and direct INSERT
+boundary. It passed only in disposable PostgreSQL 16.13 and 17.6 after the
+local capability proposal. Those tests also reject a missing runtime grant or
+changed wrapper body. The wrapper is absent on production, so no hosted
+post-apply or runtime receipt exists; this is not activation evidence.
