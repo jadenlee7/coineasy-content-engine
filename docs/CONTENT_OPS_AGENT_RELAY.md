@@ -97,9 +97,18 @@ separate Typefully readback adapter uses only authenticated social-set and
 media-status GET calls and discards profile URLs and raw provider bodies. Its
 ready-media result alone cannot prove the uploaded bytes or version: a durable
 owner upload record must bind it to the canonical PNG before preparation. The
-legacy Typefully client makes at most one create-draft POST and treats a lost
-response as unknown; neither module supplies the missing durable exact-version
-draft owner, hosted account/media verification, or public X publication path.
+Draft-only `20260923120000_typefully_draft_once.sql` migration stages private
+media-upload receipts and a unique per-content-item attempt ledger. Its
+service-role reservation rechecks the current approved version, latest human
+fact-check approval, stored canonical PNG, primary official source, account,
+and fresh media readback; it commits `delivery_unknown` before any provider
+POST. Only a matching draft receipt may move it to `draft_created`, and no RPC
+releases an unknown row for retry. The actual uploaded-bytes hash and provider
+GET evidence remain trusted-caller attestations: the database cannot perform
+those network checks. This migration is not applied to production, and no
+hosted owner/worker is connected to it yet. The legacy Typefully client still
+has no durable owner and must not be used as that worker. No public X posting
+path or scheduling authorization is supplied.
 
 ## Dedicated relay configuration
 
