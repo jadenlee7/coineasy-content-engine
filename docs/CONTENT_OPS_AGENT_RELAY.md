@@ -172,6 +172,9 @@ client/social-set mapping and dedicated Supabase/Typefully credentials. A
 real hosted canary, service creation, variable setup, and production migration
 need separate operator authorization; no public Telegram or X send follows
 from enabling this private-draft service.
+The dedicated image copies only the exact Typefully owner modules and their
+inert shared validators, not the Telegram publication worker or other provider
+workers. CI inspects the built image's module list with networking disabled.
 
 ## Dedicated relay configuration
 

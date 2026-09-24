@@ -72,7 +72,7 @@ const legacyManifestHashes: Record<string, string> = {
 };
 const proposedManifestHashes: Record<string, string> = {
   // Draft-only, not owned by the existing two-service Railway IaC program.
-  'railway.typefully-daily.json': 'b617f405c7b39acf5972549f3c3a6b3bb7f46f29b47bd200d028837deab4f4fc',
+  'railway.typefully-daily.json': 'f83de5cb67706ff358aba57b4859f6601b5c5036320748780d073254448653d9',
 };
 
 function assertPreservedVariables(actual: Record<string, unknown>, expected: string[]) {

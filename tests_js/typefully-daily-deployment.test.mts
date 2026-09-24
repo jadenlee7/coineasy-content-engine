@@ -14,7 +14,17 @@ test("private Typefully daily Railway config stays isolated and default OFF", ()
       watchPatterns: [
         "/.dockerignore",
         "/Dockerfile.typefully-daily",
-        "/core/publications/**",
+        "/Dockerfile.typefully-daily.dockerignore",
+        "/core/__init__.py",
+        "/core/publications/__init__.py",
+        "/core/publications/models.py",
+        "/core/publications/handoff.py",
+        "/core/publications/settings.py",
+        "/core/publications/typefully_daily.py",
+        "/core/publications/typefully_draft_once.py",
+        "/core/publications/typefully_media_once.py",
+        "/core/publications/typefully_media_upload.py",
+        "/core/publications/typefully_readback.py",
         "/scripts/run_typefully_daily.py",
         "/railway.typefully-daily.json",
       ],
@@ -32,6 +42,37 @@ test("private Typefully daily Railway config stays isolated and default OFF", ()
   assert.match(docker, /USER nobody/);
   assert.match(docker, /typefully-daily-build-sha/);
   assert.doesNotMatch(docker, /TELEGRAM_|TYPEFULLY_DAILY_ENABLED=true/);
+  assert.deepEqual(docker.split("\n").filter((line) => line.startsWith("COPY ")), [
+    "COPY core/__init__.py ./core/__init__.py",
+    "COPY core/publications/__init__.py ./core/publications/__init__.py",
+    "COPY core/publications/models.py ./core/publications/models.py",
+    "COPY core/publications/handoff.py ./core/publications/handoff.py",
+    "COPY core/publications/settings.py ./core/publications/settings.py",
+    "COPY core/publications/typefully_daily.py ./core/publications/typefully_daily.py",
+    "COPY core/publications/typefully_draft_once.py ./core/publications/typefully_draft_once.py",
+    "COPY core/publications/typefully_media_once.py ./core/publications/typefully_media_once.py",
+    "COPY core/publications/typefully_media_upload.py ./core/publications/typefully_media_upload.py",
+    "COPY core/publications/typefully_readback.py ./core/publications/typefully_readback.py",
+    "COPY scripts/run_typefully_daily.py ./scripts/run_typefully_daily.py",
+  ]);
+  assert.deepEqual(read("Dockerfile.typefully-daily.dockerignore").trimEnd().split("\n"), [
+    "**",
+    "!Dockerfile.typefully-daily",
+    "!core/",
+    "!core/__init__.py",
+    "!core/publications/",
+    "!core/publications/__init__.py",
+    "!core/publications/models.py",
+    "!core/publications/handoff.py",
+    "!core/publications/settings.py",
+    "!core/publications/typefully_daily.py",
+    "!core/publications/typefully_draft_once.py",
+    "!core/publications/typefully_media_once.py",
+    "!core/publications/typefully_media_upload.py",
+    "!core/publications/typefully_readback.py",
+    "!scripts/",
+    "!scripts/run_typefully_daily.py",
+  ]);
   assert.doesNotMatch(read(".railway/railway.ts"), /Dockerfile\.typefully-daily|TYPEFULLY_DAILY_ENABLED/);
 });
 

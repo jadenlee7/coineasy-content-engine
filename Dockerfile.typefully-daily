@@ -12,7 +12,15 @@ RUN test -n "$RAILWAY_GIT_COMMIT_SHA" && \
     chmod 444 /app/typefully-daily-build-sha
 
 COPY core/__init__.py ./core/__init__.py
-COPY core/publications ./core/publications
+COPY core/publications/__init__.py ./core/publications/__init__.py
+COPY core/publications/models.py ./core/publications/models.py
+COPY core/publications/handoff.py ./core/publications/handoff.py
+COPY core/publications/settings.py ./core/publications/settings.py
+COPY core/publications/typefully_daily.py ./core/publications/typefully_daily.py
+COPY core/publications/typefully_draft_once.py ./core/publications/typefully_draft_once.py
+COPY core/publications/typefully_media_once.py ./core/publications/typefully_media_once.py
+COPY core/publications/typefully_media_upload.py ./core/publications/typefully_media_upload.py
+COPY core/publications/typefully_readback.py ./core/publications/typefully_readback.py
 COPY scripts/run_typefully_daily.py ./scripts/run_typefully_daily.py
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TYPEFULLY_DAILY_ENABLED=false

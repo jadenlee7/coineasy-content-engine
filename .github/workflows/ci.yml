@@ -115,6 +115,24 @@ jobs:
             echo "unstamped Typefully image unexpectedly built" >&2
             exit 1
           fi
+      - name: Prove the image contains only required Typefully owner modules
+        shell: bash
+        run: |
+          docker run --rm -i --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python \
+            coineasy-typefully-daily-ci - <<'PY'
+          from pathlib import Path
+          from core.publications.typefully_daily import TypefullyDailySettings
+          expected = {
+              '__init__.py', 'models.py', 'handoff.py', 'settings.py',
+              'typefully_daily.py', 'typefully_draft_once.py',
+              'typefully_media_once.py', 'typefully_media_upload.py',
+              'typefully_readback.py',
+          }
+          assert {entry.name for entry in Path('/app/core/publications').iterdir()} == expected
+          assert TypefullyDailySettings.from_env({}) is None
+          print('typefully_isolated_default_off')
+          PY
       - name: Prove disabled execution has zero I/O
         shell: bash
         run: |
