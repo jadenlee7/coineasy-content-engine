@@ -12,6 +12,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Awaitable, Callable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -38,6 +39,22 @@ from core.publications.typefully_readback import TypefullyReadbackError, _key
 
 _KST = ZoneInfo("Asia/Seoul")
 _ORDER = ("yellow", "babylon", "squid", "origintrail")
+_BUILD_SHA_PATH = Path("/app/typefully-daily-build-sha")
+
+
+def _release_fence(values: Mapping[str, str], *, stamp_reader: Callable[[], str] | None,
+                   require_pin: bool) -> tuple[str, str, str]:
+    deployed = values.get("RAILWAY_GIT_COMMIT_SHA", "")
+    pinned = values.get("TYPEFULLY_DAILY_RELEASE_SHA", "")
+    try:
+        build_sha = (stamp_reader or _BUILD_SHA_PATH.read_text)().strip()
+    except (OSError, TypeError, AttributeError):
+        _fail("typefully_daily_release_fence_mismatch")
+    if (not _HEX40.fullmatch(deployed) or not _HEX40.fullmatch(build_sha)
+        or deployed != build_sha or (require_pin and pinned != deployed)
+        or (pinned and (not _HEX40.fullmatch(pinned) or pinned != deployed))):
+        _fail("typefully_daily_release_fence_mismatch")
+    return deployed, pinned, build_sha
 
 
 @dataclass(frozen=True)
@@ -51,19 +68,20 @@ class TypefullyDailySettings:
     social_sets: Mapping[str, int]
     deployed_sha: str
     authorized_sha: str
+    build_sha: str
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "TypefullyDailySettings | None":
+    def from_env(cls, env: Mapping[str, str] | None = None, *,
+                 stamp_reader: Callable[[], str] | None = None) -> "TypefullyDailySettings | None":
         values = os.environ if env is None else env
         flag = values.get("TYPEFULLY_DAILY_ENABLED", "false")
         if flag == "false":
             return None
         if flag != "true":
             _fail("typefully_daily_enable_flag_invalid")
-        deployed = values.get("RAILWAY_GIT_COMMIT_SHA", "")
-        pinned = values.get("TYPEFULLY_DAILY_RELEASE_SHA", "")
-        if not _HEX40.fullmatch(deployed) or deployed != pinned:
-            _fail("typefully_daily_release_fence_mismatch")
+        deployed, pinned, build_sha = _release_fence(
+            values, stamp_reader=stamp_reader, require_pin=True,
+        )
         raw_clients = values.get("TYPEFULLY_DAILY_CLIENTS", "")
         clients = tuple(raw_clients.split(","))
         if (not clients or any(client not in CLIENT_TARGETS for client in clients)
@@ -87,7 +105,7 @@ class TypefullyDailySettings:
             enabled=True, supabase_url=url, service_role_key=service_key,
             workspace_id=_uuid(values.get("CONTENT_STUDIO_WORKSPACE_ID", "")),
             api_key=key, clients=clients, social_sets=sets,
-            deployed_sha=deployed, authorized_sha=pinned,
+            deployed_sha=deployed, authorized_sha=pinned, build_sha=build_sha,
         )
 
 
@@ -174,7 +192,9 @@ async def run_typefully_daily(
     if settings.enabled is not True:
         _fail("typefully_daily_disabled")
     if (not _HEX40.fullmatch(settings.deployed_sha)
-        or settings.deployed_sha != settings.authorized_sha):
+        or not _HEX40.fullmatch(settings.build_sha)
+        or settings.deployed_sha != settings.authorized_sha
+        or settings.deployed_sha != settings.build_sha):
         _fail("typefully_daily_release_fence_mismatch")
     try:
         if _supabase_url(settings.supabase_url) != settings.supabase_url:

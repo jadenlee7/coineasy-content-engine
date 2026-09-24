@@ -159,6 +159,20 @@ coordinator never retries a provider write. The migration, coordinator, and
 workers remain undeployed and disabled in production. Neither Typefully X
 scheduling nor public X publication is included.
 
+`Dockerfile.typefully-daily` and `railway.typefully-daily.json` package this
+coordinator as a separate Railway cron service; adding these files does not
+create or deploy a service. The image build requires a 40-character commit
+SHA and embeds it as an immutable stamp. The stamp does not, by itself, prove
+GitHub origin: Railway deployment metadata must be checked separately. The
+15-minute schedule runs a no-I/O disabled path by default. Its pre-deploy
+`--validate-only` checks runtime SHA against the image stamp even while OFF,
+without credentials, database calls, or provider calls. Enabling requires the
+additional pinned `TYPEFULLY_DAILY_RELEASE_SHA` to match both, plus explicit
+client/social-set mapping and dedicated Supabase/Typefully credentials. A
+real hosted canary, service creation, variable setup, and production migration
+need separate operator authorization; no public Telegram or X send follows
+from enabling this private-draft service.
+
 ## Dedicated relay configuration
 
 Railway only:

@@ -13,10 +13,28 @@ from core.publications.typefully_daily import (
     run_typefully_daily,
 )
 from core.publications.typefully_draft_once import TypefullyDraftOwnerError
+from scripts import run_typefully_daily as cli
 from tests.test_typefully_draft_once import APPROVAL, ITEM, KEY, VERSION, WORKSPACE
 
 
 SLOT = "99999999-9999-4999-8999-999999999999"
+SHA = "a" * 40
+
+
+def enabled_env(**overrides):
+    return {
+        "TYPEFULLY_DAILY_ENABLED": "true",
+        "TYPEFULLY_DAILY_RELEASE_SHA": SHA,
+        "RAILWAY_GIT_COMMIT_SHA": SHA,
+        "TYPEFULLY_DAILY_CLIENTS": "yellow,babylon",
+        "TYPEFULLY_SOCIAL_SET_YELLOW": "12345",
+        "TYPEFULLY_SOCIAL_SET_BABYLON": "67890",
+        "SUPABASE_URL": "https://synthetic.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "synthetic_service_role_key_000000001",
+        "CONTENT_STUDIO_WORKSPACE_ID": WORKSPACE,
+        "TYPEFULLY_API_KEY": KEY,
+        **overrides,
+    }
 
 
 def settings(clients=("yellow", "babylon")):
@@ -25,7 +43,7 @@ def settings(clients=("yellow", "babylon")):
         service_role_key="synthetic_service_role_key_000000001",
         workspace_id=WORKSPACE, api_key=KEY, clients=clients,
         social_sets={"yellow": 12345, "babylon": 67890},
-        deployed_sha="a" * 40, authorized_sha="a" * 40,
+        deployed_sha="a" * 40, authorized_sha="a" * 40, build_sha="a" * 40,
     )
 
 
@@ -49,6 +67,50 @@ class FakeSelector:
         return self.candidates.get(client_id)
 
 
+class TypefullyDailyCliTests(unittest.TestCase):
+    def test_cli_default_off_and_validate_only_have_zero_io(self):
+        def forbidden_stamp():
+            raise AssertionError("disabled mode read build stamp")
+
+        self.assertEqual(cli.run(environ={}, stamp_reader=forbidden_stamp), {
+            "ok": True, "mode": "run", "enabled": False,
+            "network_calls": False, "database_calls": False, "provider_calls": False,
+        })
+        validated = cli.run(
+            validate_only=True,
+            environ={"RAILWAY_GIT_COMMIT_SHA": SHA}, stamp_reader=lambda: SHA,
+        )
+        self.assertEqual(validated, {
+            "ok": True, "mode": "validate_only", "enabled": False,
+            "network_calls": False, "database_calls": False, "provider_calls": False,
+        })
+        active_validation = cli.run(
+            validate_only=True, environ=enabled_env(), stamp_reader=lambda: SHA,
+        )
+        self.assertEqual(active_validation["ok"], True)
+        self.assertEqual(active_validation["provider_calls"], False)
+        mismatch = cli.run(
+            validate_only=True, environ=enabled_env(), stamp_reader=lambda: "b" * 40,
+        )
+        self.assertEqual(mismatch["ok"], False)
+        self.assertEqual(mismatch["provider_calls"], False)
+
+    def test_cli_enabled_run_reports_unknown_as_failure_without_retry(self):
+        calls = []
+
+        async def fake_runner(config):
+            calls.append(config.clients)
+            return {"kst_date": "2026-09-24", "outcomes": [
+                {"client_id": "yellow", "status": "draft_unknown", "slot_id": SLOT},
+            ]}
+
+        result = cli.run(environ=enabled_env(), stamp_reader=lambda: SHA,
+                         daily_runner=fake_runner)
+        self.assertEqual(calls, [("yellow", "babylon")])
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["outcomes"][0]["status"], "draft_unknown")
+
+
 class TypefullyDailyTests(unittest.IsolatedAsyncioTestCase):
     async def test_default_off_and_release_mismatch_have_zero_io(self):
         self.assertIsNone(TypefullyDailySettings.from_env({}))
@@ -65,6 +127,12 @@ class TypefullyDailyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TypefullyDraftOwnerError,
                                     "typefully_daily_release_fence_mismatch"):
             await run_typefully_daily(mismatch, selector=selector)
+        wrong_image = TypefullyDailySettings(**{
+            **vars(settings()), "build_sha": "b" * 40,
+        })
+        with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                    "typefully_daily_release_fence_mismatch"):
+            await run_typefully_daily(wrong_image, selector=selector)
         self.assertEqual(selector.calls, [])
 
     async def test_unsafe_url_and_credentials_have_zero_io(self):

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.typefully-daily",
+    "watchPatterns": [
+      "/.dockerignore",
+      "/Dockerfile.typefully-daily",
+      "/core/publications/**",
+      "/scripts/run_typefully_daily.py",
+      "/railway.typefully-daily.json"
+    ]
+  },
+  "deploy": {
+    "preDeployCommand": "python -m scripts.run_typefully_daily --validate-only",
+    "startCommand": "python -m scripts.run_typefully_daily",
+    "cronSchedule": "*/15 * * * *",
+    "restartPolicyType": "NEVER"
+  }
+}

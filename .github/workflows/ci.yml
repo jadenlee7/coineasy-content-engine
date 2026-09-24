@@ -91,6 +91,72 @@ jobs:
                             'external_sends': 0, 'production_proof': False}))
           PY
 
+  typefully-daily-image:
+    name: Private Typefully daily image (OFF, no provider I/O)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build with a synthetic SHA stamp (not origin proof)
+        run: >-
+          docker build --file Dockerfile.typefully-daily
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-typefully-daily-ci .
+      - name: Reject an image without a build SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker build --file Dockerfile.typefully-daily \
+            --tag coineasy-typefully-daily-unstamped-ci . >/dev/null 2>&1; then
+            echo "unstamped Typefully image unexpectedly built" >&2
+            exit 1
+          fi
+      - name: Prove disabled execution has zero I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges coineasy-typefully-daily-ci)"
+          jq -e '. == {"ok":true,"mode":"run","enabled":false,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+      - name: Validate image stamp and synthetic active config without I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":false,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env TYPEFULLY_DAILY_ENABLED=true \
+            --env TYPEFULLY_DAILY_CLIENTS=yellow \
+            --env TYPEFULLY_SOCIAL_SET_YELLOW=12345 \
+            --env TYPEFULLY_DAILY_RELEASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env SUPABASE_URL=https://synthetic.supabase.co \
+            --env SUPABASE_SERVICE_ROLE_KEY=ssssssssssssssssssssssssssssssssssssssss \
+            --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
+            --env TYPEFULLY_API_KEY=tttttttttttttttttttttttttttttttttttttttt \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":true,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+          set +e
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env RAILWAY_GIT_COMMIT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          status=$?
+          set -e
+          test "$status" -eq 2
+          jq -e '.ok == false and .network_calls == false and .database_calls == false and .provider_calls == false' <<< "$output"
+
   automation-image:
     runs-on: ubuntu-latest
     steps:
