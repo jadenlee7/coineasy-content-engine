@@ -137,8 +137,13 @@ existing durable media-upload receipt, re-downloads the private canonical PNG
 and checks its bytes, dimensions, and SHA-256, then authenticates the current
 Typefully X account and ready media. Only the matching DB reservation body
 can authorize one draft POST with `publish_at` and `plan_at` absent. A missing
-or ambiguous POST response or confirmation is not retried; the attempt requires readback and
-manual reconciliation because the provider or DB may already have committed.
+or ambiguous POST response is never retried. On a later run, the owner may
+scan at most 100 Typefully draft summaries and read one detail with GET only.
+It confirms the existing DB attempt only if exactly one draft matches the
+reserved version title, social set, approved X copy, media ID, creation window,
+and unscheduled draft state. No match, an incomplete scan, changed content, or
+multiple matches cannot authorize another POST. An unknown media allocation or
+PUT remains manual reconciliation only.
 It is not a daily scheduler or a media uploader. This migration and both
 workers are not deployed or enabled in production. The legacy
 Typefully client must not be used as a substitute owner. No public X posting
@@ -175,6 +180,12 @@ client/social-set mapping and dedicated Supabase/Typefully credentials. A
 real hosted canary, service creation, variable setup, and production migration
 need separate operator authorization; no public Telegram or X send follows
 from enabling this private-draft service.
+For this draft-only service, use an API key from a Typefully collaborator with
+**Write**, not **Write & Publish** or Admin, on the selected social sets.
+Typefully documents that API keys inherit their creator's permissions: Write
+permits drafts and media, while Publish is required to schedule or post. The
+social-set GET verifies account identity, not this permission level, so the
+operator must verify the collaborator role separately before activation.
 The dedicated image copies only the exact Typefully owner modules and their
 inert shared validators, not the Telegram publication worker or other provider
 workers. CI inspects the built image's module list with networking disabled.

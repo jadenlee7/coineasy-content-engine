@@ -3,6 +3,7 @@
 import hashlib
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -81,6 +82,13 @@ class FakeWorld:
         self.override_png = None
         self.missing_media_receipt = False
         self.timeout_draft = False
+        self.reconcile_drafts = 0
+        self.reconcile_matching_ids = None
+        self.reconcile_status = "draft"
+        self.reconcile_publish_state = None
+        self.reconcile_shared = False
+        self.reconcile_text = None
+        self.reconcile_media_id = MEDIA
 
     def db(self, request):
         self.db_calls.append(request)
@@ -105,9 +113,12 @@ class FakeWorld:
             assert payload["target_content_version_id"] == VERSION
             assert payload["target_approval_id"] == APPROVAL
             assert payload["target_media_receipt_id"] == RECEIPT
-            self.attempt = {"attempt_id": ATTEMPT,
-                            "content_version_id": VERSION,
-                            "status": "delivery_unknown"}
+            self.attempt = {
+                "attempt_id": ATTEMPT, "content_version_id": VERSION,
+                "approval_id": APPROVAL, "media_receipt_id": RECEIPT,
+                "social_set_id": 12345, "status": "delivery_unknown",
+                "reserved_at": datetime.now(timezone.utc).isoformat(),
+            }
             reservation = {
                 "attempt_id": ATTEMPT, "content_version_id": VERSION,
                 "approval_id": APPROVAL, "social_set_id": 12345,
@@ -132,6 +143,37 @@ class FakeWorld:
                 "id": 12345, "username": "squidkorea"})
         if request.method == "GET" and request.url.path.endswith(f"/media/{MEDIA}"):
             return httpx.Response(200, json={"media_id": MEDIA, "status": "ready"})
+        if request.method == "GET" and request.url.path.endswith("/drafts"):
+            created = (datetime.fromisoformat(self.attempt["reserved_at"])
+                       + timedelta(seconds=1)).isoformat()
+            offset = int(request.url.params["offset"])
+            limit = int(request.url.params["limit"])
+            return httpx.Response(200, json={"results": [{
+                "id": 5678 + index, "social_set_id": 12345,
+                "draft_title": (body()["draft_title"] if self.reconcile_matching_ids is None
+                                or index in self.reconcile_matching_ids else "unrelated"),
+                "created_at": created,
+                "status": self.reconcile_status,
+            } for index in range(offset, min(offset + limit, self.reconcile_drafts))],
+                "count": self.reconcile_drafts, "limit": limit, "offset": offset,
+                "next": ("next-page" if offset + limit < self.reconcile_drafts else None),
+                "previous": None})
+        if request.method == "GET" and request.url.path.endswith("/drafts/5678"):
+            created = (datetime.fromisoformat(self.attempt["reserved_at"])
+                       + timedelta(seconds=1)).isoformat()
+            return httpx.Response(200, json={
+                "id": 5678, "social_set_id": 12345,
+                "draft_title": body()["draft_title"], "created_at": created,
+                "status": self.reconcile_status,
+                "publish_state": self.reconcile_publish_state,
+                "share_url": "https://synthetic.example/share" if self.reconcile_shared else None,
+                "scheduled_date": None, "published_at": None,
+                "platforms": {"x": {"enabled": True, "posts": [{
+                    "text": (self.reconcile_text if self.reconcile_text is not None
+                             else body()["platforms"]["x"]["posts"][0]["text"]),
+                    "media_ids": [self.reconcile_media_id],
+                }] }},
+            })
         if request.method == "POST" and request.url.path.endswith("/drafts"):
             if self.timeout_draft:
                 raise httpx.ReadTimeout("lost provider response")
@@ -263,7 +305,121 @@ class TypefullyDraftOnceTests(unittest.IsolatedAsyncioTestCase):
             typefully_transport=httpx.MockTransport(world.provider),
         )
         self.assertEqual(second["status"], "already_reserved")
-        self.assertEqual(len(world.provider_calls), 3)
+        self.assertEqual(second["attempt_status"], "delivery_unknown")
+        self.assertEqual([request.method for request in world.provider_calls].count("POST"), 1)
+
+    async def test_lost_draft_response_reconciles_exact_draft_without_second_post(self):
+        world = FakeWorld()
+        world.timeout_draft = True
+        repo = SupabaseTypefullyDraftOwner(settings(),
+                                          transport=httpx.MockTransport(world.db))
+        with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                    "typefully_draft_create_unknown"):
+            await run_typefully_draft_once(
+                settings(), repository=repo,
+                typefully_transport=httpx.MockTransport(world.provider),
+            )
+        world.reconcile_drafts = 1
+        result = await run_typefully_draft_once(
+            settings(), repository=repo,
+            typefully_transport=httpx.MockTransport(world.provider),
+        )
+        self.assertEqual(result["status"], "already_reserved")
+        self.assertEqual(result["attempt_status"], "draft_created")
+        self.assertTrue(result["reconciled"])
+        self.assertEqual(world.attempt["status"], "draft_created")
+        self.assertEqual([request.method for request in world.provider_calls].count("POST"), 1)
+
+    async def test_unknown_draft_with_duplicate_or_scheduled_match_stays_unknown(self):
+        for count, status, publish_state, code in (
+            (2, "draft", None, "typefully_draft_reconciliation_ambiguous"),
+            (1, "scheduled", None, "typefully_draft_reconciliation_mismatch"),
+            (1, "draft", "in_progress", "typefully_draft_reconciliation_mismatch"),
+        ):
+            with self.subTest(count=count, status=status, publish_state=publish_state):
+                world = FakeWorld()
+                world.timeout_draft = True
+                repo = SupabaseTypefullyDraftOwner(
+                    settings(), transport=httpx.MockTransport(world.db),
+                )
+                with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                            "typefully_draft_create_unknown"):
+                    await run_typefully_draft_once(
+                        settings(), repository=repo,
+                        typefully_transport=httpx.MockTransport(world.provider),
+                    )
+                world.reconcile_drafts = count
+                world.reconcile_status = status
+                world.reconcile_publish_state = publish_state
+                with self.assertRaisesRegex(TypefullyDraftOwnerError, code):
+                    await run_typefully_draft_once(
+                        settings(), repository=repo,
+                        typefully_transport=httpx.MockTransport(world.provider),
+                    )
+                self.assertEqual(world.attempt["status"], "delivery_unknown")
+                self.assertEqual([request.method for request in world.provider_calls].count("POST"), 1)
+
+    async def test_existing_attempt_rejects_wrong_approval_or_account_before_provider_get(self):
+        for changed in ({"approval_id": ASSET}, {"social_set_id": 12346}):
+            with self.subTest(changed=changed):
+                world = FakeWorld()
+                world.attempt = {
+                    "attempt_id": ATTEMPT, "content_version_id": VERSION,
+                    "approval_id": APPROVAL, "media_receipt_id": RECEIPT,
+                    "social_set_id": 12345, "status": "draft_created",
+                    "reserved_at": datetime.now(timezone.utc).isoformat(),
+                    **changed,
+                }
+                repo = SupabaseTypefullyDraftOwner(
+                    settings(), transport=httpx.MockTransport(world.db),
+                )
+                with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                            "typefully_attempt_readback_invalid"):
+                    await run_typefully_draft_once(
+                        settings(), repository=repo,
+                        typefully_transport=httpx.MockTransport(world.provider),
+                    )
+                self.assertEqual(world.provider_calls, [])
+
+    async def test_unknown_draft_incomplete_scan_or_content_mismatch_never_confirms(self):
+        for case in ("incomplete_scan", "wrong_text", "wrong_media", "shared_draft"):
+            with self.subTest(case=case):
+                world = FakeWorld()
+                world.timeout_draft = True
+                repo = SupabaseTypefullyDraftOwner(
+                    settings(), transport=httpx.MockTransport(world.db),
+                )
+                with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                            "typefully_draft_create_unknown"):
+                    await run_typefully_draft_once(
+                        settings(), repository=repo,
+                        typefully_transport=httpx.MockTransport(world.provider),
+                    )
+                world.reconcile_drafts = 101 if case == "incomplete_scan" else 1
+                if case == "incomplete_scan":
+                    world.reconcile_matching_ids = {0}
+                elif case == "wrong_text":
+                    world.reconcile_text = "changed copy"
+                elif case == "wrong_media":
+                    world.reconcile_media_id = RECEIPT
+                else:
+                    world.reconcile_shared = True
+                if case == "incomplete_scan":
+                    result = await run_typefully_draft_once(
+                        settings(), repository=repo,
+                        typefully_transport=httpx.MockTransport(world.provider),
+                    )
+                    self.assertEqual(result["attempt_status"], "delivery_unknown")
+                else:
+                    with self.assertRaisesRegex(
+                        TypefullyDraftOwnerError, "typefully_draft_reconciliation_mismatch",
+                    ):
+                        await run_typefully_draft_once(
+                            settings(), repository=repo,
+                            typefully_transport=httpx.MockTransport(world.provider),
+                        )
+                self.assertEqual(world.attempt["status"], "delivery_unknown")
+                self.assertEqual([request.method for request in world.provider_calls].count("POST"), 1)
 
     async def test_missing_receipt_or_changed_banner_never_reserves(self):
         for missing_receipt, changed_png in ((True, None), (False, PNG + b"changed")):

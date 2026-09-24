@@ -16,7 +16,7 @@ import os
 import re
 import struct
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 from urllib.parse import quote
 from uuid import UUID
@@ -27,6 +27,7 @@ from core.publications.handoff import CLIENT_TARGETS
 from core.publications.settings import _supabase_url
 from core.publications.typefully_readback import (
     BASE_URL,
+    TypefullyReadbackError,
     _id as _social_set_id,
     _key,
     _media_id,
@@ -76,6 +77,12 @@ def _stamp(value: object) -> str:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         _fail("typefully_time_invalid")
     return value
+
+
+def _utc_stamp(value: object) -> datetime:
+    return datetime.fromisoformat(_stamp(value).replace("Z", "+00:00")).astimezone(
+        timezone.utc,
+    )
 
 
 @dataclass(frozen=True)
@@ -166,9 +173,11 @@ class SupabaseTypefullyDraftOwner:
         })
         if raw is None:
             return None
-        if not isinstance(raw, dict) or raw.get("status") not in (
-            "delivery_unknown", "draft_created"
-        ) or raw.get("content_version_id") != self.settings.content_version_id:
+        if (not isinstance(raw, dict)
+            or raw.get("status") not in ("delivery_unknown", "draft_created")
+            or raw.get("content_version_id") != self.settings.content_version_id
+            or raw.get("approval_id") != self.settings.approval_id
+            or raw.get("social_set_id") != self.settings.social_set_id):
             _fail("typefully_attempt_readback_invalid")
         _uuid(raw.get("attempt_id"))
         return raw
@@ -355,6 +364,134 @@ async def create_draft_once(*, social_set_id: int, api_key: str,
         _fail("typefully_draft_create_unknown")
 
 
+async def _reconcile_unknown_draft(
+    settings: TypefullyDraftOnceSettings, repo: SupabaseTypefullyDraftOwner,
+    attempt: Mapping, *, transport=None,
+) -> bool:
+    """Confirm only one exact, unscheduled provider draft; never repeat POST."""
+    if (attempt.get("status") != "delivery_unknown"
+        or attempt.get("content_version_id") != settings.content_version_id
+        or attempt.get("approval_id") != settings.approval_id
+        or attempt.get("social_set_id") != settings.social_set_id):
+        _fail("typefully_attempt_readback_invalid")
+    attempt_id = _uuid(attempt.get("attempt_id"))
+    receipt_id = _uuid(attempt.get("media_receipt_id"))
+    cutoff = _utc_stamp(attempt.get("reserved_at")) - timedelta(minutes=5)
+    latest_allowed = datetime.now(timezone.utc) + timedelta(minutes=5)
+    candidate = await repo.candidate()
+    receipt = await repo.media_receipt()
+    if (receipt.get("media_receipt_id") != receipt_id
+        or receipt.get("content_version_id") != settings.content_version_id
+        or receipt.get("asset_id") != candidate["asset_id"]
+        or receipt.get("asset_sha256") != candidate["asset_sha256"]
+        or receipt.get("uploaded_bytes_sha256") != candidate["asset_sha256"]
+        or receipt.get("social_set_id") != settings.social_set_id):
+        _fail("typefully_media_receipt_mismatch")
+    media_id = _media_id(receipt.get("media_id"))
+    expected_title = f"CoinEasy {settings.client_id} {settings.content_version_id}"
+    matches: dict[int, datetime] = {}
+    complete = False
+    last_created: datetime | None = None
+    seen_ids: set[int] = set()
+    total_count: int | None = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False,
+                                     trust_env=False, transport=transport) as client:
+            await read_typefully_social_set(
+                social_set_id=settings.social_set_id, client_id=settings.client_id,
+                api_key=settings.api_key, client=client,
+            )
+            for page in range(2):
+                response = await client.get(
+                    f"{BASE_URL}/social-sets/{settings.social_set_id}/drafts",
+                    headers={"Authorization": f"Bearer {settings.api_key}"},
+                    params={"order_by": "-created_at", "limit": 50, "offset": page * 50},
+                )
+                if response.status_code != 200:
+                    _fail("typefully_draft_reconciliation_unavailable")
+                payload = response.json()
+                results = payload.get("results") if isinstance(payload, dict) else None
+                if (not isinstance(results, list) or len(results) > 50
+                    or type(payload.get("count")) is not int
+                    or type(payload.get("limit")) is not int
+                    or type(payload.get("offset")) is not int
+                    or payload["limit"] != 50 or payload["offset"] != page * 50
+                    or payload["count"] < page * 50 + len(results)
+                    or (total_count is not None and payload["count"] != total_count)
+                    or "next" not in payload
+                    or (payload.get("next") is not None
+                        and type(payload["next"]) is not str)):
+                    _fail("typefully_draft_reconciliation_invalid")
+                total_count = payload["count"]
+                for entry in results:
+                    if not isinstance(entry, dict):
+                        _fail("typefully_draft_reconciliation_invalid")
+                    entry_id = _positive(entry.get("id"))
+                    if entry_id in seen_ids:
+                        _fail("typefully_draft_reconciliation_invalid")
+                    seen_ids.add(entry_id)
+                    created = _utc_stamp(entry.get("created_at"))
+                    if (created > latest_allowed
+                        or (last_created is not None and created > last_created)
+                        or entry.get("social_set_id") != settings.social_set_id):
+                        _fail("typefully_draft_reconciliation_invalid")
+                    last_created = created
+                    if created < cutoff:
+                        complete = True
+                        break
+                    if entry.get("draft_title") == expected_title:
+                        matches[entry_id] = created
+                if complete or payload.get("next") is None:
+                    if not complete and page * 50 + len(results) != total_count:
+                        _fail("typefully_draft_reconciliation_invalid")
+                    complete = True
+                    break
+                if len(results) != 50:
+                    _fail("typefully_draft_reconciliation_invalid")
+            if not complete or not matches:
+                return False
+            if len(matches) != 1:
+                _fail("typefully_draft_reconciliation_ambiguous")
+            draft_id = next(iter(matches))
+            response = await client.get(
+                f"{BASE_URL}/social-sets/{settings.social_set_id}/drafts/{draft_id}",
+                headers={"Authorization": f"Bearer {settings.api_key}"},
+                params={"exclude_comment_markers": "true"},
+            )
+            if response.status_code != 200:
+                _fail("typefully_draft_reconciliation_unavailable")
+            detail = response.json()
+    except (TypefullyDraftOwnerError, TypefullyReadbackError):
+        raise
+    except Exception:
+        _fail("typefully_draft_reconciliation_unavailable")
+    platforms = detail.get("platforms") if isinstance(detail, dict) else None
+    x = platforms.get("x") if isinstance(platforms, dict) else None
+    posts = x.get("posts") if isinstance(x, dict) else None
+    if (not isinstance(detail, dict)
+        or detail.get("id") != draft_id
+        or detail.get("social_set_id") != settings.social_set_id
+        or detail.get("draft_title") != expected_title
+        or _utc_stamp(detail.get("created_at")) != matches[draft_id]
+        or detail.get("status") != "draft"
+        or detail.get("share_url") is not None
+        or not all(name in detail and detail[name] is None for name in (
+            "publish_state", "scheduled_date", "published_at"
+        ))
+        or not isinstance(platforms, dict)
+        or any(name != "x" and (not isinstance(value, dict)
+                                or value.get("enabled") is not False)
+               for name, value in platforms.items())
+        or not isinstance(x, dict) or x.get("enabled") is not True
+        or not isinstance(posts, list) or len(posts) != 1
+        or not isinstance(posts[0], dict)
+        or posts[0].get("text") != candidate["x_copy"]
+        or posts[0].get("media_ids") != [media_id]):
+        _fail("typefully_draft_reconciliation_mismatch")
+    await repo.confirm(attempt_id, draft_id)
+    return True
+
+
 async def run_typefully_draft_once(settings: TypefullyDraftOnceSettings,
                                   *, repository=None, typefully_transport=None) -> dict:
     """Run one exact approved version; every failure is terminal for this run."""
@@ -372,6 +509,13 @@ async def run_typefully_draft_once(settings: TypefullyDraftOnceSettings,
     repo = repository if repository is not None else SupabaseTypefullyDraftOwner(settings)
     existing = await repo.existing_attempt()
     if existing is not None:
+        if existing["status"] == "delivery_unknown":
+            reconciled = await _reconcile_unknown_draft(
+                settings, repo, existing, transport=typefully_transport,
+            )
+            if reconciled:
+                return {"status": "already_reserved", "attempt_id": existing["attempt_id"],
+                        "attempt_status": "draft_created", "reconciled": True}
         return {"status": "already_reserved", "attempt_id": existing["attempt_id"],
                 "attempt_status": existing["status"]}
     candidate = await repo.candidate()
