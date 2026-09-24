@@ -4,7 +4,7 @@ import test from "node:test";
 
 test("daily review CI exercises the existing courier without delivery authority", () => {
   const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-  const job = read(".github/workflows/ci.yml").split("  daily-review-image:\n")[1]?.split("\n  automation-image:")[0];
+  const job = read(".github/workflows/ci.yml").split("  daily-review-image:\n")[1]?.split("\n  typefully-daily-image:")[0];
   assert.ok(job);
   assert.match(job, /contents: read/);
   assert.match(job, /persist-credentials: false/);

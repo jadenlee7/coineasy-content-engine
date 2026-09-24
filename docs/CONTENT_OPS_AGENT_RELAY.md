@@ -83,10 +83,117 @@ invalidates earlier review and publication eligibility.
   worker token.
 - Client Telegram publication stays behind the immutable exact-version queue
   and human `double-fact-check@1` approval.
-- Typefully starts in draft-only mode with `publish_at: null`. A human reviews
-  the selected social set, final copy, media, and timing before scheduling.
+- Typefully starts in draft-only mode with `publish_at` and `plan_at` omitted.
+  A human reviews the selected social set, final copy, media, and timing before
+  scheduling.
 - Agent-to-agent replies use one work-item/version correlation ID and a bounded
   attempt count. Bots do not answer each other indefinitely.
+
+The local `typefully_draft_preparation` module now builds an advisory request
+body from one approved immutable-version handoff, a recent authenticated X
+account readback, and an owner-bound ready PNG upload. It preserves the exact
+approved X text and media ID, rejects mismatched accounts or versions, and omits
+`publish_at` and `plan_at` as the [Typefully API reference](https://typefully.com/docs/api)
+documents for a plain draft. It performs
+no I/O and grants no attempt authority. The separate Typefully readback adapter
+uses only authenticated social-set and media-status GET calls and discards
+profile URLs and raw provider bodies. Its
+ready-media result alone cannot prove the uploaded bytes or version: a durable
+owner upload record must bind it to the canonical PNG before preparation. The
+Draft-only `20260923120000_typefully_draft_once.sql` migration stages private
+media-allocation attempts, media-upload receipts, and a unique per-content-item
+draft attempt ledger. The media reservation commits `allocation_unknown` before
+the Typefully POST. After a successful allocation response, the exact media ID
+must be durably marked `upload_unknown` before the sole S3 PUT. Only a known
+successful PUT can record the owner-bound receipt; no unknown state is reopened
+for automatic retry. Its draft
+service-role reservation rechecks the current approved version, latest human
+fact-check approval, stored canonical PNG, primary official source, account,
+and fresh media readback; it commits `delivery_unknown` before any provider
+POST. Only a matching draft receipt may move it to `draft_created`, and no RPC
+releases an unknown row for retry. The actual uploaded-bytes hash and provider
+GET evidence remain trusted-caller attestations: the database cannot perform
+those network checks. Service-role-only `public` RPC wrappers expose this
+private ledger to a PostgREST owner without granting direct table access;
+bounded candidate, media-receipt, and attempt readbacks expose only the fields
+needed to prove exact ownership or reconcile an uncertain reservation. Both
+candidate lookup and reservation require the currently latest official tweet,
+publication within 24 hours, and an active 15-minute feed polled within 30
+minutes. The reservation repeats mutable checks under a content-item lock.
+The media adapter follows Typefully's documented allocation + raw S3 PUT flow
+for exact PNG bytes, with a strict presigned-host check and no automatic retry
+or URL/credential echo. It requires a durable upload-intent callback before
+PUT. The local `typefully_media_once` worker is default OFF and requires an
+exact runtime/pinned release SHA, exact identifiers, the current approved
+candidate, a fresh authenticated account GET, and re-downloaded canonical PNG
+bytes. It then reserves, allocates, durably marks upload intent, makes one PUT,
+and records a bounded receipt. It does not retry uncertain POST, PUT, or DB
+responses. The later authenticated media GET is still required before a draft.
+The local `typefully_draft_once` worker is default OFF. It requires the exact
+workspace, client, item, current version, approval, and social-set identifiers;
+literal `TYPEFULLY_DRAFT_ENABLED=true`; and a matching 40-character runtime Git
+SHA and pinned release SHA before making any network call. It requires an
+existing durable media-upload receipt, re-downloads the private canonical PNG
+and checks its bytes, dimensions, and SHA-256, then authenticates the current
+Typefully X account and ready media. Only the matching DB reservation body
+can authorize one draft POST with `publish_at` and `plan_at` absent. A missing
+or ambiguous POST response is never retried. On a later run, the owner may
+scan at most 100 Typefully draft summaries and read one detail with GET only.
+It confirms the existing DB attempt only if exactly one draft matches the
+reserved version title, social set, approved X copy, media ID, creation window,
+and unscheduled draft state. No match, an incomplete scan, changed content, or
+multiple matches cannot authorize another POST. An unknown media allocation or
+PUT remains manual reconciliation only.
+It is not a daily scheduler or a media uploader. This migration and both
+workers are not deployed or enabled in production. The legacy
+Typefully client must not be used as a substitute owner. No public X posting
+path or scheduling authorization is supplied.
+
+The Draft-only `20260923130000_typefully_daily_slot.sql` migration adds a
+service-role-only selector with one immutable slot per workspace, client, and
+KST day. It selects a newly human-approved current version only when the
+existing Typefully candidate checks pass; repeated claims return the same
+item, version, and approval IDs. The coordinator rejects a slot whose KST
+date is outside its request/response window; a request crossing KST midnight
+may accept either adjacent date, but a stale day cannot start a media upload.
+A replayed media allocation must also retain the same approval, social set,
+asset identity, and allocated media state before the coordinator can advance.
+A private slot does not approve content or
+authorize a provider call. The local `typefully_daily` coordinator is also
+default OFF and has no installed schedule. It requires
+`TYPEFULLY_DAILY_ENABLED=true`, matching 40-character
+`RAILWAY_GIT_COMMIT_SHA` and `TYPEFULLY_DAILY_RELEASE_SHA`, a canonical
+`TYPEFULLY_DAILY_CLIENTS` subset of `yellow,babylon,squid,origintrail`, and
+one distinct `TYPEFULLY_SOCIAL_SET_<CLIENT>` per selected client. It claims
+the exact slot, passes its IDs to the fenced media worker, and invokes the
+fenced private-draft worker only after a known completed upload. Unknown
+media or draft attempts stay unknown and require reconciliation; the
+coordinator never retries a provider write. The migration, coordinator, and
+workers remain undeployed and disabled in production. Neither Typefully X
+scheduling nor public X publication is included.
+
+`Dockerfile.typefully-daily` and `railway.typefully-daily.json` package this
+coordinator as a separate Railway cron service; adding these files does not
+create or deploy a service. The image build requires a 40-character commit
+SHA and embeds it as an immutable stamp. The stamp does not, by itself, prove
+GitHub origin: Railway deployment metadata must be checked separately. The
+15-minute schedule runs a no-I/O disabled path by default. Its pre-deploy
+`--validate-only` checks runtime SHA against the image stamp even while OFF,
+without credentials, database calls, or provider calls. Enabling requires the
+additional pinned `TYPEFULLY_DAILY_RELEASE_SHA` to match both, plus explicit
+client/social-set mapping and dedicated Supabase/Typefully credentials. A
+real hosted canary, service creation, variable setup, and production migration
+need separate operator authorization; no public Telegram or X send follows
+from enabling this private-draft service.
+For this draft-only service, use an API key from a Typefully collaborator with
+**Write**, not **Write & Publish** or Admin, on the selected social sets.
+Typefully documents that API keys inherit their creator's permissions: Write
+permits drafts and media, while Publish is required to schedule or post. The
+social-set GET verifies account identity, not this permission level, so the
+operator must verify the collaborator role separately before activation.
+The dedicated image copies only the exact Typefully owner modules and their
+inert shared validators, not the Telegram publication worker or other provider
+workers. CI inspects the built image's module list with networking disabled.
 
 ## Dedicated relay configuration
 
@@ -128,7 +235,7 @@ For each authorized work item:
    reviewer. Include only primary URLs, final copy, banner, concrete checks,
    and the exact IDs. Do not expose secrets or private chat history.
 7. Only after the exact version has a valid human double-fact-check approval,
-   prepare a Typefully draft with publish_at null and an exact Telegram
+   prepare a Typefully draft with `publish_at` and `plan_at` omitted and an exact Telegram
    publication request. Never click public send, schedule, or publish.
 8. Record real publication URLs for KPI only after provider confirmation.
 
@@ -144,7 +251,7 @@ missing or ambiguous. Do not approve your own work. Do not start bot loops.
    room receive the same exact version through different bots.
 4. Run one Squid and one non-Squid canary through source, copy, design brief,
    banner return, independent QA, and human approval. Keep all public sends off.
-5. Create Typefully drafts with `publish_at: null`; verify account and copy
+5. Create Typefully drafts with `publish_at` and `plan_at` omitted; verify account and copy
    manually. Then allow one explicitly approved Telegram publication.
 6. Enable scheduled agent runs only after duplicate suppression, version
    matching, retry limits, and delivery alerts pass.
