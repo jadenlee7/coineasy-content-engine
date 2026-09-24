@@ -111,10 +111,20 @@ class TypefullyDailySettings:
 
 class SupabaseTypefullyDailySelector:
     def __init__(self, settings: TypefullyDailySettings,
-                 transport: httpx.AsyncBaseTransport | None = None):
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 clock: Callable[[], datetime] | None = None):
         self.settings, self.transport = settings, transport
+        self.clock = clock or (lambda: datetime.now(_KST))
+
+    def _today_kst(self) -> date:
+        now = self.clock()
+        if (not isinstance(now, datetime) or now.tzinfo is None
+            or now.utcoffset() is None):
+            _fail("typefully_daily_clock_invalid")
+        return now.astimezone(_KST).date()
 
     async def claim(self, client_id: str) -> Mapping | None:
+        request_date = self._today_kst()
         try:
             async with httpx.AsyncClient(timeout=20.0, follow_redirects=False,
                                          trust_env=False, transport=self.transport) as client:
@@ -129,6 +139,7 @@ class SupabaseTypefullyDailySelector:
             if response.status_code != 200:
                 _fail("typefully_daily_database_unavailable")
             raw = response.json()
+            response_date = self._today_kst()
         except TypefullyDraftOwnerError:
             raise
         except Exception:
@@ -147,7 +158,8 @@ class SupabaseTypefullyDailySelector:
             or raw.get("workspace_id") != self.settings.workspace_id
             or raw.get("client_id") != client_id
             or type(raw.get("reused")) is not bool
-            or not valid_date):
+            or not valid_date
+            or date.fromisoformat(kst_date) not in (request_date, response_date)):
             _fail("typefully_daily_slot_invalid")
         for name in ("slot_id", "content_item_id", "content_version_id", "approval_id"):
             _uuid(raw.get(name))

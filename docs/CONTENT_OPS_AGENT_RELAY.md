@@ -153,7 +153,12 @@ The Draft-only `20260923130000_typefully_daily_slot.sql` migration adds a
 service-role-only selector with one immutable slot per workspace, client, and
 KST day. It selects a newly human-approved current version only when the
 existing Typefully candidate checks pass; repeated claims return the same
-item, version, and approval IDs. A private slot does not approve content or
+item, version, and approval IDs. The coordinator rejects a slot whose KST
+date is outside its request/response window; a request crossing KST midnight
+may accept either adjacent date, but a stale day cannot start a media upload.
+A replayed media allocation must also retain the same approval, social set,
+asset identity, and allocated media state before the coordinator can advance.
+A private slot does not approve content or
 authorize a provider call. The local `typefully_daily` coordinator is also
 default OFF and has no installed schedule. It requires
 `TYPEFULLY_DAILY_ENABLED=true`, matching 40-character

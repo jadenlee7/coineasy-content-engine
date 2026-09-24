@@ -164,6 +164,27 @@ class TypefullyMediaOnceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(world.attempt)
         self.assertNotIn("allocation_post", world.events)
 
+    async def test_replay_rejects_wrong_approval_social_set_or_media_state(self):
+        for changed in (
+            {"approval_id": RECEIPT},
+            {"social_set_id": 12346},
+            {"status": "uploaded", "media_id": None},
+            {"status": "allocation_unknown", "media_id": MEDIA},
+        ):
+            with self.subTest(changed=changed):
+                world = MediaWorld()
+                world.attempt = {
+                    "attempt_id": ATTEMPT, "content_version_id": VERSION,
+                    "approval_id": APPROVAL, "asset_id": ASSET,
+                    "asset_sha256": SHA, "social_set_id": 12345,
+                    "status": "allocation_unknown", "media_id": None,
+                    **changed,
+                }
+                with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                            "typefully_allocation_readback_invalid"):
+                    await run(world)
+                self.assertEqual(world.events, ["get_typefully_media_allocation_attempt"])
+
     async def test_ambiguous_allocation_intent_put_or_receipt_never_retries(self):
         for lost, expected_status, expected_put in (
             ("allocation_timeout", "allocation_unknown", False),

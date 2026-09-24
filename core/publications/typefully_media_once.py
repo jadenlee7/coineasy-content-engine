@@ -22,6 +22,7 @@ from core.publications.typefully_draft_once import (
     SupabaseTypefullyDraftOwner,
     TypefullyDraftOwnerError,
     _HEX40,
+    _HEX64,
     _fail,
     _positive,
     _uuid,
@@ -91,9 +92,23 @@ class SupabaseTypefullyMediaOwner(SupabaseTypefullyDraftOwner):
             return None
         if (not isinstance(raw, dict)
             or raw.get("content_version_id") != self.settings.content_version_id
+            or raw.get("approval_id") != self.settings.approval_id
+            or raw.get("social_set_id") != self.settings.social_set_id
             or raw.get("status") not in ("allocation_unknown", "upload_unknown", "uploaded")):
             _fail("typefully_allocation_readback_invalid")
         _uuid(raw.get("attempt_id"))
+        _uuid(raw.get("asset_id"))
+        asset_sha256 = raw.get("asset_sha256")
+        if type(asset_sha256) is not str or not _HEX64.fullmatch(asset_sha256):
+            _fail("typefully_allocation_readback_invalid")
+        if raw["status"] == "allocation_unknown":
+            if raw.get("media_id") is not None:
+                _fail("typefully_allocation_readback_invalid")
+        else:
+            try:
+                _media_id(raw.get("media_id"))
+            except ValueError:
+                _fail("typefully_allocation_readback_invalid")
         return raw
 
     async def reserve_allocation(self, candidate: Mapping, account: Mapping) -> Mapping:

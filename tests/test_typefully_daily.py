@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -248,15 +248,32 @@ class TypefullyDailyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("do not echo", str(caught.exception))
 
     async def test_selector_accepts_server_kst_date_at_local_midnight_boundary(self):
-        previous = "2026-09-22"
+        before = datetime.fromisoformat("2026-09-22T23:59:59+09:00")
+        after = datetime.fromisoformat("2026-09-23T00:00:01+09:00")
+        observed = iter((before, after))
 
         def backend(_request):
-            return httpx.Response(200, json={**slot("yellow"), "kst_date": previous})
+            return httpx.Response(200, json={**slot("yellow"), "kst_date": "2026-09-22"})
 
         selector = SupabaseTypefullyDailySelector(
             settings(), transport=httpx.MockTransport(backend),
+            clock=lambda: next(observed),
         )
-        self.assertEqual((await selector.claim("yellow"))["kst_date"], previous)
+        self.assertEqual((await selector.claim("yellow"))["kst_date"], "2026-09-22")
+
+    async def test_selector_rejects_stale_server_kst_date(self):
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+
+        def backend(_request):
+            stale = (now - timedelta(days=2)).date().isoformat()
+            return httpx.Response(200, json={**slot("yellow"), "kst_date": stale})
+
+        selector = SupabaseTypefullyDailySelector(
+            settings(), transport=httpx.MockTransport(backend), clock=lambda: now,
+        )
+        with self.assertRaisesRegex(TypefullyDraftOwnerError,
+                                    "typefully_daily_slot_invalid"):
+            await selector.claim("yellow")
 
 
 if __name__ == "__main__":
