@@ -141,6 +141,24 @@ workers are not deployed or enabled in production. The legacy
 Typefully client must not be used as a substitute owner. No public X posting
 path or scheduling authorization is supplied.
 
+The Draft-only `20260923130000_typefully_daily_slot.sql` migration adds a
+service-role-only selector with one immutable slot per workspace, client, and
+KST day. It selects a newly human-approved current version only when the
+existing Typefully candidate checks pass; repeated claims return the same
+item, version, and approval IDs. A private slot does not approve content or
+authorize a provider call. The local `typefully_daily` coordinator is also
+default OFF and has no installed schedule. It requires
+`TYPEFULLY_DAILY_ENABLED=true`, matching 40-character
+`RAILWAY_GIT_COMMIT_SHA` and `TYPEFULLY_DAILY_RELEASE_SHA`, a canonical
+`TYPEFULLY_DAILY_CLIENTS` subset of `yellow,babylon,squid,origintrail`, and
+one distinct `TYPEFULLY_SOCIAL_SET_<CLIENT>` per selected client. It claims
+the exact slot, passes its IDs to the fenced media worker, and invokes the
+fenced private-draft worker only after a known completed upload. Unknown
+media or draft attempts stay unknown and require reconciliation; the
+coordinator never retries a provider write. The migration, coordinator, and
+workers remain undeployed and disabled in production. Neither Typefully X
+scheduling nor public X publication is included.
+
 ## Dedicated relay configuration
 
 Railway only:

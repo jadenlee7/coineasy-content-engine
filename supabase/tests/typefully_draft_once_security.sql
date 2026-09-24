@@ -8,6 +8,7 @@ declare
     before_count bigint;
 begin
     foreach relation_name in array array[
+        'private.typefully_daily_slots',
         'private.typefully_media_allocation_attempts',
         'private.typefully_media_upload_receipts',
         'private.typefully_draft_attempts'
@@ -38,7 +39,8 @@ begin
         'public.get_typefully_draft_attempt(uuid,uuid)',
         'public.get_typefully_media_allocation_attempt(uuid,uuid)',
         'public.get_typefully_draft_candidate(uuid,uuid,uuid,uuid)',
-        'public.get_typefully_media_upload_receipt(uuid,uuid,bigint)'
+        'public.get_typefully_media_upload_receipt(uuid,uuid,bigint)',
+        'public.claim_typefully_daily_slot(uuid,text)'
     ] loop
         if to_regprocedure(function_name) is null
            or not has_function_privilege('service_role', function_name, 'EXECUTE')
@@ -74,7 +76,16 @@ begin
     exception when insufficient_privilege then
         if sqlerrm <> 'typefully_service_role_required' then raise; end if;
     end;
+    begin
+        perform public.claim_typefully_daily_slot(gen_random_uuid(),'squid');
+        raise exception 'typefully_nonservice_daily_claim_accepted';
+    exception when insufficient_privilege then
+        if sqlerrm <> 'typefully_service_role_required' then raise; end if;
+    end;
     perform set_config('request.jwt.claim.role', 'service_role', true);
+    if public.claim_typefully_daily_slot(gen_random_uuid(),'squid') is not null then
+        raise exception 'typefully_empty_daily_claim_accepted';
+    end if;
     begin
         perform public.reserve_typefully_draft_once(
             gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
@@ -109,6 +120,7 @@ declare
     media_id uuid := gen_random_uuid();
     allocation_attempt_id uuid;
     allocation jsonb;
+    daily_slot jsonb;
     media_receipt_id uuid;
     attempt jsonb;
     attempt_id uuid;
@@ -201,8 +213,25 @@ begin
             is not null then
         raise exception 'typefully_stale_feed_candidate_accepted';
     end if;
+    if public.claim_typefully_daily_slot(workspace_id,'squid') is not null then
+        raise exception 'typefully_stale_feed_daily_claim_accepted';
+    end if;
     update public.source_feeds set last_polled_at=statement_timestamp()
     where id=feed_id;
+    daily_slot := public.claim_typefully_daily_slot(workspace_id,'squid');
+    if daily_slot->>'content_item_id' <> item_id::text
+       or daily_slot->>'content_version_id' <> version_id::text
+       or daily_slot->>'approval_id' <> approval_id::text
+       or daily_slot->>'reused' <> 'false' then
+        raise exception 'typefully_daily_slot_selection_invalid';
+    end if;
+    if public.claim_typefully_daily_slot(workspace_id,'squid')->>'slot_id'
+            <> daily_slot->>'slot_id'
+       or (select count(*) from private.typefully_daily_slots as slot
+            where slot.workspace_id=fixture.workspace_id
+              and slot.client_id='squid') <> 1 then
+        raise exception 'typefully_daily_slot_replay_invalid';
+    end if;
     if public.get_typefully_draft_candidate(
         workspace_id,item_id,version_id,approval_id)->>'asset_id' <> asset_id::text
        or public.get_typefully_draft_candidate(
