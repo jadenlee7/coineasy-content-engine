@@ -150,7 +150,6 @@ def prepare_typefully_draft(
             {"text": x_copy, "media_ids": [media_id]},
         ]}},
         "draft_title": f"CoinEasy {packet['client_id']} {packet['content_version_id']}",
-        "publish_at": None,
     }
     preparation = {
         "schema_version": "exact-typefully-draft-preparation@1",

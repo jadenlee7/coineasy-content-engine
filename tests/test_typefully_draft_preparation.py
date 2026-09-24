@@ -65,7 +65,7 @@ class TypefullyDraftPreparationTests(unittest.TestCase):
                 )
                 prepared = result["preparation"]
                 body = prepared["request_body"]
-                self.assertEqual(body["publish_at"], None)
+                self.assertNotIn("publish_at", body)
                 self.assertNotIn("plan_at", body)
                 self.assertEqual(body["platforms"], {"x": {
                     "enabled": True,

@@ -83,18 +83,21 @@ invalidates earlier review and publication eligibility.
   worker token.
 - Client Telegram publication stays behind the immutable exact-version queue
   and human `double-fact-check@1` approval.
-- Typefully starts in draft-only mode with `publish_at: null`. A human reviews
-  the selected social set, final copy, media, and timing before scheduling.
+- Typefully starts in draft-only mode with `publish_at` and `plan_at` omitted.
+  A human reviews the selected social set, final copy, media, and timing before
+  scheduling.
 - Agent-to-agent replies use one work-item/version correlation ID and a bounded
   attempt count. Bots do not answer each other indefinitely.
 
 The local `typefully_draft_preparation` module now builds an advisory request
 body from one approved immutable-version handoff, a recent authenticated X
 account readback, and an owner-bound ready PNG upload. It preserves the exact
-approved X text and media ID, rejects mismatched accounts or versions, and sets
-`publish_at: null`. It performs no I/O and grants no attempt authority. The
-separate Typefully readback adapter uses only authenticated social-set and
-media-status GET calls and discards profile URLs and raw provider bodies. Its
+approved X text and media ID, rejects mismatched accounts or versions, and omits
+`publish_at` and `plan_at` as the [Typefully API reference](https://typefully.com/docs/api)
+documents for a plain draft. It performs
+no I/O and grants no attempt authority. The separate Typefully readback adapter
+uses only authenticated social-set and media-status GET calls and discards
+profile URLs and raw provider bodies. Its
 ready-media result alone cannot prove the uploaded bytes or version: a durable
 owner upload record must bind it to the canonical PNG before preparation. The
 Draft-only `20260923120000_typefully_draft_once.sql` migration stages private
@@ -133,8 +136,8 @@ SHA and pinned release SHA before making any network call. It requires an
 existing durable media-upload receipt, re-downloads the private canonical PNG
 and checks its bytes, dimensions, and SHA-256, then authenticates the current
 Typefully X account and ready media. Only the matching DB reservation body
-can authorize one draft POST with `publish_at: null`. A missing/ambiguous POST
-response or confirmation is not retried; the attempt requires readback and
+can authorize one draft POST with `publish_at` and `plan_at` absent. A missing
+or ambiguous POST response or confirmation is not retried; the attempt requires readback and
 manual reconciliation because the provider or DB may already have committed.
 It is not a daily scheduler or a media uploader. This migration and both
 workers are not deployed or enabled in production. The legacy
@@ -216,7 +219,7 @@ For each authorized work item:
    reviewer. Include only primary URLs, final copy, banner, concrete checks,
    and the exact IDs. Do not expose secrets or private chat history.
 7. Only after the exact version has a valid human double-fact-check approval,
-   prepare a Typefully draft with publish_at null and an exact Telegram
+   prepare a Typefully draft with `publish_at` and `plan_at` omitted and an exact Telegram
    publication request. Never click public send, schedule, or publish.
 8. Record real publication URLs for KPI only after provider confirmation.
 
@@ -232,7 +235,7 @@ missing or ambiguous. Do not approve your own work. Do not start bot loops.
    room receive the same exact version through different bots.
 4. Run one Squid and one non-Squid canary through source, copy, design brief,
    banner return, independent QA, and human approval. Keep all public sends off.
-5. Create Typefully drafts with `publish_at: null`; verify account and copy
+5. Create Typefully drafts with `publish_at` and `plan_at` omitted; verify account and copy
    manually. Then allow one explicitly approved Telegram publication.
 6. Enable scheduled agent runs only after duplicate suppression, version
    matching, retry limits, and delivery alerts pass.

@@ -100,7 +100,6 @@ class TypefullyPublisher(Publisher):
             },
             "draft_title": self._draft_title(payload),
         }
-        body["publish_at"] = None
         return body
 
     async def publish(

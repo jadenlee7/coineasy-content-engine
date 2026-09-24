@@ -455,8 +455,7 @@ begin
                 'enabled', true, 'posts', jsonb_build_array(jsonb_build_object(
                     'text', x_copy, 'media_ids', jsonb_build_array(receipt.media_id)
                 )))),
-            'draft_title', 'CoinEasy ' || item.client_id || ' ' || version.id::text,
-            'publish_at', null
+            'draft_title', 'CoinEasy ' || item.client_id || ' ' || version.id::text
         ),
         'status', 'delivery_unknown'
     );

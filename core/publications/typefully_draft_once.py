@@ -273,7 +273,6 @@ class SupabaseTypefullyDraftOwner:
             }]}},
             "draft_title": (f"CoinEasy {self.settings.client_id} "
                             f"{self.settings.content_version_id}"),
-            "publish_at": None,
         }
         if (not isinstance(raw, dict) or raw.get("status") != "delivery_unknown"
             or raw.get("content_version_id") != self.settings.content_version_id
@@ -308,9 +307,11 @@ async def create_draft_once(*, social_set_id: int, api_key: str,
         _key(api_key)
     except ValueError:
         _fail("typefully_draft_request_invalid")
+    # Typefully can report status="draft" even while an immediate publish is
+    # in progress. The request shape, not the response status, enforces draft-only.
     if (not isinstance(body, Mapping)
-        or body.get("publish_at", "missing") is not None or "plan_at" in body
-        or set(body) != {"platforms", "draft_title", "publish_at"}
+        or "publish_at" in body or "plan_at" in body
+        or set(body) != {"platforms", "draft_title"}
         or not isinstance(body["platforms"], Mapping)
         or set(body["platforms"]) != {"x"}):
         _fail("typefully_draft_only")

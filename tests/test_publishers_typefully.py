@@ -142,7 +142,7 @@ async def test_real_post_hits_correct_url(monkeypatch):
     assert len(body["platforms"]["x"]["posts"]) == 1
     assert "draft_title" in body
     assert body["draft_title"].startswith("Daily News - yellow - ")
-    assert body["publish_at"] is None
+    assert "publish_at" not in body
     assert result["response"] == {"id": 123, "status": "draft"}
     assert "private_url" not in str(result)
 

@@ -392,8 +392,8 @@ begin
         raise exception 'typefully_unknown_readback_missing';
     end if;
     if attempt->>'status' <> 'delivery_unknown'
-       or attempt->'request_body'->>'publish_at' is not null
-       or jsonb_typeof(attempt->'request_body'->'publish_at') <> 'null'
+       or attempt->'request_body' ? 'publish_at'
+       or attempt->'request_body' ? 'plan_at'
        or attempt->'request_body'->'platforms'->'x'->'posts'->0->>'text' <> '테스트 공지'
        or attempt->'request_body'->'platforms'->'x'->'posts'->0->'media_ids'->>0 <> media_id::text then
         raise exception 'typefully_reserved_draft_body_invalid';

@@ -67,7 +67,7 @@ class TypefullyReadbackTests(unittest.IsolatedAsyncioTestCase):
         prepared = prepare_typefully_draft(
             _snapshot(), social_set=account, media=bound_media, now=NOW,
         )["preparation"]
-        self.assertEqual(prepared["request_body"]["publish_at"], None)
+        self.assertNotIn("publish_at", prepared["request_body"])
         self.assertEqual(prepared["request_body"]["platforms"]["x"]["posts"][0]["media_ids"],
                          [MEDIA_ID])
         self.assertFalse(prepared["execution_authorized"])

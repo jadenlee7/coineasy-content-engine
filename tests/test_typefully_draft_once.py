@@ -10,6 +10,7 @@ from core.publications.typefully_draft_once import (
     SupabaseTypefullyDraftOwner,
     TypefullyDraftOnceSettings,
     TypefullyDraftOwnerError,
+    create_draft_once,
     run_typefully_draft_once,
 )
 
@@ -66,7 +67,7 @@ def body():
         "platforms": {"x": {"enabled": True, "posts": [{
             "text": "정확한 테스트 공지", "media_ids": [MEDIA],
         }]}},
-        "draft_title": f"CoinEasy squid {VERSION}", "publish_at": None,
+        "draft_title": f"CoinEasy squid {VERSION}",
     }
 
 
@@ -233,6 +234,16 @@ class TypefullyDraftOnceTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual([r.method for r in world.provider_calls], ["GET", "GET"])
         self.assertEqual(world.attempt["status"], "delivery_unknown")
+
+        for unsafe_field in ({"publish_at": None}, {"plan_at": None}):
+            with self.subTest(unsafe_field=unsafe_field), self.assertRaisesRegex(
+                TypefullyDraftOwnerError, "typefully_draft_only",
+            ):
+                await create_draft_once(
+                    social_set_id=12345, api_key=KEY,
+                    body={**body(), **unsafe_field},
+                    transport=httpx.MockTransport(world.provider),
+                )
 
     async def test_lost_draft_response_leaves_unknown_and_no_retry(self):
         world = FakeWorld()
