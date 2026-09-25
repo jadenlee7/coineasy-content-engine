@@ -50,6 +50,18 @@ the expected room, bot, payload, and release. All ledger functions return
 `execution_authorized=false` and have no runtime role grants. Registration is
 not an approval and creates no publication or public outbox.
 
+`core/content_ops/final_card_courier.py` now defines the matching **unmounted,
+default-OFF** courier contract. It renders the exact banner and full Telegram/X
+copy, binds four payload hashes to the snapshot, parent card, delivery UUID and
+release SHA, checks canonical PNG bytes and 24-hour source age, and accepts
+only direct, correctly ordered Telegram response evidence from an injected
+sender. It stops after a reused/uncertain reservation or response and never
+resends with another delivery ID. The injected DB owner must durably commit
+each ledger write before returning; the runtime release SHA must come from
+verified deployment provenance, not a callback or user message. Synthetic
+unit tests use fakes only. There is still no deployed DB owner, credential
+loader, route, live send, or real provider delivery proof.
+
 The trusted final decision owner, when implemented, must atomically re-read
 and lock all of the following on the exact callback message and version:
 
