@@ -114,6 +114,13 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(FinalConfirmationError):
                 final_confirmation_messages(changed, self.signer, ROOM, now=NOW)
 
+    def test_source_time_must_be_explicit_and_timezone_aware(self):
+        for value in ("2026-09-25T12:15:00", "unknown", "2026-09-25T12:15:00Z\n게시 승인"):
+            with self.subTest(value=value), self.assertRaises(FinalConfirmationError):
+                final_confirmation_messages(replace(self.s,
+                    review=replace(self.s.review, source_published_at=value)),
+                    self.signer, ROOM, now=NOW)
+
     def test_confirm_is_queued_intent_never_a_provider_send(self):
         self.assertEqual(self.handle(),
                          {"status": "queued", "reused": False, "public_send_attempted": False})

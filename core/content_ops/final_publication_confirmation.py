@@ -14,6 +14,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from core.publications.handoff import CLIENT_TARGETS
 
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
+_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z")
 _TOKEN = re.compile(r"ce2:[A-Za-z0-9_-]{51}\Z")
 _ACTIONS = {"p": "confirm_publication", "h": "hold"}
 
@@ -68,6 +70,15 @@ class FinalConfirmationSnapshot:
         _require(type(self.review) is ReviewSnapshot)
         self.review.validate()
         _require(self.review.eligibility == "daily_ready", "final_confirmation_not_ready")
+        published = self.review.source_published_at
+        _require(type(published) is str and bool(_TIME.fullmatch(published)),
+                 "final_confirmation_source_time_invalid")
+        try:
+            parsed = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            _require(parsed.utcoffset() is not None,
+                     "final_confirmation_source_time_invalid")
+        except ValueError:
+            raise FinalConfirmationError("final_confirmation_source_time_invalid") from None
         for value in (self.review_id, self.card_id, self.reviewer_id,
                       self.source_check_actor_id, self.claims_check_actor_id):
             _uuid(value)
