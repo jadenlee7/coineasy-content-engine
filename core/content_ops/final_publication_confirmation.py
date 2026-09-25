@@ -24,6 +24,7 @@ from core.publications.handoff import CLIENT_TARGETS
 
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
+_RELEASE = re.compile(r"[a-f0-9]{40}\Z")
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z")
 _TOKEN = re.compile(r"ce2:[A-Za-z0-9_-]{51}\Z")
 _ACTIONS = {"p": "confirm_publication", "h": "hold"}
@@ -65,6 +66,7 @@ class FinalConfirmationSnapshot:
     version_fingerprint: str
     approval_count: int
     publication_count: int
+    release_sha: str
 
     def validate(self) -> None:
         _require(type(self.review) is ReviewSnapshot)
@@ -93,6 +95,8 @@ class FinalConfirmationSnapshot:
                  "final_confirmation_checks_incomplete")
         _require(type(self.version_fingerprint) is str
                  and bool(_SHA.fullmatch(self.version_fingerprint)))
+        _require(type(self.release_sha) is str
+                 and bool(_RELEASE.fullmatch(self.release_sha)))
         _require(type(self.approval_count) is int and self.approval_count == 0
                  and type(self.publication_count) is int and self.publication_count == 0,
                  "final_confirmation_already_acted")
@@ -106,7 +110,8 @@ class FinalConfirmationSnapshot:
             review_epoch=self.review_epoch, source_check_epoch=self.source_check_epoch,
             claims_check_epoch=self.claims_check_epoch,
             version_fingerprint=self.version_fingerprint,
-            approval_count=self.approval_count, publication_count=self.publication_count)
+            approval_count=self.approval_count, publication_count=self.publication_count,
+            release_sha=self.release_sha)
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
 

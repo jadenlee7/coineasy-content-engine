@@ -15,6 +15,8 @@ same-reviewer checks/epoch, full copy, banner hash, and trusted room. A `ce1:`
 private-card check or legacy approval token cannot be accepted as a `ce2:`
 decision. The callback result is at most an owner-queued intent, not a Telegram
 or X delivery receipt.
+The snapshot also binds an exact 40-character release SHA. A future owner must
+compare that SHA with its own deployed runtime before honoring a decision.
 
 The packet currently has **no delivery owner, DB-backed final-card registry,
 restricted callback route, approval transaction, or publication queue adapter**.
