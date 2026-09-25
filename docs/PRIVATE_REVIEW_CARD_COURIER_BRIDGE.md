@@ -17,6 +17,9 @@ before the existing human `double-fact-check@1` and per-channel publication
 owners may proceed. An old or forged approval callback on the private card
 remains forbidden even after both private checks. This final confirmation
 card/owner is not part of this PR and must not be inferred from a checked state.
+An unmounted second-stage packet and callback contract is now drafted in
+[Final publication confirmation bridge](FINAL_PUBLICATION_CONFIRMATION_BRIDGE.md).
+It is not a DB-backed final-card owner, approval, queue or live bot route.
 
 `core/content_ops/private_review_card_courier.py` now connects that validator
 to a default-OFF one-shot sequence through injected `CardOwner` and
