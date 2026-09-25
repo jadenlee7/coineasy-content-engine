@@ -25,7 +25,7 @@ _USERNAME = "coineasy_review_bot"
 _CONTROL_LABELS = (
     ("✏️ Telegram 수정", "✏️ X 수정"),
     ("🎨 배너 다시 만들기", "보류"),
-    ("원문 사실 확인", "문안·배너 확인"),
+    ("✅ 공식 원문 확인", "✅ 문안·배너 확인"),
 )
 
 
