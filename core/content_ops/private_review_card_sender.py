@@ -16,17 +16,13 @@ from typing import Callable
 import httpx
 
 from core.content_ops.private_review_card_receipt import ObservedSend, validate_part_response
+from core.content_ops.review_buttons import PRIVATE_CONTROL_LABELS
 
 
 _TOKEN = re.compile(r"([1-9][0-9]{4,15}):[A-Za-z0-9_-]{30,100}\Z")
 _ROOM = re.compile(r"-100[1-9][0-9]{6,12}\Z")
 _API = "https://api.telegram.org/bot"
 _USERNAME = "coineasy_review_bot"
-_CONTROL_LABELS = (
-    ("✏️ Telegram 수정", "✏️ X 수정"),
-    ("🎨 배너 다시 만들기", "보류"),
-    ("✅ 공식 원문 확인", "✅ 문안·배너 확인"),
-)
 
 
 class PrivateCardSenderError(RuntimeError):
@@ -148,7 +144,7 @@ class TelegramPrivateCardSender:
                     or re.fullmatch(r"ce1:[A-Za-z0-9_-]{51}", button["callback_data"]) is None
                     for row in markup["inline_keyboard"] for button in row)
                 or tuple(tuple(button["text"] for button in row)
-                    for row in markup["inline_keyboard"]) != _CONTROL_LABELS):
+                    for row in markup["inline_keyboard"]) != PRIVATE_CONTROL_LABELS):
                 raise PrivateCardSenderError("private_card_request_invalid")
         if ((kind == "image" and "비공개 검수용" not in text)
             or (kind == "telegram" and not text.startswith("[Telegram 공지 전문]\n"))

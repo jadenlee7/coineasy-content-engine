@@ -28,6 +28,11 @@ ACTIONS = {"t": "edit_telegram", "x": "edit_x", "b": "edit_banner",
 LABELS = {"t": "✏️ Telegram 수정", "x": "✏️ X 수정", "b": "🎨 배너 수정",
           "s": "원문 사실 확인", "c": "문안·배너 확인", "h": "보류",
           "a": "✅ 두 채널 승인·게시"}
+PRIVATE_CONTROL_LABELS = (
+    ("✏️ Telegram 수정", "✏️ X 수정"),
+    ("🎨 배너 다시 만들기", "보류"),
+    ("✅ 공식 원문 확인", "✅ 문안·배너 확인"),
+)
 
 
 def _check(condition, code="review_buttons_invalid"):
@@ -154,9 +159,9 @@ def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now, priv
     rows = [[button("t"), button("x")], [button("b"), button("h")],
             [button("s"), button("c")]]
     if private_only:
-        rows[1][0]["text"] = "🎨 배너 다시 만들기"
-        rows[2][0]["text"] = "✅ 공식 원문 확인"
-        rows[2][1]["text"] = "✅ 문안·배너 확인"
+        for row, labels in zip(rows, PRIVATE_CONTROL_LABELS):
+            for item, label in zip(row, labels):
+                item["text"] = label
         # Reserved routing namespace for the existing shared polling owner.
         # The signed 51-byte token remains unchanged inside this 55-byte value.
         for row in rows:
