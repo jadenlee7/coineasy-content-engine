@@ -739,6 +739,8 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_preflight.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_delivery_ledger.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_card_preflight.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_decision_ledger.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_decision_ledger.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake

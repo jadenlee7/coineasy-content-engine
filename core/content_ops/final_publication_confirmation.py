@@ -1,8 +1,8 @@
 """Local-only second-stage publication confirmation for an exact reviewed version.
 
 This module has no transport, database connection, publisher, or runtime mount.
-Only a trusted owner can supply the snapshot and atomically turn a confirmed
-human decision into the existing approval and channel-specific outboxes. A
+Only a trusted owner can supply the snapshot and durably record the decision.
+The current private decision ledger creates no approval or channel outbox. A
 rendered card or a valid HMAC is never publication authority by itself.
 """
 
@@ -183,8 +183,8 @@ def final_confirmation_messages(snapshot: FinalConfirmationSnapshot,
         f"공식 게시 시각: {snapshot.review.source_published_at}\n"
         f"배너 SHA-256: {snapshot.review.banner_sha256}\n"
         "아래 배너·Telegram·X 전문을 다시 확인하세요.\n"
-        "승인은 이 정확한 버전의 채널별 게시 대기열 요청입니다. "
-        "전송 성공이나 공개 게시 완료를 뜻하지 않습니다.\n"
+        "승인은 이 정확한 버전의 최종 검수 결정만 기록합니다. "
+        "공개 게시 대기열이나 전송 완료를 뜻하지 않습니다.\n"
         "버튼은 15분 후 만료되며, 수정·새 버전은 기존 확인을 무효화합니다."
     )
     return {"banner": {"sha256": snapshot.review.banner_sha256},
@@ -202,21 +202,29 @@ class VerifiedFinalCallback:
     actor_is_bot: bool
     room_binding: str
     message_binding: str
+    bot_binding: str
+    human_binding: str
     token: str
 
 
 class FinalDecisionOwner(Protocol):
-    def read_confirmation(self, room_binding: str, message_binding: str) -> FinalConfirmationSnapshot:
+    def read_confirmation(self, room_binding: str, message_binding: str,
+                          bot_binding: str, human_binding: str) -> FinalConfirmationSnapshot:
         """Read only a fully delivered, registered final card by exact message."""
 
     def apply_final_decision(self, *, snapshot_sha256: str, version_id: str,
-                             reviewer_id: str, action: str, idempotency_key: str) -> dict:
-        """Atomically recheck source/version/checks/ACL, then hold or approve+queue."""
+                             card_id: str, version_fingerprint: str,
+                             message_binding: str, bot_binding: str,
+                             room_binding: str, human_binding: str,
+                             runtime_release_sha: str, reviewer_id: str,
+                             action: str, idempotency_key: str) -> dict:
+        """Recheck and durably record a private decision; never publish."""
 
 
 def handle_final_confirmation(event: VerifiedFinalCallback, *, enabled: bool,
         signer: FinalConfirmationSigner, owner: FinalDecisionOwner,
-        allowed_reviewers: frozenset, room_binding: str, now: int) -> dict:
+        allowed_reviewers: frozenset, room_binding: str,
+        runtime_release_sha: str, now: int) -> dict:
     if enabled is not True:
         return {"status": "disabled", "public_send_attempted": False}
     _require(type(event) is VerifiedFinalCallback and event.actor_is_bot is False
@@ -224,17 +232,29 @@ def handle_final_confirmation(event: VerifiedFinalCallback, *, enabled: bool,
              "final_confirmation_actor_forbidden")
     _require(type(event.callback_id) is str and bool(re.fullmatch(
         r"[A-Za-z0-9_-]{1,128}", event.callback_id)))
-    _require(type(event.message_binding) is str and 1 <= len(event.message_binding) <= 128)
-    snapshot = owner.read_confirmation(event.room_binding, event.message_binding)
+    _require(type(event.room_binding) is str and bool(_SHA.fullmatch(event.room_binding)))
+    _require(all(type(value) is str and bool(_SHA.fullmatch(value)) for value in
+                 (event.message_binding, event.bot_binding, event.human_binding)))
+    _require(type(runtime_release_sha) is str and bool(_RELEASE.fullmatch(runtime_release_sha)),
+             "final_confirmation_release_invalid")
+    snapshot = owner.read_confirmation(event.room_binding, event.message_binding,
+        event.bot_binding, event.human_binding)
     snapshot.validate()
     _require(event.actor_id == snapshot.reviewer_id,
              "final_confirmation_actor_forbidden")
+    _require(snapshot.release_sha == runtime_release_sha,
+             "final_confirmation_release_conflict")
     action = signer.verify(event.token, snapshot, room_binding, now=now)
     result = owner.apply_final_decision(snapshot_sha256=snapshot.digest(),
         version_id=snapshot.review.content_version_id, reviewer_id=event.actor_id,
-        action=action, idempotency_key=hashlib.sha256(event.callback_id.encode()).hexdigest())
-    _require(type(result) is dict and set(result) == {"status", "reused"}
-             and result["status"] in {"queued", "held"}
-             and type(result["reused"]) is bool,
+        card_id=snapshot.card_id, version_fingerprint=snapshot.version_fingerprint,
+        message_binding=event.message_binding, bot_binding=event.bot_binding,
+        room_binding=event.room_binding, human_binding=event.human_binding,
+        runtime_release_sha=runtime_release_sha, action=action,
+        idempotency_key=hashlib.sha256(event.callback_id.encode()).hexdigest())
+    _require(type(result) is dict and set(result) == {"status", "reused", "decision_id"}
+             and result["status"] in {"confirmed_pending_publication_owner", "held"}
+             and type(result["reused"]) is bool and type(result["decision_id"]) is str
+             and bool(_UUID.fullmatch(result["decision_id"])),
              "final_confirmation_owner_readback_unknown")
     return {**result, "public_send_attempted": False}

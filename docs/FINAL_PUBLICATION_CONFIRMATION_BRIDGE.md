@@ -13,13 +13,13 @@ asserted public X handle. Buttons use a dedicated `ce2:` namespace and a
 15-minute MAC over the current version, DB-issued fingerprint, review/card,
 same-reviewer checks/epoch, full copy, banner hash, and trusted room. A `ce1:`
 private-card check or legacy approval token cannot be accepted as a `ce2:`
-decision. The callback result is at most an owner-queued intent, not a Telegram
-or X delivery receipt.
+decision. The callback result is at most a private decision receipt, not a
+public approval, publication request, or Telegram/X delivery receipt.
 The snapshot also binds an exact 40-character release SHA. A future owner must
 compare that SHA with its own deployed runtime before honoring a decision.
 
 The packet currently has **no live delivery owner, restricted callback route,
-approval transaction, or publication queue adapter**.
+public approval transaction, or publication queue adapter**.
 It is intentionally not part of the live bot. A signer key must be separate
 from the private-card key and all publishing credentials; no key is provisioned
 by this proposal. The existing bot remains the sole update consumer.
@@ -68,7 +68,25 @@ an uncertain registration; it cannot approve or send. There is still no
 deployed owner, credential loader, route, live send, or real provider delivery
 proof.
 
-The trusted final decision owner, when implemented, must atomically re-read
+`supabase/proposals/content_ops_final_decision_ledger.sql` adds a **local-only,
+ungranted** decision owner. A trusted ingress must authenticate the Telegram
+callback and HMAC, then pass exact actor, four room/message/bot/human bindings,
+current version fingerprint, snapshot hash, and deployed release SHA. Under the
+content-item lock the owner checks the registered final card, expiry, same-actor
+private checks, latest official source, current version, and zero existing
+approvals/publications. It records one immutable decision per review. A hold
+also invalidates the review epoch. A confirmation returns
+`confirmed_pending_publication_owner`; it does **not** insert an approval,
+publication, publish job, Typefully draft, or any dispatchable outbox row.
+Replay of the original callback key returns the same decision ID, conflicting
+keys/actions fail closed, and read-only terminal lookup handles an uncertain
+commit. `core/content_ops/final_decision_owner.py` is its default-OFF,
+unmounted fixed-SQL adapter with an injected trusted snapshot reader. The
+disposable full-schema test uses only synthetic records and proves the absence
+of public work. The final-card button text explicitly says a decision is not
+queueing or sending.
+
+The later public approval/publication owner must atomically re-read
 and lock all of the following on the exact callback message and version:
 
 1. Complete registered final card and authenticated same-room actor; active

@@ -19,7 +19,10 @@ C = "55555555-5555-4555-8555-555555555555"
 A = "66666666-6666-4666-8666-666666666666"
 OTHER = "77777777-7777-4777-8777-777777777777"
 ROOM = "fixture-private-room"
-MESSAGE = "fixture-controls-message"
+ROOM = "b" * 64
+MESSAGE = "d" * 64
+BOT = "e" * 64
+HUMAN = "f" * 64
 
 
 def snapshot(client="yellow"):
@@ -40,9 +43,9 @@ class FakeOwner:
         self.applies = 0
         self.decisions = {}
 
-    def read_confirmation(self, room, message):
+    def read_confirmation(self, room, message, bot, human):
         self.reads += 1
-        if (room, message) != (ROOM, MESSAGE):
+        if (room, message, bot, human) != (ROOM, MESSAGE, BOT, HUMAN):
             raise FinalConfirmationError("final_confirmation_unregistered")
         return self.current
 
@@ -54,8 +57,9 @@ class FakeOwner:
         key = request["idempotency_key"]
         if key in self.decisions:
             return {**self.decisions[key], "reused": True}
-        result = {"status": "queued" if request["action"] == "confirm_publication"
-                  else "held", "reused": False}
+        result = {"status": "confirmed_pending_publication_owner"
+                  if request["action"] == "confirm_publication" else "held",
+                  "decision_id": OTHER, "reused": False}
         self.decisions[key] = result
         return result
 
@@ -68,11 +72,13 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
 
     def event(self, action="p", **changes):
         token = self.signer.issue(self.s, action, ROOM, now=NOW, expires_at=NOW + 900)
-        return replace(VerifiedFinalCallback("callback-1", A, False, ROOM, MESSAGE, token), **changes)
+        return replace(VerifiedFinalCallback("callback-1", A, False, ROOM,
+            MESSAGE, BOT, HUMAN, token), **changes)
 
     def handle(self, event=None, **changes):
         args = dict(enabled=True, signer=self.signer, owner=self.owner,
-                    allowed_reviewers=frozenset({A, OTHER}), room_binding=ROOM, now=NOW)
+                    allowed_reviewers=frozenset({A, OTHER}), room_binding=ROOM,
+                    runtime_release_sha=self.s.release_sha, now=NOW)
         args.update(changes)
         return handle_final_confirmation(event or self.event(), **args)
 
@@ -93,7 +99,7 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
                 self.assertEqual(len(packet["controls"]["reply_markup"]["inline_keyboard"][0]), 2)
                 self.assertIn("Typefully", packet["controls"]["text"])
                 self.assertIn("공식 채널", packet["controls"]["text"])
-                self.assertIn("전송 성공이나 공개 게시 완료를 뜻하지 않습니다", packet["controls"]["text"])
+                self.assertIn("공개 게시 대기열이나 전송 완료를 뜻하지 않습니다", packet["controls"]["text"])
                 for button in packet["controls"]["reply_markup"]["inline_keyboard"][0]:
                     self.assertEqual(len(button["callback_data"]), 55)
                     self.assertTrue(button["callback_data"].startswith("ce2:"))
@@ -121,9 +127,11 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
                     review=replace(self.s.review, source_published_at=value)),
                     self.signer, ROOM, now=NOW)
 
-    def test_confirm_is_queued_intent_never_a_provider_send(self):
+    def test_confirm_is_private_decision_never_a_queue_or_provider_send(self):
         self.assertEqual(self.handle(),
-                         {"status": "queued", "reused": False, "public_send_attempted": False})
+                         {"status": "confirmed_pending_publication_owner",
+                          "decision_id": OTHER, "reused": False,
+                          "public_send_attempted": False})
         self.assertEqual(self.owner.applies, 1)
         self.assertEqual(self.handle()["reused"], True)
         self.assertEqual(len(self.owner.decisions), 1)
@@ -136,7 +144,6 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
     def test_stale_card_and_changed_copy_or_banner_rejected_before_write(self):
         for changed in (replace(self.s, card_id=OTHER),
                         replace(self.s, version_fingerprint="c" * 64),
-                        replace(self.s, release_sha="d" * 40),
                         replace(self.s, review=replace(self.s.review, x_copy="new X")),
                         replace(self.s, review=replace(self.s.review, banner_sha256="c" * 64)),
                         replace(self.s, review=replace(self.s.review, content_version_id=OTHER))):
@@ -157,7 +164,16 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
             self.handle(self.event(actor_id=OTHER))
         self.assertEqual(self.owner.reads, 1)
         with self.assertRaisesRegex(FinalConfirmationError, "unregistered"):
-            self.handle(self.event(message_binding="other-message"))
+            self.handle(self.event(message_binding="0" * 64))
+        for event in (self.event(bot_binding="0" * 64),
+                      self.event(human_binding="0" * 64)):
+            with self.assertRaises(FinalConfirmationError):
+                self.handle(event)
+        self.assertEqual(self.owner.applies, 0)
+
+    def test_runtime_release_must_match_before_decision(self):
+        with self.assertRaisesRegex(FinalConfirmationError, "release_conflict"):
+            self.handle(runtime_release_sha="0" * 40)
         self.assertEqual(self.owner.applies, 0)
 
     def test_private_card_or_tampered_token_cannot_confirm(self):
