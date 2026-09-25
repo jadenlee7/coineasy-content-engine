@@ -32,6 +32,17 @@ calls: 0. All owned local databases were removed afterward.
 The regression is also wired into the existing disposable PostgreSQL CI job.
 Local evidence is not a production migration receipt or a Telegram delivery.
 
+The [2026-09-23 read-only production check](PRIVATE_REVIEW_PRODUCER_BINDING_READBACK_20260923.md)
+classified the hosted helper and migration history as `legacy_no_history`; the base private button-card owner
+path is therefore still blocked. The
+[one-migration pack](../ops/private-review-producer-binding/README.md) pins
+the exact migration bytes, verifies atomic function/history application in
+disposable PostgreSQL 16 and 17, and prepares a separate approval-gated
+one-shot runner. Its mocked network tests and default-OFF template do not
+authorize or perform production application. After a separately approved
+apply, `corrected_exact_history` must be observed through the read-only
+contract before any downstream private-card work proceeds.
+
 ## Rollout boundary
 
 The deployed service remains OFF. Merge and application of this one new
