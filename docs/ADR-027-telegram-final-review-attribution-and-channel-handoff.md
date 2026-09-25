@@ -75,9 +75,11 @@ readback. No staff-room courier receives public-channel credentials.
 2. [x] Draft the attribution-only SQL proposal; no migration or grant.
 3. [x] Prove the proposal on a disposable full schema, including historical
    approvals, cross-workspace FK rejection and least-privilege ACLs.
-4. [ ] Implement the exact final-card registration and one-transaction decision
-   owner, with same-actor checks and action-time freshness.
-5. [ ] Implement and verify all four exact Telegram channel owners and the
+4. [x] Draft an ungranted, read-only final-card preparation gate with
+   same-actor checks and action-time source freshness.
+5. [ ] Implement the exact final-card delivery registry and one-transaction
+   decision owner; the preparation gate is not a publication authority.
+6. [ ] Implement and verify all four exact Telegram channel owners and the
    Typefully draft handoff; hold any unsupported destination.
-6. [ ] Obtain separate authorization for production migration, deployment,
+7. [ ] Obtain separate authorization for production migration, deployment,
    enabling a private canary, and each public channel activation.

@@ -24,6 +24,17 @@ It is intentionally not part of the live bot. A signer key must be separate
 from the private-card key and all publishing credentials; no key is provisioned
 by this proposal. The existing bot remains the sole update consumer.
 
+`supabase/proposals/content_ops_final_card_preflight.sql` now provides a
+local-only, ungranted preparation check. It rechecks the parent private card,
+the same principal's two checks, current version fingerprint and today's
+fresh official source through the existing candidate owner. Its only positive
+result is `ready_for_final_card` with `execution_authorized=false`; it does
+not register or deliver a final card, record an approval, create an outbox,
+or invoke a provider. The hosted catalog preapply is read-only and must be
+rerun before any separately authorized installation. Disposable CI proves
+normal eligibility and fail-closed missing check, wrong binding, stale source,
+stale poll, revoked reviewer, existing approval and revoked parent card.
+
 The trusted final decision owner, when implemented, must atomically re-read
 and lock all of the following on the exact callback message and version:
 
