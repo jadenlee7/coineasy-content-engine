@@ -263,6 +263,24 @@ begin
         'reused',false,'execution_authorized',false);
 end $$;
 
+-- Read-only reconciliation for a lost registration acknowledgement. This is
+-- evidence of private card registration, never permission to approve or send.
+create function private.read_content_ops_final_card_terminal(target_delivery_id uuid)
+returns jsonb language plpgsql stable security invoker set search_path='' as $$
+declare registered_id uuid;
+begin
+    if target_delivery_id is null or
+       target_delivery_id='00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception 'final_card_terminal_arguments_invalid' using errcode='22023';
+    end if;
+    select id into registered_id from private.content_ops_final_cards
+        where id=target_delivery_id;
+    return jsonb_build_object(
+        'status',case when registered_id is null then 'not_registered'
+                      else 'card_registered' end,
+        'card_id',registered_id,'execution_authorized',false);
+end $$;
+
 revoke all on function private.guard_content_ops_final_card_ledger()
     from public,anon,authenticated,service_role;
 revoke all on function private.reserve_content_ops_final_card_delivery(
@@ -274,5 +292,7 @@ revoke all on function private.confirm_content_ops_final_card_part(
     uuid,smallint,text,text,text)
     from public,anon,authenticated,service_role;
 revoke all on function private.register_content_ops_final_card(uuid)
+    from public,anon,authenticated,service_role;
+revoke all on function private.read_content_ops_final_card_terminal(uuid)
     from public,anon,authenticated,service_role;
 commit;

@@ -129,6 +129,11 @@ begin
         raise exception 'final_card_incomplete_registered';
     exception when check_violation then null;
     end;
+    result:=private.read_content_ops_final_card_terminal(delivery);
+    if result <> jsonb_build_object('status','not_registered','card_id',null,
+        'execution_authorized',false) then
+        raise exception 'final_card_incomplete_terminal_readback';
+    end if;
     begin
         perform private.begin_content_ops_final_card_part(delivery,1::smallint,repeat('b',64));
         raise exception 'final_card_out_of_order_part_allowed';
@@ -179,6 +184,11 @@ begin
     result:=private.register_content_ops_final_card(delivery);
     if result->>'status' <> 'card_registered' or result->>'reused' <> 'true' then
         raise exception 'final_card_registration_replay_invalid';
+    end if;
+    result:=private.read_content_ops_final_card_terminal(delivery);
+    if result <> jsonb_build_object('status','card_registered','card_id',delivery,
+        'execution_authorized',false) then
+        raise exception 'final_card_registered_terminal_readback';
     end if;
     if (select count(*) from private.content_ops_final_card_parts
         where delivery_id=delivery and state='confirmed')<>4
@@ -258,7 +268,9 @@ begin
         'EXECUTE') or has_function_privilege('anon',
         'private.confirm_content_ops_final_card_part(uuid,smallint,text,text,text)',
         'EXECUTE') or has_function_privilege('service_role',
-        'private.register_content_ops_final_card(uuid)', 'EXECUTE') then
+        'private.register_content_ops_final_card(uuid)', 'EXECUTE')
+       or has_function_privilege('service_role',
+        'private.read_content_ops_final_card_terminal(uuid)', 'EXECUTE') then
         raise exception 'final_card_ledger_runtime_grant_leaked';
     end if;
     if has_table_privilege('service_role',

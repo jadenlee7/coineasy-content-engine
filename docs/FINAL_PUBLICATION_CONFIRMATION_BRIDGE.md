@@ -59,8 +59,14 @@ sender. It stops after a reused/uncertain reservation or response and never
 resends with another delivery ID. The injected DB owner must durably commit
 each ledger write before returning; the runtime release SHA must come from
 verified deployment provenance, not a callback or user message. Synthetic
-unit tests use fakes only. There is still no deployed DB owner, credential
-loader, route, live send, or real provider delivery proof.
+unit tests use fakes only. `core/content_ops/final_card_owner.py` is the
+matching injected PostgreSQL adapter: it is default OFF, uses fixed SQL
+calls and a fresh committed transaction per step, and accepts only bounded
+receipts. A lost commit ACK remains unknown. The ledger's ungranted,
+read-only terminal function resolves only the original delivery UUID after
+an uncertain registration; it cannot approve or send. There is still no
+deployed owner, credential loader, route, live send, or real provider delivery
+proof.
 
 The trusted final decision owner, when implemented, must atomically re-read
 and lock all of the following on the exact callback message and version:
