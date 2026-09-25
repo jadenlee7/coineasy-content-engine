@@ -33,8 +33,19 @@ The separate prompt-capability catalog gate
 returned `prompt_preapply=pass`, `read_only=true`, `changes=0`,
 `provider_calls=0` and `hosted_runtime_verified=false`.
 
-**Decision:** the producer-binding mismatch is resolved and both existing-base
-pre-apply catalog gates pass. This is necessary but not sufficient for a live
+An additional foundation contract
+`supabase/proposals/content_ops_button_card_foundation_preapply_readonly.sql`
+(SHA-256 `729f55f93f14e2f39b2cc36b50a9cae2ca06b74e62da4bbed92b1644a6658707`)
+returned `button_card_foundation_preapply=pass`, `read_only=true`,
+`changes=0`, `provider_calls=0` and `hosted_runtime_verified=false`.
+It pins the already-hosted review/card table columns, RLS and ACL boundary,
+and the exact body hashes, owner, return type, security mode and search path
+of `content_ops_button_version_fingerprint` and
+`record_content_ops_button_card`. The catalog pass does not compile the new
+send-ledger or owner-gateway proposals on production.
+
+**Decision:** the producer-binding mismatch is resolved and the three
+existing-base pre-apply catalog gates pass. This is necessary but not sufficient for a live
 private card. The button-card send-ledger and owner-gateway files remain SQL
 proposals, not applied migrations; the prompt capability wrappers remain
 unapplied. Hosted execution of those proposals, exact ACL/post-apply checks,

@@ -95,8 +95,9 @@ older and migration `20260916190000` had no applied history entry; see the
 [historical mismatch receipt](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md).
 After the separately approved one-migration correction, the independent
 production read-only contract returned `corrected_exact_history`, and the
-**full** button-card pre-apply gate returned `pass`. The separate prompt
-pre-apply catalog gate also passed with `hosted_runtime_verified=false`; see
+**full** button-card pre-apply gate returned `pass`. The separate prompt and
+new review/card foundation catalog gates also passed with
+`hosted_runtime_verified=false`; see
 the [2026-09-25 readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260925.md).
 These passes resolve the base-schema mismatch only. No button-card owner or
 prompt-capability proposal has been applied, and no live send is authorized.

@@ -276,8 +276,28 @@ try {
   sql('supabase/proposals/content_ops_button_durable_attempt.sql');
   sql('supabase/proposals/content_ops_banner_revision.sql');
   query('create role coineasy_private_review login; grant usage on schema private to coineasy_private_review;');
+  sql('supabase/proposals/content_ops_button_card_foundation_preapply_readonly.sql');
+  query(`alter function private.content_ops_button_version_fingerprint(uuid,uuid,uuid)
+    security definer`);
+  const driftedFoundation = sql(
+    'supabase/proposals/content_ops_button_card_foundation_preapply_readonly.sql',
+    { allowFailure: true });
+  if (driftedFoundation.status === 0
+      || !String(driftedFoundation.stderr).includes('button_card_foundation_function_mismatch')) {
+    throw Error('card foundation pre-apply accepted a changed security mode');
+  }
+  query(`alter function private.content_ops_button_version_fingerprint(uuid,uuid,uuid)
+    security invoker`);
+  sql('supabase/proposals/content_ops_button_card_foundation_preapply_readonly.sql');
   sql('supabase/proposals/content_ops_button_card_send_ledger.sql');
   sql('supabase/proposals/content_ops_button_card_owner_gateway.sql');
+  const foundationInstalled = sql(
+    'supabase/proposals/content_ops_button_card_foundation_preapply_readonly.sql',
+    { allowFailure: true });
+  if (foundationInstalled.status === 0
+      || !String(foundationInstalled.stderr).includes('button_card_foundation_partial_installation')) {
+    throw Error('card foundation pre-apply accepted a partially installed owner');
+  }
   const secondPreapply = sql('supabase/proposals/content_ops_button_card_preapply_readonly.sql',
     { allowFailure: true });
   if (secondPreapply.status === 0
