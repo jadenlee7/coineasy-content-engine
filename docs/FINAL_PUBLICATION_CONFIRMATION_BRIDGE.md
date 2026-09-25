@@ -38,6 +38,16 @@ and lock all of the following on the exact callback message and version:
    reconciled read-only by the original callback/operation IDs, never retried
    with a new ID.
 
+The existing `public.record_studio_content_review_v2` is **not** this owner:
+it records `reviewer_source='studio_session'` with no Telegram reviewer ID,
+and a later `request_content_publication` is a separate transaction. Calling
+it for a bot callback would misattribute the human decision and lose the
+atomic approval/outbox guarantee. A dedicated, least-privilege decision RPC
+must bind the signup-free private reviewer principal to an auditable approval
+source that the existing `double-fact-check@1` publication gate recognizes.
+That schema/contract change needs its own hosted compatibility proof and
+explicit production authorization.
+
 Only separately deployed channel owners may send, and each channel needs its
 own provider receipt and public destination readback. Typefully may remain
 draft-only until its scheduling/send authority is explicitly configured. The
