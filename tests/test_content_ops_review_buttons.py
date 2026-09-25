@@ -105,6 +105,17 @@ class ReviewButtonsTest(unittest.TestCase):
                     self.assertEqual(len(b["callback_data"].encode()), 51)
                     self.assertNotIn(client, b["callback_data"])
 
+    def test_private_card_binds_banner_review_without_public_approval(self):
+        s = replace(self.s, eligibility="blocked")
+        m = review_messages(s, self.signer, ROOM, now=NOW, private_only=True)
+        rows = m["controls"]["reply_markup"]["inline_keyboard"]
+        self.assertEqual([button["text"] for button in rows[2]],
+                         ["✅ 공식 원문 확인", "✅ 문안·배너 확인"])
+        self.assertEqual(sum(len(row) for row in rows), 6)
+        self.assertIn("공식 채널 게시 승인이 아닙니다", m["controls"]["text"])
+        self.assertTrue(all(button["callback_data"].startswith("ce1:")
+                            for row in rows for button in row))
+
     def test_no_approval_without_both_human_checks(self):
         with self.assertRaisesRegex(ButtonReviewError, "attestation"):
             self.run_event()

@@ -148,12 +148,15 @@ def review_messages(snapshot: ReviewSnapshot, signer, room_binding, *, now, priv
         controls = (f"{snapshot.client_id.upper()} · 비공개 제작·검수\n"
                     f"공식 원문: {snapshot.source_url}\n공식 게시: {snapshot.source_published_at}\n"
                     f"버전: {snapshot.content_version_id}\n"
-                    "수정·재제작은 새 검토본을 만듭니다. 공식 채널 게시 승인이 아닙니다.\n"
+                    "아래 두 확인은 이 버전의 비공개 검수 기록입니다. 공식 채널 게시 승인이 아닙니다.\n"
+                    "수정·재제작은 새 검토본을 만들고 기존 확인을 무효화합니다.\n"
                     "버튼은 30분 후 만료됩니다.")
     rows = [[button("t"), button("x")], [button("b"), button("h")],
             [button("s"), button("c")]]
     if private_only:
         rows[1][0]["text"] = "🎨 배너 다시 만들기"
+        rows[2][0]["text"] = "✅ 공식 원문 확인"
+        rows[2][1]["text"] = "✅ 문안·배너 확인"
         # Reserved routing namespace for the existing shared polling owner.
         # The signed 51-byte token remains unchanged inside this 55-byte value.
         for row in rows:
