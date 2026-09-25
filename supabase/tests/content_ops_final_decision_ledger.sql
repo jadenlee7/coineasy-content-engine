@@ -1,6 +1,7 @@
 -- Disposable full-schema check. No provider call or production write.
 begin;
 do $$
+<<fixture>>
 declare
     choice text;
     w uuid; i uuid; v uuid; feed uuid; source uuid; job uuid;
@@ -238,7 +239,8 @@ begin
                or result->>'reused' <> 'false'
                or result->'execution_authorized' is distinct from 'false'::jsonb
                or (select count(*) from private.content_ops_channel_handoffs h
-                    where h.decision_id=decision_id and h.approval_id=approval_id
+                    where h.decision_id=fixture.decision_id
+                      and h.approval_id=fixture.approval_id
                       and h.status='awaiting_channel_owner')<>2
                or (select count(*) from public.approvals a where a.workspace_id=w
                     and a.content_item_id=i and a.review_principal_id=actor
