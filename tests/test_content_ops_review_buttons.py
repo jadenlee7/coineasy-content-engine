@@ -116,6 +116,17 @@ class ReviewButtonsTest(unittest.TestCase):
         self.assertTrue(all(button["callback_data"].startswith("ce1:")
                             for row in rows for button in row))
 
+    def test_private_checks_never_turn_a_legacy_approval_into_public_queue(self):
+        self.s = replace(self.s, eligibility="blocked")
+        self.owner.current = self.s
+        self.run_event(self.event("s"), private_only=True)
+        self.run_event(self.event("c"), private_only=True)
+        self.assertEqual(len(self.owner.checks), 2)
+        with self.assertRaisesRegex(ButtonReviewError, "review_private_publication_forbidden"):
+            self.run_event(self.event("a"), private_only=True)
+        self.assertEqual(self.owner.applies, 2)
+        self.assertFalse(self.owner.outbox)
+
     def test_no_approval_without_both_human_checks(self):
         with self.assertRaisesRegex(ButtonReviewError, "attestation"):
             self.run_event()

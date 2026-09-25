@@ -9,6 +9,15 @@ Telegram success responses before building the argument set for
 banner, complete Telegram copy, complete X copy, then six edit/check/hold
 buttons. It contains no approval/publish control and no Studio login link.
 
+The operator selected a **two-stage release**: the two check buttons record
+private source and final copy/banner review for one immutable version; they do
+not approve or queue publication. A separate, exact-version final publication
+confirmation must show the destinations and current approved media/copy again
+before the existing human `double-fact-check@1` and per-channel publication
+owners may proceed. An old or forged approval callback on the private card
+remains forbidden even after both private checks. This final confirmation
+card/owner is not part of this PR and must not be inferred from a checked state.
+
 `core/content_ops/private_review_card_courier.py` now connects that validator
 to a default-OFF one-shot sequence through injected `CardOwner` and
 `CardSender` contracts. A durable `new_attempt=True` reservation is required
