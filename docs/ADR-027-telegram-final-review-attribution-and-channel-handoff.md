@@ -77,9 +77,12 @@ readback. No staff-room courier receives public-channel credentials.
    approvals, cross-workspace FK rejection and least-privilege ACLs.
 4. [x] Draft an ungranted, read-only final-card preparation gate with
    same-actor checks and action-time source freshness.
-5. [ ] Implement the exact final-card delivery registry and one-transaction
-   decision owner; the preparation gate is not a publication authority.
-6. [ ] Implement and verify all four exact Telegram channel owners and the
+5. [x] Draft the local-only exact final-card delivery registry and private
+   decision owner; neither is a publication authority.
+6. [ ] Verify the ungranted approval/private-intent proposal against the hosted
+   schema and exact destination policy. Synthetic route bindings in CI are not
+   live channel verification or permission to apply the proposal.
+7. [ ] Implement and verify all four exact Telegram channel owners and the
    Typefully draft handoff; hold any unsupported destination.
-7. [ ] Obtain separate authorization for production migration, deployment,
+8. [ ] Obtain separate authorization for production migration, deployment,
    enabling a private canary, and each public channel activation.

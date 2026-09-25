@@ -112,6 +112,25 @@ source that the existing `double-fact-check@1` publication gate recognizes.
 That schema/contract change needs its own hosted compatibility proof and
 explicit production authorization.
 
+`supabase/proposals/content_ops_publication_handoff_intent.sql` is the next
+**local-only, ungranted** step. It requires two separately verified, active,
+exact-release destination bindings (official Telegram and Typefully/X), a
+complete four-part private final card, the original confirmed decision key,
+fresh source/current version and fingerprint, an eligible fact-check report,
+no Content QA BLOCK, and zero existing public attempts. If any gate fails it
+inserts nothing. A successful single transaction attributes one
+`telegram_principal` approval, marks the exact item approved, and records two
+immutable *private* channel intents as `awaiting_channel_owner`. Those rows
+contain hashes, not copy, credentials, actual destination IDs, provider
+responses or a schedule. No route is seeded; no worker can claim the intents;
+there is no `public.publications` row, publish job, Typefully draft, Telegram
+send, X send, runtime grant or mounted callback. A lost acknowledgement is
+resolved read-only with the original decision/actor/key. Disposable CI uses
+synthetic route hashes only and is not destination verification. Even applying
+this proposal later would **not** make public delivery operational; the
+destination registry and both channel adapters still require a separate
+approval, exact-SHA compatibility/ACL review, and live private canary.
+
 Only separately deployed channel owners may send, and each channel needs its
 own provider receipt and public destination readback. Typefully may remain
 draft-only until its scheduling/send authority is explicitly configured. The

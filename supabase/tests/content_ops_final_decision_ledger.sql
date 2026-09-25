@@ -10,7 +10,17 @@ declare
     human text:=repeat('c',64); control_binding text:=repeat('d',64);
     snapshot_hash text:=repeat('e',64); release_sha text:=repeat('f',40);
     operation_key text:=repeat('1',64); decision_id uuid;
+    approval_id uuid; part_index integer; fact_report jsonb;
 begin
+    fact_report:=jsonb_build_object('schema_version','1.0',
+        'policy_version','double-fact-check@1','content_kind','daily_news',
+        'human_review_required',true,'status','pass',
+        'input_sha256',repeat('a',64),'output_sha256',repeat('b',64),
+        'checks',jsonb_build_array(
+            jsonb_build_object('id','source_evidence','status','pass',
+                'label','Synthetic source check','detail','Synthetic only','metrics','{}'::jsonb),
+            jsonb_build_object('id','output_claims','status','pass',
+                'label','Synthetic output check','detail','Synthetic only','metrics','{}'::jsonb)));
     foreach choice in array array['confirm_publication','hold'] loop
         operation_key:=case when choice='hold' then repeat('2',64)
             else repeat('1',64) end;
@@ -42,7 +52,8 @@ begin
         insert into public.content_versions(id,workspace_id,content_item_id,
             version_number,prompt_version,title,generation_meta,deliverables,channel_copy)
             values(v,w,i,1,'synthetic@1','Synthetic',
-                jsonb_build_object('mock_mode',false,'request_id',i::text),
+                jsonb_build_object('mock_mode',false,'request_id',i::text,
+                    'fact_check',fact_report),
                 jsonb_build_object('primary_asset_id',banner::text),
                 jsonb_build_object('telegram','Synthetic Korean','x','Synthetic X'));
         update public.content_items set current_version_id=v where id=i;
@@ -97,6 +108,14 @@ begin
             control_message_binding,expires_at)
             values(card,review,parent,actor,0,fingerprint,snapshot_hash,
                 control_binding,expiry);
+        for part_index in 0..3 loop
+            insert into private.content_ops_final_card_parts(delivery_id,part_index,
+                payload_sha256,state,message_binding,response_sha256,
+                started_at,confirmed_at)
+            values(card,part_index,repeat('8',64),'confirmed',
+                lpad(part_index::text,64,case when choice='hold' then '2' else '1' end),
+                repeat('7',64),clock_timestamp()-interval '1 second',clock_timestamp());
+        end loop;
         if private.content_ops_final_card_preflight(review,parent,actor,
             fingerprint,bot,room,human)->>'status' <> 'ready_for_final_card' then
             raise exception 'synthetic_final_decision_candidate_invalid';
@@ -189,6 +208,73 @@ begin
            or exists(select 1 from public.jobs where workspace_id=w and job_kind='publish') then
             raise exception 'private_final_decision_created_public_work';
         end if;
+        if choice='confirm_publication' then
+            begin
+                perform private.materialize_content_ops_publication_handoff(
+                    decision_id,actor,release_sha,operation_key);
+                raise exception 'unverified_routes_created_approval';
+            exception when check_violation then null; end;
+            if exists(select 1 from public.approvals where workspace_id=w) then
+                raise exception 'failed_route_gate_created_approval';
+            end if;
+            insert into private.content_ops_publication_routes(workspace_id,
+                client_id,channel,route_binding,release_sha,verified_at,active)
+            values(w,'yellow','telegram',repeat('a',64),release_sha,
+                    clock_timestamp()-interval '1 minute',true),
+                  (w,'yellow','typefully_x',repeat('b',64),release_sha,
+                    clock_timestamp()-interval '1 minute',true);
+            update public.source_feeds set last_polled_at=clock_timestamp()-interval '16 minutes'
+                where id=feed;
+            begin
+                perform private.materialize_content_ops_publication_handoff(
+                    decision_id,actor,release_sha,operation_key);
+                raise exception 'stale_source_created_approval';
+            exception when check_violation then null; end;
+            update public.source_feeds set last_polled_at=clock_timestamp() where id=feed;
+            result:=private.materialize_content_ops_publication_handoff(
+                decision_id,actor,release_sha,operation_key);
+            approval_id:=(result->>'approval_id')::uuid;
+            if result->>'status' <> 'approved_handoff_unwired'
+               or result->>'reused' <> 'false'
+               or result->'execution_authorized' is distinct from 'false'::jsonb
+               or (select count(*) from private.content_ops_channel_handoffs h
+                    where h.decision_id=decision_id and h.approval_id=approval_id
+                      and h.status='awaiting_channel_owner')<>2
+               or (select count(*) from public.approvals a where a.workspace_id=w
+                    and a.content_item_id=i and a.review_principal_id=actor
+                      and a.reviewer_source='telegram_principal'
+                      and a.source_facts_verified and a.output_claims_verified)<>1
+               or not exists(select 1 from public.content_items
+                    where id=i and status='approved') then
+                raise exception 'atomic_approval_handoff_invalid';
+            end if;
+            perform private.require_double_fact_check_approval(w,i,v,approval_id);
+            result:=private.materialize_content_ops_publication_handoff(
+                decision_id,actor,release_sha,operation_key);
+            if result->>'reused' <> 'true'
+               or (result->>'approval_id')::uuid is distinct from approval_id
+               or private.read_content_ops_publication_handoff_terminal(
+                    decision_id,actor,operation_key)->>'approval_id'
+                    is distinct from approval_id::text then
+                raise exception 'atomic_approval_handoff_replay_invalid';
+            end if;
+            begin
+                perform private.materialize_content_ops_publication_handoff(
+                    decision_id,actor,release_sha,repeat('9',64));
+                raise exception 'new_operation_key_replayed_approval';
+            exception when check_violation then null; end;
+            if exists(select 1 from public.publications where workspace_id=w)
+               or exists(select 1 from public.jobs where workspace_id=w
+                    and job_kind='publish') then
+                raise exception 'handoff_created_dispatchable_public_work';
+            end if;
+        else
+            begin
+                perform private.materialize_content_ops_publication_handoff(
+                    decision_id,actor,release_sha,operation_key);
+                raise exception 'held_decision_created_approval';
+            exception when check_violation then null; end;
+        end if;
     end loop;
     if has_function_privilege('service_role',
         'private.record_content_ops_final_decision(uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)',
@@ -196,6 +282,14 @@ begin
         'private.read_content_ops_final_decision_terminal(uuid,uuid,text)','EXECUTE')
        or has_table_privilege('service_role','private.content_ops_final_decisions','SELECT') then
         raise exception 'final_decision_runtime_grant_leaked';
+    end if;
+    if has_function_privilege('service_role',
+        'private.materialize_content_ops_publication_handoff(uuid,uuid,text,text)',
+        'EXECUTE') or has_table_privilege('service_role',
+        'private.content_ops_channel_handoffs','SELECT')
+       or has_table_privilege('service_role',
+        'private.content_ops_publication_routes','SELECT') then
+        raise exception 'publication_handoff_runtime_grant_leaked';
     end if;
 end $$;
 rollback;
