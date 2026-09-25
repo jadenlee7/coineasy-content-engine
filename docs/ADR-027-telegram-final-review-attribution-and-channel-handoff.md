@@ -73,7 +73,7 @@ readback. No staff-room courier receives public-channel credentials.
 
 1. [x] Pin the hosted approvals/principal contracts read-only.
 2. [x] Draft the attribution-only SQL proposal; no migration or grant.
-3. [ ] Prove the proposal on a disposable full schema, including historical
+3. [x] Prove the proposal on a disposable full schema, including historical
    approvals, cross-workspace FK rejection and least-privilege ACLs.
 4. [ ] Implement the exact final-card registration and one-transaction decision
    owner, with same-actor checks and action-time freshness.

@@ -13,10 +13,11 @@ begin
         (other_w,'Synthetic other workspace','synthetic-other-'||substr(other_w::text,1,8));
     insert into public.workspace_clients(workspace_id,client_id,display_name)
         values(w,'yellow','Synthetic Yellow');
-    insert into public.content_items(id,workspace_id,client_id,content_kind,status,current_version_id)
-        values(i,w,'yellow','daily_news','needs_review',v);
+    insert into public.content_items(id,workspace_id,client_id,content_kind,status)
+        values(i,w,'yellow','daily_news','needs_review');
     insert into public.content_versions(id,workspace_id,content_item_id,version_number,prompt_version)
         values(v,w,i,1,'synthetic@1');
+    update public.content_items set current_version_id=v where id=i;
     insert into private.content_ops_review_principals(id,workspace_id,bot_binding,human_binding)
         values(principal,w,repeat('a',64),repeat('b',64)),
               (other_principal,other_w,repeat('c',64),repeat('d',64));
