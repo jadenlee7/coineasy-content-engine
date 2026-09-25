@@ -89,18 +89,17 @@ production and cannot establish pre-apply hosted-version compatibility.
 The companion `content_ops_button_card_preapply_readonly.sql` checks the
 existing outbox, asset/Storage columns, exact base RPC contracts and absence
 of a partially installed button-card owner before any proposal is applied.
-The strengthened gate passes in disposable PostgreSQL 16.13 and 17.6 but
-**blocks on production**: the hosted candidate-reader body is the older
-version, and migration `20260916190000` is not recorded as applied remotely.
-The earlier signature-only production pass is superseded; see the
-[read-only mismatch receipt](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md).
-An independent, explicitly partial read-only gate passed on production at
-2026-09-23 14:56 UTC for the subsequent base RPC/table ACLs, FORCE RLS and
-absence of a partial owner installation. It reports `overall_ready=false` and
-does not check or excuse the stale producer binding. The full gate remains
-BLOCK until the separately authorized producer correction is applied and
-verified.
-No button-card owner migration or live send is authorized by this evidence.
+The strengthened gate passed in disposable PostgreSQL 16.13 and 17.6, but
+initially blocked on production because the hosted candidate-reader body was
+older and migration `20260916190000` had no applied history entry; see the
+[historical mismatch receipt](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260923.md).
+After the separately approved one-migration correction, the independent
+production read-only contract returned `corrected_exact_history`, and the
+**full** button-card pre-apply gate returned `pass`. The separate prompt
+pre-apply catalog gate also passed with `hosted_runtime_verified=false`; see
+the [2026-09-25 readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260925.md).
+These passes resolve the base-schema mismatch only. No button-card owner or
+prompt-capability proposal has been applied, and no live send is authorized.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
