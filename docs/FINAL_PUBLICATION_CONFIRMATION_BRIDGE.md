@@ -18,8 +18,8 @@ or X delivery receipt.
 The snapshot also binds an exact 40-character release SHA. A future owner must
 compare that SHA with its own deployed runtime before honoring a decision.
 
-The packet currently has **no delivery owner, DB-backed final-card registry,
-restricted callback route, approval transaction, or publication queue adapter**.
+The packet currently has **no live delivery owner, restricted callback route,
+approval transaction, or publication queue adapter**.
 It is intentionally not part of the live bot. A signer key must be separate
 from the private-card key and all publishing credentials; no key is provisioned
 by this proposal. The existing bot remains the sole update consumer.
@@ -34,6 +34,21 @@ or invoke a provider. The hosted catalog preapply is read-only and must be
 rerun before any separately authorized installation. Disposable CI proves
 normal eligibility and fail-closed missing check, wrong binding, stale source,
 stale poll, revoked reviewer, existing approval and revoked parent card.
+
+`supabase/proposals/content_ops_final_card_delivery_ledger.sql` is a separate
+local-only, ungranted transport ledger and final-card registry. It reserves one
+15-minute attempt for an exact parent review epoch, actor, version fingerprint,
+snapshot, packet, and release. A future trusted courier must durably record
+each of the four part attempts **before** invoking Telegram, then attach a
+provider-verified message/response binding. A repeated attempt without a
+receipt returns `delivery_unknown`: it is never permission to resend. Only
+four confirmed sequential parts allow registration of the control card.
+Synthetic receipts in the disposable test prove state transitions, **not**
+real Telegram delivery. A supplied receipt is not independently authenticated
+by the ledger; a future courier must verify it and bind the full message to
+the expected room, bot, payload, and release. All ledger functions return
+`execution_authorized=false` and have no runtime role grants. Registration is
+not an approval and creates no publication or public outbox.
 
 The trusted final decision owner, when implemented, must atomically re-read
 and lock all of the following on the exact callback message and version:

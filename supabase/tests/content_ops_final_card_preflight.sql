@@ -8,6 +8,8 @@ declare
     job uuid:=gen_random_uuid(); banner uuid:=gen_random_uuid();
     actor uuid:=gen_random_uuid(); review uuid:=gen_random_uuid();
     card uuid:=gen_random_uuid(); fingerprint text; result jsonb;
+    delivery uuid:=gen_random_uuid(); part_no smallint;
+    payload_hash text; message_hash text; response_hash text;
     bot text:=repeat('a',64); room text:=repeat('b',64);
     human text:=repeat('c',64); source_time timestamptz;
     poll_time timestamptz;
@@ -95,6 +97,96 @@ begin
        or result->'execution_authorized' is distinct from 'false'::jsonb then
         raise exception 'final_card_preflight_ready_projection_invalid';
     end if;
+    result:=private.reserve_content_ops_final_card_delivery(delivery,review,card,
+        actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
+        repeat('6',40));
+    if result->>'status' <> 'delivery_reserved'
+       or result->'execution_authorized' is distinct from 'false'::jsonb then
+        raise exception 'final_card_delivery_reserve_invalid';
+    end if;
+    begin
+        perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
+            actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
+            repeat('6',40));
+        raise exception 'final_card_duplicate_delivery_allowed';
+    exception when unique_violation then null;
+    end;
+    update public.source_feeds set last_polled_at=clock_timestamp()-interval '16 minutes'
+        where id=feed;
+    begin
+        perform private.begin_content_ops_final_card_part(
+            delivery,0::smallint,repeat('a',64));
+        raise exception 'final_card_stale_source_part_allowed';
+    exception when check_violation then null;
+    end;
+    update public.source_feeds set last_polled_at=poll_time where id=feed;
+    if exists(select 1 from private.content_ops_final_card_parts
+        where delivery_id=delivery) then
+        raise exception 'final_card_stale_source_part_written';
+    end if;
+    begin
+        perform private.register_content_ops_final_card(delivery);
+        raise exception 'final_card_incomplete_registered';
+    exception when check_violation then null;
+    end;
+    begin
+        perform private.begin_content_ops_final_card_part(delivery,1::smallint,repeat('b',64));
+        raise exception 'final_card_out_of_order_part_allowed';
+    exception when check_violation then null;
+    end;
+    for part_no in 0..3 loop
+        payload_hash:=repeat((array['a','b','c','d'])[part_no+1],64);
+        message_hash:=repeat((array['1','2','3','4'])[part_no+1],64);
+        response_hash:=repeat((array['5','6','7','8'])[part_no+1],64);
+        result:=private.begin_content_ops_final_card_part(delivery,part_no::smallint,payload_hash);
+        if result->>'status' <> 'attempt_recorded'
+           or result->>'reused' <> 'false' then
+            raise exception 'final_card_attempt_not_recorded';
+        end if;
+        result:=private.begin_content_ops_final_card_part(delivery,part_no::smallint,payload_hash);
+        if result->>'status' <> 'delivery_unknown'
+           or result->>'reused' <> 'true' then
+            raise exception 'final_card_retry_would_duplicate_send';
+        end if;
+        begin
+            perform private.begin_content_ops_final_card_part(
+                delivery,part_no::smallint,repeat('e',64));
+            raise exception 'final_card_payload_swap_allowed';
+        exception when unique_violation then null;
+        end;
+        result:=private.confirm_content_ops_final_card_part(delivery,part_no::smallint,
+            payload_hash,message_hash,response_hash);
+        if result->>'status' <> 'confirmed' or result->>'reused' <> 'false' then
+            raise exception 'final_card_receipt_not_confirmed';
+        end if;
+        result:=private.confirm_content_ops_final_card_part(delivery,part_no::smallint,
+            payload_hash,message_hash,response_hash);
+        if result->>'status' <> 'confirmed' or result->>'reused' <> 'true' then
+            raise exception 'final_card_receipt_replay_not_idempotent';
+        end if;
+        begin
+            perform private.confirm_content_ops_final_card_part(delivery,part_no::smallint,
+                payload_hash,repeat('9',64),response_hash);
+            raise exception 'final_card_receipt_swap_allowed';
+        exception when unique_violation then null;
+        end;
+    end loop;
+    result:=private.register_content_ops_final_card(delivery);
+    if result->>'status' <> 'card_registered' or result->>'reused' <> 'false'
+       or result->'execution_authorized' is distinct from 'false'::jsonb then
+        raise exception 'final_card_registration_invalid';
+    end if;
+    result:=private.register_content_ops_final_card(delivery);
+    if result->>'status' <> 'card_registered' or result->>'reused' <> 'true' then
+        raise exception 'final_card_registration_replay_invalid';
+    end if;
+    if (select count(*) from private.content_ops_final_card_parts
+        where delivery_id=delivery and state='confirmed')<>4
+       or (select count(*) from private.content_ops_final_cards where id=delivery)<>1
+       or (select count(*) from public.approvals where workspace_id=w)<>before_approvals
+       or (select count(*) from public.publications where workspace_id=w)<>before_publications then
+        raise exception 'final_card_registration_side_effect_invalid';
+    end if;
     if private.content_ops_final_card_preflight(review,card,actor,
         fingerprint,bot,room,repeat('9',64))->>'status' <> 'blocked'
        or private.content_ops_final_card_preflight(review,card,actor,
@@ -158,6 +250,24 @@ begin
         'private.content_ops_final_card_preflight(uuid,uuid,uuid,text,text,text,text)',
         'EXECUTE') then
         raise exception 'final_card_preflight_runtime_grant_leaked';
+    end if;
+    if has_function_privilege('service_role',
+        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text)',
+        'EXECUTE') or has_function_privilege('authenticated',
+        'private.begin_content_ops_final_card_part(uuid,smallint,text)',
+        'EXECUTE') or has_function_privilege('anon',
+        'private.confirm_content_ops_final_card_part(uuid,smallint,text,text,text)',
+        'EXECUTE') or has_function_privilege('service_role',
+        'private.register_content_ops_final_card(uuid)', 'EXECUTE') then
+        raise exception 'final_card_ledger_runtime_grant_leaked';
+    end if;
+    if has_table_privilege('service_role',
+        'private.content_ops_final_card_deliveries','SELECT')
+       or has_table_privilege('authenticated',
+        'private.content_ops_final_card_parts','INSERT')
+       or has_table_privilege('anon',
+        'private.content_ops_final_cards','SELECT') then
+        raise exception 'final_card_ledger_table_grant_leaked';
     end if;
 end $$;
 rollback;

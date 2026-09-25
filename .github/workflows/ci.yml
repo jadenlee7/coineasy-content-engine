@@ -730,13 +730,14 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution_preapply_readonly.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_approval_attribution.sql
-      - name: Prove final card preflight is read-only and fail-closed
+      - name: Prove final card preflight and delivery ledger fail closed
         run: |
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_review_state.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_edit_reply.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_prompt_registration.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_durable_attempt.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_preflight.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_delivery_ledger.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_card_preflight.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
