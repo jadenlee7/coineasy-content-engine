@@ -724,6 +724,12 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260916190000_content_ops_review_producer_binding.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_producer_binding.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
+      - name: Verify final approval attribution on disposable full schema
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_approval_attribution_fixture.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution_preapply_readonly.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_approval_attribution.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake
