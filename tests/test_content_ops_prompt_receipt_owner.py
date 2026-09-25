@@ -61,7 +61,7 @@ def fixture_rows():
         expected_text_sha256=hashlib.sha256(TEXT.encode()).hexdigest(),
         started_at=STARTED.isoformat(), expires_at=(STARTED+timedelta(minutes=10)).isoformat())
     return [(ITEM_ID,), (review,), (card,), (attempt,),
-        (reserved(), OBSERVED+timedelta(seconds=1)), None, (True,), (registered(),)]
+        (reserved(), OBSERVED+timedelta(seconds=1)), (registered(),), (True,)]
 
 
 class Connection:
@@ -121,20 +121,19 @@ def test_legacy_receipt_only_bypass_always_refused(value):
 
 @pytest.mark.parametrize("reused", [False, True])
 def test_atomic_lock_order_parameterization_and_commit_ack(reused):
-    connection = Connection(); connection.rows[7] = (registered(reused),); calls = []
+    connection = Connection(); connection.rows[5] = (registered(reused),); calls = []
     def factory(): calls.append(1); return connection
     assert call(PostgresPromptReceiptOwner(factory)) == registered(reused)
     assert calls == [1] and connection.exits == [None] and connection.events[-1] == "commit"
-    assert len(connection.statements) == 8
+    assert len(connection.statements) == 7
     sqls = [sql.lower() for sql, _ in connection.statements]
     for index, table, lock in [(0, "content_items", "for update"),
         (1, "content_ops_button_reviews", "for update"), (2, "content_ops_button_cards", "for share"),
         (3, "content_ops_button_prompt_attempts", "for share")]:
         assert table in sqls[index] and lock in sqls[index]
-    assert "reserve_content_ops_button_prompt_attempt" in sqls[4]
-    assert "insert into" in sqls[5] and "on conflict" in sqls[5] and "do nothing" in sqls[5]
+    assert "reserve_content_ops_button_prompt_for_runtime" in sqls[4]
+    assert "register_content_ops_button_prompt_response_for_runtime" in sqls[5]
     assert "content_ops_button_prompt_receipts" in sqls[6]
-    assert "register_content_ops_button_edit_prompt" in sqls[7]
     for sql, params in connection.statements:
         assert "%s" in sql and isinstance(params, (tuple, list))
         for value in (RECEIPT_ID, REVIEW_ID, ACTOR_ID, FINGERPRINT, TEXT): assert value not in sql
@@ -205,7 +204,7 @@ def test_wrong_response_or_recycled_message_rejected(changes):
 
 
 @pytest.mark.parametrize("row", [None, (), (False,), (1,), (None,), (True, True)])
-def test_receipt_conflict_rolls_back_without_registration(row):
+def test_receipt_readback_conflict_rolls_back_combined_capability(row):
     connection = Connection(); connection.rows[6] = row
     with pytest.raises(PromptReceiptError, match=UNKNOWN): call(PostgresPromptReceiptOwner(lambda: connection))
     assert len(connection.statements) == 7 and connection.events[-1] == "rollback"
@@ -216,21 +215,21 @@ def test_receipt_conflict_rolls_back_without_registration(row):
     ("reused", 1), ("reused", None), ("execution_authorized", True),
     ("execution_authorized", 0), ("extra", "private")])
 def test_bad_registration_receipt_validated_inside_transaction(field, value):
-    connection = Connection(); connection.rows[7][0][field] = value
+    connection = Connection(); connection.rows[5][0][field] = value
     with pytest.raises(PromptReceiptError, match=UNKNOWN): call(PostgresPromptReceiptOwner(lambda: connection))
-    assert len(connection.statements) == 8 and connection.events[-1] == "rollback"
+    assert len(connection.statements) == 6 and connection.events[-1] == "rollback"
 
 
 @pytest.mark.parametrize("row", [None, (), (None,), ([],), (True,), (registered(), "extra")])
 def test_malformed_registration_row_causes_rollback(row):
-    connection = Connection(); connection.rows[7] = row
+    connection = Connection(); connection.rows[5] = row
     with pytest.raises(PromptReceiptError, match=UNKNOWN): call(PostgresPromptReceiptOwner(lambda: connection))
     assert connection.events[-1] == "rollback"
 
 
 @pytest.mark.parametrize("kind,index", [("execute_error", 1), ("execute_error", 5),
-    ("execute_error", 6), ("execute_error", 8), ("fetch_error", 4), ("fetch_error", 5),
-    ("fetch_error", 7), ("fetch_error", 8)])
+    ("execute_error", 6), ("execute_error", 7), ("fetch_error", 4), ("fetch_error", 5),
+    ("fetch_error", 6), ("fetch_error", 7)])
 def test_driver_errors_rollback_never_retry_or_leak(kind, index):
     connection = Connection(**{kind: index}); calls = []
     def factory(): calls.append(1); return connection
@@ -243,7 +242,7 @@ def test_lost_commit_ack_unknown_without_retry():
     connection = Connection(commit_error=True); calls = []
     def factory(): calls.append(1); return connection
     with pytest.raises(PromptReceiptError, match=UNKNOWN): call(PostgresPromptReceiptOwner(factory))
-    assert calls == [1] and len(connection.statements) == 8
+    assert calls == [1] and len(connection.statements) == 7
     assert connection.exits == [None] and connection.events[-1] == "commit"
 
 
@@ -280,7 +279,7 @@ def test_malformed_reservation_readback_never_inserts(row):
     assert len(connection.statements) == 5 and connection.events[-1] == "rollback"
 
 
-def test_equivalent_timezone_observation_preserves_exact_instant_in_insert():
+def test_equivalent_timezone_observation_preserves_exact_instant_in_capability():
     observed = OBSERVED.astimezone(timezone(timedelta(hours=9)))
     connection = Connection()
     assert call(PostgresPromptReceiptOwner(lambda: connection), observed_at=observed) == registered()
@@ -303,14 +302,14 @@ def test_precise_reserved_expiry_is_bound_to_insert_and_readback_without_roundin
         timezone(timedelta(hours=9)))
     connection.rows[3][0]["expires_at"] = expiry.isoformat()
     assert call(PostgresPromptReceiptOwner(lambda: connection)) == registered()
-    insert_sql, insert_params = connection.statements[5]
+    capability_sql, capability_params = connection.statements[5]
     readback_sql, readback_params = connection.statements[6]
-    assert "reservation_expires_at" in insert_sql
+    assert "register_content_ops_button_prompt_response_for_runtime" in capability_sql
     assert "reservation_expires_at=%s" in readback_sql
-    assert insert_params[-1] == expiry and type(insert_params[-1]) is datetime
+    assert expiry not in capability_params  # SQL reads the committed reservation.
     assert readback_params[-2] == expiry and type(readback_params[-2]) is datetime
-    assert insert_params[-1].microsecond == readback_params[-2].microsecond == 654321
-    assert insert_params[-1].utcoffset() == readback_params[-2].utcoffset() == expiry.utcoffset()
+    assert readback_params[-2].microsecond == 654321
+    assert readback_params[-2].utcoffset() == expiry.utcoffset()
 
 
 def test_replayed_receipt_with_different_reserved_expiry_is_not_registered():
@@ -322,6 +321,6 @@ def test_replayed_receipt_with_different_reserved_expiry_is_not_registered():
     connection.rows[6] = (False,)
     with pytest.raises(PromptReceiptError, match=UNKNOWN):
         call(PostgresPromptReceiptOwner(lambda: connection))
-    assert connection.statements[5][1][-1] == expiry
+    assert expiry not in connection.statements[5][1]
     assert connection.statements[6][1][-2] == expiry
     assert len(connection.statements) == 7 and connection.events[-1] == "rollback"

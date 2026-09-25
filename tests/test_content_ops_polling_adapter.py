@@ -35,12 +35,74 @@ def test_private_card_namespace_reaches_actual_signed_controller(action):
     u = case.update(action)
     u["callback_query"]["data"] = "ce1:" + u["callback_query"]["data"]
     original = copy.deepcopy(u)
+    expected = "edit_requested" if action in {"x", "b", "t"} else "action_recorded"
     assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
-        "status": "action_recorded", "execution_authorized": False}
+        "status": expected, "execution_authorized": False}
     assert u == original
     assert case.owner.applies == 1 and not case.owner.outbox
-    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "action_recorded"
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == expected
     assert len(case.owner.operations) == 1
+
+
+def test_committed_edit_hands_one_fresh_command_to_injected_courier():
+    case, _ = fixture()
+    calls = []
+
+    class Courier:
+        async def run(self, command, *, enabled):
+            calls.append((command, enabled))
+            return {"status": "prompt_registered", "private_send_attempts": 1,
+                    "public_send_attempted": False}
+
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=Courier)
+    u = case.update("x", private=True)
+    assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
+        "status": "prompt_registered", "execution_authorized": False}
+    command, enabled = calls[0]
+    assert enabled is True
+    assert (command.callback_id, command.bot_id, command.chat_id, command.human_id) == (
+        u["callback_query"]["id"], case.policy.bot_id, case.policy.chat_id, 201)
+    assert len(calls) == 1 and not case.owner.outbox
+    # Owner idempotency returns reused=True; never create a new prompt attempt.
+    assert asyncio.run(adapter.handle_callback(u, now=NOW)) == {
+        "status": "prompt_status_unknown", "execution_authorized": False}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("result", [
+    {"status": "delivery_unknown", "private_send_attempts": 1,
+     "public_send_attempted": False},
+    {"status": "prompt_registered", "private_send_attempts": 0,
+     "public_send_attempted": False},
+    None,
+])
+def test_unconfirmed_prompt_never_claims_delivery_or_retries(result):
+    case, _ = fixture()
+    calls = []
+
+    class Courier:
+        async def run(self, command, *, enabled):
+            calls.append(command)
+            return result
+
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=Courier)
+    u = case.update("b", private=True)
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "prompt_status_unknown"
+    assert asyncio.run(adapter.handle_callback(u, now=NOW))["status"] == "prompt_status_unknown"
+    assert len(calls) == 1 and not case.owner.outbox
+
+
+def test_checks_never_invoke_prompt_courier():
+    case, _ = fixture()
+    adapter = PollingReviewAdapter(enabled=True, policy=case.policy,
+        signer=case.signer, review_owner=case.owner,
+        prompt_courier_factory=lambda: (_ for _ in ()).throw(AssertionError("prompt")))
+    assert asyncio.run(adapter.handle_callback(case.update("s", private=True), now=NOW)) == {
+        "status": "action_recorded", "execution_authorized": False}
 
 
 def test_generated_private_buttons_are_55_bytes_and_webhook_compatible():
@@ -62,7 +124,7 @@ def test_generated_private_buttons_are_55_bytes_and_webhook_compatible():
 def test_signed_publication_action_is_rejected_even_after_checks(prefix):
     case, adapter = fixture()
     for action in ("s", "c"):
-        asyncio.run(adapter.handle_callback(case.update(action), now=NOW))
+        asyncio.run(adapter.handle_callback(case.update(action, private=True), now=NOW))
     u = case.update("a"); u["callback_query"]["data"] = prefix + u["callback_query"]["data"]
     before = case.owner.applies
     with pytest.raises(ReviewIngressError):
@@ -70,12 +132,19 @@ def test_signed_publication_action_is_rejected_even_after_checks(prefix):
     assert case.owner.applies == before and not case.owner.outbox
 
 
+def test_unprefixed_private_button_rejected_before_owner_io():
+    case, adapter = fixture()
+    with pytest.raises(ReviewIngressError):
+        asyncio.run(adapter.handle_callback(case.update("s"), now=NOW))
+    assert case.owner.lookups == case.owner.reads == case.owner.applies == 0
+
+
 @pytest.mark.parametrize("mutation", ["actor", "room", "signature", "registration"])
 def test_untrusted_context_does_not_mutate_owner(mutation):
-    case, adapter = fixture(); u = case.update()
+    case, adapter = fixture(); u = case.update(private=True)
     if mutation == "actor": u["callback_query"]["from"]["id"] = 999
     if mutation == "room": u["callback_query"]["message"]["chat"]["id"] = -999
-    if mutation == "signature": u["callback_query"]["data"] = "A" * 51
+    if mutation == "signature": u["callback_query"]["data"] = "ce1:" + "A" * 51
     if mutation == "registration": case.owner.registered = False
     with pytest.raises(ReviewIngressError):
         asyncio.run(adapter.handle_callback(u, now=NOW))

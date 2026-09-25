@@ -3,8 +3,10 @@
 The injected owner must authenticate the provider transport. This adapter reads
 an existing locked reservation and checks keyed packet/control-card lineage;
 neither those hashes nor caller-supplied response bytes prove transport origin.
-Those live integrations are NOT implemented here. Runtime roles have no grants; never use
-an admin/service-role credential as a fallback. No retries, sends or enrollment.
+Those live integrations are NOT implemented here. The restricted runtime role
+lacks the proposed prompt capability grants; it must never receive direct
+prompt INSERT or an admin/service-role credential as a fallback. No retries,
+sends or enrollment.
 """
 from __future__ import annotations
 
@@ -121,7 +123,7 @@ class PostgresPromptReceiptOwner:
                     _require(stored['id'] == attempt_id)
                     cursor.execute("""
                         with checked as materialized (
-                            select private.reserve_content_ops_button_prompt_attempt(
+                            select private.reserve_content_ops_button_prompt_for_runtime(
                                 %s::uuid,%s::uuid,%s::uuid,%s,%s) as result
                         ) select result, clock_timestamp() from checked
                     """, (card['id'], attempt_id, stored['actor_id'],
@@ -147,13 +149,17 @@ class PostgresPromptReceiptOwner:
                               receipt.edit_action_key, receipt.bot_binding, receipt.room_binding,
                               receipt.message_binding, receipt.receipt_sha256, observed_at,
                               datetime.fromisoformat(stored['expires_at']))
+                    # A narrow security-definer capability atomically writes
+                    # the receipt and registers the prompt. The login role
+                    # retains no direct INSERT or base-RPC EXECUTE grant.
                     cursor.execute("""
-                        insert into private.content_ops_button_prompt_receipts(
-                            id,review_id,actor_id,epoch,edit_action_key,bot_binding,
-                            room_binding,message_binding,receipt_sha256,delivered_at,reservation_expires_at,outcome)
-                        values(%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,'sent')
-                        on conflict (id) do nothing
-                    """, fields)
+                        select private.register_content_ops_button_prompt_response_for_runtime(
+                            %s::uuid,%s,%s,%s,%s,%s)
+                    """, (receipt.id, receipt.human_binding, receipt.message_binding,
+                          message_binding, receipt.receipt_sha256, observed_at))
+                    row = cursor.fetchone()
+                    _require(row is not None and len(row) == 1)
+                    result = _registration(row[0])
                     # Never overwrite an unknown/rejected/conflicting receipt, or
                     # freshen delivery time. Check every persisted input on replay.
                     cursor.execute("""
@@ -166,12 +172,6 @@ class PostgresPromptReceiptOwner:
                     """, (*fields[1:], receipt.id))
                     row = cursor.fetchone()
                     _require(row is not None and len(row) == 1 and row[0] is True)
-                    cursor.execute("""
-                        select private.register_content_ops_button_edit_prompt(%s::uuid,%s)
-                    """, (receipt.id, receipt.human_binding))
-                    row = cursor.fetchone()
-                    _require(row is not None and len(row) == 1)
-                    result = _registration(row[0])
             # Malformed output rolls back BOTH writes. A failed commit ACK yields
             # unknown even if the server committed. Never return optimistic success.
             return result

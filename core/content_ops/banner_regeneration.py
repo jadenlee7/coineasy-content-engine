@@ -53,6 +53,10 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def kst_day(now):
+    return datetime.fromtimestamp(now, timezone(timedelta(hours=9))).date().isoformat()
+
+
 def text(value, limit):
     require(type(value) is str and value.strip() and len(value) <= limit)
     require(not _PRIVATE.search(value) and not any(
@@ -178,7 +182,7 @@ class BannerJournal:
         published = datetime.fromisoformat(request.snapshot.source_published_at.replace("Z", "+00:00"))
         require(published.utcoffset() is not None and 0 <= now-published.timestamp() < 86400,
                 "banner_source_stale")
-        day = datetime.fromtimestamp(now, timezone(timedelta(hours=9))).date().isoformat()
+        day = kst_day(now)
         s = request.snapshot
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -300,6 +304,13 @@ async def run_banner_once(*, enabled=False, journal=None, owner=None, provider=N
         raise BannerError("banner_journal_corrupt") from None
     job_id = request.job_id
     expected = "provider_started" if row["state"] == "queued" else "committing"
+    # A queued job belongs to the day that reserved its provider capacity.
+    # Never shift a paid call into the next KST day's allowance. A completed
+    # provider result may still be committed after midnight without a new call.
+    if expected == "provider_started" and row["kst_day"] != kst_day(now):
+        journal.change(job_id, expected, "obsolete")
+        return {"status": "obsolete", "provider_called": False,
+                "public_send_attempted": False}
     published = datetime.fromisoformat(request.snapshot.source_published_at.replace("Z", "+00:00"))
     if published.utcoffset() is None or not 0 <= now-published.timestamp() < 86400:
         journal.change(job_id, expected, "obsolete")

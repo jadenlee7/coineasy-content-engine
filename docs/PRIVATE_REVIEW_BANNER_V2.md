@@ -75,8 +75,10 @@ the same database file; independent replicas/disks defeat its replay barrier.
 6. Enroll verified staff/approver identities and confirm the private destination.
    Usernames alone are not stable authorization identifiers.
 7. Confirm KST schedule and spending policy. Current journal limits are counts
-   per client/day and item, **not a US-dollar cap**. Enforce a real budget before
-   scheduling paid generation; leave scheduling off meanwhile.
+   per client/day and item, **not a US-dollar cap**. A queued request cannot
+   start a paid provider call after its reserved KST day; an already generated
+   result can still commit after midnight without a new call. Enforce a real
+   monetary budget before scheduling paid generation; leave scheduling off meanwhile.
 8. Reconcile the existing private activation authorization against the exact
    rollout scope and run a single
    private exact-version pilot with message-ID readback. Public posting and

@@ -4,7 +4,10 @@ import { spawnSync, spawn } from 'node:child_process';
 
 if (process.argv.length !== 3 || process.argv[2] !== '--local-only'
     || !existsSync('supabase/tests/bootstrap_local_postgres.sql')) throw Error('local-only repo root required');
-const bin = '/opt/homebrew/opt/postgresql@16/bin/';
+// The disposable Linux CI image carries the same PostgreSQL major version.
+// Both modes create a fresh local-only cluster; neither accepts a remote DSN.
+const bin = process.env.BUTTON_REVIEW_DISPOSABLE_CONTAINER === 'true'
+  ? '/usr/lib/postgresql/16/bin/' : '/opt/homebrew/opt/postgresql@16/bin/';
 const dir = mkdtempSync('/private/tmp/coineasy-button-review-');
 const env = { ...process.env };
 for (const k of Object.keys(env)) if (k.startsWith('PG') || k === 'DATABASE_URL') delete env[k];
@@ -30,6 +33,9 @@ const proposal = 'supabase/proposals/content_ops_button_review_state.sql';
 const editProposal = 'supabase/proposals/content_ops_button_edit_reply.sql';
 const registrationProposal = 'supabase/proposals/content_ops_button_prompt_registration.sql';
 const durableProposal = 'supabase/proposals/content_ops_button_durable_attempt.sql';
+const promptRuntimeProposal = 'supabase/proposals/content_ops_button_prompt_runtime_capability.sql';
+const cardSendLedgerProposal = 'supabase/proposals/content_ops_button_card_send_ledger.sql';
+const cardOwnerGatewayProposal = 'supabase/proposals/content_ops_button_card_owner_gateway.sql';
 const markupProposal = 'supabase/proposals/content_ops_button_markup_attempt.sql';
 const authorityProposal = 'supabase/proposals/content_ops_button_markup_authority.sql';
 const confirmationProposal = 'supabase/proposals/content_ops_button_markup_confirmation.sql';
@@ -39,6 +45,17 @@ const confirmationSendProposal = 'supabase/proposals/content_ops_button_confirma
 const confirmationSendEventProposal = 'supabase/proposals/content_ops_button_confirmation_send_event.sql';
 const confirmationDispatchProposal = 'supabase/proposals/content_ops_button_confirmation_dispatch.sql';
 const bannerProposal = 'supabase/proposals/content_ops_banner_revision.sql';
+const promptFixtureAcl = `grant usage on schema private,public to coineasy_private_review;
+  grant select,update on public.content_items,
+    private.content_ops_button_reviews,private.content_ops_button_actions,
+    private.content_ops_button_cards,private.content_ops_button_prompt_attempts,
+    private.content_ops_button_identities to coineasy_private_review;
+  grant select on private.content_ops_button_prompt_receipts,
+    private.content_ops_button_edit_prompts to coineasy_private_review;
+  -- FOR SHARE needs column UPDATE; the proposed runtime ACL grants this
+  -- lock-only column but no prompt-row INSERT or general UPDATE.
+  grant update(id) on private.content_ops_button_prompt_receipts
+    to coineasy_private_review;`;
 const driverPython = env.BUTTON_EDIT_TEST_PYTHON;
 function driverTest(phase) {
   if (!driverPython) return;
@@ -64,6 +81,14 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.register_content_ops_button_edit_prompt(uuid,text)',
       'private.guard_content_ops_button_durable_record()',
       'private.record_content_ops_button_card(uuid,uuid,text,bigint,jsonb,jsonb,timestamptz,timestamptz)',
+      'private.guard_content_ops_button_card_send_attempt()',
+      'private.prepare_content_ops_button_review_from_claim(uuid,uuid,uuid,uuid,uuid)',
+      'private.bind_content_ops_button_card_outbox(uuid,uuid,uuid,text)',
+      'private.content_ops_button_card_outbox_owned(uuid)',
+      'private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)',
+      'private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,bigint,text,text,timestamptz)',
+      'private.register_content_ops_button_card_from_sends(uuid,uuid,text,bigint,jsonb,jsonb,text,jsonb,timestamptz,timestamptz)',
+      'private.read_content_ops_button_card_terminal(uuid,uuid,uuid)',
       'private.reserve_content_ops_button_prompt_attempt(uuid,uuid,uuid,text,text)',
       'private.assert_content_ops_button_prompt_card_active(uuid,uuid,text)',
       'private.revoke_content_ops_button_card(uuid,uuid,text,uuid,text,text)',
@@ -83,6 +108,8 @@ const acl = `do $$ declare r text; f text; t text; begin
       'private.content_ops_button_identities','private.content_ops_button_edit_prompts',
       'private.content_ops_button_prompt_receipts','private.content_ops_button_cards',
       'private.content_ops_button_prompt_attempts','private.content_ops_button_markup_attempts',
+      'private.content_ops_button_card_send_attempts',
+      'private.content_ops_button_card_outbox_owners',
       'private.content_ops_button_control_evidence','private.content_ops_button_markup_approvals',
       'private.content_ops_button_markup_confirmations','private.content_ops_button_markup_confirmation_events',
       'private.content_ops_button_confirmation_deliveries','private.content_ops_button_confirmation_sources',
@@ -102,7 +129,10 @@ try {
   query("create function auth.role() returns text language sql stable as $$select current_setting('request.jwt.claim.role',true)$$;", 'postgres');
   const migrations = readdirSync('supabase/migrations').filter(p => p.endsWith('.sql')).sort();
   for (const p of migrations) sql('supabase/migrations/' + p);
-  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
+  // This disposable role bypasses RLS ONLY in this functional fixture. It has
+  // no direct INSERT on prompt tables. Production uses scoped RLS instead.
+  query('create role coineasy_private_review login bypassrls;', 'postgres');
+  sql(proposal); sql(editProposal); sql(registrationProposal); sql(durableProposal); sql(promptRuntimeProposal); query(promptFixtureAcl, 'postgres'); sql(cardSendLedgerProposal); sql(cardOwnerGatewayProposal); sql(markupProposal); sql(authorityProposal); sql(confirmationProposal); sql(confirmationDeliveryProposal); sql(confirmationSourceProposal); sql(confirmationSendProposal); sql(confirmationSendEventProposal); sql(confirmationDispatchProposal); sql(bannerProposal); query(acl, 'postgres');
   console.log(JSON.stringify({ fullLocalMigrationFiles: migrations.length, proposalApplied: true, runtimeAclDenied: true, hostedProof: false }));
   driverTest('initial');
   driverTest('callbacks');
@@ -113,6 +143,8 @@ try {
   driverTest('confirmation');
   run('createdb', [...pg, 'synthetic_buttons']);
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql', 'synthetic_buttons');
+  sql('supabase/migrations/20260906100000_content_ops_review_outbox.sql', 'synthetic_buttons');
+  sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql', 'synthetic_buttons');
   query(`create table auth.users(id uuid primary key);
     alter table public.content_versions add column locale text default 'ko-KR',
       add column content jsonb default '{}',add column qa jsonb default '{}',add column created_by uuid;
@@ -121,6 +153,10 @@ try {
   sql(editProposal, 'synthetic_buttons');
   sql(registrationProposal, 'synthetic_buttons');
   sql(durableProposal, 'synthetic_buttons');
+  sql(promptRuntimeProposal, 'synthetic_buttons');
+  query(promptFixtureAcl);
+  sql(cardSendLedgerProposal, 'synthetic_buttons');
+  sql(cardOwnerGatewayProposal, 'synthetic_buttons');
   sql(markupProposal, 'synthetic_buttons');
   sql(authorityProposal, 'synthetic_buttons');
   sql(confirmationProposal, 'synthetic_buttons');
@@ -132,6 +168,7 @@ try {
   sql(bannerProposal, 'synthetic_buttons');
   query(acl);
   sql('supabase/tests/content_ops_button_review_state.sql', 'synthetic_buttons');
+  sql('supabase/tests/content_ops_button_card_send_ledger.sql', 'synthetic_buttons');
   sql('supabase/tests/content_ops_button_edit_reply.sql', 'synthetic_buttons');
 
   // Persistent synthetic fixture solely for separate-connection race/restart tests.

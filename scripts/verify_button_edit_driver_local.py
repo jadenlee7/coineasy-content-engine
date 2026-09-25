@@ -66,6 +66,15 @@ def main():
             dbname='postgres', connect_timeout=5, sslmode='disable',
             options='-c statement_timeout=10000 -c lock_timeout=5000')
 
+    def connect_prompt_runtime():
+        # Disposable fixture role only. The local harness grants broad reads
+        # to focus this phase on the capability transaction; production ACLs
+        # are assessed separately and must never reuse these fixture grants.
+        return psycopg.connect(host=str(path), port=65439,
+            user='coineasy_private_review', password='', dbname='postgres',
+            connect_timeout=5, sslmode='disable',
+            options='-c statement_timeout=10000 -c lock_timeout=5000')
+
     def read(sql, params=()):
         with connect() as c:
             return c.execute(sql, params).fetchone()[0]
@@ -171,7 +180,7 @@ def main():
     def persist_prompt(ctx, owner=None, observed_at=None, human_id=None, attempt_id=None):
         # The fixture stores the ORIGINAL precise observation across retries;
         # retry-time wall clock must never refresh a provider delivery receipt.
-        return (owner or PostgresPromptReceiptOwner(connect)).record_prompt_response(
+        return (owner or PostgresPromptReceiptOwner(connect_prompt_runtime)).record_prompt_response(
             enabled=True, attempt_id=attempt_id or ctx['attempt'], bindings=binding,
             bot_id=bot, chat_id=room, human_id=human_id or human, thread_id=None,
             http_status=200, raw_response=json.dumps(ctx['provider_response']).encode(),
@@ -194,7 +203,7 @@ def main():
 
     def seed(client='squid', channel='x', registered=True, deferred_edit=False):
         assert not (registered and deferred_edit)
-        ids = {k: str(uuid4()) for k in ('workspace', 'actor', 'item', 'version', 'review', 'prompt', 'source', 'asset')}
+        ids = {k: str(uuid4()) for k in ('workspace', 'actor', 'item', 'version', 'review', 'prompt', 'source', 'feed', 'asset')}
         ids.update(client=client, channel=channel, text="검수용 수정 문안 ' quoted ; -- 😀")
         with connect() as c:
             ids['message'] = c.execute("select nextval('private.test_button_driver_messages')").fetchone()[0]
@@ -202,6 +211,10 @@ def main():
             c.execute('insert into auth.users(id) values(%s)', (a,))
             c.execute('insert into public.workspaces(id,name,slug) values(%s,%s,%s)', (w, 'Synthetic driver', w))
             c.execute('insert into public.workspace_clients(workspace_id,client_id,display_name) values(%s,%s,%s)', (w, client, client))
+            c.execute("""insert into public.source_feeds(id,workspace_id,client_id,provider,name,
+                handle,poll_interval_minutes,last_polled_at,active)
+                values(%s,%s,%s,'x','Synthetic official feed',%s,15,clock_timestamp(),true)""",
+                (ids['feed'],w,client,'@'+client))
             c.execute("insert into public.content_items(id,workspace_id,client_id,content_kind,status) values(%s,%s,%s,'daily_news','draft')", (i,w,client))
             c.execute("""insert into public.content_versions(id,workspace_id,content_item_id,version_number,
                 prompt_version,channel_copy,content,deliverables,generation_meta)
@@ -210,7 +223,10 @@ def main():
                 Jsonb({'primary_asset_id':ids['asset']}), Jsonb({'mock_mode':False,
                     'fact_check':{'status':'pass'}, 'brand_qa':{'status':'pass'}})))
             c.execute("insert into public.assets(id,workspace_id,content_item_id,content_version_id,asset_kind,storage_path,mime_type,sha256) values(%s,%s,%s,%s,'png',%s,'image/png',%s)", (ids['asset'],w,i,v,ids['asset']+'/synthetic-only.png','a'*64))
-            c.execute("insert into public.source_items(id,workspace_id,client_id,source_type,body,source_hash,published_at) values(%s,%s,%s,'manual','Synthetic source',%s,now())", (ids['source'],w,client,'b'*64))
+            c.execute("""insert into public.source_items(id,workspace_id,client_id,source_feed_id,
+                source_type,body,source_hash,published_at)
+                values(%s,%s,%s,%s,'manual','Synthetic source',%s,clock_timestamp()-interval '1 hour')""",
+                (ids['source'],w,client,ids['feed'],'b'*64))
             c.execute('insert into public.content_source_links(workspace_id,client_id,content_item_id,source_item_id) values(%s,%s,%s,%s)', (w,client,i,ids['source']))
             c.execute("update public.content_items set status='needs_review',current_version_id=%s where id=%s", (v,i))
             c.execute('insert into private.content_ops_button_reviewers values(%s,%s,%s,true)', (w,client,a))
@@ -1174,7 +1190,9 @@ def main():
 
         # A real transaction with fault injection only at the receipt/ACK boundary.
         class FaultConnection:
-            def __init__(self, fault): self.real=connect(); self.fault=fault
+            def __init__(self, fault, *, prompt_runtime=False):
+                self.real=(connect_prompt_runtime if prompt_runtime else connect)()
+                self.fault=fault
             @property
             def autocommit(self): return self.real.autocommit
             def __enter__(self): self.real.__enter__(); return self
@@ -1247,14 +1265,18 @@ def main():
             contenders.append(contender)
         distinct_barrier = Barrier(8)
         distinct_sqlstates = []
-        class DiagnosticConnection(FaultConnection):
+        class DiagnosticConnection:
             # Test-only capture before the adapter deliberately sanitizes DB errors.
             # A deadlock/timeout must not masquerade as an expected conflict loser.
-            def __init__(self): super().__init__('none')
+            def __init__(self): self.real = connect_prompt_runtime()
+            @property
+            def autocommit(self): return self.real.autocommit
+            def __enter__(self): self.real.__enter__(); return self
             def __exit__(self, *args):
                 if args[1] is not None:
                     distinct_sqlstates.append(getattr(args[1], 'sqlstate', None))
-                return super().__exit__(*args)
+                return self.real.__exit__(*args)
+            def cursor(self): return self.real.cursor()
         def distinct_prompt_race(contender):
             distinct_barrier.wait(timeout=10)
             try:
@@ -1265,7 +1287,9 @@ def main():
         with ThreadPoolExecutor(max_workers=8) as pool:
             distinct_results = list(pool.map(distinct_prompt_race, contenders))
         winners = [result for result in distinct_results if result is not None]
-        assert len(winners) == 1 and winners[0]['reused'] is False
+        assert len(winners) == 1 and winners[0]['reused'] is False, (
+            f'distinct_prompt_winners={len(winners)} '
+            f'loser_sqlstates={sorted(str(code) for code in distinct_sqlstates)}')
         assert winners[0]['execution_authorized'] is False
         assert len(distinct_sqlstates) == 7
         assert not ({'40P01','55P03','57014'} & set(distinct_sqlstates)), 'unexpected deadlock/timeout'
@@ -1307,7 +1331,9 @@ def main():
 
         for fault, expected in (('prompt_receipt',0),('commit_ack',1)):
             ctx = seed_validated_prompt(); calls = []
-            def prompt_factory(): calls.append(1); return FaultConnection(fault)
+            def prompt_factory():
+                calls.append(1)
+                return FaultConnection(fault,prompt_runtime=True)
             prompt_unknown(ctx, owner=PostgresPromptReceiptOwner(prompt_factory))
             assert calls == [1]
             # Independent reads reconcile committed state; never retry unknown sends.

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.private-review-card"
+  },
+  "deploy": {
+    "preDeployCommand": "python -m scripts.run_private_review_card_canary --validate-only",
+    "startCommand": "python -m scripts.run_private_review_card_canary",
+    "restartPolicyType": "NEVER"
+  }
+}

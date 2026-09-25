@@ -91,6 +91,112 @@ jobs:
                             'external_sends': 0, 'production_proof': False}))
           PY
 
+  private-review-card-image:
+    name: Private button card (OFF, no delivery)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated private card image with synthetic SHA
+        run: >-
+          docker build --file Dockerfile.private-review-card
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-private-card-ci .
+      - name: Prove default-OFF without credentials or network
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges coineasy-private-card-ci)"
+          jq -e '. == {"ok":true,"mode":"run","enabled":false,
+            "public_send_attempted":false}' <<< "$output"
+      - name: Validate exact release and credential boundary without I/O
+        shell: bash
+        run: |
+          docker run --rm -i --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python \
+            coineasy-private-card-ci - <<'PY'
+          import json, sys
+          from scripts.run_private_review_card_canary import run
+
+          def no_io(event, args):
+              if event in ('socket.connect', 'socket.bind', 'sqlite3.connect'):
+                  raise AssertionError('external_io_forbidden')
+          sys.addaudithook(no_io)
+
+          env = {
+              'CONTENT_OPS_BUTTON_CARD_ENABLED': 'false',
+              'CONTENT_OPS_REVIEW_ENABLED': 'false',
+              'CONTENT_OPS_REVIEW_MODE': 'canary',
+              'CONTENT_OPS_REVIEW_PACKET_MODE': 'button_card_v1',
+              'CONTENT_OPS_GATEWAY_URL': 'https://coineasy-newscard.netlify.app',
+              'CONTENT_STUDIO_WORKSPACE_ID': '11111111-1111-4111-8111-111111111111',
+              'CONTENT_OPS_REVIEW_CANARY_VERSION_ID': '44444444-4444-4444-8444-444444444444',
+              'CONTENT_OPS_REVIEW_RELEASE_SHA': 'a' * 40,
+              'RAILWAY_GIT_COMMIT_SHA': 'a' * 40,
+              'CONTENT_OPS_GATEWAY_TOKEN': 'synthetic_gateway_' + 'c' * 40,
+              'TELEGRAM_REVIEW_BOT_TOKEN': '123456789:' + 'd' * 40,
+              'TELEGRAM_REVIEW_CHAT_ID': '-1001234567890',
+              'CONTENT_OPS_BUTTON_SIGNING_KEY': 'e' * 64,
+              'CONTENT_OPS_EDIT_BINDING_KEY': 'f' * 64,
+          }
+          result = run(validate_only=True, environ=env)
+          assert result == {'ok': True, 'mode': 'validate_only', 'enabled': False,
+                            'network_calls': False, 'database_calls': False,
+                            'telegram_calls': False}
+          env['RAILWAY_GIT_COMMIT_SHA'] = 'b' * 40
+          assert run(validate_only=True, environ=env)['ok'] is False
+          env['RAILWAY_GIT_COMMIT_SHA'] = 'a' * 40
+          env['SUPABASE_SERVICE_ROLE_KEY'] = 'synthetic_forbidden_' + 'g' * 40
+          assert run(validate_only=True, environ=env)['ok'] is False
+          del env['SUPABASE_SERVICE_ROLE_KEY']
+          env['PGPASSWORD'] = 'synthetic_forbidden'
+          assert run(validate_only=True, environ=env)['ok'] is False
+          print(json.dumps({'synthetic_validation_passed': True,
+                            'release_mismatch_denied': True,
+                            'broad_db_credential_denied': True,
+                            'external_sends': 0, 'production_proof': False}))
+          PY
+
+  private-review-card-ledger:
+    name: Disposable private button-card SQL (no provider)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify isolated SQL ledger and runtime ACL
+        run: node scripts/verify_private_card_ledger_docker_local.mjs --local-only
+      - name: Verify isolated prompt capability on PostgreSQL 17
+        run: node scripts/verify_private_card_ledger_docker_local.mjs --local-postgres17
+
+  private-review-button-driver:
+    name: Disposable full-schema button review driver (no network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build synthetic PostgreSQL and Python driver
+        run: docker build --file Dockerfile.button-review-driver --tag coineasy-button-review-driver-ci .
+      - name: Verify full-schema callback, banner, cancellation and restart behavior
+        run: >-
+          docker run --rm --network none --cap-drop ALL
+          --security-opt no-new-privileges coineasy-button-review-driver-ci
+
   automation-image:
     runs-on: ubuntu-latest
     steps:

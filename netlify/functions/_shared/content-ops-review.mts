@@ -6,6 +6,8 @@ import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_BODY_BYTES = 2048;
+const MAX_BUTTON_BODY_BYTES = 8192;
+const MAX_IMAGE_BYTES = 10_000_000;
 const OTHER_PRINCIPALS = [
   "API_SECRET", "STUDIO_ACCESS_TOKEN", "STUDIO_AUTOMATION_TOKEN",
   "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_CONTENT_QA_KEY", "SUPABASE_BUZZ_DELIVERY_KEY",
@@ -26,7 +28,8 @@ const CLAIM_KEYS = [
 ];
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
-type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null };
+type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null;
+  packet_mode?: "button_card_v1" };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch };
 
 const json = (value: Json, status = 200) => Response.json(value, {
@@ -43,8 +46,16 @@ function configuredScope(getEnv: Env): ReviewScope | null {
   const mode = getEnv("CONTENT_OPS_REVIEW_MODE");
   const version = getEnv("CONTENT_OPS_REVIEW_CANARY_VERSION_ID");
   const packetMode = getEnv("CONTENT_OPS_REVIEW_PACKET_MODE") ?? "link_card";
-  // This first daily-review release exposes link cards only. Bundle delivery
-  // and Telegram approval remain separate, unmounted integration work.
+  // Button cards are a separate default-OFF, exact-version canary. This
+  // does not activate the sender, callback owner, approval or publication.
+  if (packetMode === "button_card_v1") {
+    return getEnv("CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED") === "true"
+      && mode === "canary" && isCatalogUuid(version)
+      && version === version.toLowerCase()
+      ? { mode, content_version_id: version, packet_mode: "button_card_v1" }
+      : null;
+  }
+  // The existing daily-review release exposes link cards only.
   if (packetMode !== "link_card") return null;
   if (mode === "daily" && (version === undefined || version === "")) {
     return { mode, content_version_id: null };
@@ -56,7 +67,7 @@ function configuredScope(getEnv: Env): ReviewScope | null {
   return null;
 }
 
-async function readBody(req: Request): Promise<Json | null> {
+async function readBody(req: Request, maximum = MAX_BODY_BYTES): Promise<Json | null> {
   if (!req.body) return null;
   const reader = req.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -66,7 +77,7 @@ async function readBody(req: Request): Promise<Json | null> {
       const next = await reader.read();
       if (next.done) break;
       total += next.value.byteLength;
-      if (total > MAX_BODY_BYTES) { await reader.cancel(); return null; }
+      if (total > maximum) { await reader.cancel(); return null; }
       chunks.push(next.value);
     }
     const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -95,7 +106,7 @@ function rpcRequest(body: Json, workspaceId: string, scope: ReviewScope): { name
     params.target_packet_sha256 = body.packet_sha256;
     return { name: "content_ops_begin_review_send", params };
   }
-  if (body.action === "finish" && exact(body, ["action", "outbox_id", "claim_token", "outcome", "message_id"])
+  if (!scope.packet_mode && body.action === "finish" && exact(body, ["action", "outbox_id", "claim_token", "outcome", "message_id"])
     && ["sent", "rejected", "delivery_unknown"].includes(String(body.outcome))
     && (body.outcome === "sent"
       ? Number.isSafeInteger(body.message_id) && Number(body.message_id) > 0
@@ -127,6 +138,205 @@ function claimProjection(value: unknown, claimToken: unknown): Json | null {
   return Object.fromEntries(CLAIM_KEYS.map((key) => [key, value[key]]));
 }
 
+async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array | null> {
+  if (!response.body) return null;
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maximum)) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximum) { await reader.cancel(); return null; }
+      chunks.push(next.value);
+    }
+    if (declared !== null && Number(declared) !== total) return null;
+    return Buffer.concat(chunks, total);
+  } catch { return null; }
+  finally { reader.releaseLock(); }
+}
+
+async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
+                           release: string, fetcher: typeof fetch): Promise<Response> {
+  if (scope.packet_mode !== "button_card_v1"
+    || !exact(body, ["action", "outbox_id", "claim_token"])
+    || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
+    return json({ error: "invalid_request" }, 400);
+  }
+  try {
+    const located = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_image_locator`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
+        "Content-Type": "application/json" },
+      body: JSON.stringify({ target_workspace_id: cfg.workspaceId,
+        target_outbox_id: body.outbox_id, target_claim_token: body.claim_token,
+        target_content_version_id: scope.content_version_id }),
+    });
+    if (!located.ok || located.redirected
+      || (located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const locatorBytes = await boundedBytes(located, 4096);
+    if (!locatorBytes) return json({ error: "content_ops_image_unavailable" }, 503);
+    const value: unknown = JSON.parse(Buffer.from(locatorBytes).toString("utf8"));
+    const keys = ["status", "outbox_id", "client_id", "content_item_id",
+      "content_version_id", "asset_id", "bucket", "path", "sha256",
+      "byte_size", "execution_authorized"];
+    if (!record(value) || !exact(value, keys)
+      || value.status !== "ready" || value.execution_authorized !== false
+      || value.outbox_id !== body.outbox_id
+      || value.content_version_id !== scope.content_version_id
+      || !isCatalogUuid(value.content_item_id) || !isCatalogUuid(value.asset_id)
+      || typeof value.client_id !== "string" || !Object.hasOwn(HANDLES, value.client_id)
+      || value.bucket !== "content-studio"
+      || value.path !== `${cfg.workspaceId}/${value.client_id}/${value.asset_id}/news-card.png`
+      || typeof value.sha256 !== "string" || !HASH.test(value.sha256)
+      || !Number.isSafeInteger(value.byte_size) || Number(value.byte_size) < 9
+      || Number(value.byte_size) > MAX_IMAGE_BYTES) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
+      method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
+        "Accept-Encoding": "identity" },
+    });
+    if (image.status !== 200 || image.redirected
+      || (image.headers.get("content-type") || "").split(";", 1)[0] !== "image/png"
+      || (image.headers.get("content-encoding") || "identity") !== "identity"
+      || image.headers.has("content-range")) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    const imageBytes = await boundedBytes(image, MAX_IMAGE_BYTES);
+    if (!imageBytes || imageBytes.byteLength !== value.byte_size
+      || !Buffer.from(imageBytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      || createHash("sha256").update(imageBytes).digest("hex") !== value.sha256) {
+      return json({ error: "content_ops_image_unavailable" }, 503);
+    }
+    return new Response(imageBytes, { status: 200, headers: {
+      "Content-Type": "image/png", "Content-Length": String(imageBytes.byteLength),
+      "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      "X-Content-Ops-Release-Sha": release,
+      "X-Content-Ops-Outbox-Id": String(value.outbox_id),
+      "X-Content-Ops-Item-Id": String(value.content_item_id),
+      "X-Content-Ops-Version-Id": String(value.content_version_id),
+      "X-Content-Ops-Banner-Sha256": String(value.sha256),
+    } });
+  } catch { return json({ error: "content_ops_image_unavailable" }, 503); }
+}
+
+const OWNER_ARGS: Record<string, string[]> = {
+  prepare: ["outbox_id", "claim_token", "review_id"],
+  bind: ["review_id", "outbox_id", "claim_token", "packet_sha256"],
+  reserve: ["review_id", "card_id", "part_index", "payload_sha256"],
+  confirm: ["review_id", "card_id", "part_index", "payload_sha256",
+    "message_id", "message_binding", "response_sha256", "observed_at"],
+  register: ["review_id", "card_id", "expected_fingerprint", "epoch",
+    "bindings", "parts", "controls_payload_sha256", "response_sha256s",
+    "delivered", "expires"],
+  terminal: ["review_id", "card_id", "outbox_id"],
+};
+const OWNER_RECEIPTS: Record<string, string[]> = {
+  prepare: ["status", "review_id", "version_fingerprint", "epoch", "state",
+    "expires_at", "execution_authorized"],
+  bind: ["status", "execution_authorized"],
+  reserve: ["status", "new_attempt", "execution_authorized"],
+  confirm: ["status", "new_confirmation", "execution_authorized"],
+  register: ["status", "card_id", "reused", "execution_authorized"],
+  terminal: ["status", "card_id", "outbox_id", "execution_authorized"],
+};
+const ownerUuid = (value: unknown) => isCatalogUuid(value) && value === value.toLowerCase();
+const ownerHash = (value: unknown) => typeof value === "string" && HASH.test(value);
+const ownerStamp = (value: unknown) => typeof value === "string"
+  && value.length >= 20 && value.length <= 40
+  && /(Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+
+function ownerArgs(step: string, args: unknown): args is Json {
+  const names = OWNER_ARGS[step];
+  if (!names || !record(args) || !exact(args, names)) return false;
+  for (const name of names.filter((key) => key.endsWith("_id") || key === "claim_token")) {
+    if (!ownerUuid(args[name])) return false;
+  }
+  if (["bind", "reserve", "confirm", "register"].includes(step)) {
+    const hashes = { bind: ["packet_sha256"], reserve: ["payload_sha256"],
+      confirm: ["payload_sha256", "message_binding", "response_sha256"],
+      register: ["expected_fingerprint", "controls_payload_sha256"] }[step] || [];
+    if (!hashes.every((name) => ownerHash(args[name]))) return false;
+  }
+  if (["reserve", "confirm"].includes(step)
+    && (!Number.isInteger(args.part_index) || Number(args.part_index) < 0
+      || Number(args.part_index) > 3)) return false;
+  if (step === "confirm" && (!Number.isSafeInteger(args.message_id)
+    || Number(args.message_id) <= 0 || !ownerStamp(args.observed_at))) return false;
+  if (step === "register") {
+    if (!Number.isSafeInteger(args.epoch) || Number(args.epoch) < 0
+      || !ownerStamp(args.delivered) || !ownerStamp(args.expires)
+      || !record(args.bindings) || !exact(args.bindings,
+        ["bot", "room", "message", "packet_receipt", "card_receipt",
+          "parent_binding", "thread_id"])
+      || !["bot", "room", "message", "packet_receipt", "card_receipt",
+        "parent_binding"].every((name) => ownerHash((args.bindings as Json)[name]))
+      || (args.bindings as Json).thread_id !== null
+      || !Array.isArray(args.parts) || args.parts.length !== 3
+      || !args.parts.every((part: unknown, index: number) => record(part)
+        && exact(part, ["kind", "outcome", "message_binding", "payload_sha256"])
+        && part.kind === ["image", "telegram", "x"][index]
+        && part.outcome === "sent" && ownerHash(part.message_binding)
+        && ownerHash(part.payload_sha256))
+      || !Array.isArray(args.response_sha256s) || args.response_sha256s.length !== 4
+      || !args.response_sha256s.every(ownerHash)) return false;
+  }
+  return true;
+}
+
+function ownerReceipt(step: string, value: unknown, args: Json): value is Json {
+  if (!record(value) || !exact(value, OWNER_RECEIPTS[step])
+    || value.execution_authorized !== false) return false;
+  if (step === "prepare") return value.status === "review_prepared"
+    && value.review_id === args.review_id && ownerHash(value.version_fingerprint)
+    && value.epoch === 0 && value.state === "active" && ownerStamp(value.expires_at);
+  if (step === "bind") return value.status === "bound";
+  if (step === "reserve") return value.status === "reserved" && typeof value.new_attempt === "boolean";
+  if (step === "confirm") return value.status === "confirmed"
+    && typeof value.new_confirmation === "boolean";
+  if (step === "register") return value.status === "card_recorded"
+    && value.card_id === args.card_id && value.reused === false;
+  return step === "terminal" && ((value.status === "sent"
+    && value.card_id === args.card_id && value.outbox_id === args.outbox_id)
+    || (value.status === "not_confirmed" && value.card_id === null && value.outbox_id === null));
+}
+
+async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
+                           release: string, fetcher: typeof fetch): Promise<Response> {
+  if (scope.packet_mode !== "button_card_v1" || !exact(body, ["action", "step", "args"])
+    || typeof body.step !== "string" || !ownerArgs(body.step, body.args)) {
+    return json({ error: "invalid_request" }, 400);
+  }
+  try {
+    const result = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_owner_step`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
+        "Content-Type": "application/json" },
+      body: JSON.stringify({ target_workspace_id: cfg.workspaceId,
+        target_content_version_id: scope.content_version_id,
+        target_action: body.step, target_args: body.args }),
+    });
+    if (!result.ok || result.redirected
+      || (result.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
+      return json({ error: "content_ops_owner_unavailable" }, 503);
+    }
+    const bytes = await boundedBytes(result, 4096);
+    if (!bytes) return json({ error: "content_ops_owner_unavailable" }, 503);
+    const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
+    if (!ownerReceipt(body.step as string, value, body.args as Json)) {
+      return json({ error: "content_ops_owner_unavailable" }, 503);
+    }
+    return json({ ok: true, release_sha: release, scope, owner: value });
+  } catch { return json({ error: "content_ops_owner_unavailable" }, 503); }
+}
+
 export function createContentOpsReviewHandler(deps: Dependencies) {
   return async (req: Request): Promise<Response> => {
     if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -155,16 +365,19 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!scope) return json({ error: "content_ops_scope_not_configured" }, 503);
     if (req.headers.get("x-content-ops-mode") !== scope.mode
       || req.headers.get("x-content-ops-version-id") !== scope.content_version_id
-      || req.headers.get("x-content-ops-packet-mode") !== null) {
+      || req.headers.get("x-content-ops-packet-mode") !== (scope.packet_mode ?? null)) {
       return json({ error: "content_ops_scope_mismatch" }, 409);
     }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") || "")) {
       return json({ error: "invalid_request" }, 400);
     }
-    const body = await readBody(req);
+    const body = await readBody(req,
+      scope.packet_mode === "button_card_v1" ? MAX_BUTTON_BODY_BYTES : MAX_BODY_BYTES);
     if (!body) return json({ error: "invalid_request" }, 400);
     const cfg = contentCatalogConfig(deps.getEnv);
     if (!cfg) return json({ error: "content_ops_database_not_configured" }, 503);
+    if (body.action === "image") return buttonImage(body, scope, cfg, release, deps.fetcher || fetch);
+    if (body.action === "owner") return buttonOwner(body, scope, cfg, release, deps.fetcher || fetch);
     const rpc = rpcRequest(body, cfg.workspaceId, scope);
     if (!rpc) return json({ error: "invalid_request" }, 400);
     try {
