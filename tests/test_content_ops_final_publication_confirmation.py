@@ -33,7 +33,7 @@ def snapshot(client="yellow"):
         "2026-09-25T12:15:00Z", "확인된 텔레그램 공지 전문",
         "확인된 X 문안", "a" * 64, "daily_ready")
     return FinalConfirmationSnapshot(review, R, C, A, A, A, 2, 2, 2,
-        "b" * 64, 0, 0, "c" * 40)
+        "b" * 64, 0, 0, "c" * 40, "d" * 64, "e" * 64)
 
 
 class FakeOwner:
@@ -144,6 +144,8 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
     def test_stale_card_and_changed_copy_or_banner_rejected_before_write(self):
         for changed in (replace(self.s, card_id=OTHER),
                         replace(self.s, version_fingerprint="c" * 64),
+                        replace(self.s, telegram_route_binding="f" * 64),
+                        replace(self.s, typefully_route_binding="f" * 64),
                         replace(self.s, review=replace(self.s.review, x_copy="new X")),
                         replace(self.s, review=replace(self.s.review, banner_sha256="c" * 64)),
                         replace(self.s, review=replace(self.s.review, content_version_id=OTHER))):
@@ -152,6 +154,14 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
                 with self.assertRaisesRegex(FinalConfirmationError, "stale_or_invalid"):
                     self.handle()
         self.assertEqual(self.owner.applies, 0)
+
+    def test_missing_or_unverified_destination_cannot_render_card(self):
+        for field in ("telegram_route_binding", "typefully_route_binding"):
+            for value in (None, "", "account-label", "a" * 63, "a" * 64 + "\n"):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                        FinalConfirmationError, "destination_unverified"):
+                    final_confirmation_messages(replace(self.s, **{field: value}),
+                        self.signer, ROOM, now=NOW)
 
     def test_actor_room_and_message_are_bound(self):
         for event in (self.event(actor_id="outsider"), self.event(actor_is_bot=True),

@@ -15,8 +15,14 @@ same-reviewer checks/epoch, full copy, banner hash, and trusted room. A `ce1:`
 private-card check or legacy approval token cannot be accepted as a `ce2:`
 decision. The callback result is at most a private decision receipt, not a
 public approval, publication request, or Telegram/X delivery receipt.
-The snapshot also binds an exact 40-character release SHA. A future owner must
-compare that SHA with its own deployed runtime before honoring a decision.
+The snapshot also binds an exact 40-character release SHA, both opaque
+destination digests, and the displayed destination labels. A future owner must
+compare the SHA with its own deployed runtime before honoring a decision.
+The labels are policy labels, not verified provider account identifiers. The
+digests must come from a separately trusted verifier of the client, provider,
+exact account/destination, public display label and permitted action. Missing
+or malformed digests cannot produce a final card; this proposal does not
+implement that live verifier or establish any actual client account mapping.
 
 The packet currently has **no live delivery owner, restricted callback route,
 public approval transaction, or publication queue adapter**.
@@ -38,7 +44,7 @@ stale poll, revoked reviewer, existing approval and revoked parent card.
 `supabase/proposals/content_ops_final_card_delivery_ledger.sql` is a separate
 local-only, ungranted transport ledger and final-card registry. It reserves one
 15-minute attempt for an exact parent review epoch, actor, version fingerprint,
-snapshot, packet, and release. A future trusted courier must durably record
+snapshot, packet, release, and both destination digests. A future trusted courier must durably record
 each of the four part attempts **before** invoking Telegram, then attach a
 provider-verified message/response binding. A repeated attempt without a
 receipt returns `delivery_unknown`: it is never permission to resend. Only
@@ -112,6 +118,17 @@ source that the existing `double-fact-check@1` publication gate recognizes.
 That schema/contract change needs its own hosted compatibility proof and
 explicit production authorization.
 
+`supabase/proposals/content_ops_publication_routes.sql` is an empty,
+default-inactive, ungranted registry plus a fail-closed route check. Apply it in
+the disposable schema before the final-card delivery ledger. Reservation,
+each new part attempt, final-card registration, final confirmation and the
+approval transaction compare **both** pinned digests against the active
+exact-release rows. Both rows are locked together in channel order through
+the transaction, so a route update cannot slip between validation and the
+approval/intent write. A changed or revoked destination requires a new valid
+card; an earlier decision or historical replay receipt is not new authority.
+Holding remains possible without confirming a changed destination.
+
 `supabase/proposals/content_ops_publication_handoff_intent.sql` is the next
 **local-only, ungranted** step. It requires two separately verified, active,
 exact-release destination bindings (official Telegram and Typefully/X), a
@@ -126,7 +143,11 @@ responses or a schedule. No route is seeded; no worker can claim the intents;
 there is no `public.publications` row, publish job, Typefully draft, Telegram
 send, X send, runtime grant or mounted callback. A lost acknowledgement is
 resolved read-only with the original decision/actor/key. Disposable CI uses
-synthetic route hashes only and is not destination verification. Even applying
+synthetic route hashes only and is not destination verification. All four
+clients exercise confirmation and hold (eight scenarios), including destination
+changes before confirmation and between confirmation and approval. Missing or
+revoked routes, stale sources, duplicate callbacks and partial work fail closed.
+Even applying
 this proposal later would **not** make public delivery operational; the
 destination registry and both channel adapters still require a separate
 approval, exact-SHA compatibility/ACL review, and live private canary.

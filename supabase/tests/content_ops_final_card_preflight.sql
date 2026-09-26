@@ -97,9 +97,24 @@ begin
        or result->'execution_authorized' is distinct from 'false'::jsonb then
         raise exception 'final_card_preflight_ready_projection_invalid';
     end if;
+    begin
+        perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
+            actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
+            repeat('6',40),repeat('7',64),repeat('8',64));
+        raise exception 'final_card_missing_routes_reserved';
+    exception when check_violation then null; end;
+    if exists(select 1 from private.content_ops_final_card_deliveries where id=delivery) then
+        raise exception 'missing_routes_wrote_delivery';
+    end if;
+    insert into private.content_ops_publication_routes(workspace_id,client_id,
+        channel,route_binding,release_sha,verified_at,active)
+    values(w,'yellow','telegram',repeat('7',64),repeat('6',40),
+            clock_timestamp()-interval '1 minute',true),
+          (w,'yellow','typefully_x',repeat('8',64),repeat('6',40),
+            clock_timestamp()-interval '1 minute',true);
     result:=private.reserve_content_ops_final_card_delivery(delivery,review,card,
         actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-        repeat('6',40));
+        repeat('6',40),repeat('7',64),repeat('8',64));
     if result->>'status' <> 'delivery_reserved'
        or result->'execution_authorized' is distinct from 'false'::jsonb then
         raise exception 'final_card_delivery_reserve_invalid';
@@ -107,10 +122,21 @@ begin
     begin
         perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
             actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-            repeat('6',40));
+            repeat('6',40),repeat('7',64),repeat('8',64));
         raise exception 'final_card_duplicate_delivery_allowed';
     exception when unique_violation then null;
     end;
+    update private.content_ops_publication_routes set route_binding=repeat('9',64)
+        where workspace_id=w and channel='telegram';
+    begin
+        perform private.begin_content_ops_final_card_part(delivery,0::smallint,repeat('a',64));
+        raise exception 'final_card_changed_destination_part_allowed';
+    exception when check_violation then null; end;
+    if exists(select 1 from private.content_ops_final_card_parts where delivery_id=delivery) then
+        raise exception 'changed_destination_wrote_part';
+    end if;
+    update private.content_ops_publication_routes set route_binding=repeat('7',64)
+        where workspace_id=w and channel='telegram';
     update public.source_feeds set last_polled_at=clock_timestamp()-interval '16 minutes'
         where id=feed;
     begin
@@ -176,6 +202,17 @@ begin
         exception when unique_violation then null;
         end;
     end loop;
+    update private.content_ops_publication_routes set active=false
+        where workspace_id=w and channel='typefully_x';
+    begin
+        perform private.register_content_ops_final_card(delivery);
+        raise exception 'final_card_revoked_destination_registered';
+    exception when check_violation then null; end;
+    if exists(select 1 from private.content_ops_final_cards where id=delivery) then
+        raise exception 'revoked_destination_registered_card';
+    end if;
+    update private.content_ops_publication_routes set active=true
+        where workspace_id=w and channel='typefully_x';
     result:=private.register_content_ops_final_card(delivery);
     if result->>'status' <> 'card_registered' or result->>'reused' <> 'false'
        or result->'execution_authorized' is distinct from 'false'::jsonb then
@@ -262,7 +299,7 @@ begin
         raise exception 'final_card_preflight_runtime_grant_leaked';
     end if;
     if has_function_privilege('service_role',
-        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text)',
+        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)',
         'EXECUTE') or has_function_privilege('authenticated',
         'private.begin_content_ops_final_card_part(uuid,smallint,text)',
         'EXECUTE') or has_function_privilege('anon',
@@ -272,6 +309,14 @@ begin
        or has_function_privilege('service_role',
         'private.read_content_ops_final_card_terminal(uuid)', 'EXECUTE') then
         raise exception 'final_card_ledger_runtime_grant_leaked';
+    end if;
+    if has_function_privilege('service_role',
+        'private.require_content_ops_publication_routes(uuid,text,text,text,text)','EXECUTE')
+       or has_function_privilege('authenticated',
+        'private.require_content_ops_publication_routes(uuid,text,text,text,text)','EXECUTE')
+       or has_function_privilege('anon',
+        'private.require_content_ops_publication_routes(uuid,text,text,text,text)','EXECUTE') then
+        raise exception 'publication_route_helper_runtime_grant_leaked';
     end if;
     if has_table_privilege('service_role',
         'private.content_ops_final_card_deliveries','SELECT')

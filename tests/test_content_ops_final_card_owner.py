@@ -60,7 +60,8 @@ def reserve_args():
     return dict(delivery_id=D, review_id=R, parent_card_id=C, actor_id=A,
         version_fingerprint=SHA, bot_binding=SHA, room_binding=SHA,
         human_binding=SHA, snapshot_sha256=SHA, packet_sha256=SHA,
-        release_sha=RELEASE)
+        release_sha=RELEASE, telegram_route_binding="b" * 64,
+        typefully_route_binding="c" * 64)
 
 
 @pytest.mark.parametrize("method,kwargs", [
@@ -87,7 +88,8 @@ def test_exact_reservation_commit_and_bounded_receipt():
     assert asyncio.run(owner.reserve_delivery(**reserve_args())) == receipt
     sql, args = conn.cursor_value.statements[1]
     assert "reserve_content_ops_final_card_delivery" in sql
-    assert args == (D, R, C, A, SHA, SHA, SHA, SHA, SHA, SHA, RELEASE)
+    assert args == (D, R, C, A, SHA, SHA, SHA, SHA, SHA, SHA, RELEASE,
+                    "b" * 64, "c" * 64)
 
 
 def test_part_begin_and_confirmation_use_separate_transactions():
@@ -119,6 +121,16 @@ def test_part_begin_and_confirmation_use_separate_transactions():
     assert "confirm_content_ops_final_card_part" in connections[1].cursor_value.statements[1][0]
     assert connections[0].cursor_value.statements[1][1] == (D, 0, SHA)
     assert connections[1].cursor_value.statements[1][1] == (D, 0, SHA, SHA, SHA)
+
+
+@pytest.mark.parametrize("field", ["telegram_route_binding", "typefully_route_binding"])
+@pytest.mark.parametrize("value", [None, "", "account-label", "a" * 63, "a" * 64 + "\n"])
+def test_invalid_destination_binding_rejected_before_connection(field, value):
+    factory = Mock(side_effect=AssertionError("unexpected DB I/O"))
+    owner = PostgresFinalCardOwner(factory, enabled=True)
+    with pytest.raises(FinalCardOwnerError, match="arguments_invalid"):
+        asyncio.run(owner.reserve_delivery(**{**reserve_args(), field: value}))
+    factory.assert_not_called()
 
 
 def test_reused_begin_is_readback_not_fresh_attempt():

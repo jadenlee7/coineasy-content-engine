@@ -112,6 +112,11 @@ begin
     end if;
     decision_status:=case when requested_action='hold' then 'held'
         else 'confirmed_pending_publication_owner' end;
+    if requested_action='confirm_publication' then
+        perform private.require_content_ops_publication_routes(review.workspace_id,
+            review.client_id,verified_runtime_release_sha,delivery.telegram_route_binding,
+            delivery.typefully_route_binding);
+    end if;
     insert into private.content_ops_final_decisions(card_id,review_id,actor_id,
         content_version_id,version_fingerprint,snapshot_sha256,release_sha,
         idempotency_key,action,status)

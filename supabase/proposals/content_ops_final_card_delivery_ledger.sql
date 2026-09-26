@@ -14,6 +14,8 @@ create table private.content_ops_final_card_deliveries (
     snapshot_sha256 text not null check (snapshot_sha256 ~ '^[a-f0-9]{64}$'),
     packet_sha256 text not null check (packet_sha256 ~ '^[a-f0-9]{64}$'),
     release_sha text not null check (release_sha ~ '^[a-f0-9]{40}$'),
+    telegram_route_binding text not null check (telegram_route_binding ~ '^[a-f0-9]{64}$'),
+    typefully_route_binding text not null check (typefully_route_binding ~ '^[a-f0-9]{64}$'),
     bot_binding text not null check (bot_binding ~ '^[a-f0-9]{64}$'),
     room_binding text not null check (room_binding ~ '^[a-f0-9]{64}$'),
     human_binding text not null check (human_binding ~ '^[a-f0-9]{64}$'),
@@ -96,7 +98,8 @@ create function private.reserve_content_ops_final_card_delivery(
     target_id uuid,target_review_id uuid,target_parent_card_id uuid,
     target_actor_id uuid,expected_fingerprint text,verified_bot_binding text,
     verified_room_binding text,verified_human_binding text,
-    target_snapshot_sha256 text,target_packet_sha256 text,target_release_sha text
+    target_snapshot_sha256 text,target_packet_sha256 text,target_release_sha text,
+    expected_telegram_binding text,expected_typefully_binding text
 ) returns jsonb language plpgsql volatile security invoker set search_path='' as $$
 declare
     r private.content_ops_button_reviews;
@@ -124,14 +127,18 @@ begin
         verified_bot_binding,verified_room_binding,verified_human_binding);
     if preflight->>'status' is distinct from 'ready_for_final_card' then
         raise exception 'final_card_delivery_ineligible' using errcode='23514';end if;
+    perform private.require_content_ops_publication_routes(r.workspace_id,r.client_id,
+        target_release_sha,expected_telegram_binding,expected_typefully_binding);
     observed:=clock_timestamp();
     expiry:=least(parent.expires_at,r.expires_at,observed+interval '15 minutes');
     if expiry<=observed then raise exception 'final_card_delivery_expired' using errcode='23514';end if;
     insert into private.content_ops_final_card_deliveries(id,review_id,parent_card_id,
         actor_id,epoch,version_fingerprint,snapshot_sha256,packet_sha256,
-        release_sha,bot_binding,room_binding,human_binding,expires_at)
+        release_sha,telegram_route_binding,typefully_route_binding,
+        bot_binding,room_binding,human_binding,expires_at)
     values(target_id,r.id,parent.id,target_actor_id,r.epoch,r.version_fingerprint,
         target_snapshot_sha256,target_packet_sha256,target_release_sha,
+        expected_telegram_binding,expected_typefully_binding,
         verified_bot_binding,verified_room_binding,verified_human_binding,expiry);
     return jsonb_build_object('status','delivery_reserved','delivery_id',target_id,
         'expires_at',expiry,'execution_authorized',false);
@@ -181,6 +188,9 @@ begin
         d.room_binding,d.human_binding);
     if preflight->>'status' is distinct from 'ready_for_final_card' then
         raise exception 'final_card_part_ineligible' using errcode='23514';end if;
+    perform private.require_content_ops_publication_routes(r.workspace_id,r.client_id,
+        d.release_sha,d.telegram_route_binding,d.typefully_route_binding)
+        from private.content_ops_button_reviews r where r.id=d.review_id;
     insert into private.content_ops_final_card_parts(delivery_id,part_index,payload_sha256)
         values(d.id,target_part_index,target_payload_sha256);
     return jsonb_build_object('status','attempt_recorded','reused',false,
@@ -251,6 +261,9 @@ begin
     if preflight->>'status' is distinct from 'ready_for_final_card'
        or (preflight->>'review_epoch')::bigint is distinct from d.epoch then
         raise exception 'final_card_registration_ineligible' using errcode='23514';end if;
+    perform private.require_content_ops_publication_routes(r.workspace_id,r.client_id,
+        d.release_sha,d.telegram_route_binding,d.typefully_route_binding)
+        from private.content_ops_button_reviews r where r.id=d.review_id;
     select message_binding into control_binding
       from private.content_ops_final_card_parts
       where delivery_id=d.id and part_index=3 and state='confirmed';
@@ -284,7 +297,7 @@ end $$;
 revoke all on function private.guard_content_ops_final_card_ledger()
     from public,anon,authenticated,service_role;
 revoke all on function private.reserve_content_ops_final_card_delivery(
-    uuid,uuid,uuid,uuid,text,text,text,text,text,text,text)
+    uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)
     from public,anon,authenticated,service_role;
 revoke all on function private.begin_content_ops_final_card_part(uuid,smallint,text)
     from public,anon,authenticated,service_role;

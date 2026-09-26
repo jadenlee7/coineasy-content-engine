@@ -3,24 +3,6 @@
 -- destination bindings and a separately authorized channel owner are required.
 begin;
 
-create table private.content_ops_publication_routes (
-    workspace_id uuid not null,
-    client_id text not null check (client_id in ('yellow','origintrail','squid','babylon')),
-    channel text not null check (channel in ('telegram','typefully_x')),
-    -- Opaque digest of a separately verified destination, never a guessed label.
-    route_binding text not null check (route_binding ~ '^[a-f0-9]{64}$'),
-    release_sha text not null check (release_sha ~ '^[a-f0-9]{40}$'),
-    verified_at timestamptz not null,
-    active boolean not null default false,
-    primary key (workspace_id,client_id,channel),
-    foreign key (workspace_id,client_id)
-        references public.workspace_clients(workspace_id,client_id) on delete restrict
-);
-alter table private.content_ops_publication_routes enable row level security;
-alter table private.content_ops_publication_routes force row level security;
-revoke all on private.content_ops_publication_routes
-    from public,anon,authenticated,service_role;
-
 create table private.content_ops_channel_handoffs (
     id uuid primary key default gen_random_uuid(),
     decision_id uuid not null references private.content_ops_final_decisions(id),
@@ -66,7 +48,6 @@ declare
     existing_approval public.approvals;
     candidate jsonb;
     preflight jsonb;
-    route_count integer;
     channel_name text;
     route private.content_ops_publication_routes;
     copy_text text;
@@ -163,14 +144,9 @@ begin
        or length(version.channel_copy->>'x')>600 then
         raise exception 'publication_handoff_fact_check_or_copy_invalid' using errcode='23514';
     end if;
-    select count(*) into route_count from private.content_ops_publication_routes p
-        where p.workspace_id=r.workspace_id and p.client_id=r.client_id
-          and p.channel in ('telegram','typefully_x') and p.active
-          and p.release_sha=verified_runtime_release_sha
-          and p.verified_at<=clock_timestamp();
-    if route_count<>2 then
-        raise exception 'publication_handoff_routes_unverified' using errcode='23514';
-    end if;
+    perform private.require_content_ops_publication_routes(r.workspace_id,
+        r.client_id,verified_runtime_release_sha,delivery.telegram_route_binding,
+        delivery.typefully_route_binding);
     -- The approval and both PRIVATE, non-dispatchable channel intents commit
     -- atomically. They are not public.publications or worker-claimable jobs.
     insert into public.approvals(workspace_id,client_id,content_item_id,

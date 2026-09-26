@@ -81,20 +81,23 @@ class PostgresFinalCardOwner:
     async def reserve_delivery(self, *, delivery_id, review_id, parent_card_id,
                                actor_id, version_fingerprint, bot_binding,
                                room_binding, human_binding, snapshot_sha256,
-                               packet_sha256, release_sha):
+                               packet_sha256, release_sha,
+                               telegram_route_binding, typefully_route_binding):
         if (not all(_uuid(v) for v in
                     (delivery_id, review_id, parent_card_id, actor_id))
             or not all(_sha(v) for v in
                     (version_fingerprint, bot_binding, room_binding,
-                     human_binding, snapshot_sha256, packet_sha256))
+                     human_binding, snapshot_sha256, packet_sha256,
+                     telegram_route_binding, typefully_route_binding))
             or not _release(release_sha)):
             raise FinalCardOwnerError("final_card_owner_arguments_invalid")
         receipt = await asyncio.to_thread(self._call,
             "select private.reserve_content_ops_final_card_delivery("
-            "%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)",
+            "%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (delivery_id, review_id, parent_card_id, actor_id,
              version_fingerprint, bot_binding, room_binding, human_binding,
-             snapshot_sha256, packet_sha256, release_sha),
+             snapshot_sha256, packet_sha256, release_sha,
+             telegram_route_binding, typefully_route_binding),
             expected_keys={"status", "delivery_id", "expires_at",
                            "execution_authorized"})
         if (receipt["status"] != "delivery_reserved"

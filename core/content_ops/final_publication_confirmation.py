@@ -51,6 +51,8 @@ class FinalConfirmationSnapshot:
 
     Both checks must belong to the same reviewer and review epoch. Copy and
     banner are bound through ``review`` and the DB-issued version fingerprint.
+    Route digests must come from a trusted live verifier of the exact client,
+    destination, public label and allowed action; labels alone are not IDs.
     These values are not accepted from a Telegram update or an agent message.
     """
 
@@ -67,6 +69,8 @@ class FinalConfirmationSnapshot:
     approval_count: int
     publication_count: int
     release_sha: str
+    telegram_route_binding: str
+    typefully_route_binding: str
 
     def validate(self) -> None:
         _require(type(self.review) is ReviewSnapshot)
@@ -97,6 +101,9 @@ class FinalConfirmationSnapshot:
                  and bool(_SHA.fullmatch(self.version_fingerprint)))
         _require(type(self.release_sha) is str
                  and bool(_RELEASE.fullmatch(self.release_sha)))
+        for binding in (self.telegram_route_binding, self.typefully_route_binding):
+            _require(type(binding) is str and bool(_SHA.fullmatch(binding)),
+                     "final_confirmation_destination_unverified")
         _require(type(self.approval_count) is int and self.approval_count == 0
                  and type(self.publication_count) is int and self.publication_count == 0,
                  "final_confirmation_already_acted")
@@ -111,7 +118,10 @@ class FinalConfirmationSnapshot:
             claims_check_epoch=self.claims_check_epoch,
             version_fingerprint=self.version_fingerprint,
             approval_count=self.approval_count, publication_count=self.publication_count,
-            release_sha=self.release_sha)
+            release_sha=self.release_sha,
+            telegram_route_binding=self.telegram_route_binding,
+            typefully_route_binding=self.typefully_route_binding,
+            destination_labels=list(CLIENT_TARGETS[self.review.client_id][:2]))
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
 

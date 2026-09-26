@@ -213,7 +213,9 @@ class FinalCardCourier:
                 version_fingerprint=snapshot.version_fingerprint,
                 bot_binding=bot, room_binding=room, human_binding=human,
                 snapshot_sha256=snapshot_sha, packet_sha256=packet_sha,
-                release_sha=self._release_sha)
+                release_sha=self._release_sha,
+                telegram_route_binding=snapshot.telegram_route_binding,
+                typefully_route_binding=snapshot.typefully_route_binding)
             if (type(reservation) is not dict
                 or set(reservation) != {"status", "delivery_id", "expires_at",
                                         "execution_authorized"}

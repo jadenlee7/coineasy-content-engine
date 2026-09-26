@@ -38,7 +38,7 @@ def prepared():
         "검수 완료된 Telegram 전문", "Verified X copy",
         hashlib.sha256(PNG).hexdigest(), "daily_ready")
     snapshot = FinalConfirmationSnapshot(review, R, C, A, A, A, 0, 0, 0,
-        "b" * 64, 0, 0, RELEASE)
+        "b" * 64, 0, 0, RELEASE, "d" * 64, "e" * 64)
     return PreparedFinalCard(snapshot, D, PNG, BOT, ROOM, HUMAN, None, NOW)
 
 
@@ -170,6 +170,8 @@ class FinalCardCourierTest(unittest.TestCase):
         self.assertTrue(all(png is None for _, png in self.sender.calls[1:]))
         self.assertEqual((self.owner.register_calls, self.owner.read_calls), (1, 1))
         self.assertEqual(self.owner.reservation["release_sha"], RELEASE)
+        self.assertEqual(self.owner.reservation["telegram_route_binding"], "d" * 64)
+        self.assertEqual(self.owner.reservation["typefully_route_binding"], "e" * 64)
         self.assertEqual(self.owner.reservation["snapshot_sha256"],
                          prepared().snapshot.digest())
         self.assertRegex(self.owner.reservation["packet_sha256"], r"^[a-f0-9]{64}$")
