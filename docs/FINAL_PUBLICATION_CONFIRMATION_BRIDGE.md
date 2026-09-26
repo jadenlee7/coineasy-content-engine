@@ -35,10 +35,11 @@ proof. Client config labels alone are insufficient.
 
 `core/content_ops/publication_route_readback.py` is a separate, **unmounted,
 default-OFF** read-only adapter. With an independently approved exact route
-policy, independently attested exact runtime release SHA, and the client
-publishing bot's token supplied by a credential owner,
+policy, independently attested exact runtime release SHA, and an active
+`TelegramExactConfig` loaded by the existing publication owner,
 it makes only Telegram `getMe`, `getChat`, and `getChatMember` reads. It fails
-before any provider I/O if the release SHA differs, and before the injected
+before any provider I/O if the release SHA, publisher client, public handle,
+configured destination or bot identity differs. It fails before the injected
 official Typefully social-set detail reader if the bot,
 channel, or posting permission differs. Both observations must complete within
 15 minutes, and only their exact identity bindings and display handles are
@@ -50,6 +51,11 @@ runtime-SHA attestor, route-registry writer, runtime mount, or actual Telegram c
 permission proof is included. No token, provider response, private channel ID,
 or social-set ID is printed by this adapter. Its synthetic tests cannot
 authorize a final card or any publication.
+The existing publisher settings still restrict the runnable exact Telegram
+worker to Squid; a read-only route observation is not a permit to add another
+client. Current repository configs mark Babylon and OriginTrail Telegram
+publishing inactive, so their route readback must remain blocked until a
+separately approved configuration change and live permission check.
 
 The packet currently has **no live delivery owner, restricted callback route,
 public approval transaction, or publication queue adapter**.

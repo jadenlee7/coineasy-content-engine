@@ -5,6 +5,7 @@ import json
 import unittest
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 
 import httpx
 
@@ -13,6 +14,9 @@ from core.content_ops.publication_route_readback import (
 )
 from core.content_ops.publication_route_verification import verify_publication_routes
 from core.content_ops.typefully_route_reader import TypefullySocialSetDetailReader
+from core.publishers.telegram_exact import (
+    TelegramExactConfig, TelegramExactError, load_telegram_exact_config,
+)
 from tests.test_content_ops_publication_route_verification import fixture
 
 
@@ -73,9 +77,16 @@ class FakeProvider:
                                    "linkedin": {"platform": "linkedin"}}
         return result
 
-    def owner(self, *, token=TOKEN, expected=None, runtime_release_sha=None):
+    def owner(self, *, token=TOKEN, expected=None, runtime_release_sha=None,
+              publisher_config=None):
+        route = expected or self.values["expected"]
+        publisher_config = publisher_config or TelegramExactConfig(
+            client_id=route.client_id,
+            public_username=route.telegram_username,
+            chat_id="@" + route.telegram_username,
+            bot_token=token)
         return PublicationRouteReadback(expected or self.values["expected"],
-            publishing_bot_token=token,
+            telegram_publisher_config=publisher_config,
             runtime_release_sha=(runtime_release_sha
                 if runtime_release_sha is not None else self.values["expected"].release_sha),
             typefully_detail_reader=self.typefully,
@@ -84,6 +95,27 @@ class FakeProvider:
 
 
 class PublicationRouteReadbackTest(unittest.TestCase):
+    def test_existing_publisher_loader_rejects_inactive_client_routes(self):
+        for client in ("yellow", "squid", "babylon", "origintrail"):
+            with self.subTest(client=client):
+                expected = fixture(client)["expected"]
+                suffix = client.upper()
+                env = {f"TELEGRAM_BOT_TOKEN_{suffix}":
+                           str(expected.telegram_bot_id) + ":" + "a" * 40,
+                       f"TELEGRAM_CHANNEL_{suffix}":
+                           "@" + expected.telegram_username}
+                if client in ("babylon", "origintrail"):
+                    with self.assertRaisesRegex(TelegramExactError,
+                                                "channel_inactive"):
+                        load_telegram_exact_config(client,
+                            clients_dir=Path("clients"), environ=env)
+                else:
+                    config = load_telegram_exact_config(client,
+                        clients_dir=Path("clients"), environ=env)
+                    self.assertEqual(config.client_id, client)
+                    self.assertEqual(config.public_username,
+                                     expected.telegram_username.lower())
+
     def test_default_off_and_bad_policy_have_zero_provider_io(self):
         provider = FakeProvider(fixture())
         with self.assertRaisesRegex(PublicationRouteReadbackError, "disabled"):
@@ -98,6 +130,21 @@ class PublicationRouteReadbackTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationRouteReadbackError,
                                     "configuration_invalid"):
             asyncio.run(provider.owner(runtime_release_sha="d" * 40).run(enabled=True))
+        for changed in (
+                {"client_id": "squid"},
+                {"public_username": "otherchannel"},
+                {"chat_id": "@otherchannel"},
+                {"chat_id": "-9999999999999"},
+        ):
+            config = TelegramExactConfig(
+                client_id=provider.values["expected"].client_id,
+                public_username=provider.values["expected"].telegram_username,
+                chat_id="@" + provider.values["expected"].telegram_username,
+                bot_token=TOKEN)
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                    PublicationRouteReadbackError, "configuration_invalid"):
+                asyncio.run(provider.owner(publisher_config=replace(config,
+                    **changed)).run(enabled=True))
         self.assertEqual((provider.calls, provider.typefully_calls), ([], []))
 
     def test_exact_three_telegram_reads_then_one_typefully_read(self):
@@ -147,7 +194,9 @@ class PublicationRouteReadbackTest(unittest.TestCase):
         moments = iter((provider.values["now"],
                         provider.values["now"] + timedelta(minutes=16)))
         owner = PublicationRouteReadback(provider.values["expected"],
-            publishing_bot_token=TOKEN,
+            telegram_publisher_config=TelegramExactConfig(
+                client_id="yellow", public_username="yellowkorea_ann",
+                chat_id="@yellowkorea_ann", bot_token=TOKEN),
             runtime_release_sha=provider.values["expected"].release_sha,
             typefully_detail_reader=provider.typefully,
             transport=httpx.MockTransport(provider.telegram), clock=lambda: next(moments))
@@ -166,7 +215,9 @@ class PublicationRouteReadbackTest(unittest.TestCase):
             bearer_token="synthetic_read_only_bearer", enabled=True,
             transport=httpx.MockTransport(typefully_detail))
         owner = PublicationRouteReadback(provider.values["expected"],
-            publishing_bot_token=TOKEN,
+            telegram_publisher_config=TelegramExactConfig(
+                client_id="yellow", public_username="yellowkorea_ann",
+                chat_id="@yellowkorea_ann", bot_token=TOKEN),
             runtime_release_sha=provider.values["expected"].release_sha,
             typefully_detail_reader=detail_reader,
             transport=httpx.MockTransport(provider.telegram),
