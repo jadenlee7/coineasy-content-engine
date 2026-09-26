@@ -9,8 +9,13 @@ Only the fixed GET detail endpoint is reachable; identity checks remain in
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
+import yaml
+
+from core.publications.handoff import CLIENT_TARGETS
 
 
 _MAX_RESPONSE_BYTES = 32768
@@ -18,6 +23,34 @@ _MAX_RESPONSE_BYTES = 32768
 
 class TypefullyRouteReaderError(RuntimeError):
     """Fixed error code only; never includes credential or provider response."""
+
+
+@dataclass(frozen=True, repr=False)
+class TypefullyDraftTarget:
+    """The active social-set ID used by the existing client draft route."""
+
+    client_id: str
+    social_set_id: int
+
+
+def load_typefully_draft_target(client_id: str, *,
+        clients_dir: Path = Path("clients")) -> TypefullyDraftTarget:
+    """Read the existing active publisher target; never infer one from a label."""
+    if type(client_id) is not str or client_id not in CLIENT_TARGETS:
+        raise TypefullyRouteReaderError("typefully_route_reader_configuration_invalid")
+    try:
+        raw = yaml.safe_load((clients_dir / client_id / "config.yaml").read_text(
+            encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        raise TypefullyRouteReaderError("typefully_route_reader_configuration_invalid") from None
+    publishing = raw.get("publishing") if type(raw) is dict else None
+    typefully = publishing.get("typefully") if type(publishing) is dict else None
+    if type(typefully) is not dict or typefully.get("active") is not True:
+        raise TypefullyRouteReaderError("typefully_route_reader_inactive")
+    social_set_id = typefully.get("social_set_id")
+    if type(social_set_id) is not int or social_set_id <= 0:
+        raise TypefullyRouteReaderError("typefully_route_reader_configuration_invalid")
+    return TypefullyDraftTarget(client_id, social_set_id)
 
 
 class TypefullySocialSetDetailReader:

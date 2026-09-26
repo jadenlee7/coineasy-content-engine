@@ -2,11 +2,13 @@
 
 import asyncio
 import unittest
+from pathlib import Path
 
 import httpx
 
 from core.content_ops.typefully_route_reader import (
-    TypefullyRouteReaderError, TypefullySocialSetDetailReader,
+    TypefullyDraftTarget, TypefullyRouteReaderError,
+    TypefullySocialSetDetailReader, load_typefully_draft_target,
 )
 from tests.test_content_ops_publication_route_verification import fixture
 
@@ -23,6 +25,19 @@ class TypefullyRouteReaderTest(unittest.TestCase):
     def provider(self, request):
         self.calls.append(request)
         return httpx.Response(200, json=self.values["typefully_social_set"])
+
+    def test_existing_active_targets_only(self):
+        for client in ("yellow", "squid"):
+            with self.subTest(client=client):
+                target = load_typefully_draft_target(client,
+                    clients_dir=Path("clients"))
+                self.assertEqual(type(target), TypefullyDraftTarget)
+                self.assertEqual(target.client_id, client)
+                self.assertGreater(target.social_set_id, 0)
+        for client in ("babylon", "origintrail"):
+            with self.subTest(client=client), self.assertRaisesRegex(
+                    TypefullyRouteReaderError, "inactive"):
+                load_typefully_draft_target(client, clients_dir=Path("clients"))
 
     def reader(self, *, token=TOKEN, enabled=True, provider=None):
         return TypefullySocialSetDetailReader(bearer_token=token,

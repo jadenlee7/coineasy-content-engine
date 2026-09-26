@@ -39,7 +39,9 @@ policy, independently attested exact runtime release SHA, and an active
 `TelegramExactConfig` loaded by the existing publication owner,
 it makes only Telegram `getMe`, `getChat`, and `getChatMember` reads. It fails
 before any provider I/O if the release SHA, publisher client, public handle,
-configured destination or bot identity differs. It fails before the injected
+configured destination or bot identity differs. The Typefully target must be
+loaded from the active client draft configuration and match the approved
+social-set ID before any provider I/O. It fails before the injected
 official Typefully social-set detail reader if the bot,
 channel, or posting permission differs. Both observations must complete within
 15 minutes, and only their exact identity bindings and display handles are
@@ -54,7 +56,7 @@ authorize a final card or any publication.
 The existing publisher settings still restrict the runnable exact Telegram
 worker to Squid; a read-only route observation is not a permit to add another
 client. Current repository configs mark Babylon and OriginTrail Telegram
-publishing inactive, so their route readback must remain blocked until a
+and Typefully publishing inactive, so their route readback must remain blocked until a
 separately approved configuration change and live permission check.
 
 The packet currently has **no live delivery owner, restricted callback route,

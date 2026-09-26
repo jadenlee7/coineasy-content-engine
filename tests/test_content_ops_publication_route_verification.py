@@ -71,6 +71,8 @@ class PublicationRouteVerificationTest(unittest.TestCase):
         changed = [
             {**good, "expected": replace(good["expected"], telegram_channel_id=-999)},
             {**good, "expected": replace(good["expected"], typefully_social_set_id=999)},
+            {**good, "expected": replace(good["expected"], telegram_username="otherchannel")},
+            {**good, "expected": replace(good["expected"], x_username="otherxhandle")},
             {**good, "telegram_bot": {**good["telegram_bot"], "id": 777}},
             {**good, "telegram_channel": {**good["telegram_channel"], "type": "supergroup"}},
             {**good, "telegram_channel": {**good["telegram_channel"], "username": "different"}},

@@ -75,6 +75,7 @@ def validate_expected_publication_routes(expected: ExpectedPublicationRoutes) ->
     _require(type(expected.workspace_id) is str
              and bool(_UUID.fullmatch(expected.workspace_id))
              and UUID(expected.workspace_id).int != 0
+             and type(expected.client_id) is str
              and expected.client_id in CLIENT_TARGETS
              and type(expected.release_sha) is str
              and bool(_RELEASE.fullmatch(expected.release_sha))
@@ -84,8 +85,12 @@ def validate_expected_publication_routes(expected: ExpectedPublicationRoutes) ->
              and _positive_int(expected.typefully_social_set_id)
              and type(expected.telegram_username) is str
              and bool(_TG_HANDLE.fullmatch(expected.telegram_username))
+             and expected.telegram_username.lower()
+                 == CLIENT_TARGETS[expected.client_id][0].lower()
              and type(expected.x_username) is str
-             and bool(_X_HANDLE.fullmatch(expected.x_username)),
+             and bool(_X_HANDLE.fullmatch(expected.x_username))
+             and expected.x_username.lower()
+                 == CLIENT_TARGETS[expected.client_id][1].lower(),
              "publication_route_policy_invalid")
 
 

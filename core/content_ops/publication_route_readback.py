@@ -24,6 +24,7 @@ from core.content_ops.publication_route_verification import (
     verify_publication_routes,
 )
 from core.publishers.telegram_exact import TelegramExactConfig
+from core.content_ops.typefully_route_reader import TypefullyDraftTarget
 
 
 _TOKEN = re.compile(r"([0-9]{6,14}):[A-Za-z0-9_-]{30,100}\Z")
@@ -39,12 +40,14 @@ class PublicationRouteReadback:
 
     def __init__(self, expected: ExpectedPublicationRoutes, *,
             telegram_publisher_config: TelegramExactConfig,
+            typefully_publisher_target: TypefullyDraftTarget,
             runtime_release_sha: str,
             typefully_detail_reader: Callable[[int], Awaitable[dict]],
             transport: httpx.AsyncBaseTransport | None = None,
             clock: Callable[[], datetime] | None = None):
         self._expected = expected
         self._publisher_config = telegram_publisher_config
+        self._typefully_target = typefully_publisher_target
         self._runtime_release_sha = runtime_release_sha
         self._typefully_detail_reader = typefully_detail_reader
         self._transport = transport
@@ -58,7 +61,9 @@ class PublicationRouteReadback:
         except PublicationRouteError:
             raise PublicationRouteReadbackError("publication_route_readback_configuration_invalid") from None
         config = self._publisher_config
-        if type(config) is not TelegramExactConfig:
+        typefully_target = self._typefully_target
+        if (type(config) is not TelegramExactConfig
+            or type(typefully_target) is not TypefullyDraftTarget):
             raise PublicationRouteReadbackError("publication_route_readback_configuration_invalid")
         token = config.bot_token
         match = _TOKEN.fullmatch(token) if type(token) is str else None
@@ -69,6 +74,9 @@ class PublicationRouteReadback:
             or config.public_username.lower() != self._expected.telegram_username.lower()
             or target not in ("@" + self._expected.telegram_username.lower(),
                               str(self._expected.telegram_channel_id))
+            or typefully_target.client_id != self._expected.client_id
+            or type(typefully_target.social_set_id) is not int
+            or typefully_target.social_set_id != self._expected.typefully_social_set_id
             or type(self._runtime_release_sha) is not str
             or self._runtime_release_sha != self._expected.release_sha
             or not callable(self._typefully_detail_reader)

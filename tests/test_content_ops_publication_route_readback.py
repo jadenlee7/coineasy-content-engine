@@ -13,7 +13,9 @@ from core.content_ops.publication_route_readback import (
     PublicationRouteReadback, PublicationRouteReadbackError,
 )
 from core.content_ops.publication_route_verification import verify_publication_routes
-from core.content_ops.typefully_route_reader import TypefullySocialSetDetailReader
+from core.content_ops.typefully_route_reader import (
+    TypefullyDraftTarget, TypefullySocialSetDetailReader,
+)
 from core.publishers.telegram_exact import (
     TelegramExactConfig, TelegramExactError, load_telegram_exact_config,
 )
@@ -78,7 +80,7 @@ class FakeProvider:
         return result
 
     def owner(self, *, token=TOKEN, expected=None, runtime_release_sha=None,
-              publisher_config=None):
+              publisher_config=None, typefully_target=None):
         route = expected or self.values["expected"]
         publisher_config = publisher_config or TelegramExactConfig(
             client_id=route.client_id,
@@ -87,6 +89,8 @@ class FakeProvider:
             bot_token=token)
         return PublicationRouteReadback(expected or self.values["expected"],
             telegram_publisher_config=publisher_config,
+            typefully_publisher_target=(typefully_target or TypefullyDraftTarget(
+                route.client_id, route.typefully_social_set_id)),
             runtime_release_sha=(runtime_release_sha
                 if runtime_release_sha is not None else self.values["expected"].release_sha),
             typefully_detail_reader=self.typefully,
@@ -127,6 +131,10 @@ class PublicationRouteReadbackTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationRouteReadbackError,
                                     "configuration_invalid"):
             asyncio.run(provider.owner(expected=invalid).run(enabled=True))
+        malformed = replace(provider.values["expected"], client_id=["yellow"])
+        with self.assertRaisesRegex(PublicationRouteReadbackError,
+                                    "configuration_invalid"):
+            asyncio.run(provider.owner(expected=malformed).run(enabled=True))
         with self.assertRaisesRegex(PublicationRouteReadbackError,
                                     "configuration_invalid"):
             asyncio.run(provider.owner(runtime_release_sha="d" * 40).run(enabled=True))
@@ -145,6 +153,12 @@ class PublicationRouteReadbackTest(unittest.TestCase):
                     PublicationRouteReadbackError, "configuration_invalid"):
                 asyncio.run(provider.owner(publisher_config=replace(config,
                     **changed)).run(enabled=True))
+        for target in (TypefullyDraftTarget("squid",
+                           provider.values["expected"].typefully_social_set_id),
+                       TypefullyDraftTarget("yellow", 999)):
+            with self.subTest(target=target), self.assertRaisesRegex(
+                    PublicationRouteReadbackError, "configuration_invalid"):
+                asyncio.run(provider.owner(typefully_target=target).run(enabled=True))
         self.assertEqual((provider.calls, provider.typefully_calls), ([], []))
 
     def test_exact_three_telegram_reads_then_one_typefully_read(self):
@@ -197,6 +211,8 @@ class PublicationRouteReadbackTest(unittest.TestCase):
             telegram_publisher_config=TelegramExactConfig(
                 client_id="yellow", public_username="yellowkorea_ann",
                 chat_id="@yellowkorea_ann", bot_token=TOKEN),
+            typefully_publisher_target=TypefullyDraftTarget("yellow",
+                provider.values["expected"].typefully_social_set_id),
             runtime_release_sha=provider.values["expected"].release_sha,
             typefully_detail_reader=provider.typefully,
             transport=httpx.MockTransport(provider.telegram), clock=lambda: next(moments))
@@ -218,6 +234,8 @@ class PublicationRouteReadbackTest(unittest.TestCase):
             telegram_publisher_config=TelegramExactConfig(
                 client_id="yellow", public_username="yellowkorea_ann",
                 chat_id="@yellowkorea_ann", bot_token=TOKEN),
+            typefully_publisher_target=TypefullyDraftTarget("yellow",
+                provider.values["expected"].typefully_social_set_id),
             runtime_release_sha=provider.values["expected"].release_sha,
             typefully_detail_reader=detail_reader,
             transport=httpx.MockTransport(provider.telegram),
