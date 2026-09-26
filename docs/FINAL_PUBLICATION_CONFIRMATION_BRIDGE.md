@@ -22,8 +22,8 @@ Displayed handles are not authority by themselves. The digests must come from
 a separately trusted verifier of the client, provider, exact account/destination,
 observed public handle and permitted action. Missing
 or malformed digests cannot produce a final card; this proposal does not
-implement the live provider readers, credential owner, or establish any actual
-Telegram client-channel mapping. `core/content_ops/publication_route_verification.py`
+establish any actual Telegram client-channel mapping.
+`core/content_ops/publication_route_verification.py`
 is a pure, unmounted comparison of owner-approved exact IDs with read-only
 Telegram `getMe`/`getChat`/`getChatMember` and Typefully social-set details.
 It requires administrator posting permission, one X-only social set, exact
@@ -32,6 +32,20 @@ route pair and labels can be pinned to a snapshot together; it never sends or
 drafts. Typefully's four X sets were observed read-only during development,
 but that observation is not a committed owner manifest or Telegram permission
 proof. Client config labels alone are insufficient.
+
+`core/content_ops/publication_route_readback.py` is a separate, **unmounted,
+default-OFF** read-only adapter. With an independently approved exact route
+policy and the client publishing bot's token supplied by a credential owner,
+it makes only Telegram `getMe`, `getChat`, and `getChatMember` reads. It fails
+before the injected official Typefully social-set detail reader if the bot,
+channel, or posting permission differs. Both observations must complete within
+15 minutes, and only their exact identity bindings and display handles are
+returned. The Typefully reader must perform a fresh authenticated detail read,
+not return a cached/list result. No production credential loader, Typefully
+reader, route-registry writer, runtime mount, or actual Telegram channel
+permission proof is included. No token, provider response, private channel ID,
+or social-set ID is printed by this adapter. Its synthetic tests cannot
+authorize a final card or any publication.
 
 The packet currently has **no live delivery owner, restricted callback route,
 public approval transaction, or publication queue adapter**.

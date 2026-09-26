@@ -69,17 +69,8 @@ def _digest(payload: dict) -> str:
         separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def verify_publication_routes(expected: ExpectedPublicationRoutes, *,
-        telegram_bot: dict, telegram_channel: dict, telegram_member: dict,
-        typefully_social_set: dict, observed_at: datetime,
-        now: datetime) -> VerifiedPublicationRoutes:
-    """Verify two read-only observations against one approved, exact policy.
-
-    Telegram evidence is getMe/getChat/getChatMember for the publishing bot.
-    Typefully evidence is one social-set detail with exactly one X platform.
-    Refreshing a matching observation does not change the identity digest;
-    verified_at remains separate so a database gate can enforce freshness.
-    """
+def validate_expected_publication_routes(expected: ExpectedPublicationRoutes) -> None:
+    """Fail before provider I/O when an approved route policy is incomplete."""
     _require(type(expected) is ExpectedPublicationRoutes)
     _require(type(expected.workspace_id) is str
              and bool(_UUID.fullmatch(expected.workspace_id))
@@ -96,14 +87,15 @@ def verify_publication_routes(expected: ExpectedPublicationRoutes, *,
              and type(expected.x_username) is str
              and bool(_X_HANDLE.fullmatch(expected.x_username)),
              "publication_route_policy_invalid")
-    _require(type(observed_at) is datetime and type(now) is datetime
-             and observed_at.tzinfo is not None and now.tzinfo is not None
-             and observed_at.utcoffset() is not None
-             and now.utcoffset() is not None
-             and timedelta(0) <= now-observed_at <= _FRESHNESS,
-             "publication_route_observation_stale")
+
+
+def validate_telegram_route_observation(expected: ExpectedPublicationRoutes, *,
+        telegram_bot: dict, telegram_channel: dict,
+        telegram_member: dict) -> None:
+    """Check channel identity and the publishing bot's actual post permission."""
+    validate_expected_publication_routes(expected)
     _require(all(type(value) is dict for value in (
-        telegram_bot, telegram_channel, telegram_member, typefully_social_set)))
+        telegram_bot, telegram_channel, telegram_member)))
     member_user = telegram_member.get("user")
     _require(telegram_bot.get("id") == expected.telegram_bot_id
              and type(telegram_bot.get("id")) is int
@@ -120,6 +112,30 @@ def verify_publication_routes(expected: ExpectedPublicationRoutes, *,
              and telegram_member.get("status") == "administrator"
              and telegram_member.get("can_post_messages") is True,
              "publication_route_telegram_unverified")
+
+
+def verify_publication_routes(expected: ExpectedPublicationRoutes, *,
+        telegram_bot: dict, telegram_channel: dict, telegram_member: dict,
+        typefully_social_set: dict, observed_at: datetime,
+        now: datetime) -> VerifiedPublicationRoutes:
+    """Verify two read-only observations against one approved, exact policy.
+
+    Telegram evidence is getMe/getChat/getChatMember for the publishing bot.
+    Typefully evidence is one social-set detail with exactly one X platform.
+    Refreshing a matching observation does not change the identity digest;
+    verified_at remains separate so a database gate can enforce freshness.
+    """
+    validate_expected_publication_routes(expected)
+    _require(type(observed_at) is datetime and type(now) is datetime
+             and observed_at.tzinfo is not None and now.tzinfo is not None
+             and observed_at.utcoffset() is not None
+             and now.utcoffset() is not None
+             and timedelta(0) <= now-observed_at <= _FRESHNESS,
+             "publication_route_observation_stale")
+    validate_telegram_route_observation(expected,
+        telegram_bot=telegram_bot, telegram_channel=telegram_channel,
+        telegram_member=telegram_member)
+    _require(type(typefully_social_set) is dict)
     platforms = typefully_social_set.get("platforms")
     x = platforms.get("x") if type(platforms) is dict else None
     _require(type(typefully_social_set.get("id")) is int
