@@ -462,11 +462,13 @@ def test_denied_or_revoked_work_is_not_current_or_passable() -> None:
 def test_concurrency_probe_uses_64_connections_and_closed_topic() -> None:
     probe = _sql(PROBE)
     assert "CONCURRENCY = 64" in probe
-    assert "ThreadPoolExecutor(max_workers=CONCURRENCY)" in probe
+    assert "ThreadPoolExecutor(max_workers=concurrency)" in probe
+    assert "postgres_advisory_session_latch" in probe
+    assert "backend_concurrency_target" in probe
     assert 'topic = "official_update"' in probe
     assert "side_effect_baseline_unchanged" in probe
     assert "--release-sha" in probe
     assert "--config-sha256" in probe
     assert "psql_timeout_commit_state_unknown_no_retry" in probe
-    assert "insufficient_direct_connection_capacity_for_64_way_probe" in probe
+    assert "insufficient_database_backend_capacity_for_concurrency_probe" in probe
     assert "approved 120-minute TTL" in probe
