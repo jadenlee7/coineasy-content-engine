@@ -35,14 +35,18 @@ proof. Client config labels alone are insufficient.
 
 `core/content_ops/publication_route_readback.py` is a separate, **unmounted,
 default-OFF** read-only adapter. With an independently approved exact route
-policy and the client publishing bot's token supplied by a credential owner,
+policy, independently attested exact runtime release SHA, and the client
+publishing bot's token supplied by a credential owner,
 it makes only Telegram `getMe`, `getChat`, and `getChatMember` reads. It fails
-before the injected official Typefully social-set detail reader if the bot,
+before any provider I/O if the release SHA differs, and before the injected
+official Typefully social-set detail reader if the bot,
 channel, or posting permission differs. Both observations must complete within
 15 minutes, and only their exact identity bindings and display handles are
-returned. The Typefully reader must perform a fresh authenticated detail read,
-not return a cached/list result. No production credential loader, Typefully
-reader, route-registry writer, runtime mount, or actual Telegram channel
+returned. `core/content_ops/typefully_route_reader.py` supplies an equally
+unmounted, default-OFF authenticated GET-only social-set detail reader. It
+requires a separately provisioned READ-capable bearer and performs one fresh
+request, never a cached/list result. No production credential loader,
+runtime-SHA attestor, route-registry writer, runtime mount, or actual Telegram channel
 permission proof is included. No token, provider response, private channel ID,
 or social-set ID is printed by this adapter. Its synthetic tests cannot
 authorize a final card or any publication.

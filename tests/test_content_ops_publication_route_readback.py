@@ -12,6 +12,7 @@ from core.content_ops.publication_route_readback import (
     PublicationRouteReadback, PublicationRouteReadbackError,
 )
 from core.content_ops.publication_route_verification import verify_publication_routes
+from core.content_ops.typefully_route_reader import TypefullySocialSetDetailReader
 from tests.test_content_ops_publication_route_verification import fixture
 
 
@@ -72,9 +73,12 @@ class FakeProvider:
                                    "linkedin": {"platform": "linkedin"}}
         return result
 
-    def owner(self, *, token=TOKEN, expected=None):
+    def owner(self, *, token=TOKEN, expected=None, runtime_release_sha=None):
         return PublicationRouteReadback(expected or self.values["expected"],
-            publishing_bot_token=token, typefully_detail_reader=self.typefully,
+            publishing_bot_token=token,
+            runtime_release_sha=(runtime_release_sha
+                if runtime_release_sha is not None else self.values["expected"].release_sha),
+            typefully_detail_reader=self.typefully,
             transport=httpx.MockTransport(self.telegram),
             clock=lambda: self.values["now"])
 
@@ -91,6 +95,9 @@ class PublicationRouteReadbackTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationRouteReadbackError,
                                     "configuration_invalid"):
             asyncio.run(provider.owner(expected=invalid).run(enabled=True))
+        with self.assertRaisesRegex(PublicationRouteReadbackError,
+                                    "configuration_invalid"):
+            asyncio.run(provider.owner(runtime_release_sha="d" * 40).run(enabled=True))
         self.assertEqual((provider.calls, provider.typefully_calls), ([], []))
 
     def test_exact_three_telegram_reads_then_one_typefully_read(self):
@@ -140,12 +147,37 @@ class PublicationRouteReadbackTest(unittest.TestCase):
         moments = iter((provider.values["now"],
                         provider.values["now"] + timedelta(minutes=16)))
         owner = PublicationRouteReadback(provider.values["expected"],
-            publishing_bot_token=TOKEN, typefully_detail_reader=provider.typefully,
+            publishing_bot_token=TOKEN,
+            runtime_release_sha=provider.values["expected"].release_sha,
+            typefully_detail_reader=provider.typefully,
             transport=httpx.MockTransport(provider.telegram), clock=lambda: next(moments))
         with self.assertRaisesRegex(PublicationRouteReadbackError, "unverified"):
             asyncio.run(owner.run(enabled=True))
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(len(provider.typefully_calls), 1)
+
+    def test_http_readers_compose_without_draft_or_send(self):
+        provider = FakeProvider(fixture())
+        typefully_requests = []
+        def typefully_detail(request):
+            typefully_requests.append(request)
+            return httpx.Response(200, json=provider.values["typefully_social_set"])
+        detail_reader = TypefullySocialSetDetailReader(
+            bearer_token="synthetic_read_only_bearer", enabled=True,
+            transport=httpx.MockTransport(typefully_detail))
+        owner = PublicationRouteReadback(provider.values["expected"],
+            publishing_bot_token=TOKEN,
+            runtime_release_sha=provider.values["expected"].release_sha,
+            typefully_detail_reader=detail_reader,
+            transport=httpx.MockTransport(provider.telegram),
+            clock=lambda: provider.values["now"])
+        result = asyncio.run(owner.run(enabled=True))
+        self.assertEqual(result.client_id, "yellow")
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual([request.method for request in provider.calls],
+                         ["POST", "POST", "POST"])
+        self.assertEqual(len(typefully_requests), 1)
+        self.assertEqual(typefully_requests[0].method, "GET")
 
 
 if __name__ == "__main__":

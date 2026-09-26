@@ -2,7 +2,8 @@
 
 This is not the private review bot and has no send, draft, update, polling,
 database or configuration-write method. The caller must inject an approved
-client publishing bot credential and a fresh official Typefully detail reader.
+client publishing bot credential, an independently attested runtime release
+SHA, and a fresh official Typefully detail reader.
 No credential or provider response is included in errors or return values.
 """
 
@@ -35,11 +36,13 @@ class PublicationRouteReadback:
 
     def __init__(self, expected: ExpectedPublicationRoutes, *,
             publishing_bot_token: str,
+            runtime_release_sha: str,
             typefully_detail_reader: Callable[[int], Awaitable[dict]],
             transport: httpx.AsyncBaseTransport | None = None,
             clock: Callable[[], datetime] | None = None):
         self._expected = expected
         self._token = publishing_bot_token
+        self._runtime_release_sha = runtime_release_sha
         self._typefully_detail_reader = typefully_detail_reader
         self._transport = transport
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -53,6 +56,8 @@ class PublicationRouteReadback:
             raise PublicationRouteReadbackError("publication_route_readback_configuration_invalid") from None
         match = _TOKEN.fullmatch(self._token) if type(self._token) is str else None
         if (match is None or int(match.group(1)) != self._expected.telegram_bot_id
+            or type(self._runtime_release_sha) is not str
+            or self._runtime_release_sha != self._expected.release_sha
             or not callable(self._typefully_detail_reader)
             or not callable(self._clock)):
             raise PublicationRouteReadbackError("publication_route_readback_configuration_invalid")
