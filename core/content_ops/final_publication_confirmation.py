@@ -13,19 +13,21 @@ import hashlib
 import hmac
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from core.content_ops.review_buttons import ReviewSnapshot
-from core.publications.handoff import CLIENT_TARGETS
+from core.content_ops.publication_route_verification import VerifiedPublicationRoutes
 
 
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _RELEASE = re.compile(r"[a-f0-9]{40}\Z")
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z")
+_TG_LABEL = re.compile(r"@[A-Za-z0-9_]{5,32}\Z")
+_X_LABEL = re.compile(r"@[A-Za-z0-9_]{1,15}\Z")
 _TOKEN = re.compile(r"ce2:[A-Za-z0-9_-]{51}\Z")
 _ACTIONS = {"p": "confirm_publication", "h": "hold"}
 
@@ -71,6 +73,8 @@ class FinalConfirmationSnapshot:
     release_sha: str
     telegram_route_binding: str
     typefully_route_binding: str
+    telegram_destination_label: str
+    typefully_x_destination_label: str
 
     def validate(self) -> None:
         _require(type(self.review) is ReviewSnapshot)
@@ -104,6 +108,11 @@ class FinalConfirmationSnapshot:
         for binding in (self.telegram_route_binding, self.typefully_route_binding):
             _require(type(binding) is str and bool(_SHA.fullmatch(binding)),
                      "final_confirmation_destination_unverified")
+        _require(type(self.telegram_destination_label) is str
+                 and bool(_TG_LABEL.fullmatch(self.telegram_destination_label))
+                 and type(self.typefully_x_destination_label) is str
+                 and bool(_X_LABEL.fullmatch(self.typefully_x_destination_label)),
+                 "final_confirmation_destination_unverified")
         _require(type(self.approval_count) is int and self.approval_count == 0
                  and type(self.publication_count) is int and self.publication_count == 0,
                  "final_confirmation_already_acted")
@@ -121,9 +130,34 @@ class FinalConfirmationSnapshot:
             release_sha=self.release_sha,
             telegram_route_binding=self.telegram_route_binding,
             typefully_route_binding=self.typefully_route_binding,
-            destination_labels=list(CLIENT_TARGETS[self.review.client_id][:2]))
+            destination_labels=[self.telegram_destination_label,
+                                self.typefully_x_destination_label])
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
+
+
+def pin_verified_routes(snapshot: FinalConfirmationSnapshot,
+        routes: VerifiedPublicationRoutes, *, now: datetime) -> FinalConfirmationSnapshot:
+    """Bind one fresh verified pair to a private final-card projection."""
+    _require(type(snapshot) is FinalConfirmationSnapshot
+             and type(routes) is VerifiedPublicationRoutes
+             and type(now) is datetime and now.tzinfo is not None
+             and now.utcoffset() is not None
+             and type(routes.verified_at) is datetime
+             and routes.verified_at.tzinfo is not None
+             and routes.verified_at.utcoffset() is not None
+             and 0 <= (now-routes.verified_at).total_seconds() <= 900
+             and routes.workspace_id == snapshot.review.workspace_id
+             and routes.client_id == snapshot.review.client_id
+             and routes.release_sha == snapshot.release_sha,
+             "final_confirmation_destination_unverified")
+    pinned = replace(snapshot,
+        telegram_route_binding=routes.telegram_route_binding,
+        typefully_route_binding=routes.typefully_route_binding,
+        telegram_destination_label=routes.telegram_destination_label,
+        typefully_x_destination_label=routes.typefully_x_destination_label)
+    pinned.validate()
+    return pinned
 
 
 class FinalConfirmationSigner:
@@ -179,14 +213,13 @@ def final_confirmation_messages(snapshot: FinalConfirmationSnapshot,
     """Return a four-part private-room packet, never a send request."""
     snapshot.validate()
     _require(type(signer) is FinalConfirmationSigner)
-    telegram_target, typefully_target, _ = CLIENT_TARGETS[snapshot.review.client_id]
     def button(action: str, label: str) -> dict:
         return {"text": label, "callback_data": signer.issue(snapshot, action,
             room_binding, now=now, expires_at=now + 900)}
     controls = (
         f"{snapshot.review.client_id.upper()} · 최종 게시 확인 (2차)\n"
-        f"Telegram 공식 채널: @{telegram_target}\n"
-        f"X 게시 준비 대상: Typefully {typefully_target}\n"
+        f"Telegram 공식 채널: {snapshot.telegram_destination_label}\n"
+        f"X 게시 준비 대상: Typefully {snapshot.typefully_x_destination_label}\n"
         f"콘텐츠 버전: {snapshot.review.content_version_id}\n"
         f"검수 카드: {snapshot.card_id}\n"
         f"공식 원문: {snapshot.review.source_url}\n"

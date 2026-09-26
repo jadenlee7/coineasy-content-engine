@@ -42,6 +42,7 @@ begin
         where p.workspace_id=target_workspace_id and p.client_id=target_client_id
           and p.active and p.release_sha=target_release_sha
           and p.verified_at<=clock_timestamp()
+          and p.verified_at>clock_timestamp()-interval '15 minutes'
           and p.route_binding=case p.channel when 'telegram'
               then expected_telegram_binding else expected_typefully_binding end;
     if routes<>2 then

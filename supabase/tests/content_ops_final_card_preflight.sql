@@ -112,6 +112,20 @@ begin
             clock_timestamp()-interval '1 minute',true),
           (w,'yellow','typefully_x',repeat('8',64),repeat('6',40),
             clock_timestamp()-interval '1 minute',true);
+    update private.content_ops_publication_routes
+        set verified_at=clock_timestamp()-interval '16 minutes'
+        where workspace_id=w and channel='typefully_x';
+    begin
+        perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
+            actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
+            repeat('6',40),repeat('7',64),repeat('8',64));
+        raise exception 'stale_destination_verification_reserved';
+    exception when check_violation then null; end;
+    if exists(select 1 from private.content_ops_final_card_deliveries where id=delivery) then
+        raise exception 'stale_destination_verification_wrote_delivery';
+    end if;
+    update private.content_ops_publication_routes set verified_at=clock_timestamp()
+        where workspace_id=w and channel='typefully_x';
     result:=private.reserve_content_ops_final_card_delivery(delivery,review,card,
         actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
         repeat('6',40),repeat('7',64),repeat('8',64));

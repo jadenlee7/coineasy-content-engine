@@ -240,6 +240,20 @@ begin
             raise exception 'private_final_decision_created_public_work';
         end if;
         if choice='confirm_publication' then
+            update private.content_ops_publication_routes
+                set verified_at=clock_timestamp()-interval '16 minutes'
+                where workspace_id=w and channel='telegram';
+            begin
+                perform private.materialize_content_ops_publication_handoff(
+                    decision_id,actor,release_sha,operation_key);
+                raise exception 'stale_destination_verification_created_approval';
+            exception when check_violation then null; end;
+            if exists(select 1 from public.approvals where workspace_id=w)
+               or exists(select 1 from private.content_ops_channel_handoffs where workspace_id=w) then
+                raise exception 'stale_destination_verification_created_partial_work';
+            end if;
+            update private.content_ops_publication_routes set verified_at=clock_timestamp()
+                where workspace_id=w and channel='telegram';
             update private.content_ops_publication_routes set active=false
                 where workspace_id=w and channel='typefully_x';
             begin

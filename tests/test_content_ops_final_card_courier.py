@@ -38,7 +38,8 @@ def prepared():
         "검수 완료된 Telegram 전문", "Verified X copy",
         hashlib.sha256(PNG).hexdigest(), "daily_ready")
     snapshot = FinalConfirmationSnapshot(review, R, C, A, A, A, 0, 0, 0,
-        "b" * 64, 0, 0, RELEASE, "d" * 64, "e" * 64)
+        "b" * 64, 0, 0, RELEASE, "d" * 64, "e" * 64,
+        "@yellowkorea_ann", "@Yellow__Korea")
     return PreparedFinalCard(snapshot, D, PNG, BOT, ROOM, HUMAN, None, NOW)
 
 

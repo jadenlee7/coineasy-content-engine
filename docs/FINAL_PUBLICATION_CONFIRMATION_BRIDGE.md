@@ -8,9 +8,9 @@ checks. It is not the cancellation-button `confirmation_*` flow.
 four-part private-room packet shape: canonical banner identity (SHA-256; a
 future courier must obtain and verify the actual PNG bytes), full Telegram
 copy, full X copy, and a final control card showing the client Telegram
-destination and Typefully target. The Typefully target is an account/social-set label, not an
-asserted public X handle. Buttons use a dedicated `ce2:` namespace and a
-15-minute MAC over the current version, DB-issued fingerprint, review/card,
+destination and Typefully/X target. The card now shows observed route handles
+from the pinned snapshot, rather than static account-name guesses. Buttons use
+a dedicated `ce2:` namespace and a 15-minute MAC over the current version, DB-issued fingerprint, review/card,
 same-reviewer checks/epoch, full copy, banner hash, and trusted room. A `ce1:`
 private-card check or legacy approval token cannot be accepted as a `ce2:`
 decision. The callback result is at most a private decision receipt, not a
@@ -18,11 +18,20 @@ public approval, publication request, or Telegram/X delivery receipt.
 The snapshot also binds an exact 40-character release SHA, both opaque
 destination digests, and the displayed destination labels. A future owner must
 compare the SHA with its own deployed runtime before honoring a decision.
-The labels are policy labels, not verified provider account identifiers. The
-digests must come from a separately trusted verifier of the client, provider,
-exact account/destination, public display label and permitted action. Missing
+Displayed handles are not authority by themselves. The digests must come from
+a separately trusted verifier of the client, provider, exact account/destination,
+observed public handle and permitted action. Missing
 or malformed digests cannot produce a final card; this proposal does not
-implement that live verifier or establish any actual client account mapping.
+implement the live provider readers, credential owner, or establish any actual
+Telegram client-channel mapping. `core/content_ops/publication_route_verification.py`
+is a pure, unmounted comparison of owner-approved exact IDs with read-only
+Telegram `getMe`/`getChat`/`getChatMember` and Typefully social-set details.
+It requires administrator posting permission, one X-only social set, exact
+account IDs/handles, and observations no older than 15 minutes. The returned
+route pair and labels can be pinned to a snapshot together; it never sends or
+drafts. Typefully's four X sets were observed read-only during development,
+but that observation is not a committed owner manifest or Telegram permission
+proof. Client config labels alone are insufficient.
 
 The packet currently has **no live delivery owner, restricted callback route,
 public approval transaction, or publication queue adapter**.
@@ -44,7 +53,8 @@ stale poll, revoked reviewer, existing approval and revoked parent card.
 `supabase/proposals/content_ops_final_card_delivery_ledger.sql` is a separate
 local-only, ungranted transport ledger and final-card registry. It reserves one
 15-minute attempt for an exact parent review epoch, actor, version fingerprint,
-snapshot, packet, release, and both destination digests. A future trusted courier must durably record
+snapshot, packet, release, and both destination digests. A future trusted
+courier must durably record
 each of the four part attempts **before** invoking Telegram, then attach a
 provider-verified message/response binding. A repeated attempt without a
 receipt returns `delivery_unknown`: it is never permission to resend. Only
@@ -125,7 +135,8 @@ each new part attempt, final-card registration, final confirmation and the
 approval transaction compare **both** pinned digests against the active
 exact-release rows. Both rows are locked together in channel order through
 the transaction, so a route update cannot slip between validation and the
-approval/intent write. A changed or revoked destination requires a new valid
+approval/intent write. Each route observation must also be no older than 15
+minutes at every new state transition. A changed or revoked destination requires a new valid
 card; an earlier decision or historical replay receipt is not new authority.
 Holding remains possible without confirming a changed destination.
 

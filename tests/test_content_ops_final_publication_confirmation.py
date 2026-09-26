@@ -6,8 +6,10 @@ from dataclasses import replace
 from core.content_ops.final_publication_confirmation import (
     FinalConfirmationError, FinalConfirmationSigner, FinalConfirmationSnapshot,
     VerifiedFinalCallback, final_confirmation_messages, handle_final_confirmation,
+    pin_verified_routes,
 )
 from core.content_ops.review_buttons import ReviewSnapshot
+from core.publications.handoff import CLIENT_TARGETS
 
 
 NOW = 1790340000
@@ -33,7 +35,8 @@ def snapshot(client="yellow"):
         "2026-09-25T12:15:00Z", "확인된 텔레그램 공지 전문",
         "확인된 X 문안", "a" * 64, "daily_ready")
     return FinalConfirmationSnapshot(review, R, C, A, A, A, 2, 2, 2,
-        "b" * 64, 0, 0, "c" * 40, "d" * 64, "e" * 64)
+        "b" * 64, 0, 0, "c" * 40, "d" * 64, "e" * 64,
+        "@" + CLIENT_TARGETS[client][0], "@" + CLIENT_TARGETS[client][1])
 
 
 class FakeOwner:
@@ -146,6 +149,8 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
                         replace(self.s, version_fingerprint="c" * 64),
                         replace(self.s, telegram_route_binding="f" * 64),
                         replace(self.s, typefully_route_binding="f" * 64),
+                        replace(self.s, telegram_destination_label="@other_channel"),
+                        replace(self.s, typefully_x_destination_label="@other_account"),
                         replace(self.s, review=replace(self.s.review, x_copy="new X")),
                         replace(self.s, review=replace(self.s.review, banner_sha256="c" * 64)),
                         replace(self.s, review=replace(self.s.review, content_version_id=OTHER))):
@@ -158,6 +163,12 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
     def test_missing_or_unverified_destination_cannot_render_card(self):
         for field in ("telegram_route_binding", "typefully_route_binding"):
             for value in (None, "", "account-label", "a" * 63, "a" * 64 + "\n"):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                        FinalConfirmationError, "destination_unverified"):
+                    final_confirmation_messages(replace(self.s, **{field: value}),
+                        self.signer, ROOM, now=NOW)
+        for field in ("telegram_destination_label", "typefully_x_destination_label"):
+            for value in (None, "", "@bad\nchannel", "https://x.com/account"):
                 with self.subTest(field=field, value=value), self.assertRaisesRegex(
                         FinalConfirmationError, "destination_unverified"):
                     final_confirmation_messages(replace(self.s, **{field: value}),
