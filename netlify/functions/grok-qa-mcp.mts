@@ -1,5 +1,10 @@
 import type { Config, Context } from "@netlify/functions";
-import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import {
+  createMcpHandler,
+  isLegacyRequest,
+  McpServer,
+  WebStandardStreamableHTTPServerTransport,
+} from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import {
@@ -23,9 +28,19 @@ import {
   sendGrokQaVerdictOutcome,
   type GrokQaVerdict,
 } from "./_shared/grok-qa.mts";
+import { grokQaOauthConfig } from "./_shared/grok-qa-oauth.mts";
 
 const PRODUCTION_HOST = "coineasy-newscard.netlify.app";
 const MAX_MCP_REQUEST_BYTES = 128 * 1024;
+
+function validConnectorHost(requestUrl: URL): boolean {
+  const host = requestUrl.hostname.toLowerCase();
+  if (host === PRODUCTION_HOST || host === "localhost" || host === "127.0.0.1") return true;
+  if (Netlify.env.get("CONTEXT") !== "deploy-preview") return false;
+  const prime = (Netlify.env.get("DEPLOY_PRIME_URL") || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/deploy-preview-\d+--coineasy-newscard\.netlify\.app$/.test(prime)
+    && requestUrl.origin === prime;
+}
 
 const clientSchema = z.enum(["yellow", "origintrail", "squid", "babylon"]);
 const kindSchema = z.enum(["daily_news", "article", "tutorial"]);
@@ -359,7 +374,31 @@ function mcpServer(): McpServer {
   return server;
 }
 
-const handler = createMcpHandler(() => mcpServer());
+const handler = createMcpHandler(() => mcpServer(), {
+  legacy: "reject",
+});
+
+async function legacyJsonResponse(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return Response.json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    }, { status: 405 });
+  }
+  const server = mcpServer();
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+  try {
+    return await transport.handleRequest(req);
+  } finally {
+    await transport.close().catch(() => {});
+    await server.close().catch(() => {});
+  }
+}
 
 function jsonResponse(body: Record<string, unknown>, status: number, headers = {}): Response {
   return Response.json(body, {
@@ -372,15 +411,19 @@ function jsonResponse(body: Record<string, unknown>, status: number, headers = {
 }
 
 export default async (req: Request, _context: Context): Promise<Response> => {
-  const host = new URL(req.url).hostname.toLowerCase();
-  if (host !== PRODUCTION_HOST && host !== "localhost" && host !== "127.0.0.1") {
+  const requestUrl = new URL(req.url);
+  if (!validConnectorHost(requestUrl)) {
     return jsonResponse({ error: "invalid_connector_host" }, 421);
   }
   const config = grokQaConnectorConfig((name) => Netlify.env.get(name));
   if (!config) return jsonResponse({ error: "grok_qa_connector_not_configured" }, 503);
   if (!hasGrokQaConnectorAccess(req, config.token)) {
+    const oauth = grokQaOauthConfig((name) => Netlify.env.get(name), requestUrl.origin);
+    const metadata = oauth
+      ? `, resource_metadata="${oauth.issuer}/.well-known/oauth-protected-resource/api/grok-qa/mcp"`
+      : "";
     return jsonResponse({ error: "invalid_token" }, 401, {
-      "WWW-Authenticate": 'Bearer realm="coineasy-grok-qa"',
+      "WWW-Authenticate": `Bearer realm="coineasy-grok-qa"${metadata}`,
     });
   }
   const declared = Number(req.headers.get("content-length") || 0);
@@ -393,7 +436,9 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       return jsonResponse({ error: "mcp_request_too_large" }, 413);
     }
   }
-  const response = await handler.fetch(req);
+  const response = await isLegacyRequest(req)
+    ? await legacyJsonResponse(req)
+    : await handler.fetch(req);
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   headers.set("X-Content-Type-Options", "nosniff");
