@@ -60,6 +60,40 @@ def _enabled(env):
     return value == "true"
 
 
+def _validate_scope_and_provenance(env, *, stamp_reader=None):
+    if (env.get("CONTENT_OPS_REVIEW_ENABLED", "false") != "false"
+        or env.get("CONTENT_OPS_REVIEW_MODE") != "canary"
+        or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != "button_card_v1"
+        or env.get("CONTENT_OPS_GATEWAY_URL") != APP_ORIGIN):
+        raise ValueError("private_card_scope_invalid")
+    for name, value in env.items():
+        upper = name.upper()
+        if not value or upper in _ALLOWED_SECRETS:
+            continue
+        if (upper in _FORBIDDEN_LIBPQ_ENV
+            or upper.startswith(("SUPABASE_", "DATABASE_", "POSTGRES_", "DB_",
+                               "REDIS_", "MYSQL_", "MONGO_", "MONGODB_",
+                               "TYPEFULLY_", "XAI_", "OPENAI_", "TWITTER_",
+                               "X_BEARER_"))
+            or upper in {"API_SECRET", "PUBLICATION_WORKER_TOKEN",
+                         "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS"}
+            or (upper.startswith("TELEGRAM_")
+                and upper not in {"TELEGRAM_REVIEW_CHAT_ID"})
+            or (upper.endswith(("_KEY", "_SECRET", "_TOKEN", "_PASSWORD"))
+                and upper not in _ALLOWED_SECRETS)):
+            raise ValueError("private_card_credential_boundary_invalid")
+    release = env.get("CONTENT_OPS_REVIEW_RELEASE_SHA", "")
+    runtime = env.get("RAILWAY_GIT_COMMIT_SHA", "")
+    build = (stamp_reader or _build_stamp)()
+    if (type(release) is not str or _SHA40.fullmatch(release) is None
+        or type(runtime) is not str or _SHA40.fullmatch(runtime) is None
+        or type(build) is not str or _SHA40.fullmatch(build) is None
+        or not secrets.compare_digest(release, runtime)
+        or not secrets.compare_digest(release, build)):
+        raise ValueError("private_card_release_mismatch")
+    return release
+
+
 @dataclass(frozen=True, repr=False)
 class PrivateCardRuntimeSettings:
     workspace_id: str
@@ -75,32 +109,9 @@ class PrivateCardRuntimeSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str], *, stamp_reader: Callable[[], str] | None = None):
         _enabled(env)
-        if (env.get("CONTENT_OPS_REVIEW_ENABLED", "false") != "false"
-            or env.get("CONTENT_OPS_REVIEW_MODE") != "canary"
-            or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != "button_card_v1"
-            or env.get("CONTENT_OPS_GATEWAY_URL") != APP_ORIGIN):
-            raise ValueError("private_card_scope_invalid")
-        for name, value in env.items():
-            upper = name.upper()
-            if not value or upper in _ALLOWED_SECRETS:
-                continue
-            if (upper in _FORBIDDEN_LIBPQ_ENV
-                or upper.startswith(("SUPABASE_", "DATABASE_", "POSTGRES_", "DB_",
-                                   "REDIS_", "MYSQL_", "MONGO_", "MONGODB_",
-                                   "TYPEFULLY_", "XAI_", "OPENAI_", "TWITTER_",
-                                   "X_BEARER_"))
-                or upper in {"API_SECRET", "PUBLICATION_WORKER_TOKEN",
-                             "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS"}
-                or (upper.startswith("TELEGRAM_")
-                    and upper not in {"TELEGRAM_REVIEW_CHAT_ID"})
-                or (upper.endswith(("_KEY", "_SECRET", "_TOKEN", "_PASSWORD"))
-                    and upper not in _ALLOWED_SECRETS)):
-                raise ValueError("private_card_credential_boundary_invalid")
+        release = _validate_scope_and_provenance(env, stamp_reader=stamp_reader)
         workspace = env.get("CONTENT_STUDIO_WORKSPACE_ID", "")
         version = env.get("CONTENT_OPS_REVIEW_CANARY_VERSION_ID", "")
-        release = env.get("CONTENT_OPS_REVIEW_RELEASE_SHA", "")
-        runtime = env.get("RAILWAY_GIT_COMMIT_SHA", "")
-        build = (stamp_reader or _build_stamp)()
         gateway_token = env.get("CONTENT_OPS_GATEWAY_TOKEN", "")
         bot_token = env.get("TELEGRAM_REVIEW_BOT_TOKEN", "")
         room = env.get("TELEGRAM_REVIEW_CHAT_ID", "")
@@ -108,11 +119,6 @@ class PrivateCardRuntimeSettings:
         binding = env.get("CONTENT_OPS_EDIT_BINDING_KEY", "")
         bot_match = _BOT.fullmatch(bot_token)
         if (not _uuid(workspace) or not _uuid(version)
-            or type(release) is not str or _SHA40.fullmatch(release) is None
-            or type(runtime) is not str or _SHA40.fullmatch(runtime) is None
-            or type(build) is not str or _SHA40.fullmatch(build) is None
-            or not secrets.compare_digest(release, runtime)
-            or not secrets.compare_digest(release, build)
             or _TOKEN.fullmatch(gateway_token) is None
             or bot_match is None or _ROOM.fullmatch(room) is None
             or _HEX64.fullmatch(signing) is None or _HEX64.fullmatch(binding) is None
@@ -148,6 +154,11 @@ def run(*, validate_only=False, environ: Mapping[str, str] | None = None,
         if not enabled and not validate_only:
             return {"ok": True, "mode": mode, "enabled": False,
                     "public_send_attempted": False}
+        if validate_only and not enabled:
+            _validate_scope_and_provenance(env, stamp_reader=stamp_reader)
+            return {"ok": True, "mode": mode, "enabled": False,
+                    "network_calls": False, "database_calls": False,
+                    "telegram_calls": False}
         settings = PrivateCardRuntimeSettings.from_env(env, stamp_reader=stamp_reader)
         if validate_only:
             return {"ok": True, "mode": mode, "enabled": enabled,

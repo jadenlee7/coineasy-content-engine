@@ -30,6 +30,17 @@ def config(**overrides):
         **overrides}
 
 
+def off_bootstrap_config(**overrides):
+    return {"CONTENT_OPS_BUTTON_CARD_ENABLED": "false",
+        "CONTENT_OPS_REVIEW_ENABLED": "false",
+        "CONTENT_OPS_REVIEW_MODE": "canary",
+        "CONTENT_OPS_REVIEW_PACKET_MODE": "button_card_v1",
+        "CONTENT_OPS_GATEWAY_URL": cli.APP_ORIGIN,
+        "CONTENT_OPS_REVIEW_RELEASE_SHA": SHA,
+        "RAILWAY_GIT_COMMIT_SHA": SHA,
+        **overrides}
+
+
 def test_disabled_run_reads_only_flag_and_creates_no_clients():
     class Guarded(dict):
         def __init__(self):
@@ -52,7 +63,7 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
     def fail(_):
         raise AssertionError("validate-only constructed a runtime")
 
-    assert cli.run(validate_only=True, environ=config(),
+    assert cli.run(validate_only=True, environ=off_bootstrap_config(),
         stamp_reader=lambda: SHA, runner_factory=fail) == {
             "ok": True, "mode": "validate_only", "enabled": False,
             "network_calls": False, "database_calls": False,
@@ -63,8 +74,6 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
         {"CONTENT_OPS_REVIEW_ENABLED": "true"},
         {"CONTENT_OPS_GATEWAY_URL": "https://example.invalid"},
         {"RAILWAY_GIT_COMMIT_SHA": "b" * 40},
-        {"CONTENT_OPS_BUTTON_SIGNING_KEY": "bad"},
-        {"CONTENT_OPS_EDIT_BINDING_KEY": "1" * 64},
         {"SUPABASE_SERVICE_ROLE_KEY": "forbidden"},
         {"PGPASSWORD": "forbidden"},
         {"PGSERVICE": "forbidden"},
@@ -74,11 +83,32 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
         {"AWS_ACCESS_KEY_ID": "forbidden"},
         {"TYPEFULLY_API_KEY": "forbidden"},
     ):
-        result = cli.run(validate_only=True, environ=config(**change),
+        result = cli.run(validate_only=True, environ=off_bootstrap_config(**change),
             stamp_reader=lambda: SHA, runner_factory=fail)
         assert result == {"ok": False, "mode": "validate_only",
             "error": "private_card_canary_failed", "network_calls": False,
             "database_calls": False, "telegram_calls": False}
+
+
+def test_validate_only_enabled_requires_exact_canary_credentials():
+    incomplete = off_bootstrap_config(CONTENT_OPS_BUTTON_CARD_ENABLED="true")
+    assert cli.run(validate_only=True, environ=incomplete,
+        stamp_reader=lambda: SHA)["ok"] is False
+    for change in (
+        {"CONTENT_OPS_BUTTON_SIGNING_KEY": "bad"},
+        {"CONTENT_OPS_EDIT_BINDING_KEY": "1" * 64},
+    ):
+        result = cli.run(validate_only=True,
+            environ=config(CONTENT_OPS_BUTTON_CARD_ENABLED="true", **change),
+            stamp_reader=lambda: SHA)
+        assert result["ok"] is False
+
+
+def test_off_bootstrap_rejects_bad_build_stamp_and_broad_credentials():
+    assert cli.run(validate_only=True, environ=off_bootstrap_config(),
+        stamp_reader=lambda: "b" * 40)["ok"] is False
+    assert cli.run(validate_only=True, environ=off_bootstrap_config(
+        TELEGRAM_BOT_TOKEN="forbidden"), stamp_reader=lambda: SHA)["ok"] is False
 
 
 def test_enabled_entrypoint_is_one_run_and_prints_only_bounded_status():
