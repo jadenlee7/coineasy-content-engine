@@ -2,6 +2,12 @@
 
 Status: **local preparation only; not mounted, not deployed, no send**.
 
+2026-09-27 update: the separately approved production migration
+`20260927130000_content_ops_button_card_owner_ledger.sql` was applied once and
+its history hash, catalog and ACL were read back. The dedicated card service,
+gateway scope and live send path remain OFF/unmounted. Historical pre-apply
+statements below describe the earlier gate, not the current DB state.
+
 `core/content_ops/private_review_card_receipt.py` renders a private-only
 four-part card for Yellow, Babylon, Squid or OriginTrail and validates direct
 Telegram success responses before building the argument set for
@@ -44,8 +50,9 @@ outbox binding, reservation and confirmation, and a
 guarded registration wrapper comparing all four payload, message and response
 hashes and the four directly validated message IDs. Registration and the
 existing outbox's `sent` transition are one local DB transaction; its exact
-terminal readback never grants a send. This SQL is deliberately a **proposal**, not an applied migration; the
-owner has no runtime connection, grant or mounted entrypoint. Static SQL tests
+terminal readback never grants a send. This SQL was the proposal basis for the
+separately applied `20260927130000` migration; the owner has no mounted runtime
+entrypoint. Static SQL tests
 and fake-transaction tests do not establish hosted PostgreSQL compatibility.
 The disposable, network-isolated PostgreSQL 16 and 17 verifier in
 `scripts/verify_private_card_ledger_docker_local.mjs` additionally
@@ -69,10 +76,13 @@ service was changed.
 
 `scripts/run_private_review_card_canary.py` now assembles this exact one-shot
 chain. It returns disabled before reading credentials unless the separate
-`CONTENT_OPS_BUTTON_CARD_ENABLED=true` flag is set. Its validate-only mode
-checks the exact build/runtime/gateway release SHA, one immutable version,
-private destination, distinct signing keys and absence of broad DB/publisher
-secrets, including libpq `PGPASSWORD`/connection overrides, without network I/O.
+`CONTENT_OPS_BUTTON_CARD_ENABLED=true` flag is set. With the flag OFF,
+validate-only checks exact build/runtime/release SHA, private scope and absence
+of broad DB/publisher secrets, including libpq `PGPASSWORD`/connection
+overrides, without needing a canary version or provider credentials. With the
+flag ON, validate-only additionally requires one immutable version, private
+destination and distinct signing keys/tokens. Neither path makes network,
+database or Telegram calls.
 A separate Dockerfile and Railway manifest are
 local deployment proposals, default OFF with no cron and no restart; they are
 not attached to an existing Railway service. Neither `--validate-only` nor a
@@ -99,8 +109,9 @@ production read-only contract returned `corrected_exact_history`, and the
 new review/card foundation catalog gates also passed with
 `hosted_runtime_verified=false`; see
 the [2026-09-25 readback](PRIVATE_REVIEW_CARD_PREAPPLY_RECEIPT_20260925.md).
-These passes resolve the base-schema mismatch only. No button-card owner or
-prompt-capability proposal has been applied, and no live send is authorized.
+These passes resolved the base-schema mismatch. The button-card owner was
+subsequently applied as the separately approved `20260927130000` migration;
+the prompt-capability proposal remains unapplied and no live send is authorized.
 
 The local ledger proposal now requires an exact `sending` row in the existing
 `content_ops_review_outbox`, its claim token, packet hash and unexpired lease
