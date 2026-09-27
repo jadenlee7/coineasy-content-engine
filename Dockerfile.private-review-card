@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+WORKDIR /app
+RUN pip install --no-cache-dir httpx==0.28.1
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN test -n "$RAILWAY_GIT_COMMIT_SHA" && \
+    echo "$RAILWAY_GIT_COMMIT_SHA" | grep -Eq '^[a-f0-9]{40}$' && \
+    printf '%s' "$RAILWAY_GIT_COMMIT_SHA" > /app/content-ops-build-sha
+COPY core/__init__.py ./core/__init__.py
+COPY core/content_ops ./core/content_ops
+COPY core/publications/__init__.py ./core/publications/__init__.py
+COPY core/publications/handoff.py ./core/publications/handoff.py
+COPY scripts/run_private_review_card_canary.py ./scripts/run_private_review_card_canary.py
+ENV PYTHONUNBUFFERED=1 CONTENT_OPS_BUTTON_CARD_ENABLED=false CONTENT_OPS_REVIEW_ENABLED=false
+CMD ["python", "-m", "scripts.run_private_review_card_canary"]

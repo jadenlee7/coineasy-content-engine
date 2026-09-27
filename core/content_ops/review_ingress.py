@@ -144,7 +144,10 @@ def _parse_callback(raw_body, headers, policy, now, *, private_only=False):
     _require(set(update) == {"update_id", "callback_query"})
     query = update["callback_query"]
     _require(type(query) is dict and not ({"inline_message_id", "game_short_name"} & query.keys()))
-    if private_only and type(query.get("data")) is str and query["data"].startswith("ce1:"):
+    if private_only:
+        _require(type(query.get("data")) is str
+                 and query["data"].startswith("ce1:"),
+                 "review_ingress_private_namespace_required")
         query["data"] = query["data"][4:]
     actor, message = query.get("from"), query.get("message")
     _require(type(actor) is dict and type(message) is dict)

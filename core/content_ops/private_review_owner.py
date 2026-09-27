@@ -101,7 +101,8 @@ class PostgresPrivateReviewOwner:
                         (review['workspace_id'], review['client_id']))
                     _check(cur.fetchone() is not None)
                     cur.execute("""select jsonb_build_object('channel_copy',v.channel_copy),
-                            jsonb_build_object('canonical_url',s.canonical_url,'published_at',s.published_at),
+                            jsonb_build_object('id',s.id,'source_feed_id',s.source_feed_id,
+                                'canonical_url',s.canonical_url,'published_at',s.published_at),
                             jsonb_build_object('sha256',a.sha256)
                         from public.content_versions v
                         join public.content_source_links l on l.workspace_id=v.workspace_id
@@ -119,6 +120,7 @@ class PostgresPrivateReviewOwner:
                     rows = cur.fetchall()
                     _check(len(rows) == 1)
                     version, source, asset = rows[0]
+                    _check(canonical_uuid(source['id']) and canonical_uuid(source['source_feed_id']))
                     snapshot = private_snapshot(review, version, source, asset)
 
                     def verify_clock():
@@ -127,6 +129,18 @@ class PostgresPrivateReviewOwner:
                         _check(_time(card['delivered_at']) <= current < _time(card['expires_at'])
                             and current < _time(review['expires_at'])
                             and current - timedelta(hours=24) < _time(source['published_at']) <= current)
+                        # A newer official-feed tweet invalidates this private
+                        # review even if the linked source and signed snapshot
+                        # themselves have not changed. The restricted role has
+                        # source SELECT but no feed SELECT; feed/poll readiness
+                        # remains a separate owner-side release gate.
+                        cur.execute("""select s.id from public.source_items s
+                            where s.workspace_id=%s::uuid and s.client_id=%s
+                              and s.source_feed_id=%s::uuid and s.source_type='tweet'
+                            order by s.published_at desc nulls last, s.id desc limit 1""",
+                            (review['workspace_id'], review['client_id'], source['source_feed_id']))
+                        latest = cur.fetchone()
+                        _check(latest is not None and str(latest[0]) == source['id'])
                         return signer.verify(query['data'], snapshot, policy.room_binding,
                                              now=int(current.timestamp()))
 

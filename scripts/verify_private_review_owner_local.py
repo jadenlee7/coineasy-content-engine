@@ -70,8 +70,9 @@ def run(connect, card_fixture, record_card, binding):
     for client in CLIENT_TARGETS:
         for action in ('s','c','t','x','b','h'):
             ctx = setup(client,action)
-            assert callback(ctx) == {'status':'action_recorded','execution_authorized':False}
-            assert callback(ctx)['status']=='action_recorded'
+            expected = 'edit_requested' if action in ('t','x','b') else 'action_recorded'
+            assert callback(ctx) == {'status':expected,'execution_authorized':False}
+            assert callback(ctx)['status']==expected
             assert count(ctx)==1
             cases += 1
 
@@ -81,7 +82,7 @@ def run(connect, card_fixture, record_card, binding):
     assert all(r['execution_authorized'] is False for r in results) and count(ctx)==1
 
     refusals = 0
-    for mutation in ('card','identity','reviewer','client','source','status','fingerprint',
+    for mutation in ('card','identity','reviewer','client','source','latest','status','fingerprint',
                      'topic','message','signature','public','actor','room'):
         ctx = setup(action='a' if mutation=='public' else 's')
         sql = {
@@ -95,6 +96,13 @@ def run(connect, card_fixture, record_card, binding):
         }.get(mutation)
         if sql:
             with connect() as c: c.execute(sql[0],(sql[1],))
+        if mutation=='latest':
+            with connect() as c:
+                c.execute("""insert into public.source_items(id,workspace_id,client_id,
+                    source_feed_id,source_type,body,source_hash,published_at)
+                    values(gen_random_uuid(),%s,%s,%s,'tweet','Newer synthetic tweet',
+                        repeat('e',64),clock_timestamp())""",
+                    (ctx['workspace'],ctx['client'],ctx['feed']))
         q = ctx['update']['callback_query']
         if mutation=='topic': q['message']['message_thread_id']=9
         if mutation=='message': q['message']['message_id']+=10

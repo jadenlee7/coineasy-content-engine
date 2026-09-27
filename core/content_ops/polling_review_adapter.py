@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from uuid import uuid4
 
 from core.content_ops.review_ingress import (
     IngressPolicy, MAX_BODY_BYTES, ReviewIngressError, handle_review_webhook,
@@ -21,13 +22,15 @@ PRIVATE_CALLBACK_PREFIX = "ce1:"
 class PollingReviewAdapter:
     def __init__(self, *, enabled=False, policy=None, signer=None,
                  review_owner=None, edit_owner=None, edit_bindings=None,
-                 transactional_review_owner=None, transactional_reply_owner=None):
+                 transactional_review_owner=None, transactional_reply_owner=None,
+                 prompt_courier_factory=None):
         self.enabled = enabled is True
         self.policy, self.signer = policy, signer
         self.review_owner, self.edit_owner = review_owner, edit_owner
         self.edit_bindings = edit_bindings
         self.transactional_review_owner = transactional_review_owner
         self.transactional_reply_owner = transactional_reply_owner
+        self.prompt_courier_factory = prompt_courier_factory
         if self.enabled:
             if type(policy) is not IngressPolicy:
                 raise ReviewIngressError("review_ingress_policy_invalid")
@@ -40,6 +43,8 @@ class PollingReviewAdapter:
                 from core.content_ops.private_review_owner import PostgresPrivateReviewOwner
                 if review_owner is not None or type(transactional_review_owner) is not PostgresPrivateReviewOwner:
                     raise ReviewIngressError("review_ingress_policy_invalid")
+            if prompt_courier_factory is not None and not callable(prompt_courier_factory):
+                raise ReviewIngressError("review_ingress_policy_invalid")
 
     def _payload(self, update, *, callback):
         try:
@@ -52,10 +57,10 @@ class PollingReviewAdapter:
             normalized = json.loads(body)
             if callback:
                 value = normalized["callback_query"]["data"]
-                if type(value) is not str:
+                if type(value) is not str or not value.startswith(PRIVATE_CALLBACK_PREFIX):
                     raise ValueError()
-                if value.startswith(PRIVATE_CALLBACK_PREFIX):
-                    normalized["callback_query"]["data"] = value[len(PRIVATE_CALLBACK_PREFIX):]
+                # The authenticated parser must see the private namespace and
+                # reject an unprefixed legacy/public button before owner I/O.
             return json.dumps(normalized, ensure_ascii=True).encode()
         except Exception:
             raise ReviewIngressError("review_ingress_body_invalid") from None
@@ -73,12 +78,36 @@ class PollingReviewAdapter:
                    if self.transactional_review_owner is not None else handle_review_webhook)
         options = ({} if self.transactional_review_owner is not None else
                    {'owner': self.review_owner, 'private_only': True})
+        payload = self._payload(update, callback=True)
         result = await asyncio.to_thread(handler, enabled=True,
-            raw_body=self._payload(update, callback=True), headers=self._headers(),
+            raw_body=payload, headers=self._headers(),
             policy=self.policy, signer=self.signer, now=now, **options)
         if result.get("status") not in {"checked", "edit_requested", "held"}:
             raise ReviewIngressError("review_ingress_action_unconfirmed")
-        return {"status": "action_recorded", "execution_authorized": False}
+        if result["status"] != "edit_requested":
+            return {"status": "action_recorded", "execution_authorized": False}
+        if self.prompt_courier_factory is None:
+            # A committed edit request is not a prompt delivery receipt.
+            return {"status": "edit_requested", "execution_authorized": False}
+        # The callback owner has committed. A duplicate/uncertain action must
+        # not create a fresh prompt attempt, even if the caller retries.
+        if result.get("reused") is not False:
+            return {"status": "prompt_status_unknown", "execution_authorized": False}
+        try:
+            from core.content_ops.private_review_prompt_courier import PromptCommand
+            query = json.loads(payload)["callback_query"]
+            courier = self.prompt_courier_factory()
+            receipt = await courier.run(PromptCommand(
+                query["id"], str(uuid4()), self.policy.bot_id,
+                self.policy.chat_id, query["from"]["id"]), enabled=True)
+            if receipt == {"status": "prompt_registered", "private_send_attempts": 1,
+                           "public_send_attempted": False}:
+                return {"status": "prompt_registered", "execution_authorized": False}
+        except Exception:
+            # Includes a lost reservation/provider/confirmation ACK. Never
+            # rerun the action or the courier from this adapter.
+            pass
+        return {"status": "prompt_status_unknown", "execution_authorized": False}
 
     async def handle_edit_reply(self, update, *, now):
         if not self.enabled:

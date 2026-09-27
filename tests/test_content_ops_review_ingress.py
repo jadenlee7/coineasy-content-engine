@@ -31,11 +31,12 @@ class ReviewIngressTest(unittest.TestCase):
         self.signer = ButtonSigner(b"test-only-distinct-signing-key-12345")
         self.owner = RegisteredFakeOwner(snapshot())
 
-    def update(self, action="s", callback_id=None, actor=201):
+    def update(self, action="s", callback_id=None, actor=201, private=False):
         token = self.signer.issue(snapshot(), action, ROOM, now=NOW, expires_at=NOW + 1800)
         return {"update_id": 17, "callback_query": {
             "id": callback_id or "fixture-" + action, "from": {"id": actor, "is_bot": False},
-            "chat_instance": "ignored-not-an-authentication-binding", "data": token,
+            "chat_instance": "ignored-not-an-authentication-binding",
+            "data": "ce1:" + token if private else token,
             "message": {"message_id": 31, "date": NOW - 1,
                         "from": {"id": 101, "is_bot": True},
                         "chat": {"id": self.policy.chat_id, "type": "supergroup"},
@@ -166,13 +167,23 @@ class ReviewIngressTest(unittest.TestCase):
         self.assertEqual(len(self.owner.outbox), 2)
 
     def test_private_ingress_rejects_old_publish_after_valid_checks(self):
-        self.run_update(self.update('s'), private_only=True)
-        self.run_update(self.update('c'), private_only=True)
+        self.run_update(self.update('s', private=True), private_only=True)
+        self.run_update(self.update('c', private=True), private_only=True)
         applies = self.owner.applies
         with self.assertRaisesRegex(ReviewIngressError, 'action_unconfirmed'):
-            self.run_update(self.update('a'), private_only=True)
+            self.run_update(self.update('a', private=True), private_only=True)
         self.assertEqual(self.owner.applies, applies)
         self.assertFalse(self.owner.outbox)
+
+    def test_private_ingress_requires_namespaced_button_before_owner_lookup(self):
+        with self.assertRaisesRegex(ReviewIngressError, 'private_namespace_required'):
+            self.run_update(self.update('s'), private_only=True)
+        self.assert_no_io()
+
+    def test_private_namespaced_button_cannot_enter_legacy_route(self):
+        with self.assertRaises(ReviewIngressError):
+            self.run_update(self.update('s', private=True))
+        self.assert_no_io()
 
     def test_invalid_private_mode_rejects_before_any_io(self):
         for value in (None, 'true', 1):

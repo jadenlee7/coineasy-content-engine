@@ -6,6 +6,7 @@ import io
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
@@ -198,6 +199,32 @@ def test_daily_limit_across_items(tmp_path):
     other = replace(other, snapshot=replace(other.snapshot, content_item_id=str(uuid4())))
     with pytest.raises(BannerError, match="budget_exhausted"):
         j.enqueue(other, LOGO, now=TIME)
+
+
+def test_queued_job_cannot_start_paid_call_after_kst_day_rollover(journal):
+    before = int(datetime(2026, 9, 14, 14, 59, 59, tzinfo=timezone.utc).timestamp())
+    req = request()
+    req = replace(req, snapshot=replace(req.snapshot,
+        source_published_at="2026-09-14T14:00:00Z"))
+    journal.enqueue(req, LOGO, now=before)
+    owner, provider = Owner(), Provider()
+    assert run(BannerJournal(journal.path), owner, provider, now=before + 1) == {
+        "status": "obsolete", "provider_called": False,
+        "public_send_attempted": False}
+    assert provider.calls == owner.saves == 0
+    assert journal.status(req.job_id)["state"] == "obsolete"
+
+
+def test_generated_result_can_commit_after_kst_day_rollover(journal):
+    before = int(datetime(2026, 9, 14, 14, 59, 59, tzinfo=timezone.utc).timestamp())
+    req = request()
+    req = replace(req, snapshot=replace(req.snapshot,
+        source_published_at="2026-09-14T14:00:00Z"))
+    journal.enqueue(req, LOGO, now=before)
+    owner, provider = Owner(), Provider()
+    assert run(journal, owner, provider, now=before)["status"] == "result_ready"
+    assert run(journal, owner, provider, now=before + 1)["status"] == "revision_saved"
+    assert provider.calls == owner.saves == 1
 
 
 @pytest.mark.parametrize("field,value", [("headline", "sk-" + "a"*45),

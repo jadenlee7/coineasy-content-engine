@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
 
@@ -183,6 +184,231 @@ test("this gateway supports link cards only, never bundle delivery", async () =>
     assert.equal((await headerDenied.handler(req)).status, 409);
     assert.equal(headerDenied.calls.length, 0);
   }
+});
+
+test("button-card gateway is default OFF, canary-only and exact-version fenced", async () => {
+  const buttonEnv = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1" };
+  for (const env of [buttonEnv,
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "TRUE" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true", CONTENT_OPS_REVIEW_MODE: "daily" },
+    { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true", CONTENT_OPS_REVIEW_CANARY_VERSION_ID: "" },
+  ]) {
+    const { handler, calls } = harness(env);
+    const req = canaryRequest();
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    assert.equal((await handler(req)).status, 503);
+    assert.equal(calls.length, 0);
+  }
+  const active = { ...buttonEnv, CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  for (const wrongHeader of [null, "link_card", "squid_bundle_v1", "BUTTON_CARD_V1"]) {
+    const { handler, calls } = harness(active);
+    const req = canaryRequest();
+    if (wrongHeader !== null) req.headers.set("x-content-ops-packet-mode", wrongHeader);
+    assert.equal((await handler(req)).status, 409);
+    assert.equal(calls.length, 0);
+  }
+  const { handler, calls } = harness(active, 1);
+  const req = canaryRequest();
+  req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.deepEqual(await (await handler(req)).json(), {
+    ok: true, release_sha: SHA,
+    scope: { mode: "canary", content_version_id: ID, packet_mode: "button_card_v1" },
+    queued: 1,
+  });
+  assert.deepEqual(calls[0].body, { target_workspace_id: ID, target_content_version_id: ID });
+  const finish = canaryRequest({ action: "finish", claim_token: ID, outbox_id: ID,
+    outcome: "sent", message_id: 123 });
+  finish.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.equal((await handler(finish)).status, 400);
+  assert.equal(calls.length, 1);
+});
+
+test("button-card gateway exposes claim and one-shot begin but no alternate actions", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const claim = {
+    outbox_id: ID, claim_token: ID, client_id: "yellow", kst_date: "2026-09-06",
+    content_item_id: ID, content_version_id: ID, source_item_id: ID, generate_job_id: ID,
+    banner_sha256: "a".repeat(64), title: "Review", telegram_copy: "Draft", x_copy: "Draft",
+    source_url: "https://x.com/Yellow/status/123", source_published_at: "2026-09-06T00:00:00Z",
+  };
+  const makeRequest = (body: unknown) => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const claimed = harness(env, claim);
+  assert.deepEqual((await (await claimed.handler(makeRequest({ action: "claim", claim_token: ID }))).json()).claim, claim);
+  assert.equal(claimed.calls.length, 1);
+  const begun = harness(env, { accepted: true, private_data: "never expose" });
+  assert.deepEqual(await (await begun.handler(makeRequest({ action: "begin", claim_token: ID,
+    outbox_id: ID, packet_sha256: "b".repeat(64) }))).json(), {
+      ok: true, release_sha: SHA,
+      scope: { mode: "canary", content_version_id: ID, packet_mode: "button_card_v1" },
+      accepted: true,
+    });
+  assert.equal(begun.calls.length, 1);
+  assert.equal(begun.calls[0].body.target_packet_sha256, "b".repeat(64));
+  for (const action of ["prepare", "bind", "approve", "publish", "bundle_image"]) {
+    assert.equal((await begun.handler(makeRequest({ action }))).status, 400);
+  }
+  assert.equal(begun.calls.length, 1);
+});
+
+test("button-card image needs an exact claimed locator and returns verified bytes only", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    1, 2, 3, 4, 5, 6]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const locator = { status: "ready", outbox_id: ID, client_id: "yellow",
+    content_item_id: ID, content_version_id: ID, asset_id: ID,
+    bucket: "content-studio", path: `${ID}/yellow/${ID}/news-card.png`,
+    sha256: hash, byte_size: bytes.byteLength, execution_authorized: false };
+  const body = { action: "image", outbox_id: ID, claim_token: ID };
+  const imageRequest = () => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const handler = createContentOpsReviewHandler({
+    getEnv: (name) => env[name], releaseSha: () => SHA,
+    fetcher: async (url, init) => {
+      calls.push({ url: String(url), init: init! });
+      return calls.length === 1 ? Response.json(locator)
+        : new Response(bytes, { headers: { "Content-Type": "image/png",
+            "Content-Length": String(bytes.byteLength) } });
+    },
+  });
+  const response = await handler(imageRequest());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "image/png");
+  assert.equal(response.headers.get("x-content-ops-banner-sha256"), hash);
+  assert.equal(response.headers.get("x-content-ops-version-id"), ID);
+  assert.equal(response.headers.get("x-content-ops-outbox-id"), ID);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /\/rpc\/content_ops_button_card_image_locator$/);
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    target_workspace_id: ID, target_outbox_id: ID,
+    target_claim_token: ID, target_content_version_id: ID });
+  assert.equal(calls[1].url,
+    `https://example.supabase.co/storage/v1/object/content-studio/${ID}/yellow/${ID}/news-card.png`);
+  assert.equal(calls[1].init.redirect, "error");
+
+  const link = harness(ENV);
+  assert.equal((await link.handler(request(body))).status, 400);
+  assert.equal(link.calls.length, 0);
+});
+
+test("button-card image fails closed on locator or Storage mismatch without leaking paths", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const body = { action: "image", outbox_id: ID, claim_token: ID };
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+  const locator = { status: "ready", outbox_id: ID, client_id: "yellow",
+    content_item_id: ID, content_version_id: ID, asset_id: ID,
+    bucket: "content-studio", path: `${ID}/yellow/${ID}/news-card.png`,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    byte_size: bytes.byteLength, execution_authorized: false };
+  for (const invalid of [null, { ...locator, path: "other/private.png" },
+    { ...locator, content_version_id: "22222222-2222-4222-8222-222222222222" },
+    { ...locator, provider_response: "never relay" }]) {
+    let calls = 0;
+    const handler = createContentOpsReviewHandler({ getEnv: (name) => env[name],
+      releaseSha: () => SHA, fetcher: async () => { calls++; return Response.json(invalid); } });
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    const response = await handler(req);
+    assert.equal(response.status, 503);
+    assert.equal(calls, 1);
+    assert.doesNotMatch(await response.text(), /private\.png|never relay/);
+  }
+  let calls = 0;
+  const handler = createContentOpsReviewHandler({ getEnv: (name) => env[name],
+    releaseSha: () => SHA, fetcher: async () => {
+      calls++;
+      return calls === 1 ? Response.json(locator)
+        : new Response(bytes, { headers: { "Content-Type": "image/png",
+            "Content-Length": "10000001" } });
+    } });
+  const req = canaryRequest(body);
+  req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+  assert.equal((await handler(req)).status, 503);
+  assert.equal(calls, 2);
+});
+
+test("button-card owner gateway pins server scope and permits one exact owner step", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const makeRequest = (body: unknown) => {
+    const req = canaryRequest(body);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const args = { outbox_id: ID, claim_token: ID, review_id: ID };
+  const result = { status: "review_prepared", review_id: ID,
+    version_fingerprint: "b".repeat(64), epoch: 0, state: "active",
+    expires_at: "2026-09-23T09:30:00Z", execution_authorized: false };
+  const good = harness(env, result);
+  const response = await good.handler(makeRequest({ action: "owner", step: "prepare", args }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).owner, result);
+  assert.equal(good.calls.length, 1);
+  assert.match(good.calls[0].url, /\/rpc\/content_ops_button_card_owner_step$/);
+  assert.deepEqual(good.calls[0].body, { target_workspace_id: ID,
+    target_content_version_id: ID, target_action: "prepare", target_args: args });
+
+  const link = harness(ENV, result);
+  assert.equal((await link.handler(request({ action: "owner", step: "prepare", args }))).status, 400);
+  assert.equal(link.calls.length, 0);
+  for (const invalid of [
+    { action: "owner", step: "publish", args },
+    { action: "owner", step: "prepare", args: { ...args, workspace_id: ID } },
+    { action: "owner", step: "prepare", args: { ...args, review_id: "bad" } },
+    { action: "owner", step: "prepare", args, release_sha: SHA },
+    { action: "owner", step: "register", args: { ...args } },
+  ]) assert.equal((await good.handler(makeRequest(invalid))).status, 400);
+  assert.equal(good.calls.length, 1);
+});
+
+test("owner registration accepts only bounded four-part evidence and redacts bad RPC receipts", async () => {
+  const env = { ...CANARY_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1",
+    CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+  const hashes = ["1", "2", "3", "4"].map((value) => value.repeat(64));
+  const bindings = { bot: hashes[0], room: hashes[1], message: hashes[2],
+    packet_receipt: hashes[3], card_receipt: hashes[0],
+    parent_binding: hashes[1], thread_id: null };
+  const parts = ["image", "telegram", "x"].map((kind, index) => ({
+    kind, outcome: "sent", message_binding: hashes[index],
+    payload_sha256: hashes[index] }));
+  const args = { review_id: ID, card_id: ID, expected_fingerprint: hashes[0],
+    epoch: 0, bindings, parts, controls_payload_sha256: hashes[3],
+    response_sha256s: hashes, delivered: "2026-09-23T09:10:00Z",
+    expires: "2026-09-23T09:30:00Z" };
+  const makeRequest = (value: unknown) => {
+    const req = canaryRequest(value);
+    req.headers.set("x-content-ops-packet-mode", "button_card_v1");
+    return req;
+  };
+  const good = harness(env, { status: "card_recorded", card_id: ID,
+    reused: false, execution_authorized: false });
+  assert.equal((await good.handler(makeRequest({ action: "owner", step: "register", args }))).status, 200);
+  assert.equal(good.calls.length, 1);
+  for (const invalid of [
+    { ...args, response_sha256s: [hashes[0]] },
+    { ...args, bindings: { ...bindings, provider_response: "never relay" } },
+    { ...args, parts: [{ ...parts[0], outcome: "approved" }, ...parts.slice(1)] },
+  ]) assert.equal((await good.handler(makeRequest({ action: "owner", step: "register", args: invalid }))).status, 400);
+  assert.equal(good.calls.length, 1);
+  const bad = harness(env, { status: "card_recorded", card_id: ID,
+    reused: true, execution_authorized: false, provider_response: "never relay" });
+  const response = await bad.handler(makeRequest({ action: "owner", step: "register", args }));
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /never relay/);
+  assert.equal(bad.calls.length, 1);
 });
 
 test("worker cannot widen scope or proceed after operator scope changes", async () => {

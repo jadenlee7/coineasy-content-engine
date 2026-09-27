@@ -1,0 +1,15 @@
+FROM postgres:16.13-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs python3 python3-pip python3-psycopg python3-pil python3-httpx \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /private/tmp /app \
+  && chown postgres:postgres /private/tmp /app
+
+WORKDIR /app
+COPY --chown=postgres:postgres . /app
+USER postgres
+ENV BUTTON_REVIEW_DISPOSABLE_CONTAINER=true \
+    BUTTON_EDIT_TEST_PYTHON=/usr/bin/python3 \
+    PYTHONDONTWRITEBYTECODE=1
+CMD ["node", "scripts/verify_button_review_state_local.mjs", "--local-only"]
