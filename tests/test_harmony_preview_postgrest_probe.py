@@ -30,6 +30,29 @@ def _decode(segment: str) -> dict[str, object]:
     return json.loads(base64.urlsafe_b64decode(padded))
 
 
+def test_postgrest_probe_cli_requires_database_transport() -> None:
+    child = "vllwcbhqdojpjrssidcu"
+    parent = "isuqcqwxpojgzevxfdwr"
+    required = [
+        "--project-url", f"https://{child}.supabase.co",
+        "--host", f"db.{child}.supabase.co",
+        "--user", "postgres",
+        "--expected-branch-ref", child,
+        "--parent-project-ref", parent,
+        "--release-sha", "a" * 40,
+        "--config-sha256", "b" * 64,
+    ]
+    with pytest.raises(SystemExit):
+        PROBE.parse_args(required)
+    assert PROBE.parse_args(
+        [
+            *required,
+            "--database-transport", "direct",
+            "--backend-concurrency-target", "64",
+        ]
+    ).database_transport == "direct"
+
+
 def test_project_url_is_exact_child_and_never_parent() -> None:
     child = "vllwcbhqdojpjrssidcu"
     parent = "isuqcqwxpojgzevxfdwr"
@@ -213,6 +236,44 @@ def test_64_way_http_race_accepts_one_new_and_63_reused() -> None:
     lock = threading.Lock()
     calls = 0
 
+    class FakePsql:
+        def __init__(self) -> None:
+            self.observe_calls = 0
+            self.released = threading.Event()
+
+        def json(self, sql: str) -> dict[str, object]:
+            if "create unlogged table" in sql:
+                return {
+                    "holder_pid": None,
+                    "released": False,
+                    "server_peak": 0,
+                }
+            if "holder_pid_recorded" in sql:
+                return {
+                    "holder_pid_recorded": True,
+                    "released": True,
+                    "server_peak": 8,
+                }
+            if "with recursive holder" in sql:
+                self.observe_calls += 1
+                return {
+                    "blocked_requests": 0 if self.observe_calls == 1 else 8,
+                    "holder_count": 1,
+                    "holder_pid": 4242,
+                }
+            raise AssertionError("unexpected fake gate query")
+
+        def run(self, sql: str) -> str:
+            if "harmony_postgrest_holder_lock" in sql:
+                assert self.released.wait(timeout=3)
+                return "holder_released"
+            if "set released = true" in sql:
+                self.released.set()
+                return "released"
+            if "drop table if exists" in sql:
+                return "dropped"
+            raise AssertionError("unexpected fake gate command")
+
     def opener(_req: object, *, timeout: float):
         nonlocal calls
         assert timeout == 3
@@ -227,18 +288,106 @@ def test_64_way_http_race_accepts_one_new_and_63_reused() -> None:
         3,
         opener=opener,
     )
-    rows = PROBE._run_race(
+    rows, evidence = PROBE._run_race(
         client,
+        FakePsql(),
         {"safe": True},
         "signed.jwt.value",
         expected_signal=EXPECTED_SIGNAL,
         expected_connector_receipt_id=EXPECTED_CONNECTOR_RECEIPT_ID,
         expected_registration=EXPECTED_REGISTRATION,
         expected_claims=EXPECTED_CLAIMS,
+        workspace_id="88888888-8888-4888-8888-888888888888",
+        backend_target=64,
     )
     assert calls == 64
     assert sum(row["reused"] is False for row in rows) == 1
     assert sum(row["reused"] is True for row in rows) == 63
+    assert evidence == {
+        "method": "registration_row_lock_blocker_graph",
+        "client_requests": 64,
+        "backend_target": 8,
+        "server_blocked_peak": 8,
+        "holder_released": True,
+    }
+
+
+def test_postgrest_gate_setup_shape_failure_drops_attempted_table() -> None:
+    gate = PROBE._new_postgrest_server_gate(8)
+
+    class SetupMismatchPsql:
+        dropped = False
+
+        def json(self, _sql: str) -> dict[str, object]:
+            return {
+                "holder_pid": 42,
+                "released": False,
+                "server_peak": 0,
+            }
+
+        def run(self, sql: str) -> str:
+            assert gate.table_name in sql
+            assert "drop table if exists" in sql
+            self.dropped = True
+            return "dropped"
+
+    psql = SetupMismatchPsql()
+    with pytest.raises(RuntimeError, match="gate setup failed"):
+        PROBE._setup_postgrest_server_gate(psql, gate)
+    assert psql.dropped is True
+
+
+def test_postgrest_blocker_graph_counts_only_matching_rpc_queries() -> None:
+    gate = PROBE._new_postgrest_server_gate(8)
+    sql = PROBE._postgrest_gate_observe_sql(gate)
+    assert "pg_blocking_pids" in sql
+    assert sql.count("candidate.datname = pg_catalog.current_database()") == 2
+    assert sql.count(
+        "candidate.query like '%submit_preview_harmony_signal%'"
+    ) == 2
+
+
+def test_postgrest_pre_executor_failure_releases_and_drops_gate() -> None:
+    commands: list[str] = []
+
+    class CleanupPsql:
+        def json(self, sql: str) -> dict[str, object]:
+            assert "create unlogged table" in sql
+            return {
+                "holder_pid": None,
+                "released": False,
+                "server_peak": 0,
+            }
+
+        def run(self, sql: str) -> str:
+            commands.append(sql)
+            if "set released = true" in sql:
+                return "released"
+            if "drop table if exists" in sql:
+                return "dropped"
+            raise AssertionError("unexpected cleanup SQL")
+
+    client = PROBE.PostgrestClient(
+        "https://vllwcbhqdojpjrssidcu.supabase.co",
+        "sb_publishable_test",
+        3,
+        opener=lambda *_args, **_kwargs: None,
+    )
+    with pytest.raises(KeyError):
+        PROBE._run_race(
+            client,
+            CleanupPsql(),
+            {"safe": True},
+            "signed.jwt.value",
+            expected_signal=EXPECTED_SIGNAL,
+            expected_connector_receipt_id=EXPECTED_CONNECTOR_RECEIPT_ID,
+            expected_registration={},
+            expected_claims=EXPECTED_CLAIMS,
+            workspace_id="88888888-8888-4888-8888-888888888888",
+            backend_target=64,
+        )
+    assert any("set released = true" in sql for sql in commands)
+    assert any("drop table if exists" in sql for sql in commands)
 
 
 def _validate_success_fixture(value: dict[str, object]) -> dict[str, object]:

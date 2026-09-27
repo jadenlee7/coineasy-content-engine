@@ -159,8 +159,13 @@ begin
                 'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)'
             ]
             when 'coineasy_harmony_qa' then array[
-                'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
-                'record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)'
+                'claim_preview_harmony_squid_codex_qa(uuid,text,integer)',
+                'prepare_preview_harmony_squid_codex_qa(uuid,text,uuid,uuid,bigint)',
+                'reconcile_preview_harmony_squid_codex_qa_lease(uuid,text,integer)',
+                'record_preview_harmony_squid_qa_denial(uuid,text,uuid,uuid,uuid,jsonb)',
+                'start_preview_harmony_squid_codex_qa_attempt(uuid,text,text,text)',
+                'submit_preview_harmony_squid_codex_qa_result(uuid,text,text,text,jsonb,text,text[],text)',
+                'verify_preview_harmony_squid_codex_qa_result(uuid,text,text)'
             ]
             when 'coineasy_harmony_operator' then array[
                 'append_preview_harmony_squid_stage(uuid,text,uuid,uuid,text,uuid,uuid,jsonb)',
