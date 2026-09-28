@@ -82,6 +82,7 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
         {"REDIS_URL": "forbidden"},
         {"AWS_ACCESS_KEY_ID": "forbidden"},
         {"TYPEFULLY_API_KEY": "forbidden"},
+        {"GPG_KEY": "synthetic_release_signing_fingerprint"},
     ):
         result = cli.run(validate_only=True, environ=off_bootstrap_config(**change),
             stamp_reader=lambda: SHA, runner_factory=fail)
@@ -117,11 +118,22 @@ def test_validate_only_enabled_requires_exact_canary_credentials():
         {"CONTENT_OPS_BUTTON_SIGNING_KEY": "bad"},
         {"CONTENT_OPS_EDIT_BINDING_KEY": "1" * 64},
         {"RAILWAY_GIT_COMMIT_SHA": ""},
+        {"GPG_KEY": "synthetic_release_signing_fingerprint"},
     ):
         result = cli.run(validate_only=True,
             environ=config(CONTENT_OPS_BUTTON_CARD_ENABLED="true", **change),
             stamp_reader=lambda: SHA)
         assert result["ok"] is False
+
+
+def test_off_validate_only_accepts_cleared_image_metadata():
+    env = off_bootstrap_config(GPG_KEY="")
+    del env["RAILWAY_GIT_COMMIT_SHA"]
+    assert cli.run(validate_only=True, environ=env,
+        stamp_reader=lambda: SHA) == {
+            "ok": True, "mode": "validate_only", "enabled": False,
+            "network_calls": False, "database_calls": False,
+            "telegram_calls": False}
 
 
 def test_off_bootstrap_rejects_bad_build_stamp_and_broad_credentials():
