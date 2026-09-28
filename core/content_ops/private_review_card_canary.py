@@ -15,6 +15,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from core.content_ops.private_review_card_candidate import build_prepared_card
+from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.private_review_card_courier import PrivateCardCourier
 from core.content_ops.review_buttons import ButtonSigner
 from core.content_ops.review_edit_ingress import EditBindings
@@ -48,7 +49,7 @@ class PrivateCardCanary:
     def __init__(self, *, workspace_id, content_version_id, bot_id, chat_id, gateway, owner,
                  png_reader: CanonicalPngReader, courier: PrivateCardCourier,
                  signer: ButtonSigner, bindings: EditBindings,
-                 clock=None, uuid_factory=None):
+                 clock=None, uuid_factory=None, bot_policy=None):
         # The concrete one-shot HTTP gateway must own claim, image and begin
         # together. Synthetic tests may inject separate fake contracts only.
         from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
@@ -67,6 +68,14 @@ class PrivateCardCanary:
                     or owner.gateway is not gateway
                     or courier._owner is not owner))):
             raise PrivateCardCanaryError("private_card_canary_configuration_invalid")
+        if bot_policy is not None:
+            try:
+                if type(bot_policy) is not ExistingReviewBotPolicy:
+                    raise ValueError
+                bot_policy.require_destination(bot_id=bot_id, chat_id=chat_id)
+            except Exception:
+                raise PrivateCardCanaryError("private_card_canary_configuration_invalid") from None
+        self._bot_policy = bot_policy
         self._workspace_id, self._version_id = workspace_id, content_version_id
         self._bot_id, self._chat_id = bot_id, chat_id
         self._gateway, self._owner = gateway, owner
@@ -131,7 +140,7 @@ class PrivateCardCanary:
                 workspace_id=self._workspace_id, card_id=card_id, png=image.data,
                 signer=self._signer, bindings=self._bindings,
                 bot_id=self._bot_id, chat_id=self._chat_id,
-                now=int(current.timestamp()))
+                now=int(current.timestamp()), bot_policy=self._bot_policy)
             begin_attempted = True
             begin_receipt = await self._gateway.begin(claim, prepared.packet_sha256)
             if begin_receipt != {"status": "begun", "outbox_id": claim.outbox_id,

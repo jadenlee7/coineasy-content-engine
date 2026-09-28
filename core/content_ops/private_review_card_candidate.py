@@ -13,6 +13,7 @@ from datetime import datetime
 from uuid import UUID
 
 from core.content_ops.private_review_card_courier import PreparedCard
+from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.private_review_card_receipt import (
     prepare_private_card, private_card_packet_sha256, validate_candidate,
 )
@@ -39,7 +40,7 @@ def _uuid(value):
 
 
 def build_prepared_card(*, claim, review_receipt, workspace_id, card_id,
-                        png, signer, bindings, bot_id, chat_id, now):
+                        png, signer, bindings, bot_id, chat_id, now, bot_policy=None):
     """Return a packet-hash-bound `PreparedCard`, never send permission."""
     try:
         if (type(claim) is not ReviewClaim or not _uuid(workspace_id)
@@ -87,7 +88,14 @@ def build_prepared_card(*, claim, review_receipt, workspace_id, card_id,
                   "state": review_receipt["state"],
                   "expires_at": review_receipt["expires_at"]}
         validate_candidate(review, snapshot, card_id, now=now)
-        room_binding = bindings.digest("room", bot_id, chat_id)
+        if bot_policy is not None:
+            if type(bot_policy) is not ExistingReviewBotPolicy:
+                raise ValueError
+            bot_policy.require_destination(bot_id=bot_id, chat_id=chat_id)
+        # Only the callback signature uses the owner's opaque policy binding.
+        # Registration/DB identity remains the keyed numeric room digest.
+        room_binding = (bot_policy.room_binding if bot_policy is not None
+                        else bindings.digest("room", bot_id, chat_id))
         requests = prepare_private_card(snapshot, signer, room_binding, now=now)
         packet_sha = private_card_packet_sha256(requests, claim.banner_sha256,
             review["id"], card_id)

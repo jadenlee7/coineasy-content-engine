@@ -78,6 +78,13 @@ invalidates earlier review and publication eligibility.
 
 - The internal relay bot may send messages and media only in allowlisted private
   operations rooms. It is never an administrator.
+- This relay rule is unchanged. The separate existing-bot private button-card
+  courier may use a read-only, exact-destination policy projection for the
+  operator-selected `coineasy_review_bot`, including its explicitly pinned
+  existing administrator status. It must still reject any other bot, public or
+  linked room, or role drift. This does not grant/promote bot rights, add a
+  callback consumer, or permit public posting. See
+  [the compatibility contract](PRIVATE_REVIEW_BOT_POLICY_COMPATIBILITY.md).
 - It receives no client Telegram channel IDs, client bot tokens, Typefully key,
   X bearer token, Figma credential, Supabase service-role key, or publication
   worker token.
