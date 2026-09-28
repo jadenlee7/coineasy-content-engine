@@ -60,7 +60,8 @@ def _enabled(env):
     return value == "true"
 
 
-def _validate_scope_and_provenance(env, *, stamp_reader=None):
+def _validate_scope_and_provenance(env, *, stamp_reader=None,
+                                   allow_missing_runtime_sha=False):
     if (env.get("CONTENT_OPS_REVIEW_ENABLED", "false") != "false"
         or env.get("CONTENT_OPS_REVIEW_MODE") != "canary"
         or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != "button_card_v1"
@@ -86,10 +87,17 @@ def _validate_scope_and_provenance(env, *, stamp_reader=None):
     runtime = env.get("RAILWAY_GIT_COMMIT_SHA", "")
     build = (stamp_reader or _build_stamp)()
     if (type(release) is not str or _SHA40.fullmatch(release) is None
-        or type(runtime) is not str or _SHA40.fullmatch(runtime) is None
         or type(build) is not str or _SHA40.fullmatch(build) is None
-        or not secrets.compare_digest(release, runtime)
         or not secrets.compare_digest(release, build)):
+        raise ValueError("private_card_release_mismatch")
+    # An OFF-only preflight may run without a deployment-time Git variable.
+    # Its immutable image stamp must still match the configured release. The
+    # enabled path keeps the independent runtime Git SHA requirement.
+    if runtime == "":
+        if not allow_missing_runtime_sha:
+            raise ValueError("private_card_release_mismatch")
+    elif (type(runtime) is not str or _SHA40.fullmatch(runtime) is None
+          or not secrets.compare_digest(release, runtime)):
         raise ValueError("private_card_release_mismatch")
     return release
 
@@ -155,7 +163,8 @@ def run(*, validate_only=False, environ: Mapping[str, str] | None = None,
             return {"ok": True, "mode": mode, "enabled": False,
                     "public_send_attempted": False}
         if validate_only and not enabled:
-            _validate_scope_and_provenance(env, stamp_reader=stamp_reader)
+            _validate_scope_and_provenance(env, stamp_reader=stamp_reader,
+                                           allow_missing_runtime_sha=True)
             return {"ok": True, "mode": mode, "enabled": False,
                     "network_calls": False, "database_calls": False,
                     "telegram_calls": False}

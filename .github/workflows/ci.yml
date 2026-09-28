@@ -141,6 +141,8 @@ jobs:
           assert result == {'ok': True, 'mode': 'validate_only', 'enabled': False,
                             'network_calls': False, 'database_calls': False,
                             'telegram_calls': False}
+          del env['RAILWAY_GIT_COMMIT_SHA']
+          assert run(validate_only=True, environ=env) == result
           env['RAILWAY_GIT_COMMIT_SHA'] = 'b' * 40
           assert run(validate_only=True, environ=env)['ok'] is False
           env['RAILWAY_GIT_COMMIT_SHA'] = 'a' * 40
@@ -161,13 +163,18 @@ jobs:
               'CONTENT_OPS_BUTTON_SIGNING_KEY': 'e' * 64,
               'CONTENT_OPS_EDIT_BINDING_KEY': 'f' * 64,
           })
+          del env['RAILWAY_GIT_COMMIT_SHA']
+          assert run(validate_only=True, environ=env)['ok'] is False
+          env['RAILWAY_GIT_COMMIT_SHA'] = 'a' * 40
           assert run(validate_only=True, environ=env) == {
               'ok': True, 'mode': 'validate_only', 'enabled': True,
               'network_calls': False, 'database_calls': False,
               'telegram_calls': False}
           print(json.dumps({'synthetic_validation_passed': True,
                             'off_bootstrap_without_credentials': True,
+                            'off_without_runtime_git_sha': True,
                             'enabled_requires_credentials': True,
+                            'enabled_without_runtime_git_sha_denied': True,
                             'release_mismatch_denied': True,
                             'broad_db_credential_denied': True,
                             'external_sends': 0, 'production_proof': False}))
