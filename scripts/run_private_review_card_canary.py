@@ -19,6 +19,7 @@ from typing import Callable, Mapping, Sequence
 from uuid import UUID
 
 from core.content_ops.private_review_card_canary import PrivateCardCanary
+from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.private_review_card_courier import PrivateCardCourier
 from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
 from core.content_ops.private_review_card_owner_gateway import GatewayPrivateCardOwner
@@ -113,6 +114,7 @@ class PrivateCardRuntimeSettings:
     chat_id: int
     signing_key: bytes = field(repr=False)
     binding_key: bytes = field(repr=False)
+    bot_policy: ExistingReviewBotPolicy | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], *, stamp_reader: Callable[[], str] | None = None):
@@ -132,9 +134,12 @@ class PrivateCardRuntimeSettings:
             or _HEX64.fullmatch(signing) is None or _HEX64.fullmatch(binding) is None
             or len({gateway_token, bot_token, signing, binding}) != 4):
             raise ValueError("private_card_configuration_invalid")
+        bot_id, chat_id = int(bot_match.group(1)), int(room)
+        raw_policy = env.get("CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON")
+        policy = (ExistingReviewBotPolicy.from_json(raw_policy,
+                    bot_id=bot_id, chat_id=chat_id) if raw_policy is not None else None)
         return cls(workspace, version, release, gateway_token, bot_token,
-            int(bot_match.group(1)), int(room), bytes.fromhex(signing),
-            bytes.fromhex(binding))
+            bot_id, chat_id, bytes.fromhex(signing), bytes.fromhex(binding), policy)
 
 
 def build_runner(settings: PrivateCardRuntimeSettings):
@@ -143,13 +148,14 @@ def build_runner(settings: PrivateCardRuntimeSettings):
         content_version_id=settings.version_id, enabled=True)
     owner = GatewayPrivateCardOwner(gateway, enabled=True)
     sender = TelegramPrivateCardSender(bot_token=settings.bot_token,
-        bot_id=settings.bot_id, chat_id=settings.chat_id)
+        bot_id=settings.bot_id, chat_id=settings.chat_id, bot_policy=settings.bot_policy)
     signer, bindings = ButtonSigner(settings.signing_key), EditBindings(settings.binding_key)
     courier = PrivateCardCourier(owner, sender, signer, bindings)
     return PrivateCardCanary(workspace_id=settings.workspace_id,
         content_version_id=settings.version_id, bot_id=settings.bot_id,
         chat_id=settings.chat_id, gateway=gateway, owner=owner,
-        png_reader=gateway, courier=courier, signer=signer, bindings=bindings)
+        png_reader=gateway, courier=courier, signer=signer, bindings=bindings,
+        bot_policy=settings.bot_policy)
 
 
 def run(*, validate_only=False, environ: Mapping[str, str] | None = None,

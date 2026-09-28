@@ -188,6 +188,17 @@ jobs:
               'ok': True, 'mode': 'validate_only', 'enabled': True,
               'network_calls': False, 'database_calls': False,
               'telegram_calls': False}
+          # Synthetic read-only projection of an existing callback policy.
+          # No real bot identity, private room, signing key or provider I/O.
+          env['CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON'] = json.dumps({
+              'schema': 'existing-review-bot-policy@1',
+              'bot_id': 123456789, 'chat_id': -1001234567890,
+              'room_binding': 'fixture-existing-owner-room-v1',
+              'membership_status': 'administrator',
+          })
+          assert run(validate_only=True, environ=env)['ok'] is True
+          env['CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON'] = '{}'
+          assert run(validate_only=True, environ=env)['ok'] is False
           print(json.dumps({'synthetic_validation_passed': True,
                             'off_bootstrap_without_credentials': True,
                             'off_without_runtime_git_sha': True,

@@ -16,6 +16,7 @@ from typing import Callable
 import httpx
 
 from core.content_ops.private_review_card_receipt import ObservedSend, validate_part_response
+from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.review_buttons import PRIVATE_CONTROL_LABELS
 
 
@@ -54,12 +55,22 @@ def _result(response):
 
 class TelegramPrivateCardSender:
     def __init__(self, *, bot_token: str, bot_id: int, chat_id: int,
+                 bot_policy: ExistingReviewBotPolicy | None = None,
                  transport: httpx.AsyncBaseTransport | None = None,
                  clock: Callable[[], datetime] | None = None):
         token = _TOKEN.fullmatch(bot_token) if type(bot_token) is str else None
         if (token is None or type(bot_id) is not int or bot_id != int(token.group(1))
             or type(chat_id) is not int or _ROOM.fullmatch(str(chat_id)) is None):
             raise PrivateCardSenderError("private_card_sender_configuration_invalid")
+        if bot_policy is not None:
+            try:
+                if type(bot_policy) is not ExistingReviewBotPolicy:
+                    raise ValueError
+                bot_policy.require_destination(bot_id=bot_id, chat_id=chat_id)
+            except Exception:
+                raise PrivateCardSenderError("private_card_sender_configuration_invalid") from None
+        self._membership_status = (bot_policy.membership_status
+                                   if bot_policy is not None else "member")
         self._token = bot_token
         self._bot_id = bot_id
         self._chat_id = chat_id
@@ -108,7 +119,10 @@ class TelegramPrivateCardSender:
         member = _result(await self._post("getChatMember", body={
             "chat_id": self._chat_id, "user_id": self._bot_id}))
         user = member.get("user")
-        if (member.get("status") != "member" or type(user) is not dict
+        # Exact configured role only: no automatic member/admin fallback.
+        # The existing bot username and private unlinked room guards above
+        # remain mandatory even for an explicit administrator projection.
+        if (member.get("status") != self._membership_status or type(user) is not dict
             or type(user.get("id")) is not int or user["id"] != self._bot_id
             or user.get("is_bot") is not True):
             raise PrivateCardSenderError("private_card_bot_role_invalid")
