@@ -114,13 +114,27 @@ jobs:
             --security-opt no-new-privileges coineasy-private-card-ci)"
           jq -e '. == {"ok":true,"mode":"run","enabled":false,
             "public_send_attempted":false}' <<< "$output"
+      - name: Validate the real OFF container environment without I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e CONTENT_OPS_REVIEW_MODE=canary \
+            -e CONTENT_OPS_REVIEW_PACKET_MODE=button_card_v1 \
+            -e CONTENT_OPS_GATEWAY_URL=https://coineasy-newscard.netlify.app \
+            -e CONTENT_OPS_REVIEW_RELEASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            coineasy-private-card-ci \
+            python -m scripts.run_private_review_card_canary --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":false,
+            "network_calls":false,"database_calls":false,"telegram_calls":false}' <<< "$output"
       - name: Validate OFF bootstrap and ON credential boundary without I/O
         shell: bash
         run: |
           docker run --rm -i --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --entrypoint python \
             coineasy-private-card-ci - <<'PY'
-          import json, sys
+          import json, os, sys
           from scripts.run_private_review_card_canary import run
 
           def no_io(event, args):
@@ -129,6 +143,7 @@ jobs:
           sys.addaudithook(no_io)
 
           env = {
+              **os.environ,
               'CONTENT_OPS_BUTTON_CARD_ENABLED': 'false',
               'CONTENT_OPS_REVIEW_ENABLED': 'false',
               'CONTENT_OPS_REVIEW_MODE': 'canary',
@@ -152,6 +167,9 @@ jobs:
           env['PGPASSWORD'] = 'synthetic_forbidden'
           assert run(validate_only=True, environ=env)['ok'] is False
           del env['PGPASSWORD']
+          env['GPG_KEY'] = 'synthetic_forbidden'
+          assert run(validate_only=True, environ=env)['ok'] is False
+          del env['GPG_KEY']
           env['CONTENT_OPS_BUTTON_CARD_ENABLED'] = 'true'
           assert run(validate_only=True, environ=env)['ok'] is False
           env.update({
@@ -175,6 +193,8 @@ jobs:
                             'off_without_runtime_git_sha': True,
                             'enabled_requires_credentials': True,
                             'enabled_without_runtime_git_sha_denied': True,
+                            'inherited_image_environment_checked': True,
+                            'injected_gpg_key_denied': True,
                             'release_mismatch_denied': True,
                             'broad_db_credential_denied': True,
                             'external_sends': 0, 'production_proof': False}))

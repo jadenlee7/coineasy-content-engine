@@ -1,4 +1,7 @@
 FROM python:3.12-slim
+# The base image's Python release-signing fingerprint is unused at runtime.
+# Clear that inherited metadata; injected nonempty *_KEY values still fail validation.
+ENV GPG_KEY=""
 WORKDIR /app
 RUN pip install --no-cache-dir httpx==0.28.1
 ARG RAILWAY_GIT_COMMIT_SHA
