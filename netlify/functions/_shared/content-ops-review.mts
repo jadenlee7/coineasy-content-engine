@@ -1,5 +1,6 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
+import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 
 // This gateway holds the existing database authority. The courier never does.
 // It exposes no arbitrary RPC, workspace, destination, approval, or publisher.
@@ -8,16 +9,6 @@ const HASH = /^[a-f0-9]{64}$/;
 const MAX_BODY_BYTES = 2048;
 const MAX_BUTTON_BODY_BYTES = 8192;
 const MAX_IMAGE_BYTES = 10_000_000;
-const OTHER_PRINCIPALS = [
-  "API_SECRET", "STUDIO_ACCESS_TOKEN", "STUDIO_AUTOMATION_TOKEN",
-  "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_CONTENT_QA_KEY", "SUPABASE_BUZZ_DELIVERY_KEY",
-  "SUPABASE_BUZZ_REVIEW_KEY", "SUPABASE_BUZZ_SHADOW_KEY", "PUBLICATION_WORKER_TOKEN",
-  "CONTENT_QA_CONNECTOR_TOKEN", "CONTENT_KPI_SYNC_TOKEN", "GROK_QA_RELAY_TOKEN",
-  "GROK_QA_CONNECTOR_TOKEN", "GROK_QA_DISPATCH_TOKEN", "BUZZ_DELIVERY_TOKEN",
-  "BUZZ_DELIVERY_WORKER_TOKEN", "BUZZ_REVIEW_TOKEN", "BUZZ_REVIEW_WORKER_TOKEN",
-  "BUZZ_SHADOW_ACCESS_TOKEN", "BUZZ_SHADOW_TOKEN", "TYPEFULLY_API_KEY", "XAI_API_KEY",
-  "X_BEARER_TOKEN", "TELEGRAM_REVIEW_BOT_TOKEN", "TELEGRAM_CONTENT_OPS_RELAY_BOT_TOKEN",
-];
 const HANDLES: Record<string, string> = {
   yellow: "yellow", origintrail: "origin_trail", squid: "squidrouter", babylon: "babylonlabs_io",
 };
@@ -40,7 +31,6 @@ const record = (value: unknown): value is Json => Boolean(value)
   && typeof value === "object" && !Array.isArray(value);
 const exact = (value: Json, keys: string[]) => Object.keys(value).length === keys.length
   && keys.every((key) => Object.hasOwn(value, key));
-const digest = (value: string) => createHash("sha256").update(value).digest();
 
 function configuredScope(getEnv: Env): ReviewScope | null {
   const mode = getEnv("CONTENT_OPS_REVIEW_MODE");
@@ -352,13 +342,11 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       || req.headers.get("x-content-ops-expected-release-sha") !== release) {
       return json({ error: "content_ops_release_mismatch" }, 503);
     }
-    const token = deps.getEnv("CONTENT_OPS_GATEWAY_TOKEN") || "";
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)
-      || OTHER_PRINCIPALS.some((name) => deps.getEnv(name) === token)) {
+    const token = configuredContentOpsGatewayToken(deps.getEnv);
+    if (!token) {
       return json({ error: "content_ops_token_not_configured" }, 503);
     }
-    const provided = req.headers.get("authorization") || "";
-    if (!timingSafeEqual(digest(provided), digest(`Bearer ${token}`))) {
+    if (!hasContentOpsGatewayAccess(req, token)) {
       return json({ error: "invalid_token" }, 401);
     }
     const scope = configuredScope(deps.getEnv);
