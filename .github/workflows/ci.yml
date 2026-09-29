@@ -593,6 +593,7 @@ jobs:
           node --test
           tests_js/studio-release-stamp.test.mts
           tests_js/studio-capabilities.test.mts
+          tests_js/content-ops-review-release.test.mts
 
   managed-inspect-isolation:
     runs-on: ubuntu-latest
