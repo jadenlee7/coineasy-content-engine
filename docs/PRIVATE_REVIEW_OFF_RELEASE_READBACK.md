@@ -1,7 +1,8 @@
 # Private-review OFF release readback
 
-Status: local code and tests only. This change does not authorize a push,
-merge, deployment, configuration change, enablement, database action or send.
+Status: runtime-context correction prepared for a Draft PR. Local and CI
+evidence does not fix or attest production. Merge, another deployment,
+configuration changes, enablement, database actions and sends are not included.
 
 ## Purpose
 
@@ -21,7 +22,10 @@ token format, principal-separation checks and timing-safe comparison.
 - Method: `GET` only.
 - Origin: `https://coineasy-newscard.netlify.app` only.
 - Path: `/.netlify/functions/content-ops-review-release` exactly.
-- Netlify context: `production` only; preview and branch deploys are rejected.
+- Netlify native handler context: `context.deploy.context === "production"`,
+  `context.deploy.published === true` and a nonempty, unpadded deployment ID.
+  Preview, branch, unpublished and missing/malformed deployment metadata are
+  rejected before credentials, release stamps or flags are read.
 - `Authorization`: the existing dedicated gateway bearer token.
 - `X-Content-Ops-Expected-Release-Sha`: the separately approved exact lowercase
   40-character SHA, supplied from trusted release evidence.
@@ -66,6 +70,16 @@ Authorization, and set `nosniff`. The route sets no cookie or CORS permission.
 Unauthenticated requests receive no release or flag values. Unexpected failures
 return a fixed redacted error rather than exception/configuration details.
 
+Deployment metadata comes exclusively from Netlify's native second handler
+argument. No environment variable, request header, query parameter or forwarded
+host can supply or override it. In particular, `CONTEXT` is not consulted:
+Netlify does not guarantee that build variable in the Functions runtime.
+The wrapper forwards native context without loading an SDK or making a request;
+its SDK imports are type-only and erased from the bundle.
+
+References: [Functions context API](https://docs.netlify.com/build/functions/api/)
+and [Functions environment variables](https://docs.netlify.com/build/functions/environment-variables/).
+
 The handler has only environment-reader and build-stamp dependencies. It has
 no catalog, RPC, database, fetcher, provider or sender dependency. Successful
 readback does not grant a claim, begin, owner action, image access or send;
@@ -83,7 +97,10 @@ behavior or permission to publish. It is not a distributed runtime lock.
 separation, exact host/path/context, rejected methods and payloads, three-way
 SHA equality, explicit OFF flags, redaction/cache headers, dependency isolation
 and the unchanged mutation rejection after successful readback. Its adapter
-test checks the actual generated build stamp. The existing CI build-stamp step
+test checks native-context forwarding and the actual generated build stamp.
+Regression cases include absent `CONTEXT` with valid published production
+metadata, conflicting build env, missing native metadata, unpublished deploys
+and caller-forged context/forwarded-host headers. The existing CI build-stamp step
 also runs this test with `EXPECTED_STUDIO_RELEASE_SHA` after the offline build.
 
 Local/mock and CI results are not production receipts. A future separately
@@ -91,7 +108,43 @@ authorized OFF deployment must be read back using its actual approved merge
 SHA and existing gateway credential before claiming authenticated production
 release proof. No live request is part of this local implementation.
 
-## Local validation — 2026-09-30
+## Earlier production acceptance — 2026-09-30
+
+The separately authorized OFF deployment of
+`b50bc769b9689b7855cab29a092bd517d724cc1c` reached published production, but
+release GET probes (valid, absent and invalid credentials) all returned the
+same bounded `421 content_ops_production_host_required` error. The owner API
+showed no custom `CONTEXT` variable. A network-free reproduction returned 421
+with absent `CONTEXT` and 200 with a fixture production value.
+
+Those observations and the documented runtime API support correcting the
+unsupported build-env dependency. The live error did not expose which host,
+path or runtime-context predicate failed; it is not individual predicate
+telemetry. No guard is removed, no `CONTEXT` variable is added, and the existing
+mutation gateway, credentials, three-way SHA fence and OFF flags are unchanged.
+
+This patch has not been deployed. The earlier acceptance remains BLOCK until
+a separately approved release is deployed and authenticated 200 plus negative
+401 readbacks are collected. Do not treat local or CI success as live recovery.
+
+## Runtime-context correction validation — 2026-09-30
+
+- Focused release-readback regression tests: 15 passed.
+- Full JavaScript suite: 526 passed, 3 skipped, 0 failed. Local HTTP test
+  fixtures required loopback-listener permission; the sandbox-only run's
+  `listen EPERM` was an environment restriction, not a passing test result.
+- Relevant worker/card gateway/owner/runtime/bot-policy tests: 278 passed.
+- Full Python suite in the existing dependency-complete Python 3.12 environment:
+  4,384 passed, 2 existing FastAPI deprecation warnings. The minimal test venv
+  initially lacked application dependencies; no production configuration or
+  repository dependencies were changed to address that local limitation.
+- `git diff --check`: passed.
+
+The offline Netlify bundle and post-build generated-stamp checks must also run
+on the committed patch head. Their result and GitHub CI/Netlify skip receipts
+belong to the Draft PR, not to production release acceptance.
+
+## Prior implementation validation — 2026-09-30
 
 - Full `npm run test:functions`: 523 passed, 3 skipped, 0 failed.
 - Existing worker, private-card gateway, owner gateway, runtime and bot-policy
