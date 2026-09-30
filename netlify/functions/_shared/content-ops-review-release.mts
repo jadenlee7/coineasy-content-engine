@@ -1,8 +1,10 @@
+import type { Context } from "@netlify/functions";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 
 export const CONTENT_OPS_RELEASE_PATH = "/.netlify/functions/content-ops-review-release";
 const ORIGIN = "https://coineasy-newscard.netlify.app";
 const SHA = /^[a-f0-9]{40}$/;
+export type ContentOpsReleaseRuntime = Readonly<Pick<Context, "deploy">>;
 type Dependencies = {
   getEnv: (name: string) => string | undefined;
   releaseSha: () => string | null;
@@ -22,12 +24,17 @@ function json(body: Record<string, unknown>, status = 200): Response {
 // It attests this Netlify function's build stamp and OFF flags, not the
 // Railway runtime, callback owner, database health or canary readiness.
 export function createContentOpsReviewReleaseHandler(deps: Dependencies) {
-  return async (req: Request): Promise<Response> => {
+  return async (req: Request, runtime?: ContentOpsReleaseRuntime): Promise<Response> => {
     if (req.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     try {
       const url = new URL(req.url);
+      // Only Netlify's native second handler argument supplies deployment context.
+      // CONTEXT is a build variable, not guaranteed in Functions at runtime.
+      const deploy = runtime?.deploy;
       if (url.origin !== ORIGIN || url.pathname !== CONTENT_OPS_RELEASE_PATH
-        || deps.getEnv("CONTEXT") !== "production") {
+        || deploy?.context !== "production" || deploy.published !== true
+        || typeof deploy.id !== "string" || !deploy.id.trim()
+        || deploy.id !== deploy.id.trim()) {
         return json({ error: "content_ops_production_host_required" }, 421);
       }
       const token = configuredContentOpsGatewayToken(deps.getEnv);

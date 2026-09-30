@@ -1,3 +1,4 @@
+import type { Context } from "@netlify/functions";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -5,13 +6,17 @@ import releaseHandler from "../netlify/functions/content-ops-review-release.mts"
 import { CONTENT_OPS_OTHER_PRINCIPALS } from "../netlify/functions/_shared/content-ops-gateway-auth.mts";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
 import { CONTENT_OPS_RELEASE_PATH, createContentOpsReviewReleaseHandler } from "../netlify/functions/_shared/content-ops-review-release.mts";
+import type { ContentOpsReleaseRuntime } from "../netlify/functions/_shared/content-ops-review-release.mts";
 import { STUDIO_BUILD_RELEASE_SHA } from "../netlify/functions/_shared/studio-release.generated.mts";
 
 const SHA = "a".repeat(40);
 const TOKEN = "fixture_dedicated_gateway_" + "b".repeat(40);
 const URL = "https://coineasy-newscard.netlify.app" + CONTENT_OPS_RELEASE_PATH;
+const RUNTIME: ContentOpsReleaseRuntime = {
+  deploy: { context: "production", id: "fixture-published-deploy", published: true },
+};
 const ENV: Record<string, string | undefined> = {
-  CONTEXT: "production", CONTENT_OPS_GATEWAY_TOKEN: TOKEN,
+  CONTENT_OPS_GATEWAY_TOKEN: TOKEN,
   CONTENT_OPS_REVIEW_RELEASE_SHA: SHA, CONTENT_OPS_GATEWAY_ENABLED: "false",
   CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false", STUDIO_TELEGRAM_PUBLISH_ENABLED: "false",
 };
@@ -22,10 +27,12 @@ function request(url = URL, init: RequestInit = {}) {
 }
 function harness(env = ENV, release: string | null = SHA) {
   const reads: string[] = []; let releaseReads = 0;
-  const handler = createContentOpsReviewReleaseHandler({
+  const rawHandler = createContentOpsReviewReleaseHandler({
     getEnv: name => { reads.push(name); return env[name]; },
     releaseSha: () => { releaseReads++; return release; },
   });
+  // Tests supply fixture runtime metadata explicitly, never via env or request.
+  const handler = (req: Request, runtime: ContentOpsReleaseRuntime | null = RUNTIME) => rawHandler(req, runtime ?? undefined);
   return { handler, reads, releaseReads: () => releaseReads };
 }
 function expected(release = SHA) {
@@ -53,6 +60,7 @@ test("authenticated OFF readback returns only immutable SHA and local OFF flags 
     assert.equal(h.reads.includes("CONTENT_STUDIO_WORKSPACE_ID"), false);
     assert.equal(h.reads.includes("SUPABASE_URL"), false);
     assert.equal(h.reads.includes("CONTENT_OPS_REVIEW_CANARY_VERSION_ID"), false);
+    assert.equal(h.reads.includes("CONTEXT"), false);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -64,7 +72,7 @@ test("methods including HEAD and OPTIONS cannot become a send or auth bypass", a
   }
 });
 
-test("wrong origin, scheme, port, path and preview contexts fail before token or release reads", async () => {
+test("wrong origin, scheme, port and path fail before token or release reads", async () => {
   for (const url of [
     "https://preview.example" + CONTENT_OPS_RELEASE_PATH,
     "https://coineasy-newscard.netlify.app.evil.example" + CONTENT_OPS_RELEASE_PATH,
@@ -73,13 +81,44 @@ test("wrong origin, scheme, port, path and preview contexts fail before token or
     "https://coineasy-newscard.netlify.app/.netlify/functions/content-ops-review",
   ]) {
     const h = harness(); assert.equal((await h.handler(request(url))).status, 421);
-    assert.equal(h.reads.includes("CONTENT_OPS_GATEWAY_TOKEN"), false); assert.equal(h.releaseReads(), 0);
+    assert.deepEqual(h.reads, []); assert.equal(h.releaseReads(), 0);
   }
-  for (const context of [undefined, "", "deploy-preview", "branch-deploy", "Production"]) {
+});
+
+test("missing, preview, unpublished and malformed runtime metadata fail before env or release reads", async () => {
+  const invalid: unknown[] = [null, {}, { deploy: null },
+    ...[undefined, "", "deploy-preview", "branch-deploy", "Production"].map(context => ({ deploy: { ...RUNTIME.deploy, context } })),
+    ...[undefined, false, "true", 1].map(published => ({ deploy: { ...RUNTIME.deploy, published } })),
+    ...[undefined, "", " ", " padded ", 1].map(id => ({ deploy: { ...RUNTIME.deploy, id } })),
+  ];
+  for (const runtime of invalid) {
+    const h = harness({ ...ENV, CONTEXT: "production" });
+    const response = await h.handler(request(), runtime as ContentOpsReleaseRuntime | null);
+    assert.equal(response.status, 421); noCache(response);
+    assert.deepEqual(await response.json(), { error: "content_ops_production_host_required" });
+    assert.deepEqual(h.reads, []); assert.equal(h.releaseReads(), 0);
+  }
+});
+
+test("trusted published production runtime works without CONTEXT and ignores conflicting build env", async () => {
+  for (const context of [undefined, "", "deploy-preview", "production"]) {
     const h = harness({ ...ENV, CONTEXT: context });
-    assert.equal((await h.handler(request())).status, 421);
-    assert.deepEqual(h.reads, ["CONTEXT"]); assert.equal(h.releaseReads(), 0);
+    assert.equal((await h.handler(request(), RUNTIME)).status, 200);
+    assert.equal(h.reads.includes("CONTEXT"), false);
   }
+});
+
+test("caller-supplied context and forwarded host headers cannot replace native deployment metadata", async () => {
+  const req = request();
+  req.headers.set("x-netlify-context", "production");
+  req.headers.set("x-netlify-deploy-context", "production");
+  req.headers.set("x-netlify-deploy-published", "true");
+  req.headers.set("x-forwarded-host", "coineasy-newscard.netlify.app");
+  const h = harness({ ...ENV, CONTEXT: "production" });
+  assert.equal((await h.handler(req, null)).status, 421);
+  assert.equal((await h.handler(req, { deploy: { ...RUNTIME.deploy, context: "deploy-preview" } })).status, 421);
+  assert.equal((await h.handler(request("https://preview.example" + CONTENT_OPS_RELEASE_PATH, { headers: req.headers }))).status, 421);
+  assert.deepEqual(h.reads, []); assert.equal(h.releaseReads(), 0);
 });
 
 test("missing or wrong bearer, duplicate auth, Studio key and cookie cannot read SHA or flags", async () => {
@@ -165,7 +204,7 @@ test("unexpected environment/build errors cannot reflect sensitive data", async 
       getEnv: name => { if (failEnv) throw Error("fixture-private-secret"); return ENV[name]; },
       releaseSha: () => { throw Error("fixture-private-secret"); },
     });
-    const response = await h(request()); assert.equal(response.status, 503); noCache(response);
+    const response = await h(request(), RUNTIME); assert.equal(response.status, 503); noCache(response);
     assert.deepEqual(await response.json(), { error: "content_ops_release_unavailable" });
   }
 });
@@ -195,7 +234,8 @@ test("production adapter uses the generated build stamp, not caller/config SHA",
   } } });
   try {
     const req = request(); req.headers.set("x-content-ops-expected-release-sha", release);
-    const response = await releaseHandler(req);
+    // Native context must be forwarded even when no CONTEXT env var exists.
+    const response = await releaseHandler(req, RUNTIME as Context);
     if (STUDIO_BUILD_RELEASE_SHA) {
       assert.equal(response.status, 200); assert.deepEqual(await response.json(), expected(STUDIO_BUILD_RELEASE_SHA));
     } else {
@@ -205,6 +245,8 @@ test("production adapter uses the generated build stamp, not caller/config SHA",
       assert.equal(STUDIO_BUILD_RELEASE_SHA, process.env.EXPECTED_STUDIO_RELEASE_SHA);
       assert.equal(response.status, 200);
     }
+    assert.equal((await releaseHandler(req)).status, 421);
+    assert.equal((await releaseHandler(req, { ...RUNTIME, deploy: { ...RUNTIME.deploy, published: false } } as Context)).status, 421);
   } finally {
     if (original) Object.defineProperty(globalThis, "Netlify", original);
     else Reflect.deleteProperty(globalThis, "Netlify");
@@ -218,7 +260,9 @@ test("release dependency tree stays isolated from catalog, DB and provider modul
     "../netlify/functions/_shared/content-ops-gateway-auth.mts",
   ]) {
     const source = await readFile(new globalThis.URL(file, import.meta.url), "utf8");
-    const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)].map(m => m[1]);
+    // SDK types are erased; no runtime SDK, catalog or I/O dependency is added.
+    const runtimeSource = source.replace(/import\s+type\s+\{[^}]+\}\s+from\s+["'][^"']+["'];?/g, "");
+    const imports = [...runtimeSource.matchAll(/from\s+["']([^"']+)["']/g)].map(m => m[1]);
     assert.ok(imports.every(p => ["node:crypto", "./_shared/content-ops-review-release.mts", "./_shared/studio-release.mts", "./content-ops-gateway-auth.mts"].includes(p)), file);
     assert.doesNotMatch(source, /\bfetch\s*\(|\bimport\s*\(/, file);
   }
