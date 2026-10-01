@@ -77,10 +77,13 @@ service was changed.
 `scripts/run_private_review_card_canary.py` now assembles this exact one-shot
 chain. It returns disabled before reading credentials unless the separate
 `CONTENT_OPS_BUTTON_CARD_ENABLED=true` flag is set. With the flag OFF,
-validate-only checks exact build/runtime/release SHA, private scope and absence
+validate-only checks exact build/release SHA, private scope and absence
 of broad DB/publisher secrets, including libpq `PGPASSWORD`/connection
-overrides, without needing a canary version or provider credentials. With the
-flag ON, validate-only additionally requires one immutable version, private
+overrides, without needing a canary version or provider credentials. A missing
+runtime Git SHA is permitted only for this OFF preflight and is now explicitly
+reported as `runtime_release_verified=false`; a present SHA must match exactly.
+See [the bounded runtime provenance contract](PRIVATE_CARD_RUNTIME_PROVENANCE.md).
+With the flag ON, validate-only additionally requires one immutable version, private
 destination and distinct signing keys/tokens. Neither path makes network,
 database or Telegram calls.
 A separate Dockerfile and Railway manifest are

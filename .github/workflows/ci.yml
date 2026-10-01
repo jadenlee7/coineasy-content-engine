@@ -127,7 +127,26 @@ jobs:
             coineasy-private-card-ci \
             python -m scripts.run_private_review_card_canary --validate-only)"
           jq -e '. == {"ok":true,"mode":"validate_only","enabled":false,
-            "network_calls":false,"database_calls":false,"telegram_calls":false}' <<< "$output"
+            "network_calls":false,"database_calls":false,"telegram_calls":false,
+            "provenance":{"schema_version":"private-card-runtime-provenance@1",
+              "build_release_verified":true,"runtime_git_sha_state":"missing",
+              "runtime_release_verified":false}}' <<< "$output"
+          # Build ARG is not independent runtime evidence. Prove the matching
+          # receipt only when a synthetic native runtime variable is injected.
+          matched="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e CONTENT_OPS_REVIEW_MODE=canary \
+            -e CONTENT_OPS_REVIEW_PACKET_MODE=button_card_v1 \
+            -e CONTENT_OPS_GATEWAY_URL=https://coineasy-newscard.netlify.app \
+            -e CONTENT_OPS_REVIEW_RELEASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            coineasy-private-card-ci \
+            python -m scripts.run_private_review_card_canary --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":false,
+            "network_calls":false,"database_calls":false,"telegram_calls":false,
+            "provenance":{"schema_version":"private-card-runtime-provenance@1",
+              "build_release_verified":true,"runtime_git_sha_state":"match",
+              "runtime_release_verified":true}}' <<< "$matched"
       - name: Validate OFF bootstrap and ON credential boundary without I/O
         shell: bash
         run: |
@@ -155,9 +174,16 @@ jobs:
           result = run(validate_only=True, environ=env)
           assert result == {'ok': True, 'mode': 'validate_only', 'enabled': False,
                             'network_calls': False, 'database_calls': False,
-                            'telegram_calls': False}
+                            'telegram_calls': False, 'provenance': {
+                                'schema_version': 'private-card-runtime-provenance@1',
+                                'build_release_verified': True,
+                                'runtime_git_sha_state': 'match',
+                                'runtime_release_verified': True}}
           del env['RAILWAY_GIT_COMMIT_SHA']
-          assert run(validate_only=True, environ=env) == result
+          assert run(validate_only=True, environ=env) == {**result, 'provenance': {
+              'schema_version': 'private-card-runtime-provenance@1',
+              'build_release_verified': True, 'runtime_git_sha_state': 'missing',
+              'runtime_release_verified': False}}
           env['RAILWAY_GIT_COMMIT_SHA'] = 'b' * 40
           assert run(validate_only=True, environ=env)['ok'] is False
           env['RAILWAY_GIT_COMMIT_SHA'] = 'a' * 40
@@ -202,6 +228,7 @@ jobs:
           print(json.dumps({'synthetic_validation_passed': True,
                             'off_bootstrap_without_credentials': True,
                             'off_without_runtime_git_sha': True,
+                            'off_runtime_provenance_distinguished': True,
                             'enabled_requires_credentials': True,
                             'enabled_without_runtime_git_sha_denied': True,
                             'inherited_image_environment_checked': True,
