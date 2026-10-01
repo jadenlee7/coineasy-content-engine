@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts import run_private_review_card_canary as cli
 
 
@@ -41,6 +43,16 @@ def off_bootstrap_config(**overrides):
         **overrides}
 
 
+def off_receipt(runtime_state="match"):
+    return {"ok": True, "mode": "validate_only", "enabled": False,
+        "network_calls": False, "database_calls": False,
+        "telegram_calls": False, "provenance": {
+            "schema_version": "private-card-runtime-provenance@1",
+            "build_release_verified": True,
+            "runtime_git_sha_state": runtime_state,
+            "runtime_release_verified": runtime_state == "match"}}
+
+
 def test_disabled_run_reads_only_flag_and_creates_no_clients():
     class Guarded(dict):
         def __init__(self):
@@ -64,10 +76,7 @@ def test_validate_only_checks_exact_scope_and_creates_no_clients():
         raise AssertionError("validate-only constructed a runtime")
 
     assert cli.run(validate_only=True, environ=off_bootstrap_config(),
-        stamp_reader=lambda: SHA, runner_factory=fail) == {
-            "ok": True, "mode": "validate_only", "enabled": False,
-            "network_calls": False, "database_calls": False,
-            "telegram_calls": False}
+        stamp_reader=lambda: SHA, runner_factory=fail) == off_receipt()
     for change in (
         {"CONTENT_OPS_REVIEW_PACKET_MODE": "link_card"},
         {"CONTENT_OPS_REVIEW_MODE": "daily"},
@@ -95,10 +104,7 @@ def test_off_validate_only_accepts_build_stamp_without_runtime_git_sha():
     env = off_bootstrap_config()
     del env["RAILWAY_GIT_COMMIT_SHA"]
     assert cli.run(validate_only=True, environ=env,
-        stamp_reader=lambda: SHA) == {
-            "ok": True, "mode": "validate_only", "enabled": False,
-            "network_calls": False, "database_calls": False,
-            "telegram_calls": False}
+        stamp_reader=lambda: SHA) == off_receipt("missing")
 
     assert cli.run(validate_only=True, environ={**env,
         "RAILWAY_GIT_COMMIT_SHA": "b" * 40},
@@ -124,16 +130,104 @@ def test_validate_only_enabled_requires_exact_canary_credentials():
             environ=config(CONTENT_OPS_BUTTON_CARD_ENABLED="true", **change),
             stamp_reader=lambda: SHA)
         assert result["ok"] is False
+    env = config(CONTENT_OPS_BUTTON_CARD_ENABLED="true")
+    del env["RAILWAY_GIT_COMMIT_SHA"]
+    assert cli.run(validate_only=True, environ=env,
+        stamp_reader=lambda: SHA)["ok"] is False
 
 
 def test_off_validate_only_accepts_cleared_image_metadata():
     env = off_bootstrap_config(GPG_KEY="")
     del env["RAILWAY_GIT_COMMIT_SHA"]
     assert cli.run(validate_only=True, environ=env,
-        stamp_reader=lambda: SHA) == {
-            "ok": True, "mode": "validate_only", "enabled": False,
-            "network_calls": False, "database_calls": False,
-            "telegram_calls": False}
+        stamp_reader=lambda: SHA) == off_receipt("missing")
+
+
+@pytest.mark.parametrize("runtime", [None, True, 123, b"a" * 40, [], {},
+    "A" * 40, "a" * 39, "a" * 41, SHA + "\n", " " + SHA, "b" * 40])
+def test_off_provenance_rejects_invalid_or_mismatched_runtime_without_receipt(runtime):
+    result = cli.run(validate_only=True,
+        environ=off_bootstrap_config(RAILWAY_GIT_COMMIT_SHA=runtime),
+        stamp_reader=lambda: SHA)
+    assert result == {"ok": False, "mode": "validate_only",
+        "error": "private_card_canary_failed", "network_calls": False,
+        "database_calls": False, "telegram_calls": False}
+
+
+@pytest.mark.parametrize("runtime", ["", SHA])
+def test_off_provenance_reads_immutable_stamp_once_and_preserves_validator_contract(runtime):
+    reads = []
+    runtime_reads = []
+
+    class SingleObservation(dict):
+        def get(self, name, default=None):
+            if name == "RAILWAY_GIT_COMMIT_SHA":
+                runtime_reads.append(True)
+                if len(runtime_reads) != 1:
+                    raise AssertionError("runtime SHA was re-read for the receipt")
+            return super().get(name, default)
+
+    def stamp():
+        reads.append(True)
+        if len(reads) != 1:
+            raise AssertionError("stamp was re-read for the receipt")
+        return SHA
+
+    env = SingleObservation(off_bootstrap_config(RAILWAY_GIT_COMMIT_SHA=runtime))
+    assert cli.run(validate_only=True, environ=env, stamp_reader=stamp) == off_receipt(
+        "match" if runtime else "missing")
+    assert len(reads) == 1
+    assert len(runtime_reads) == 1
+    # Existing operator helpers and enabled settings still receive only the SHA.
+    assert cli._validate_scope_and_provenance(dict(env), stamp_reader=lambda: SHA,
+        allow_missing_runtime_sha=True) == SHA
+
+
+def test_off_provenance_uses_only_native_runtime_variable_not_legacy_or_claimed_flags():
+    env = off_bootstrap_config(RAILWAY_GIT_COMMIT_SHA="",
+        MANAGED_INSPECT_SOURCE_SHA=SHA, RAILWAY_GIT_SHA=SHA,
+        CONTENT_OPS_RUNTIME_RELEASE_VERIFIED="true")
+    assert cli.run(validate_only=True, environ=env,
+        stamp_reader=lambda: SHA) == off_receipt("missing")
+
+
+@pytest.mark.parametrize("runtime", ["", SHA])
+def test_off_cli_emits_bounded_process_provenance_with_zero_io(tmp_path, monkeypatch, capsys, runtime):
+    import httpx
+    import socket
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("validate-only attempted client construction or I/O")
+
+    stamp = tmp_path / "content-ops-build-sha"
+    stamp.write_text(SHA, encoding="ascii")
+    env = config(RAILWAY_GIT_COMMIT_SHA=runtime,
+        CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON="synthetic_private_policy")
+    monkeypatch.setattr(cli, "_STAMP", stamp)
+    monkeypatch.setattr(cli.os, "environ", env)
+    monkeypatch.setattr(cli.PrivateCardRuntimeSettings, "from_env", forbidden)
+    monkeypatch.setattr(httpx, "Client", forbidden)
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    assert cli.main(["--validate-only"]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == off_receipt("match" if runtime else "missing")
+    for value in (SHA, BOT, W, V, env["TELEGRAM_REVIEW_CHAT_ID"],
+                  env["CONTENT_OPS_GATEWAY_TOKEN"], env["CONTENT_OPS_BUTTON_SIGNING_KEY"],
+                  env["CONTENT_OPS_EDIT_BINDING_KEY"], env["CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON"]):
+        assert value not in output
+
+
+def test_off_provenance_stamp_failure_stays_redacted(monkeypatch, capsys):
+    def failure():
+        raise OSError("synthetic_secret_error_do_not_emit")
+
+    monkeypatch.setattr(cli, "_build_stamp", failure)
+    monkeypatch.setattr(cli.os, "environ", off_bootstrap_config())
+    assert cli.main(["--validate-only"]) == 1
+    output = capsys.readouterr().out
+    assert "synthetic_secret_error_do_not_emit" not in output
+    assert "provenance" not in json.loads(output)
 
 
 def test_off_bootstrap_rejects_bad_build_stamp_and_broad_credentials():
@@ -173,6 +267,7 @@ def test_unmounted_service_manifest_is_default_off_and_one_shot():
     docker = (ROOT / "Dockerfile.private-review-card").read_text()
     railway = json.loads((ROOT / "ops/content-ops/railway.private-card.json").read_text())
     assert "ARG RAILWAY_GIT_COMMIT_SHA" in docker
+    assert "ENV RAILWAY_GIT_COMMIT_SHA" not in docker
     assert "CONTENT_OPS_BUTTON_CARD_ENABLED=false" in docker
     assert "CONTENT_OPS_REVIEW_ENABLED=false" in docker
     assert "COPY core/publications/handoff.py" in docker

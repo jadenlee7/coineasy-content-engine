@@ -2,8 +2,8 @@
 
 No scheduler, polling, callback consumer, public publisher or database key.
 Validate-only performs no network, database or Telegram calls. A real private
-send still requires a separately authorized default-OFF deployment and exact
-version enablement; the proposed Dockerfile.private-review-card is not deployed.
+send requires separate exact-version authorization; an OFF validation receipt
+does not authorize enablement or delivery.
 """
 from __future__ import annotations
 
@@ -61,8 +61,22 @@ def _enabled(env):
     return value == "true"
 
 
-def _validate_scope_and_provenance(env, *, stamp_reader=None,
-                                   allow_missing_runtime_sha=False):
+@dataclass(frozen=True, repr=False)
+class _PrivateCardProvenance:
+    release_sha: str
+    runtime_git_sha_state: str
+
+    def receipt(self):
+        # Only constructed after the build/release check passes. No raw SHAs,
+        # environment, private identities or credential values leave this object.
+        return {"schema_version": "private-card-runtime-provenance@1",
+                "build_release_verified": True,
+                "runtime_git_sha_state": self.runtime_git_sha_state,
+                "runtime_release_verified": self.runtime_git_sha_state == "match"}
+
+
+def _validated_scope_and_provenance(env, *, stamp_reader=None,
+                                    allow_missing_runtime_sha=False):
     if (env.get("CONTENT_OPS_REVIEW_ENABLED", "false") != "false"
         or env.get("CONTENT_OPS_REVIEW_MODE") != "canary"
         or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != "button_card_v1"
@@ -100,7 +114,15 @@ def _validate_scope_and_provenance(env, *, stamp_reader=None,
     elif (type(runtime) is not str or _SHA40.fullmatch(runtime) is None
           or not secrets.compare_digest(release, runtime)):
         raise ValueError("private_card_release_mismatch")
-    return release
+    return _PrivateCardProvenance(release, "missing" if runtime == "" else "match")
+
+
+def _validate_scope_and_provenance(env, *, stamp_reader=None,
+                                   allow_missing_runtime_sha=False):
+    # Preserve the existing SHA-only contract used by enabled settings and
+    # operator helpers. Receipt generation reuses the same single observation.
+    return _validated_scope_and_provenance(env, stamp_reader=stamp_reader,
+        allow_missing_runtime_sha=allow_missing_runtime_sha).release_sha
 
 
 @dataclass(frozen=True, repr=False)
@@ -169,11 +191,11 @@ def run(*, validate_only=False, environ: Mapping[str, str] | None = None,
             return {"ok": True, "mode": mode, "enabled": False,
                     "public_send_attempted": False}
         if validate_only and not enabled:
-            _validate_scope_and_provenance(env, stamp_reader=stamp_reader,
-                                           allow_missing_runtime_sha=True)
+            provenance = _validated_scope_and_provenance(env, stamp_reader=stamp_reader,
+                                                        allow_missing_runtime_sha=True)
             return {"ok": True, "mode": mode, "enabled": False,
                     "network_calls": False, "database_calls": False,
-                    "telegram_calls": False}
+                    "telegram_calls": False, "provenance": provenance.receipt()}
         settings = PrivateCardRuntimeSettings.from_env(env, stamp_reader=stamp_reader)
         if validate_only:
             return {"ok": True, "mode": mode, "enabled": enabled,
