@@ -13,5 +13,6 @@ COPY core/content_ops ./core/content_ops
 COPY core/publications/__init__.py ./core/publications/__init__.py
 COPY core/publications/handoff.py ./core/publications/handoff.py
 COPY scripts/run_private_review_card_canary.py ./scripts/run_private_review_card_canary.py
-ENV PYTHONUNBUFFERED=1 CONTENT_OPS_BUTTON_CARD_ENABLED=false CONTENT_OPS_REVIEW_ENABLED=false
+COPY scripts/run_daily_private_review_cards.py ./scripts/run_daily_private_review_cards.py
+ENV PYTHONUNBUFFERED=1 CONTENT_OPS_BUTTON_CARD_ENABLED=false CONTENT_OPS_REVIEW_ENABLED=false CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED=false
 CMD ["python", "-m", "scripts.run_private_review_card_canary"]

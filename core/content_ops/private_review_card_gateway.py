@@ -22,6 +22,7 @@ _SHA40 = re.compile(r"[a-f0-9]{40}\Z")
 _SHA64 = re.compile(r"[a-f0-9]{64}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,256}\Z")
 _SCOPE = "button_card_v1"
+DAILY_PACKET_MODE = "daily_button_card_v1"
 _OWNER_STEPS = frozenset({"prepare", "bind", "reserve", "confirm", "register", "terminal"})
 
 
@@ -34,6 +35,34 @@ def _uuid(value):
         return type(value) is str and str(UUID(value)) == value and UUID(value).int != 0
     except (ValueError, AttributeError):
         return False
+
+
+async def _post_receipt(*, origin, token, release, mode, version, packet_mode,
+                        transport, body, result_key):
+    """One bounded request; no implicit transport retry or response reflection."""
+    headers = {"Authorization": "Bearer " + token,
+               "x-content-ops-expected-release-sha": release,
+               "x-content-ops-mode": mode,
+               "x-content-ops-packet-mode": packet_mode, "Accept": "application/json"}
+    if version is not None:
+        headers["x-content-ops-version-id"] = version
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False,
+                trust_env=False, transport=transport) as client:
+            response = await client.post(origin + GATEWAY_PATH, headers=headers, json=body)
+        if (response.status_code != 200 or len(response.content) > 16_384
+            or response.headers.get("content-type", "").split(";", 1)[0] != "application/json"):
+            raise ValueError
+        receipt = response.json()
+        if (type(receipt) is not dict
+            or set(receipt) != {"ok", "release_sha", "scope", result_key}
+            or receipt["ok"] is not True or receipt["release_sha"] != release
+            or receipt["scope"] != {"mode": mode, "content_version_id": version,
+                                    "packet_mode": packet_mode}):
+            raise ValueError
+        return receipt[result_key]
+    except Exception:
+        raise PrivateCardGatewayError("private_card_gateway_outcome_unknown") from None
 
 
 class ButtonCanaryGateway:
@@ -57,6 +86,7 @@ class ButtonCanaryGateway:
         self._image_attempted = False
         self._image_verified = False
         self._begin_attempted = False
+        self._mode, self._packet_mode = "canary", _SCOPE
 
     @property
     def content_version_id(self):
@@ -65,32 +95,18 @@ class ButtonCanaryGateway:
     def _headers(self):
         return {"Authorization": "Bearer " + self._token,
                 "x-content-ops-expected-release-sha": self._release,
-                "x-content-ops-mode": "canary",
+                "x-content-ops-mode": self._mode,
                 "x-content-ops-version-id": self._version,
-                "x-content-ops-packet-mode": _SCOPE,
+                "x-content-ops-packet-mode": self._packet_mode,
                 "Accept": "application/json"}
 
     async def _post(self, body, result_key):
         if not self._enabled:
             raise PrivateCardGatewayError("private_card_gateway_disabled")
-        try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=False,
-                    trust_env=False, transport=self._transport) as client:
-                response = await client.post(self._origin + GATEWAY_PATH,
-                    headers=self._headers(), json=body)
-            if (response.status_code != 200 or len(response.content) > 16_384
-                or response.headers.get("content-type", "").split(";", 1)[0] != "application/json"):
-                raise PrivateCardGatewayError("private_card_gateway_outcome_unknown")
-            receipt = response.json()
-            if (type(receipt) is not dict
-                or set(receipt) != {"ok", "release_sha", "scope", result_key}
-                or receipt["ok"] is not True or receipt["release_sha"] != self._release
-                or receipt["scope"] != {"mode": "canary",
-                    "content_version_id": self._version, "packet_mode": _SCOPE}):
-                raise PrivateCardGatewayError("private_card_gateway_outcome_unknown")
-            return receipt[result_key]
-        except Exception:
-            raise PrivateCardGatewayError("private_card_gateway_outcome_unknown") from None
+        return await _post_receipt(origin=self._origin, token=self._token,
+            release=self._release, mode=self._mode, version=self._version,
+            packet_mode=self._packet_mode, transport=self._transport,
+            body=body, result_key=result_key)
 
     async def reconcile(self):
         if self._reconciled:
@@ -183,3 +199,98 @@ class ButtonCanaryGateway:
         if type(step) is not str or step not in _OWNER_STEPS or type(args) is not dict:
             raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
         return await self._post({"action": "owner", "step": step, "args": args}, "owner")
+
+
+class BoundDailyButtonGateway(ButtonCanaryGateway):
+    """Exact claimed-version session; cannot rediscover/reclaim another version."""
+
+    def __init__(self, *, claim, **kwargs):
+        if type(claim) is not ReviewClaim:
+            raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
+        super().__init__(content_version_id=claim.content_version_id, **kwargs)
+        self._mode, self._packet_mode = "daily", DAILY_PACKET_MODE
+        self._reconciled = self._claim_attempted = True
+        self._claimed = claim
+
+    @property
+    def bound_claim(self):
+        return self._claimed
+
+    async def reconcile(self):
+        raise PrivateCardGatewayError("private_card_gateway_replay_denied")
+
+
+class DailyButtonGateway:
+    """Default-OFF discovery, bounded to four single-use daily owner claims.
+
+    Only discovery omits the version header. Images, review ownership and send
+    starts use a new exact-version session, never a wildcard daily send.
+    """
+
+    def __init__(self, *, origin, gateway_token, release_sha, enabled=False,
+                 transport=None, clock=None):
+        if (origin != APP_ORIGIN or type(gateway_token) is not str
+            or _TOKEN.fullmatch(gateway_token) is None
+            or type(release_sha) is not str or _SHA40.fullmatch(release_sha) is None
+            or type(enabled) is not bool):
+            raise PrivateCardGatewayError("private_card_gateway_configuration_invalid")
+        self._origin, self._token, self._release = origin, gateway_token, release_sha
+        self._enabled, self._transport = enabled, transport
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._reconciled = self._ended = False
+        self._tokens, self._bound, self._clients, self._versions = set(), set(), set(), set()
+        self._claims = {}
+
+    async def _post(self, body, result_key):
+        if not self._enabled:
+            raise PrivateCardGatewayError("private_card_gateway_disabled")
+        return await _post_receipt(origin=self._origin, token=self._token,
+            release=self._release, mode="daily", version=None,
+            packet_mode=DAILY_PACKET_MODE, transport=self._transport,
+            body=body, result_key=result_key)
+
+    async def reconcile(self):
+        if self._reconciled:
+            raise PrivateCardGatewayError("private_card_gateway_replay_denied")
+        self._reconciled = True
+        self._ended = True
+        queued = await self._post({"action": "reconcile"}, "queued")
+        if type(queued) is not int or not 0 <= queued <= 4:
+            raise PrivateCardGatewayError("private_card_gateway_outcome_unknown")
+        self._ended = False
+        return queued
+
+    async def claim(self, claim_token):
+        if not _uuid(claim_token):
+            raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
+        if (not self._reconciled or self._ended or claim_token in self._tokens
+            or len(self._tokens) >= 4):
+            raise PrivateCardGatewayError("private_card_gateway_replay_denied")
+        self._tokens.add(claim_token)
+        # Any lost/malformed ACK ends discovery, including direct caller retries.
+        self._ended = True
+        raw = await self._post({"action": "claim", "claim_token": claim_token}, "claim")
+        if raw is None:
+            return None
+        try:
+            claim = ReviewClaim.parse(raw, self._clock())
+            if (claim.claim_token != claim_token or claim.client_id in self._clients
+                or claim.content_version_id in self._versions):
+                raise ValueError
+        except Exception:
+            raise PrivateCardGatewayError("private_card_gateway_outcome_unknown") from None
+        self._clients.add(claim.client_id)
+        self._versions.add(claim.content_version_id)
+        self._claims[claim_token] = claim
+        self._ended = False
+        return claim
+
+    def bind(self, claim):
+        if (type(claim) is not ReviewClaim
+            or self._claims.get(claim.claim_token) is not claim
+            or claim.claim_token in self._bound):
+            raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
+        self._bound.add(claim.claim_token)
+        return BoundDailyButtonGateway(claim=claim, origin=self._origin,
+            gateway_token=self._token, release_sha=self._release, enabled=self._enabled,
+            transport=self._transport, clock=self._clock)

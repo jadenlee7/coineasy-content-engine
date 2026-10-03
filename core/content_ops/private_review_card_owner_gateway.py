@@ -10,7 +10,9 @@ import re
 from datetime import datetime
 from uuid import UUID
 
-from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
+from core.content_ops.private_review_card_gateway import (
+    BoundDailyButtonGateway, ButtonCanaryGateway,
+)
 
 
 _HASH = re.compile(r"[a-f0-9]{64}\Z")
@@ -43,7 +45,7 @@ def _stamp(value):
 
 class GatewayPrivateCardOwner:
     def __init__(self, gateway: ButtonCanaryGateway, *, enabled=False):
-        if type(gateway) is not ButtonCanaryGateway or type(enabled) is not bool:
+        if type(gateway) not in {ButtonCanaryGateway, BoundDailyButtonGateway} or type(enabled) is not bool:
             raise GatewayPrivateCardOwnerError("private_card_owner_configuration_invalid")
         self.gateway = gateway
         self._enabled = enabled

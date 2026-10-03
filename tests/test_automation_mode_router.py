@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from core.automation.mode_router import (
     _normalize_demand_term,
     choose_content_mode,
+    select_daily_review_candidate,
     select_official_candidate,
 )
 
@@ -47,6 +48,64 @@ def test_complete_note_is_article_but_short_post_stays_daily_news():
         post("11", "Our new integration is live today.", is_note_tweet=False),
     )
     assert daily.content_kind == "daily_news"
+
+
+def test_daily_review_uses_latest_cursor_not_relevance():
+    now = datetime(2026, 7, 22, 9, tzinfo=timezone.utc)
+    rows = [
+        post("80", "Launch update integration mainnet available " * 20),
+        post("81", "An official product update for builders."),
+    ]
+    assert select_daily_review_candidate(rows, latest_cursor="81", now=now) is rows[1]
+    # Cursor points to an already-owned source absent from pending intake.
+    assert select_daily_review_candidate(rows, latest_cursor="82", now=now) is None
+    assert select_daily_review_candidate(rows, latest_cursor=None, now=now) is None
+    assert select_daily_review_candidate(rows, latest_cursor="80", now=now) is None
+
+
+@pytest.mark.parametrize("text, skips", [
+    ("gm", ()),
+    ("Our live AMA starts in fifteen minutes", ("AMA",)),
+    ("gm\n[X-provided link metadata]\nMainnet release upgrade", ()),
+])
+def test_daily_review_does_not_fall_back_when_latest_is_not_news(text, skips):
+    assert select_daily_review_candidate(
+        [post("80", "Our mainnet launch update is live."), post("81", text)],
+        latest_cursor="81", now=datetime(2026, 7, 22, 9, tzinfo=timezone.utc),
+        skip_patterns=skips,
+    ) is None
+
+
+@pytest.mark.parametrize("created_at", [
+    "2026-07-21T09:00:00Z",  # Exactly 24 hours is already stale.
+    "2026-07-21T08:59:59Z",
+    "2026-07-22T09:00:01Z",  # Future source.
+    "2026-07-22T08:00:00",   # Naive source time.
+    "bad", None,
+])
+def test_daily_review_timestamp_failures_cannot_promote_older_sources(created_at):
+    assert select_daily_review_candidate(
+        [post("80", "A valid older product update."),
+         post("81", "Our launch is live.", created_at=created_at)],
+        latest_cursor="81", now=datetime(2026, 7, 22, 9, tzinfo=timezone.utc),
+    ) is None
+
+
+def test_daily_review_accepts_aware_freshness_boundary_and_excludes_replies():
+    now = datetime(2026, 7, 22, 9, tzinfo=timezone.utc)
+    source = post("81", "Our mainnet launch is live.", created_at=(
+        now - timedelta(hours=24) + timedelta(microseconds=1)
+    ).isoformat())
+    assert select_daily_review_candidate(
+        [source, post("82", "Reply launch", is_reply=True)],
+        latest_cursor="81", now=now,
+    ) is source
+    assert select_daily_review_candidate(
+        [source], latest_cursor="81", now=now.replace(tzinfo=None),
+    ) is None
+    assert select_daily_review_candidate(
+        [source, dict(source)], latest_cursor="81", now=now,
+    ) is None
 
 
 def test_tutorial_rollout_is_explicit_and_limited_to_supported_clients():

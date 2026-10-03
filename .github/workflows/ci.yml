@@ -225,6 +225,39 @@ jobs:
           assert run(validate_only=True, environ=env)['ok'] is True
           env['CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON'] = '{}'
           assert run(validate_only=True, environ=env)['ok'] is False
+          # New daily command is packaged but unmounted/default-OFF. This
+          # does not alter the old CMD, schedule, deployment or callback owner.
+          from scripts.run_daily_private_review_cards import run as daily_run
+          env.update({
+              'CONTENT_OPS_BUTTON_CARD_ENABLED': 'false',
+              'CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED': 'false',
+              'CONTENT_OPS_REVIEW_MODE': 'daily',
+              'CONTENT_OPS_REVIEW_PACKET_MODE': 'daily_button_card_v1',
+              'CONTENT_OPS_REVIEW_CANARY_VERSION_ID': '',
+              'CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON': json.dumps({
+                  'schema': 'existing-review-bot-policy@1',
+                  'bot_id': 123456789, 'chat_id': -1001234567890,
+                  'room_binding': 'fixture-existing-owner-room-v1',
+                  'membership_status': 'administrator',
+              }),
+          })
+          assert daily_run(environ={}) == {
+              'ok': True, 'mode': 'run', 'enabled': False,
+              'public_send_attempted': False}
+          daily = daily_run(validate_only=True, environ=env)
+          assert daily['ok'] is True and daily['enabled'] is False
+          assert all(daily[k] is False for k in (
+              'network_calls', 'database_calls', 'telegram_calls', 'public_send_attempted'))
+          assert daily['provenance']['runtime_git_sha_state'] == 'match'
+          env['CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED'] = 'true'
+          assert daily_run(validate_only=True, environ=env)['ok'] is True
+          del env['RAILWAY_GIT_COMMIT_SHA']
+          assert daily_run(validate_only=True, environ=env)['ok'] is False
+          env['CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED'] = 'false'
+          assert daily_run(validate_only=True, environ=env)['provenance'][
+              'runtime_release_verified'] is False
+          env['TYPEFULLY_API_KEY'] = 'synthetic_forbidden'
+          assert daily_run(validate_only=True, environ=env)['ok'] is False
           print(json.dumps({'synthetic_validation_passed': True,
                             'off_bootstrap_without_credentials': True,
                             'off_without_runtime_git_sha': True,
@@ -235,6 +268,8 @@ jobs:
                             'injected_gpg_key_denied': True,
                             'release_mismatch_denied': True,
                             'broad_db_credential_denied': True,
+                            'daily_button_command_default_off': True,
+                            'daily_button_zero_io_validation': True,
                             'external_sends': 0, 'production_proof': False}))
           PY
 
@@ -799,7 +834,10 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.bootstrap.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260906100000_content_ops_review_outbox.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260916190000_content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20261003143000_content_ops_reconcile_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20261003143100_content_ops_review_exact_copy.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_reconcile_producer_binding.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
@@ -821,3 +859,47 @@ jobs:
         run: >-
           node --test
           tests_js/telegram-resolution-inspect-postgres.test.mts
+
+  daily-review-postgres17:
+    name: Daily private review SQL PostgreSQL 17.6 (no production I/O)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The full application's managed-auth boundary deliberately accepts only
+      # its local PG16 scaffold or the separately pinned hosted PG17 role graph.
+      # Do not alter that boundary or fake hosted roles for a stock PG17 image.
+      # Existing postgres CI retains complete-schema/security checks on PG16;
+      # this fixture tests actual private-review RPC bodies/ACLs on PG17.6.
+      - name: Verify isolated daily RPCs, ACL and complete-copy claims on PostgreSQL 17.6
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.bootstrap.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260906100000_content_ops_review_outbox.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20260916190000_content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20261003143000_content_ops_reconcile_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/migrations/20261003143100_content_ops_review_exact_copy.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_reconcile_producer_binding.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
