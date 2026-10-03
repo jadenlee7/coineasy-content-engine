@@ -25,7 +25,17 @@ declare
     claim_token uuid;
     claimed jsonb;
     condition text;
+    role_name text;
 begin
+    foreach role_name in array array['anon', 'authenticated', 'service_role'] loop
+        if has_function_privilege(role_name,
+               'private.content_ops_review_candidate(uuid,uuid,uuid)', 'EXECUTE')
+           or (has_function_privilege(role_name,
+                   'public.content_ops_reconcile_daily(uuid,uuid)', 'EXECUTE')
+               is distinct from (role_name = 'service_role')) then
+            raise exception 'daily review candidate or reconciliation ACL widened';
+        end if;
+    end loop;
     perform set_config('request.jwt.claim.role', 'service_role', true);
     workspace := private.test_content_ops_seed();
     update public.jobs set content_item_id = null where workspace_id = workspace;
