@@ -35,6 +35,31 @@ def test_automation_settings_are_review_first_by_default():
     assert settings.easyfarm_content_signals_url is None
     assert settings.easyfarm_content_signals_token is None
     assert settings.easyfarm_content_signals_window_days == 7
+    assert settings.daily_review_mode is False
+    assert settings.daily_review_start_kst == "09:00"
+
+
+def test_daily_review_intake_requires_explicit_opt_in_and_accepts_kst_time():
+    settings = AutomationSettings.from_env(_env(
+        AUTOMATION_DAILY_REVIEW_MODE="true",
+        AUTOMATION_DAILY_REVIEW_START_KST="10:30",
+    ))
+    assert settings.daily_review_mode is True
+    assert settings.daily_review_start_kst == "10:30"
+
+
+@pytest.mark.parametrize("value", ["9:00", "24:00", "09:60", "09:00Z", "", None])
+def test_daily_review_time_is_strict_even_for_direct_settings(value):
+    with pytest.raises(ValueError, match="HH:MM"):
+        AutomationSettings(
+            "", "", "", "", "", "", daily_review_start_kst=value,
+        )
+
+
+@pytest.mark.parametrize("value", ["true", 1, None])
+def test_daily_review_direct_settings_cannot_use_truthy_non_booleans(value):
+    with pytest.raises(ValueError, match="boolean"):
+        AutomationSettings("", "", "", "", "", "", daily_review_mode=value)
 
 
 def test_automation_settings_scope_clients_in_canonical_order():
@@ -76,6 +101,8 @@ def test_automation_settings_enable_the_exact_easyfarm_signals_endpoint():
         ),
         ({"AUTOMATION_ENABLE_TUTORIALS": "maybe"}, "boolean"),
         ({"AUTOMATION_ENABLE_TUTORIALS": "true"}, "must remain false"),
+        ({"AUTOMATION_DAILY_REVIEW_MODE": "maybe"}, "boolean"),
+        ({"AUTOMATION_DAILY_REVIEW_START_KST": "25:00"}, "HH:MM"),
         ({"STUDIO_AUTOMATION_TOKEN": "a" * 513}, "at most 512"),
         (
             {"EASYFARM_CONTENT_SIGNALS_URL": SIGNALS_URL},

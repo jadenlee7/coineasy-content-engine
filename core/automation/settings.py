@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Mapping
@@ -86,6 +87,19 @@ class AutomationSettings:
     easyfarm_content_signals_url: str | None = None
     easyfarm_content_signals_token: str | None = None
     easyfarm_content_signals_window_days: int = 7
+    daily_review_mode: bool = False
+    daily_review_start_kst: str = "09:00"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.daily_review_mode, bool):
+            raise ValueError("AUTOMATION_DAILY_REVIEW_MODE must be a boolean")
+        if (
+            not isinstance(self.daily_review_start_kst, str)
+            or re.fullmatch(
+                r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", self.daily_review_start_kst,
+            ) is None
+        ):
+            raise ValueError("AUTOMATION_DAILY_REVIEW_START_KST must be HH:MM")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AutomationSettings":
@@ -177,6 +191,10 @@ class AutomationSettings:
             ),
             enable_tutorials=enable_tutorials,
             timezone=timezone,
+            daily_review_mode=_boolean(env, "AUTOMATION_DAILY_REVIEW_MODE"),
+            daily_review_start_kst=env.get(
+                "AUTOMATION_DAILY_REVIEW_START_KST", "09:00"
+            ).strip(),
             easyfarm_content_signals_url=signals_url or None,
             easyfarm_content_signals_token=signals_token or None,
             easyfarm_content_signals_window_days=_bounded_int(

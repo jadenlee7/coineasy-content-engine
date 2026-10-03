@@ -86,6 +86,18 @@ class PrivateCardCanary:
         self._attempted = False
 
     async def run(self, *, enabled=False):
+        return await self._run(enabled=enabled)
+
+    async def run_bound(self, *, enabled=False):
+        """Reuse the one-shot send path only for a captured daily owner claim."""
+        from core.content_ops.private_review_card_gateway import BoundDailyButtonGateway
+        if enabled is not True:
+            return {"status": "disabled", "public_send_attempted": False}
+        if type(self._gateway) is not BoundDailyButtonGateway:
+            return {"status": "blocked", "public_send_attempted": False}
+        return await self._run(enabled=True, bound_claim=self._gateway.bound_claim)
+
+    async def _run(self, *, enabled=False, bound_claim=None):
         if enabled is not True:
             return {"status": "disabled", "public_send_attempted": False}
         if self._attempted:
@@ -94,15 +106,18 @@ class PrivateCardCanary:
         begin_attempted = False
         begun = False
         try:
-            queued = await self._gateway.reconcile()
-            if type(queued) is not int or queued not in (0, 1):
-                raise PrivateCardCanaryError("private_card_canary_queue_invalid")
-            if queued == 0:
-                return {"status": "no_candidate", "public_send_attempted": False}
-            claim_token = self._uuid_factory()
-            if not _uuid(claim_token):
-                raise PrivateCardCanaryError("private_card_canary_id_invalid")
-            claim = await self._gateway.claim(claim_token)
+            if bound_claim is None:
+                queued = await self._gateway.reconcile()
+                if type(queued) is not int or queued not in (0, 1):
+                    raise PrivateCardCanaryError("private_card_canary_queue_invalid")
+                if queued == 0:
+                    return {"status": "no_candidate", "public_send_attempted": False}
+                claim_token = self._uuid_factory()
+                if not _uuid(claim_token):
+                    raise PrivateCardCanaryError("private_card_canary_id_invalid")
+                claim = await self._gateway.claim(claim_token)
+            else:
+                claim, claim_token = bound_claim, bound_claim.claim_token
             if claim is None:
                 return {"status": "no_candidate", "public_send_attempted": False}
             claim_now = self._clock()

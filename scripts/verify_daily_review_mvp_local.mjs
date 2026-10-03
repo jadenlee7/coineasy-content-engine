@@ -84,9 +84,16 @@ try {
   sql('supabase/tests/content_ops_review_outbox.bootstrap.sql', db);
   sql(migration, db);
   sql('supabase/migrations/20260916190000_content_ops_review_producer_binding.sql', db);
+  sql('supabase/migrations/20261003143000_content_ops_reconcile_producer_binding.sql', db);
+  sql('supabase/migrations/20261003143100_content_ops_review_exact_copy.sql', db);
   phase = 'production-shaped producer binding';
   sql('supabase/tests/content_ops_review_producer_binding.sql', db);
   console.log(JSON.stringify({ productionShapedProducerBindingPassed: true, hostedProof: false }));
+  phase = 'production-shaped NULL-FK discovery';
+  sql('supabase/tests/content_ops_review_reconcile_producer_binding.sql', db);
+  console.log(JSON.stringify({ productionShapedNullFkDiscoveryPassed: true,
+    completeCopyClaimEqualityPassed: true, oversizeCopyRejected: true, hostedProof: false,
+    productionCalls: 0, providerCalls: 0 }));
   phase = 'synthetic rollback smoke';
   sql('supabase/tests/content_ops_review_outbox.sql', db);
   check(query('select count(*) from public.workspaces') === '0', 'smoke fixtures rolled back');

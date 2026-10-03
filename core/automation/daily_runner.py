@@ -20,7 +20,12 @@ from core.automation.generation_client import (
     GenerationRequestError,
     StudioGenerationClient,
 )
-from core.automation.mode_router import choose_content_mode, select_official_candidate
+from core.automation.mode_router import (
+    ModeDecision,
+    choose_content_mode,
+    select_daily_review_candidate,
+    select_official_candidate,
+)
 from core.automation.models import (
     AutomationState,
     ClaimedJob,
@@ -262,7 +267,7 @@ class OfficialXDailyRunner:
         summary = DailyRunSummary(kst_date=kst_date.isoformat(), dry_run=dry_run)
         worker_id = f"official-x:{uuid.uuid4()}"
 
-        if not dry_run:
+        if not dry_run and self._daily_review_window_open(now):
             await self._drain_jobs(worker_id, summary)
 
         for client_id in self.settings.allowed_clients:
@@ -291,9 +296,38 @@ class OfficialXDailyRunner:
             except Exception:
                 self._error(summary, client_id, "automation_client_failed")
 
-        if not dry_run:
+        if not dry_run and (
+            not self.settings.daily_review_mode
+            or self._daily_review_window_open(self._now())
+        ):
             await self._drain_jobs(worker_id, summary)
         return summary
+
+    def _daily_review_window_open(self, now: datetime) -> bool:
+        return (
+            not self.settings.daily_review_mode
+            or now.astimezone(_KST).time()
+            >= time.fromisoformat(self.settings.daily_review_start_kst)
+        )
+
+    def _skip_daily_review_recheck(
+        self,
+        *,
+        client_id: str,
+        selected: Mapping[str, object],
+        latest_cursor: str | None,
+        summary: DailyRunSummary,
+    ) -> bool:
+        if not self.settings.daily_review_mode:
+            return False
+        now = self._now()
+        if self._daily_review_window_open(now) and select_daily_review_candidate(
+            [selected], latest_cursor=latest_cursor, now=now,
+        ) is not None:
+            return False
+        summary.skipped += 1
+        summary.add(client_id, "daily_review_source_no_longer_eligible")
+        return True
 
     async def recover_failed_draft_once(
         self,
@@ -399,7 +433,8 @@ class OfficialXDailyRunner:
             )
         except (XRateLimitError, XRequestError, XTransientError) as exc:
             if (
-                state.draft_reserved_today
+                self.settings.daily_review_mode
+                or state.draft_reserved_today
                 or not allow_queue
                 or not state.pending_sources
             ):
@@ -464,12 +499,21 @@ class OfficialXDailyRunner:
             )
             return
 
-        demand_terms, tutorial_priority = await self._demand_terms(
-            client_id=client_id,
-            now=now,
-            persist=not dry_run,
-            summary=summary,
-        )
+        if not self._daily_review_window_open(now):
+            summary.skipped += 1
+            summary.add(client_id, "daily_review_waiting_for_window")
+            return
+
+        if self.settings.daily_review_mode:
+            # Employee review is latest-source-only, not engagement ranking.
+            demand_terms, tutorial_priority = (), 0.0
+        else:
+            demand_terms, tutorial_priority = await self._demand_terms(
+                client_id=client_id,
+                now=now,
+                persist=not dry_run,
+                summary=summary,
+            )
         if dry_run and queueable_fresh_posts is not None:
             candidate_posts = self._merge_candidate_posts(
                 state.pending_sources,
@@ -481,16 +525,29 @@ class OfficialXDailyRunner:
                 for item in state.pending_sources
             )
         remaining_candidates = tuple(candidate_posts)
+        latest_cursor = state.last_cursor
+        if self.settings.daily_review_mode and dry_run:
+            latest_cursor = self._newest_cursor(
+                queueable_fresh_posts or (), state.last_cursor,
+            )
         skipped_guarded_candidate = False
         while True:
-            selected = select_official_candidate(
-                remaining_candidates,
-                client_id=client_id,
-                now=now,
-                skip_patterns=config.routing.skip_patterns,
-                demand_terms=demand_terms,
-                tutorial_priority=tutorial_priority,
-            )
+            if self.settings.daily_review_mode:
+                selected = select_daily_review_candidate(
+                    remaining_candidates,
+                    latest_cursor=latest_cursor,
+                    now=now,
+                    skip_patterns=config.routing.skip_patterns,
+                )
+            else:
+                selected = select_official_candidate(
+                    remaining_candidates,
+                    client_id=client_id,
+                    now=now,
+                    skip_patterns=config.routing.skip_patterns,
+                    demand_terms=demand_terms,
+                    tutorial_priority=tutorial_priority,
+                )
 
             if selected is None:
                 if not skipped_guarded_candidate:
@@ -498,10 +555,14 @@ class OfficialXDailyRunner:
                     summary.add(client_id, "no_candidate")
                 return
 
-            decision = choose_content_mode(
-                client_id,
-                selected,
-                enable_tutorials=self.settings.enable_tutorials,
+            decision = (
+                ModeDecision("daily_news", automatic=True, reason="daily_staff_review")
+                if self.settings.daily_review_mode
+                else choose_content_mode(
+                    client_id,
+                    selected,
+                    enable_tutorials=self.settings.enable_tutorials,
+                )
             )
             source_item_id = selected.get("source_item_id")
             source_content = selected.get("text")
@@ -519,6 +580,13 @@ class OfficialXDailyRunner:
                 raise ValueError("recorded source is incomplete")
             guarded_status = ""
             guarded_detail = ""
+            if (
+                self.settings.daily_review_mode
+                and not 10 <= len(source_content.strip()) <= 20_000
+            ):
+                summary.skipped += 1
+                summary.add(client_id, "daily_review_source_length_unsupported")
+                return
             if (
                 decision.content_kind == "daily_news"
                 and not source_image_url
@@ -548,6 +616,9 @@ class OfficialXDailyRunner:
                 guarded_status,
                 guarded_detail,
             )
+            if self.settings.daily_review_mode:
+                # An unsafe latest visual cannot silently select old news.
+                return
             selected_post_id = selected.get("id")
             next_candidates = tuple(
                 post
@@ -570,6 +641,11 @@ class OfficialXDailyRunner:
             summary=summary,
         ):
             return
+        if self._skip_daily_review_recheck(
+            client_id=client_id, selected=selected,
+            latest_cursor=latest_cursor, summary=summary,
+        ):
+            return
         request_id = self._request_id(
             client_id=client_id,
             source_item_id=source_item_id,
@@ -585,6 +661,11 @@ class OfficialXDailyRunner:
             client_id=client_id,
             expected_kst_date=kst_date,
             summary=summary,
+        ):
+            return
+        if self._skip_daily_review_recheck(
+            client_id=client_id, selected=selected,
+            latest_cursor=latest_cursor, summary=summary,
         ):
             return
         queued = await self.repository.queue_job(
@@ -740,6 +821,16 @@ class OfficialXDailyRunner:
 
     async def _drain_jobs(self, worker_id: str, summary: DailyRunSummary) -> None:
         for _ in range(_MAX_CLAIMS_PER_RUN):
+            if self.settings.daily_review_mode:
+                now = self._now()
+                if (
+                    not self._daily_review_window_open(now)
+                    or now.astimezone(_KST).date().isoformat() != summary.kst_date
+                ):
+                    # A completed generation may have crossed the daily window.
+                    # Stop before acquiring another lease; an already claimed
+                    # job keeps its original completion/retry contract.
+                    return
             try:
                 job = await self.repository.claim_job(
                     workspace_id=self.settings.workspace_id,
