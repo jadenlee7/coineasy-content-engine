@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -484,6 +485,241 @@ def origintrail_batch_claim() -> ClaimedJob:
         locked_by="placeholder",
         origintrail_batch_eligible=True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", AUTOMATION_CLIENTS)
+async def test_daily_review_prepares_long_official_notes_as_new_announcement(client_id):
+    source = pending(
+        client_id, text="Our official mainnet update is available. " * 15,
+        note=True, source_image_url="https://pbs.twimg.com/media/official.jpg",
+    )
+    repo = FakeRepository({client_id: AutomationState(source.post_id, False, (source,))})
+    generation = FakeGenerationClient()
+    signals = FakeSignalsClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, content_signals_client=signals,
+        allowed_clients=(client_id,), daily_review_mode=True,
+    ).run()
+    assert summary.queued == summary.generated == 1
+    assert summary.errors == 0
+    assert repo.queues[0]["content_kind"] == "daily_news"
+    assert repo.queues[0]["source_content"] == source.source_content
+    assert repo.queues[0]["manual_only"] is False
+    assert generation.calls[0]["template_style"] == "remix"
+    assert signals.calls == []
+    assert len(repo.completed) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_review_before_start_only_polls_without_claiming_or_reserving():
+    source = pending("yellow")
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, False, (source,))})
+    existing_job = object()
+    repo.claims.append(existing_job)
+    generation = FakeGenerationClient()
+    x_client = FakeXClient()
+    summary = await runner(
+        repo, x_client, generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+        now_factory=lambda: NOW.replace(hour=0, minute=0) - timedelta(seconds=1),
+    ).run()
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "daily_review_waiting_for_window",
+    }]
+    assert len(x_client.calls) == len(repo.records) == 1
+    assert repo.claims == [existing_job]
+    assert repo.queues == repo.style_packs == generation.calls == repo.failed == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_dry_run_at_start_plans_but_never_writes():
+    source = pending("yellow", note=True, text="Official product update. " * 20)
+    repo = FakeRepository({"yellow": AutomationState(None, False, ())})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(posts=[source.routing_post()]), generation,
+        allowed_clients=("yellow",), daily_review_mode=True,
+        now_factory=lambda: NOW.replace(minute=0),
+    ).run(dry_run=True)
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "planned", "detail": "daily_news",
+    }]
+    assert repo.records == repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_refresh_failure_never_uses_cached_backlog():
+    source = pending("yellow")
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, False, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(error=XTransientError("safe failure")), generation,
+        allowed_clients=("yellow",), daily_review_mode=True,
+    ).run()
+    assert summary.errors == 1
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "error", "detail": "x_temporarily_unavailable",
+    }]
+    assert repo.records == repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["babylon", "origintrail"])
+async def test_daily_review_missing_latest_banner_never_falls_back_to_old_media(client_id):
+    source = pending(client_id)
+    older = replace(
+        source, post_id="600", source_image_url="https://pbs.twimg.com/media/older.jpg",
+        source_item_id=str(uuid.uuid4()),
+    )
+    repo = FakeRepository({client_id: AutomationState(source.post_id, False, (older, source))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=(client_id,),
+        daily_review_mode=True,
+    ).run()
+    assert summary.outcomes == [{
+        "client_id": client_id, "status": "approved_classic_template_missing",
+    }]
+    assert repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_already_owned_latest_cannot_promote_older_pending_source():
+    source = pending("yellow")
+    repo = FakeRepository({"yellow": AutomationState("999", False, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+    ).run()
+    assert summary.outcomes == [{"client_id": "yellow", "status": "no_candidate"}]
+    assert repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_does_not_truncate_overlong_original_into_supported_copy():
+    source = pending("yellow", text="Official product update " + "A" * 20_000, note=True)
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, False, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+    ).run()
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "daily_review_source_length_unsupported",
+    }]
+    assert repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_rechecks_source_expiry_after_style_pack_creation():
+    source = replace(pending("yellow"), published_at=(
+        NOW - timedelta(hours=23, minutes=59)
+    ).isoformat())
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, False, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+        now_factory=lambda: NOW + timedelta(minutes=2) if repo.style_packs else NOW,
+    ).run()
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "daily_review_source_no_longer_eligible",
+    }]
+    assert len(repo.style_packs) == 1
+    assert repo.queues == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_never_reopens_existing_daily_reservation():
+    source = pending("yellow")
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, True, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+    ).run()
+    assert summary.outcomes == [{"client_id": "yellow", "status": "already_reserved"}]
+    assert len(repo.records) == 1
+    assert repo.queues == repo.style_packs == generation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_daily_review_rollover_does_not_queue_or_drain_next_days_work():
+    late = NOW.replace(hour=14, minute=59)
+    source = pending("yellow")
+    repo = FakeRepository({"yellow": AutomationState(source.post_id, False, (source,))})
+    generation = FakeGenerationClient()
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=True,
+        now_factory=lambda: late + timedelta(minutes=2) if repo.style_packs else late,
+    ).run()
+    assert summary.outcomes == [{
+        "client_id": "yellow", "status": "kst_day_rolled_over",
+        "detail": "2026-07-22->2026-07-23",
+    }]
+    assert len(repo.style_packs) == 1
+    assert repo.queues == generation.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("elapsed", [timedelta(minutes=2), timedelta(hours=10)])
+@pytest.mark.parametrize("daily_review_mode", [True, False])
+async def test_daily_review_rechecks_window_before_claim_after_generation_rollover(
+    elapsed, daily_review_mode,
+):
+    late = NOW.replace(hour=14, minute=59)
+    clock = [late]
+
+    class ClaimCountingRepository(FakeRepository):
+        def __init__(self, states):
+            super().__init__(states)
+            self.claim_calls = []
+
+        async def claim_job(self, **kwargs):
+            self.claim_calls.append(kwargs)
+            return await super().claim_job(**kwargs)
+
+    class RolloverGenerationClient(FakeGenerationClient):
+        async def generate(self, **kwargs):
+            result = await super().generate(**kwargs)
+            clock[0] = late + elapsed
+            return result
+
+    repo = ClaimCountingRepository({"yellow": AutomationState("900", True, ())})
+    first_job = replace(
+        failed_squid_recovery_claim(), attempts=1,
+        failed_draft_recovery_only=False,
+    )
+    next_job = replace(
+        first_job, job_id=str(uuid.uuid4()), request_id=str(uuid.uuid4()),
+        kst_date=first_job.kst_date + timedelta(days=1),
+        content_kind="article",
+    )
+    repo.claims.extend([first_job, next_job])
+    generation = RolloverGenerationClient()
+
+    summary = await runner(
+        repo, FakeXClient(), generation, allowed_clients=("yellow",),
+        daily_review_mode=daily_review_mode, now_factory=lambda: clock[0],
+    ).run()
+
+    expected_generated = 1 if daily_review_mode else 2
+    assert summary.errors == 0
+    assert summary.generated == expected_generated
+    assert len(generation.calls) == len(repo.completed) == expected_generated
+    assert repo.completed[0]["job_id"] == first_job.job_id
+    assert repo.failed == repo.queues == []
+    if daily_review_mode:
+        assert len(repo.claim_calls) == 1
+        assert repo.claims == [next_job]
+    else:
+        # Default-OFF routing still drains immutable jobs across a clock change.
+        assert repo.claims == []
+        assert repo.completed[1]["job_id"] == next_job.job_id
+        assert generation.calls[1]["content_kind"] == "article"
 
 
 @pytest.mark.asyncio

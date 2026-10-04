@@ -45,6 +45,130 @@ test("disabled gate reads no secrets, release, request body or network", async (
   assert.deepEqual(reads, ["CONTENT_OPS_GATEWAY_ENABLED"]);
 });
 
+const DAILY_BUTTON_ENV = { ...ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "daily_button_card_v1",
+  CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "true" };
+function dailyButtonRequest(body: unknown, version: string | null = null) {
+  const req = request(body);
+  req.headers.set("x-content-ops-packet-mode", "daily_button_card_v1");
+  if (version !== null) req.headers.set("x-content-ops-version-id", version);
+  return req;
+}
+
+test("daily button cards require a separate explicit opt-in and no leftover canary version", async () => {
+  for (const env of [
+    { ...ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "daily_button_card_v1" },
+    { ...DAILY_BUTTON_ENV, CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "false" },
+    { ...DAILY_BUTTON_ENV, CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "TRUE" },
+    { ...DAILY_BUTTON_ENV, CONTENT_OPS_REVIEW_CANARY_VERSION_ID: ID },
+    { ...DAILY_BUTTON_ENV, CONTENT_OPS_REVIEW_MODE: "canary" },
+    { ...DAILY_BUTTON_ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "button_card_v1" },
+  ]) {
+    const { handler, calls } = harness(env);
+    assert.equal((await handler(dailyButtonRequest({ action: "reconcile" }))).status, 503);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test("daily button discovery is bounded and cannot be version-selected", async () => {
+  const { handler, calls } = harness(DAILY_BUTTON_ENV, 4);
+  const response = await handler(dailyButtonRequest({ action: "reconcile" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).scope,
+    { mode: "daily", content_version_id: null, packet_mode: "daily_button_card_v1" });
+  assert.deepEqual(calls[0].body, { target_workspace_id: ID, target_content_version_id: null });
+  for (const body of [{ action: "reconcile" }, { action: "claim", claim_token: ID }]) {
+    assert.equal((await handler(dailyButtonRequest(body, ID))).status, 400);
+  }
+  assert.equal(calls.length, 1);
+  assert.equal((await harness(DAILY_BUTTON_ENV, 5).handler(
+    dailyButtonRequest({ action: "reconcile" }))).status, 503);
+});
+
+test("daily button image, owner and begin require exact version before any I/O", async () => {
+  const { handler, calls } = harness(DAILY_BUTTON_ENV);
+  const bodies = [
+    { action: "image", outbox_id: ID, claim_token: ID },
+    { action: "owner", step: "prepare", args: { outbox_id: ID, claim_token: ID, review_id: ID } },
+    { action: "begin", outbox_id: ID, claim_token: ID, packet_sha256: "a".repeat(64) },
+    { action: "finish", outbox_id: ID, claim_token: ID, outcome: "sent", message_id: 1 },
+    { action: "publish" },
+  ];
+  for (const body of bodies) {
+    assert.equal((await handler(dailyButtonRequest(body))).status, 400);
+  }
+  for (const version of ["", "bad", ID.toUpperCase().replace("1", "A")]) {
+    assert.equal((await handler(dailyButtonRequest(bodies[0], version))).status, 409);
+  }
+  assert.equal((await handler(dailyButtonRequest(bodies[3], ID))).status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test("daily button begin and owner transport pin captured version without widening SQL scope", async () => {
+  const begin = harness(DAILY_BUTTON_ENV, { accepted: true });
+  const response = await begin.handler(dailyButtonRequest(
+    { action: "begin", outbox_id: ID, claim_token: ID, packet_sha256: "a".repeat(64) }, ID));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).scope.content_version_id, ID);
+  assert.equal(begin.calls[0].body.target_content_version_id, ID);
+  const prepared = harness(DAILY_BUTTON_ENV, { status: "review_prepared", review_id: ID,
+    version_fingerprint: "b".repeat(64), epoch: 0, state: "active",
+    expires_at: "2026-09-23T09:30:00Z", execution_authorized: false });
+  assert.equal((await prepared.handler(dailyButtonRequest({ action: "owner", step: "prepare",
+    args: { outbox_id: ID, claim_token: ID, review_id: ID } }, ID))).status, 200);
+  assert.equal(prepared.calls[0].body.target_content_version_id, ID);
+  assert.equal(prepared.calls[0].body.target_workspace_id, ENV.CONTENT_STUDIO_WORKSPACE_ID);
+});
+
+test("daily button discovery projects one captured version, not raw provider fields", async () => {
+  const version = "22222222-2222-4222-8222-222222222222";
+  const claim = { outbox_id: ID, claim_token: ID, client_id: "yellow", kst_date: "2026-10-02",
+    content_item_id: ID, content_version_id: version, source_item_id: ID, generate_job_id: ID,
+    banner_sha256: "a".repeat(64), title: "Synthetic", telegram_copy: "Synthetic TG",
+    x_copy: "Synthetic X", source_url: "https://x.com/Yellow/status/123",
+    source_published_at: "2026-10-02T00:00:00Z" };
+  const good = harness(DAILY_BUTTON_ENV, claim);
+  const body = { action: "claim", claim_token: ID };
+  assert.deepEqual((await (await good.handler(dailyButtonRequest(body))).json()).claim, claim);
+  assert.equal(good.calls[0].body.target_content_version_id, null);
+  const invalid = harness(DAILY_BUTTON_ENV, { ...claim, provider_response: "do-not-relay" });
+  const rejected = await invalid.handler(dailyButtonRequest(body));
+  assert.equal(rejected.status, 503);
+  assert.doesNotMatch(await rejected.text(), /do-not-relay/);
+});
+
+test("daily button image verifies exact claimed version and rejects cross-version locator", async () => {
+  const version = "22222222-2222-4222-8222-222222222222";
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const locator = { status: "ready", outbox_id: ID, client_id: "yellow",
+    content_item_id: ID, content_version_id: version, asset_id: ID,
+    bucket: "content-studio", path: `${ID}/yellow/${ID}/news-card.png`,
+    sha256: hash, byte_size: bytes.byteLength, execution_authorized: false };
+  for (const wrongVersion of [false, true]) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const handler = createContentOpsReviewHandler({
+      getEnv: (name) => DAILY_BUTTON_ENV[name], releaseSha: () => SHA,
+      fetcher: async (url, init) => {
+        calls.push({ url: String(url), init: init! });
+        return calls.length === 1
+          ? Response.json({ ...locator, content_version_id: wrongVersion ? ID : version })
+          : new Response(bytes, { headers: { "Content-Type": "image/png",
+              "Content-Length": String(bytes.byteLength) } });
+      },
+    });
+    const response = await handler(dailyButtonRequest({ action: "image",
+      outbox_id: ID, claim_token: ID }, version));
+    assert.equal(response.status, wrongVersion ? 503 : 200);
+    assert.equal(calls.length, wrongVersion ? 1 : 2);
+    assert.equal(JSON.parse(String(calls[0].init.body)).target_content_version_id, version);
+    if (!wrongVersion) {
+      assert.equal(response.headers.get("x-content-ops-version-id"), version);
+      assert.equal(response.headers.get("x-content-ops-banner-sha256"), hash);
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+    } else assert.doesNotMatch(await response.text(), /news-card\.png/);
+  }
+});
+
 test("auth, release, origin, context gates prevent all RPCs", async () => {
   for (const env of [
     { ...ENV, CONTENT_OPS_GATEWAY_ENABLED: "TRUE" },

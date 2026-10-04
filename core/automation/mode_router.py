@@ -202,6 +202,70 @@ def _tutorial_learning_score(
     return min(tutorial_priority, 1.0) * _TUTORIAL_LEARNING_BONUS_CAP
 
 
+def select_daily_review_candidate(
+    posts: Iterable[Mapping[str, object]],
+    *,
+    latest_cursor: str | None,
+    now: datetime,
+    skip_patterns: Iterable[str] = (),
+) -> Mapping[str, object] | None:
+    """Select only the latest observed standalone source, never a backlog fallback.
+
+    Pending sources exclude already-owned jobs. Match the successful feed poll's
+    cursor as well as the newest numeric post ID so absence/ownership of the
+    latest source cannot promote an older one. This is intake evidence only;
+    the private review owner must recheck feed freshness/latest/current version
+    at delivery time.
+    """
+    if (
+        now.tzinfo is None
+        or now.utcoffset() is None
+        or not isinstance(latest_cursor, str)
+        or re.fullmatch(r"[0-9]{1,19}", latest_cursor) is None
+        or int(latest_cursor) == 0
+    ):
+        return None
+    standalone = [
+        post for post in posts
+        if post.get("is_retweet") is False and post.get("is_reply") is False
+    ]
+    if not standalone or any(
+        not isinstance(post.get("id"), str)
+        or re.fullmatch(r"[0-9]{1,19}", str(post["id"])) is None
+        for post in standalone
+    ):
+        return None
+    selected = max(standalone, key=lambda post: int(str(post["id"])))
+    if (
+        selected["id"] != latest_cursor
+        or sum(post["id"] == latest_cursor for post in standalone) != 1
+    ):
+        return None
+    raw_time = selected.get("created_at")
+    if not isinstance(raw_time, str):
+        return None
+    try:
+        published = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if published.tzinfo is None or published.utcoffset() is None:
+        return None
+    if not timedelta(0) <= now - published < _OFFICIAL_SOURCE_FRESHNESS_WINDOW:
+        return None
+    ranking_post = _without_x_link_metadata(selected)
+    text = str(ranking_post.get("text") or "").casefold()
+    if (
+        announcement_score(ranking_post) <= 0.25
+        or any(
+            pattern.strip().casefold() in text
+            for pattern in skip_patterns
+            if isinstance(pattern, str) and pattern.strip()
+        )
+    ):
+        return None
+    return selected
+
+
 def select_official_candidate(
     posts: Iterable[Mapping[str, object]],
     *,

@@ -76,10 +76,13 @@ class _PrivateCardProvenance:
 
 
 def _validated_scope_and_provenance(env, *, stamp_reader=None,
-                                    allow_missing_runtime_sha=False):
+                                    allow_missing_runtime_sha=False, daily=False):
     if (env.get("CONTENT_OPS_REVIEW_ENABLED", "false") != "false"
-        or env.get("CONTENT_OPS_REVIEW_MODE") != "canary"
-        or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != "button_card_v1"
+        or env.get("CONTENT_OPS_REVIEW_MODE") != ("daily" if daily else "canary")
+        or env.get("CONTENT_OPS_REVIEW_PACKET_MODE") != (
+            "daily_button_card_v1" if daily else "button_card_v1")
+        or (daily and (env.get("CONTENT_OPS_BUTTON_CARD_ENABLED", "false") != "false"
+            or env.get("CONTENT_OPS_REVIEW_CANARY_VERSION_ID", "") != ""))
         or env.get("CONTENT_OPS_GATEWAY_URL") != APP_ORIGIN):
         raise ValueError("private_card_scope_invalid")
     for name, value in env.items():
@@ -118,11 +121,33 @@ def _validated_scope_and_provenance(env, *, stamp_reader=None,
 
 
 def _validate_scope_and_provenance(env, *, stamp_reader=None,
-                                   allow_missing_runtime_sha=False):
+                                   allow_missing_runtime_sha=False, daily=False):
     # Preserve the existing SHA-only contract used by enabled settings and
     # operator helpers. Receipt generation reuses the same single observation.
     return _validated_scope_and_provenance(env, stamp_reader=stamp_reader,
-        allow_missing_runtime_sha=allow_missing_runtime_sha).release_sha
+        allow_missing_runtime_sha=allow_missing_runtime_sha, daily=daily).release_sha
+
+
+def _private_card_identity(env):
+    """Shared exact private bot/key policy parsing; never changes owner policy."""
+    workspace = env.get("CONTENT_STUDIO_WORKSPACE_ID", "")
+    gateway_token = env.get("CONTENT_OPS_GATEWAY_TOKEN", "")
+    bot_token = env.get("TELEGRAM_REVIEW_BOT_TOKEN", "")
+    room = env.get("TELEGRAM_REVIEW_CHAT_ID", "")
+    signing = env.get("CONTENT_OPS_BUTTON_SIGNING_KEY", "")
+    binding = env.get("CONTENT_OPS_EDIT_BINDING_KEY", "")
+    bot_match = _BOT.fullmatch(bot_token)
+    if (not _uuid(workspace) or _TOKEN.fullmatch(gateway_token) is None
+        or bot_match is None or _ROOM.fullmatch(room) is None
+        or _HEX64.fullmatch(signing) is None or _HEX64.fullmatch(binding) is None
+        or len({gateway_token, bot_token, signing, binding}) != 4):
+        raise ValueError("private_card_configuration_invalid")
+    bot_id, chat_id = int(bot_match.group(1)), int(room)
+    raw_policy = env.get("CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON")
+    policy = (ExistingReviewBotPolicy.from_json(raw_policy,
+                bot_id=bot_id, chat_id=chat_id) if raw_policy is not None else None)
+    return (workspace, gateway_token, bot_token, bot_id, chat_id,
+            bytes.fromhex(signing), bytes.fromhex(binding), policy)
 
 
 @dataclass(frozen=True, repr=False)
@@ -142,26 +167,11 @@ class PrivateCardRuntimeSettings:
     def from_env(cls, env: Mapping[str, str], *, stamp_reader: Callable[[], str] | None = None):
         _enabled(env)
         release = _validate_scope_and_provenance(env, stamp_reader=stamp_reader)
-        workspace = env.get("CONTENT_STUDIO_WORKSPACE_ID", "")
         version = env.get("CONTENT_OPS_REVIEW_CANARY_VERSION_ID", "")
-        gateway_token = env.get("CONTENT_OPS_GATEWAY_TOKEN", "")
-        bot_token = env.get("TELEGRAM_REVIEW_BOT_TOKEN", "")
-        room = env.get("TELEGRAM_REVIEW_CHAT_ID", "")
-        signing = env.get("CONTENT_OPS_BUTTON_SIGNING_KEY", "")
-        binding = env.get("CONTENT_OPS_EDIT_BINDING_KEY", "")
-        bot_match = _BOT.fullmatch(bot_token)
-        if (not _uuid(workspace) or not _uuid(version)
-            or _TOKEN.fullmatch(gateway_token) is None
-            or bot_match is None or _ROOM.fullmatch(room) is None
-            or _HEX64.fullmatch(signing) is None or _HEX64.fullmatch(binding) is None
-            or len({gateway_token, bot_token, signing, binding}) != 4):
+        if not _uuid(version):
             raise ValueError("private_card_configuration_invalid")
-        bot_id, chat_id = int(bot_match.group(1)), int(room)
-        raw_policy = env.get("CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON")
-        policy = (ExistingReviewBotPolicy.from_json(raw_policy,
-                    bot_id=bot_id, chat_id=chat_id) if raw_policy is not None else None)
-        return cls(workspace, version, release, gateway_token, bot_token,
-            bot_id, chat_id, bytes.fromhex(signing), bytes.fromhex(binding), policy)
+        workspace, *identity = _private_card_identity(env)
+        return cls(workspace, version, release, *identity)
 
 
 def build_runner(settings: PrivateCardRuntimeSettings):

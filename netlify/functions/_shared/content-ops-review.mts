@@ -20,7 +20,7 @@ const CLAIM_KEYS = [
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
 type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null;
-  packet_mode?: "button_card_v1" };
+  packet_mode?: "button_card_v1" | "daily_button_card_v1" };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch };
 
 const json = (value: Json, status = 200) => Response.json(value, {
@@ -43,6 +43,14 @@ function configuredScope(getEnv: Env): ReviewScope | null {
       && mode === "canary" && isCatalogUuid(version)
       && version === version.toLowerCase()
       ? { mode, content_version_id: version, packet_mode: "button_card_v1" }
+      : null;
+  }
+  // Daily button delivery is a distinct opt-in. The old canary flag cannot
+  // widen into it, and no fixed canary version may survive a mode switch.
+  if (packetMode === "daily_button_card_v1") {
+    return getEnv("CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED") === "true"
+      && mode === "daily" && (version === undefined || version === "")
+      ? { mode, content_version_id: null, packet_mode: "daily_button_card_v1" }
       : null;
   }
   // The existing daily-review release exposes link cards only.
@@ -151,7 +159,8 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
 
 async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
                            release: string, fetcher: typeof fetch): Promise<Response> {
-  if (scope.packet_mode !== "button_card_v1"
+  if (!["button_card_v1", "daily_button_card_v1"].includes(scope.packet_mode ?? "")
+    || !isCatalogUuid(scope.content_version_id)
     || !exact(body, ["action", "outbox_id", "claim_token"])
     || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
     return json({ error: "invalid_request" }, 400);
@@ -300,7 +309,8 @@ function ownerReceipt(step: string, value: unknown, args: Json): value is Json {
 
 async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
                            release: string, fetcher: typeof fetch): Promise<Response> {
-  if (scope.packet_mode !== "button_card_v1" || !exact(body, ["action", "step", "args"])
+  if (!["button_card_v1", "daily_button_card_v1"].includes(scope.packet_mode ?? "")
+    || !isCatalogUuid(scope.content_version_id) || !exact(body, ["action", "step", "args"])
     || typeof body.step !== "string" || !ownerArgs(body.step, body.args)) {
     return json({ error: "invalid_request" }, 400);
   }
@@ -349,8 +359,13 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!hasContentOpsGatewayAccess(req, token)) {
       return json({ error: "invalid_token" }, 401);
     }
-    const scope = configuredScope(deps.getEnv);
+    let scope = configuredScope(deps.getEnv);
     if (!scope) return json({ error: "content_ops_scope_not_configured" }, 503);
+    const requestedVersion = req.headers.get("x-content-ops-version-id");
+    if (scope.packet_mode === "daily_button_card_v1" && requestedVersion !== null) {
+      if (!ownerUuid(requestedVersion)) return json({ error: "content_ops_scope_mismatch" }, 409);
+      scope = { ...scope, content_version_id: requestedVersion };
+    }
     if (req.headers.get("x-content-ops-mode") !== scope.mode
       || req.headers.get("x-content-ops-version-id") !== scope.content_version_id
       || req.headers.get("x-content-ops-packet-mode") !== (scope.packet_mode ?? null)) {
@@ -360,8 +375,17 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       return json({ error: "invalid_request" }, 400);
     }
     const body = await readBody(req,
-      scope.packet_mode === "button_card_v1" ? MAX_BUTTON_BODY_BYTES : MAX_BODY_BYTES);
+      scope.packet_mode ? MAX_BUTTON_BODY_BYTES : MAX_BODY_BYTES);
     if (!body) return json({ error: "invalid_request" }, 400);
+    if (scope.packet_mode === "daily_button_card_v1") {
+      const discovery = body.action === "reconcile" || body.action === "claim";
+      // Never issue a wildcard image/owner/begin call, or a version-selected
+      // daily discovery. SQL still checks version + outbox + claim token.
+      if (discovery !== (scope.content_version_id === null)
+        || (!discovery && !["image", "owner", "begin"].includes(String(body.action)))) {
+        return json({ error: "invalid_request" }, 400);
+      }
+    }
     const cfg = contentCatalogConfig(deps.getEnv);
     if (!cfg) return json({ error: "content_ops_database_not_configured" }, 503);
     if (body.action === "image") return buttonImage(body, scope, cfg, release, deps.fetcher || fetch);
@@ -385,7 +409,7 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       if (body.action === "claim") {
         if (value === null) return json({ ...receipt, claim: null });
         const claim = claimProjection(value, body.claim_token);
-        if (claim && (scope.mode === "daily" || claim.content_version_id === scope.content_version_id)) {
+        if (claim && (scope.content_version_id === null || claim.content_version_id === scope.content_version_id)) {
           return json({ ...receipt, claim });
         }
       }
