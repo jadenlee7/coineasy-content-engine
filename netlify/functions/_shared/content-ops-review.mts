@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Context } from "@netlify/functions";
 import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 
@@ -9,6 +10,9 @@ const HASH = /^[a-f0-9]{64}$/;
 const MAX_BODY_BYTES = 2048;
 const MAX_BUTTON_BODY_BYTES = 8192;
 const MAX_IMAGE_BYTES = 10_000_000;
+const ORIGIN = "https://coineasy-newscard.netlify.app";
+export const CONTENT_OPS_REVIEW_PATH = "/.netlify/functions/content-ops-review";
+export type ContentOpsReviewRuntime = Readonly<Pick<Context, "deploy">>;
 const HANDLES: Record<string, string> = {
   yellow: "yellow", origintrail: "origin_trail", squid: "squidrouter", babylon: "babylonlabs_io",
 };
@@ -338,13 +342,24 @@ async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
 }
 
 export function createContentOpsReviewHandler(deps: Dependencies) {
-  return async (req: Request): Promise<Response> => {
+  return async (req: Request, runtime?: ContentOpsReviewRuntime): Promise<Response> => {
     if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
     if (deps.getEnv("CONTENT_OPS_GATEWAY_ENABLED") !== "true") {
       return json({ error: "content_ops_disabled" }, 503);
     }
-    const host = new URL(req.url).hostname;
-    if (host !== "coineasy-newscard.netlify.app" || deps.getEnv("CONTEXT") !== "production") {
+    // Only Netlify's native second handler argument proves a published
+    // production deployment. CONTEXT is mutable/build-only and may be absent
+    // in Functions; neither an env value nor caller headers may substitute it.
+    let productionRuntime = false;
+    try {
+      const url = new URL(req.url);
+      const deploy = runtime?.deploy;
+      productionRuntime = url.origin === ORIGIN && url.pathname === CONTENT_OPS_REVIEW_PATH
+        && deploy?.context === "production" && deploy.published === true
+        && typeof deploy.id === "string" && Boolean(deploy.id.trim())
+        && deploy.id === deploy.id.trim();
+    } catch { /* Malformed native metadata fails closed without error reflection. */ }
+    if (!productionRuntime) {
       return json({ error: "content_ops_production_host_required" }, 421);
     }
     const release = deps.releaseSha();

@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import gatewayHandler from "../netlify/functions/content-ops-review.mts";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
+import type { ContentOpsReviewRuntime } from "../netlify/functions/_shared/content-ops-review.mts";
+import { STUDIO_BUILD_RELEASE_SHA } from "../netlify/functions/_shared/studio-release.generated.mts";
 
 const SHA = "a".repeat(40);
 const TOKEN = "test-only-dedicated-gateway-token-123456";
 const ID = "11111111-1111-4111-8111-111111111111";
 const SCOPE = { mode: "daily", content_version_id: null };
+const RUNTIME: ContentOpsReviewRuntime = {
+  deploy: { context: "production", id: "fixture-published-deploy", published: true },
+};
 const ENV = {
   CONTENT_OPS_GATEWAY_ENABLED: "true", CONTENT_OPS_REVIEW_RELEASE_SHA: SHA,
-  CONTENT_OPS_GATEWAY_TOKEN: TOKEN, CONTEXT: "production",
+  CONTENT_OPS_GATEWAY_TOKEN: TOKEN,
   SUPABASE_URL: "https://example.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "test-database-authority",
   CONTENT_STUDIO_WORKSPACE_ID: ID,
   CONTENT_OPS_REVIEW_MODE: "daily",
@@ -23,15 +29,19 @@ function request(body: unknown = { action: "reconcile" }, overrides: RequestInit
 }
 function harness(env = ENV, result: unknown = 0, fail = false) {
   const calls: Array<{ url: string; body: any }> = [];
-  const handler = createContentOpsReviewHandler({
-    getEnv: (name) => env[name], releaseSha: () => SHA,
+  const reads: string[] = []; let releaseReads = 0;
+  const rawHandler = createContentOpsReviewHandler({
+    getEnv: (name) => { reads.push(name); return env[name]; },
+    releaseSha: () => { releaseReads++; return SHA; },
     fetcher: async (url, init) => {
       calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
       if (fail) throw new Error("private-provider-response-must-not-leak");
       return Response.json(result);
     },
   });
-  return { handler, calls };
+  // Fixture runtime is supplied as the native second argument, never env/header.
+  const handler = (req: Request, runtime: ContentOpsReviewRuntime | null = RUNTIME) => rawHandler(req, runtime ?? undefined);
+  return { handler, rawHandler, calls, reads, releaseReads: () => releaseReads };
 }
 
 test("disabled gate reads no secrets, release, request body or network", async () => {
@@ -43,6 +53,83 @@ test("disabled gate reads no secrets, release, request body or network", async (
   });
   assert.equal((await handler(request())).status, 503);
   assert.deepEqual(reads, ["CONTENT_OPS_GATEWAY_ENABLED"]);
+});
+
+test("published production native context works with missing or conflicting CONTEXT", async () => {
+  for (const context of [undefined, "production", "deploy-preview", "branch-deploy"]) {
+    const h = harness({ ...ENV, CONTEXT: context });
+    assert.equal((await h.handler(request())).status, 200);
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.reads.includes("CONTEXT"), false);
+  }
+});
+
+test("missing, preview, unpublished and malformed native deployment context reject before secrets or RPC", async () => {
+  const throwing: unknown = Object.defineProperty({}, "deploy", {
+    get: () => { throw Error("private-runtime-value-must-not-leak"); },
+  });
+  const invalid: unknown[] = [null, {}, { deploy: null }, { deploy: "production" }, throwing,
+    ...[undefined, "", "deploy-preview", "branch-deploy", "Production"].map(context => ({ deploy: { ...RUNTIME.deploy, context } })),
+    ...[undefined, false, "true", 1].map(published => ({ deploy: { ...RUNTIME.deploy, published } })),
+    ...[undefined, "", " ", " padded ", 1].map(id => ({ deploy: { ...RUNTIME.deploy, id } })),
+  ];
+  for (const runtime of invalid) {
+    const h = harness({ ...ENV, CONTEXT: "production" });
+    const req = request();
+    req.headers.set("x-netlify-deploy-context", "production");
+    req.headers.set("x-netlify-deploy-id", RUNTIME.deploy.id);
+    req.headers.set("x-forwarded-host", "coineasy-newscard.netlify.app");
+    const response = await h.rawHandler(req, runtime as ContentOpsReviewRuntime | undefined);
+    assert.equal(response.status, 421);
+    assert.deepEqual(await response.json(), { error: "content_ops_production_host_required" });
+    assert.deepEqual(h.reads, ["CONTENT_OPS_GATEWAY_ENABLED"]);
+    assert.equal(h.releaseReads(), 0);
+    assert.equal(h.calls.length, 0);
+  }
+  const missing = harness({ ...ENV, CONTEXT: "production" });
+  assert.equal((await missing.rawHandler(request())).status, 421);
+  assert.equal(missing.calls.length, 0);
+});
+
+test("native production proof cannot bypass exact origin, scheme, port or function path", async () => {
+  for (const url of [
+    "https://preview.example/.netlify/functions/content-ops-review",
+    "https://coineasy-newscard.netlify.app.evil.example/.netlify/functions/content-ops-review",
+    "http://coineasy-newscard.netlify.app/.netlify/functions/content-ops-review",
+    "https://coineasy-newscard.netlify.app:444/.netlify/functions/content-ops-review",
+    "https://coineasy-newscard.netlify.app/.netlify/functions/content-ops-review-release",
+    "https://coineasy-newscard.netlify.app/.netlify/functions/content-ops-review/",
+  ]) {
+    const h = harness();
+    const response = await h.handler(new Request(url, request()));
+    assert.equal(response.status, 421, url);
+    assert.deepEqual(h.reads, ["CONTENT_OPS_GATEWAY_ENABLED"]);
+    assert.equal(h.releaseReads(), 0);
+    assert.equal(h.calls.length, 0);
+  }
+});
+
+test("native second argument composes through the production adapter without CONTEXT spoofing", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
+  const release = STUDIO_BUILD_RELEASE_SHA || SHA;
+  const reads: string[] = [];
+  Object.defineProperty(globalThis, "Netlify", { configurable: true, value: { env: {
+    get: (name: string) => { reads.push(name); return { ...ENV,
+      CONTENT_OPS_REVIEW_RELEASE_SHA: release }[name]; },
+  } } });
+  try {
+    const req = request({ action: "validate_unknown_action_no_rpc" });
+    req.headers.set("x-content-ops-expected-release-sha", release);
+    const response = await gatewayHandler(req, RUNTIME);
+    assert.equal(response.status, STUDIO_BUILD_RELEASE_SHA ? 400 : 503);
+    assert.deepEqual(await response.json(), { error: STUDIO_BUILD_RELEASE_SHA
+      ? "invalid_request" : "content_ops_release_mismatch" });
+    assert.equal(reads.includes("CONTEXT"), false);
+    assert.equal((await gatewayHandler(request())).status, 421);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "Netlify", original);
+    else delete (globalThis as any).Netlify;
+  }
 });
 
 const DAILY_BUTTON_ENV = { ...ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "daily_button_card_v1",
@@ -157,7 +244,7 @@ test("daily button image verifies exact claimed version and rejects cross-versio
       },
     });
     const response = await handler(dailyButtonRequest({ action: "image",
-      outbox_id: ID, claim_token: ID }, version));
+      outbox_id: ID, claim_token: ID }, version), RUNTIME);
     assert.equal(response.status, wrongVersion ? 503 : 200);
     assert.equal(calls.length, wrongVersion ? 1 : 2);
     assert.equal(JSON.parse(String(calls[0].init.body)).target_content_version_id, version);
@@ -169,11 +256,10 @@ test("daily button image verifies exact claimed version and rejects cross-versio
   }
 });
 
-test("auth, release, origin, context gates prevent all RPCs", async () => {
+test("auth, release and origin gates prevent all RPCs", async () => {
   for (const env of [
     { ...ENV, CONTENT_OPS_GATEWAY_ENABLED: "TRUE" },
     { ...ENV, CONTENT_OPS_REVIEW_RELEASE_SHA: "b".repeat(40) },
-    { ...ENV, CONTEXT: "deploy-preview" },
     { ...ENV, API_SECRET: TOKEN },
   ]) {
     const { handler, calls } = harness(env);
@@ -406,7 +492,7 @@ test("button-card image needs an exact claimed locator and returns verified byte
             "Content-Length": String(bytes.byteLength) } });
     },
   });
-  const response = await handler(imageRequest());
+  const response = await handler(imageRequest(), RUNTIME);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "image/png");
   assert.equal(response.headers.get("x-content-ops-banner-sha256"), hash);
@@ -445,7 +531,7 @@ test("button-card image fails closed on locator or Storage mismatch without leak
       releaseSha: () => SHA, fetcher: async () => { calls++; return Response.json(invalid); } });
     const req = canaryRequest(body);
     req.headers.set("x-content-ops-packet-mode", "button_card_v1");
-    const response = await handler(req);
+    const response = await handler(req, RUNTIME);
     assert.equal(response.status, 503);
     assert.equal(calls, 1);
     assert.doesNotMatch(await response.text(), /private\.png|never relay/);
@@ -460,7 +546,7 @@ test("button-card image fails closed on locator or Storage mismatch without leak
     } });
   const req = canaryRequest(body);
   req.headers.set("x-content-ops-packet-mode", "button_card_v1");
-  assert.equal((await handler(req)).status, 503);
+  assert.equal((await handler(req, RUNTIME)).status, 503);
   assert.equal(calls, 2);
 });
 
