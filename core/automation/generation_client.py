@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -427,11 +427,14 @@ class StudioGenerationClient:
         style_references: tuple[StyleReference, ...] = (),
         style_reference_pack_hash: str = "",
         expected_studio_release_sha: str = "",
+        before_generation_post: Callable[[], None] | None = None,
     ) -> GeneratedCatalogResult:
         if not _UUID_PATTERN.fullmatch(request_id):
             raise ValueError("automation request_id must be a UUID")
         if client_id not in {"yellow", "origintrail", "squid", "babylon"}:
             raise ValueError("unsupported automation client")
+        if before_generation_post is not None and not callable(before_generation_post):
+            raise ValueError("automation generation boundary hook is invalid")
         if (
             expected_studio_release_sha
             and _RELEASE_SHA_PATTERN.fullmatch(expected_studio_release_sha) is None
@@ -525,6 +528,10 @@ class StudioGenerationClient:
                 "X-Studio-Automation-Key": self.automation_token,
                 "X-Studio-Expected-Release-Sha": studio_release_sha,
             }
+            # Optional exact one-shot callers can close their action-time window
+            # after the release GET. Natural automation leaves this hook unset.
+            if before_generation_post is not None and before_generation_post() is not None:
+                raise ValueError("automation generation boundary hook is invalid")
             try:
                 response = await client.post(
                     f"{self.base_url}{route}",

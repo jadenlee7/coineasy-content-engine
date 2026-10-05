@@ -827,6 +827,10 @@ jobs:
                        supabase/tests/*_least_privilege.sql; do
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
+      - name: Prove isolated same-day refresh and one-shot concurrency
+        run: >-
+          node scripts/verify_official_x_same_day_refresh_local.mjs
+          --local-only --pg16
       - name: Verify production-shaped private review producer bindings
         run: |
           createdb content_ops_producer_binding
