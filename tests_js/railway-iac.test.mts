@@ -68,6 +68,7 @@ const legacyManifestHashes: Record<string, string> = {
   'railway.grok-qa.json': '7bea14fa9a681b1898a33eca0c5caf4cb177c7d0de0c590c2fae887cc987f3e0',
   'railway.managed-inspect.json': 'a2ec55ef1d3f45e271c3d6f393ba6c7b77b6f9a2a62ca1bf45aba436f4fd578c',
   'railway.official-x-cron.json': '6f2c9fa13b0e35fd7fec3f139f0adeba818903bd415be6d40cc652fefeed33de',
+  'railway.same-day-refresh.json': 'c2e0dc48925aeb33f36b9076c55bc57640077c09b51abf1ad52cdc6f6e121e42',
   'railway.telegram-publication-worker.json': '4cb5a085a58ef9d37fef5a124a54d9812162414326c999aecc9bb2d5f7014714',
 };
 

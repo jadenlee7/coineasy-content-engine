@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV GPG_KEY="" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    OFFICIAL_X_SAME_DAY_REFRESH_ENABLED=false
+
+COPY requirements-automation.txt .
+RUN pip install --no-cache-dir -r requirements-automation.txt
+
+# Only Railway's native GitHub-origin build argument may stamp this image.
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN python -c 'import os, pathlib, re, sys; sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""); sys.exit(2) if re.fullmatch(r"[a-f0-9]{40}", sha) is None else None; path = pathlib.Path("/app/same-day-refresh-build-sha"); path.write_text(sha + "\n", encoding="ascii"); path.chmod(0o444)'
+
+COPY core ./core
+COPY scripts/run_official_x_same_day_refresh.py ./scripts/run_official_x_same_day_refresh.py
+RUN groupadd --gid 10001 refresh && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin refresh
+
+USER 10001:10001
+CMD ["python", "-m", "scripts.run_official_x_same_day_refresh", "--validate-runtime-only"]
