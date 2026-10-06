@@ -50,7 +50,7 @@ def forbidden_factory(*args, **kwargs):
 
 def execute(args, env=None, factory=forbidden_factory):
     return run(_parser().parse_args(args), environ=env if env is not None else GuardedEnv(),
-               now_factory=lambda: NOW, runner_factory=factory)
+               now_factory=lambda: NOW, runner_factory=factory, stamp_reader=lambda: SHA)
 
 
 def test_default_off_no_manifest_no_credentials_no_clients():
@@ -144,6 +144,21 @@ def test_enabled_valid_manifest_dispatches_only_selected_exact_operation(command
     receipt = execute(argv(command), GuardedEnv(OFFICIAL_X_SAME_DAY_REFRESH_ENABLED="true"), factory)
     assert receipt["ok"] and calls == [WORKSPACE]
     assert len(runner.calls) == 1 and runner.calls[0][0] == expected
+
+
+@pytest.mark.parametrize("command", ["queue-once", "generate-once", "inspect"])
+def test_enabled_operation_requires_native_image_stamp_before_runner(command):
+    created = []
+
+    def factory(*args, **kwargs):
+        created.append(True)
+        return forbidden_factory()
+
+    receipt = run(_parser().parse_args(argv(command)),
+        environ=GuardedEnv(OFFICIAL_X_SAME_DAY_REFRESH_ENABLED="true"),
+        now_factory=lambda: NOW, runner_factory=factory, stamp_reader=lambda: "b" * 40)
+    assert not receipt["ok"] and receipt["error"] == "same_day_refresh_failed"
+    assert created == []
 
 
 def test_no_fifo_batch_poll_send_publish_or_all_cli_options():

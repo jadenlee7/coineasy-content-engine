@@ -308,6 +308,99 @@ jobs:
           docker run --rm --network none --cap-drop ALL
           --security-opt no-new-privileges coineasy-button-review-driver-ci
 
+  same-day-refresh-off-image:
+    name: Same-day refresh image (OFF, zero I/O)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the isolated OFF package with a synthetic native SHA
+        run: >-
+          docker build --file Dockerfile.same-day-refresh
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-same-day-refresh-ci .
+      - name: Reject missing and malformed native build provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker build --file Dockerfile.same-day-refresh \
+            --tag coineasy-same-day-refresh-missing-ci . >/tmp/refresh-missing-build.log 2>&1; then
+            echo 'missing native build SHA unexpectedly accepted' >&2
+            exit 1
+          fi
+          if docker build --file Dockerfile.same-day-refresh \
+            --build-arg RAILWAY_GIT_COMMIT_SHA=malformed \
+            --tag coineasy-same-day-refresh-malformed-ci . >/tmp/refresh-malformed-build.log 2>&1; then
+            echo 'malformed native build SHA unexpectedly accepted' >&2
+            exit 1
+          fi
+      - name: Prove non-root startup fails closed without configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python coineasy-same-day-refresh-ci \
+            -c 'import os, pathlib, stat; p=pathlib.Path("/app/same-day-refresh-build-sha"); s=p.stat(); assert os.getuid()==10001 and s.st_uid==0 and stat.S_IMODE(s.st_mode)==0o444; assert p.read_text("ascii")=="a"*40+"\n"'
+          set +e
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges coineasy-same-day-refresh-ci)"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          jq -e '.ok == false and .mode == "validate_runtime_only"
+            and .network_calls == false and .database_calls == false and .provider_calls == false
+            and .private_send_attempted == false and .public_send_attempted == false
+            and .image_attestation == false and .hosted_provenance_verified == false' <<< "$output"
+      - name: Validate matching OFF configuration and reject unsafe cases without network
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          other=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          workspace=11111111-1111-4111-8111-111111111111
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env OFFICIAL_X_SAME_DAY_REFRESH_ENABLED=false \
+            --env OFFICIAL_X_SAME_DAY_REFRESH_RELEASE_SHA="$sha" \
+            --env RAILWAY_GIT_COMMIT_SHA="$sha" --env CONTENT_STUDIO_WORKSPACE_ID="$workspace" \
+            coineasy-same-day-refresh-ci)"
+          jq -e --arg sha "$sha" '.ok == true and .mode == "validate_runtime_only" and .enabled == false
+            and .release_sha == $sha and .native_runtime_sha_matches == true
+            and .image_stamp_matches == true and .workspace_config_valid == true
+            and .image_attestation == false and .hosted_provenance_verified == false
+            and .network_calls == false and .database_calls == false and .provider_calls == false
+            and .private_send_attempted == false and .public_send_attempted == false' <<< "$output"
+          reject() {
+            local configured="$1" native="$2" enabled="$3"
+            shift 3
+            set +e
+            local output
+            output="$(docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --env OFFICIAL_X_SAME_DAY_REFRESH_ENABLED="$enabled" \
+              --env OFFICIAL_X_SAME_DAY_REFRESH_RELEASE_SHA="$configured" \
+              --env RAILWAY_GIT_COMMIT_SHA="$native" --env CONTENT_STUDIO_WORKSPACE_ID="$workspace" \
+              "$@" coineasy-same-day-refresh-ci)"
+            local status=$?
+            set -e
+            test "$status" -ne 0
+            jq -e '.ok == false and .mode == "validate_runtime_only"
+              and .network_calls == false and .database_calls == false and .provider_calls == false
+              and .private_send_attempted == false and .public_send_attempted == false' <<< "$output"
+          }
+          reject "$sha" "$other" false
+          reject "$other" "$sha" false
+          reject "$sha" "$sha" true
+          # Non-secret synthetic sentinels only; no GitHub secrets or live provider config.
+          for key in OPENAI_API_KEY TELEGRAM_REVIEW_BOT_TOKEN TYPEFULLY_API_KEY \
+            AWS_ACCESS_KEY_ID GOOGLE_APPLICATION_CREDENTIALS PGSERVICEFILE; do
+            reject "$sha" "$sha" false --env "$key=synthetic_blocked"
+          done
+
   automation-image:
     runs-on: ubuntu-latest
     steps:

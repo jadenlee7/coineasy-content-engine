@@ -13,11 +13,15 @@ from core.automation.same_day_refresh import (
     SHA40, RefreshQueueManifest, RefreshRunManifest, SameDayRefreshRunner,
     SupabaseSameDayRefreshRepository, aware_time, canonical_day, canonical_uuid,
 )
+from core.automation.same_day_refresh_runtime import read_image_stamp, validate_runtime
 
 
 def _parser():
     parser = argparse.ArgumentParser(description="One exact manual latest-source refresh; default OFF.")
-    parser.add_argument("--validate-only", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--validate-runtime-only", action="store_true",
+                       help="Check explicit OFF/config/native/image SHA only; no candidate IDs or external I/O.")
+    modes.add_argument("--validate-only", action="store_true",
                         help="Validate scalar identities/config only; zero DB/HTTP/provider I/O.")
     commands = parser.add_subparsers(dest="command")
     for command in ("queue-once", "generate-once", "inspect"):
@@ -93,12 +97,18 @@ def build_runner(env, *, workspace_id, operation):
 
 
 def run(args, *, environ=None, now_factory=lambda: datetime.now(timezone.utc),
-        runner_factory=build_runner):
+        runner_factory=build_runner, stamp_reader=read_image_stamp):
     env = os.environ if environ is None else environ
-    mode = "validate_only" if args.validate_only else (args.command or "off")
+    mode = ("validate_runtime_only" if args.validate_runtime_only else
+            "validate_only" if args.validate_only else (args.command or "off"))
     zero_io = {"network_calls": False, "database_calls": False, "provider_calls": False,
                "private_send_attempted": False, "public_send_attempted": False}
     try:
+        if args.validate_runtime_only:
+            if args.command is not None or args.validate_only:
+                raise ValueError("same_day_refresh_modes_conflict")
+            provenance = validate_runtime(env, required_enabled=False, stamp_reader=stamp_reader)
+            return {"ok": True, "mode": mode, "enabled": False, **zero_io, **provenance}
         enabled = _enabled(env)
         if not enabled and not args.validate_only:
             return {"ok": True, "mode": mode, "enabled": False, **zero_io}
@@ -110,6 +120,7 @@ def run(args, *, environ=None, now_factory=lambda: datetime.now(timezone.utc),
             return {"ok": True, "mode": mode, "enabled": enabled, **zero_io,
                     "release_sha": args.release_sha, "native_runtime_sha_matches": True,
                     "image_attestation": False}
+        provenance = validate_runtime(env, required_enabled=True, stamp_reader=stamp_reader)
         runner = runner_factory(env, workspace_id=args.workspace_id, operation=args.command)
         if args.command == "queue-once":
             receipt = asyncio.run(runner.queue_once(manifest))
@@ -121,11 +132,13 @@ def run(args, *, environ=None, now_factory=lambda: datetime.now(timezone.utc),
             if receipt["release_sha"] != args.release_sha:
                 raise ValueError("same_day_refresh_release_mismatch")
             receipt = {"ok": receipt["status"] == "refresh_ready", **receipt}
-        return {**receipt, "mode": mode, "enabled": True}
+        return {**receipt, "mode": mode, "enabled": True, **provenance}
     except Exception:
         # No source, credentials, provider body or exception text leaves this CLI.
         return {"ok": False, "mode": mode, "error": "same_day_refresh_failed",
-                **(zero_io if args.validate_only else {
+                **({"image_attestation": False, "hosted_provenance_verified": False}
+                   if args.validate_runtime_only else {}),
+                **(zero_io if args.validate_only or args.validate_runtime_only else {
                     "private_send_attempted": False, "public_send_attempted": False})}
 
 
