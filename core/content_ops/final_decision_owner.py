@@ -79,9 +79,22 @@ class PostgresFinalDecisionOwner:
                         or row[0]["execution_authorized"] is not False):
                         raise ValueError("invalid receipt")
                     receipt = row[0]
+                    self._validate_rpc_receipt(receipt)
             return receipt
         except Exception:
             raise FinalDecisionOwnerError("final_decision_owner_outcome_unknown") from None
+
+    def _validate_rpc_receipt(self, receipt):
+        """Allow stricter owner contracts to reject receipts before COMMIT."""
+        terminal = "reused" not in receipt
+        allowed = {"held", "confirmed_pending_publication_owner"}
+        if terminal:
+            allowed.add("not_recorded")
+        if (receipt["status"] not in allowed
+            or (not terminal and type(receipt["reused"]) is not bool)
+            or (receipt["status"] == "not_recorded" and receipt["decision_id"] is not None)
+            or (receipt["status"] != "not_recorded" and not _uuid(receipt["decision_id"]))):
+            raise FinalDecisionOwnerError("final_decision_owner_outcome_unknown")
 
     def apply_final_decision(self, *, snapshot_sha256, version_id, card_id,
                              version_fingerprint, message_binding, bot_binding,

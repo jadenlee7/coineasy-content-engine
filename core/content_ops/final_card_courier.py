@@ -177,7 +177,10 @@ class FinalCardCourier:
             _require(type(snapshot) is FinalConfirmationSnapshot)
             snapshot.validate()
             _uuid(prepared.delivery_id)
-            _require(snapshot.release_sha == self._release_sha
+            _uuid(snapshot.parent_card_id)
+            _require(snapshot.card_id == prepared.delivery_id
+                     and snapshot.parent_card_id != prepared.delivery_id
+                     and snapshot.release_sha == self._release_sha
                      and type(prepared.bot_id) is int and prepared.bot_id > 0
                      and type(prepared.chat_id) is int and -(2**52) < prepared.chat_id < 0
                      and type(prepared.human_id) is int and prepared.human_id > 0
@@ -200,7 +203,7 @@ class FinalCardCourier:
             packet_sha = final_card_packet_sha256(requests,
                 banner_sha256=banner_sha, snapshot_sha256=snapshot_sha,
                 delivery_id=prepared.delivery_id, review_id=snapshot.review_id,
-                parent_card_id=snapshot.card_id, release_sha=self._release_sha)
+                parent_card_id=snapshot.parent_card_id, release_sha=self._release_sha)
             if prepared.delivery_id in self._attempted:
                 raise FinalCardCourierError("final_card_replay_denied")
             await self._sender.preflight(bot_id=prepared.bot_id,
@@ -209,13 +212,14 @@ class FinalCardCourier:
             reservation_called = True
             reservation = await self._owner.reserve_delivery(
                 delivery_id=prepared.delivery_id, review_id=snapshot.review_id,
-                parent_card_id=snapshot.card_id, actor_id=snapshot.reviewer_id,
+                parent_card_id=snapshot.parent_card_id, actor_id=snapshot.reviewer_id,
                 version_fingerprint=snapshot.version_fingerprint,
                 bot_binding=bot, room_binding=room, human_binding=human,
                 snapshot_sha256=snapshot_sha, packet_sha256=packet_sha,
                 release_sha=self._release_sha,
                 telegram_route_binding=snapshot.telegram_route_binding,
-                typefully_route_binding=snapshot.typefully_route_binding)
+                typefully_route_binding=snapshot.typefully_route_binding,
+                decision_mode=snapshot.decision_mode)
             if (type(reservation) is not dict
                 or set(reservation) != {"status", "delivery_id", "expires_at",
                                         "execution_authorized"}

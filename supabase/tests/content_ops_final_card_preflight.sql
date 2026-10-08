@@ -313,7 +313,7 @@ begin
         raise exception 'final_card_preflight_runtime_grant_leaked';
     end if;
     if has_function_privilege('service_role',
-        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)',
+        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text)',
         'EXECUTE') or has_function_privilege('authenticated',
         'private.begin_content_ops_final_card_part(uuid,smallint,text)',
         'EXECUTE') or has_function_privilege('anon',

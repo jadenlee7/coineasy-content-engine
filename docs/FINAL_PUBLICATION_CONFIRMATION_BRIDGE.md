@@ -4,6 +4,11 @@ Status: **local-only, unmounted, default OFF; no approval or public send**.
 This is the second stage after the separate private source and copy/banner
 checks. It is not the cancellation-button `confirmation_*` flow.
 
+The October integration adds a separately mode-bound queue owner; see
+[`DAILY_APPROVAL_INTEGRATION.md`](DAILY_APPROVAL_INTEGRATION.md) for its current
+implementation and remaining runtime boundaries. The record-only behavior
+described below is still the default and cannot silently become queue consent.
+
 `core/content_ops/final_publication_confirmation.py` produces an exact-version
 four-part private-room packet shape: canonical banner identity (SHA-256; a
 future courier must obtain and verify the actual PNG bytes), full Telegram

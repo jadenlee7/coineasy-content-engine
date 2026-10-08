@@ -105,6 +105,15 @@ class FinalDecisionOwnerTest(unittest.TestCase):
         self.assertIn("private.read_content_ops_final_decision_terminal",
             self.connections[0].cursor_value.queries[1][0])
 
+    def test_semantically_invalid_receipt_is_rejected_before_commit(self):
+        original = self.receipt.copy()
+        for change in ({"status": "channels_queued"}, {"decision_id": "invalid"},
+                       {"reused": 1}):
+            self.receipt = {**original, **change}
+            with self.assertRaisesRegex(FinalDecisionOwnerError, "outcome_unknown"):
+                self.owner().apply_final_decision(**self.request())
+            self.assertFalse(self.connections[-1].committed)
+
 
 if __name__ == "__main__":
     unittest.main()

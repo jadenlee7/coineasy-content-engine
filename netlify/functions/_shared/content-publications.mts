@@ -7,7 +7,7 @@ import {
 
 const FEATURE_FLAG = "STUDIO_TELEGRAM_PUBLISH_ENABLED";
 const ALLOWED_CLIENTS_ENV = "STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS";
-const FIRST_SLICE_CLIENT: ContentCatalogClient = "squid";
+const TELEGRAM_PUBLICATION_CLIENTS = ["yellow", "origintrail", "squid", "babylon"] as const;
 const WORKER_TOKEN_MINIMUM = 32;
 const WORKER_TOKEN_MAXIMUM = 512;
 const WORKER_TOKEN_FORBIDDEN_PATTERN = /[^\x21-\x7e]/;
@@ -29,7 +29,8 @@ const PUBLICATION_STATUSES = new Set([
   "cancelled",
 ]);
 const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,79}$/;
-const TELEGRAM_URL_PATTERN = /^https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{4,31}\/[1-9][0-9]{0,18}$/;
+const TELEGRAM_URL_PATTERN = /^https:\/\/t\.me\/(?:yellowkorea_ann|origintrailkr|squid_kor_update|babylonbtc)\/[1-9][0-9]{0,18}$/;
+const TELEGRAM_PUBLICATION_USERNAMES = {yellow: "yellowkorea_ann", origintrail: "origintrailkr", squid: "squid_kor_update", babylon: "babylonbtc"} as const;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 const CONTENT_CATALOG_CLIENT_SET = new Set<string>(CONTENT_CATALOG_CLIENTS);
 
@@ -158,6 +159,7 @@ function normalizedPublication(
   expectedItemId: string,
   expectedVersionId: string,
   reusedDefault: boolean,
+  expectedClient?: ContentCatalogClient,
 ): StudioTelegramPublication {
   const row = isRecord(value) && isRecord(value.publication)
     ? value.publication
@@ -186,6 +188,8 @@ function normalizedPublication(
     || !PUBLICATION_STATUSES.has(status)
     || deliveryStartedAt === undefined
     || !(externalUrl === null || TELEGRAM_URL_PATTERN.test(externalUrl))
+    || (externalUrl !== null && expectedClient !== undefined
+      && !externalUrl.startsWith(`https://t.me/${TELEGRAM_PUBLICATION_USERNAMES[expectedClient]}/`))
     || (status === "published" ? externalUrl === null : externalUrl !== null)
     || !(errorCode === null || ERROR_CODE_PATTERN.test(errorCode))
   ) {
@@ -253,8 +257,12 @@ export function studioTelegramPublishEnabled(
 export function studioTelegramPublishAllowedClients(
   getEnv: (name: string) => string | undefined,
 ): ReadonlySet<ContentCatalogClient> {
-  return getEnv(ALLOWED_CLIENTS_ENV) === FIRST_SLICE_CLIENT
-    ? new Set([FIRST_SLICE_CLIENT])
+  const raw = getEnv(ALLOWED_CLIENTS_ENV);
+  if (typeof raw !== "string") return new Set();
+  const clients = raw.split(",");
+  const canonical = TELEGRAM_PUBLICATION_CLIENTS.filter((client) => clients.includes(client));
+  return clients.length > 0 && clients.join(",") === canonical.join(",")
+    ? new Set(canonical)
     : new Set();
 }
 
@@ -302,6 +310,7 @@ export async function requestStudioTelegramPublication(
   idempotencyKey: string,
   fetcher: typeof fetch = fetch,
   signal: AbortSignal = AbortSignal.timeout(10_000),
+  expectedClient?: ContentCatalogClient,
 ): Promise<StudioTelegramPublication> {
   const raw = await rpc(config, "request_studio_telegram_publication", {
     target_workspace_id: config.workspaceId,
@@ -309,7 +318,7 @@ export async function requestStudioTelegramPublication(
     target_content_version_id: contentVersionId.toLowerCase(),
     request_idempotency_key: idempotencyKey.toLowerCase(),
   }, fetcher, signal);
-  return normalizedPublication(raw, contentItemId, contentVersionId, false);
+  return normalizedPublication(raw, contentItemId, contentVersionId, false, expectedClient);
 }
 
 export async function getStudioTelegramPublicationTarget(
@@ -350,6 +359,7 @@ export async function getStudioTelegramPublication(
   contentVersionId: string,
   fetcher: typeof fetch = fetch,
   signal: AbortSignal = AbortSignal.timeout(10_000),
+  expectedClient?: ContentCatalogClient,
 ): Promise<StudioTelegramPublication | null> {
   const raw = await rpc(config, "get_studio_telegram_publication", {
     target_workspace_id: config.workspaceId,
@@ -357,7 +367,7 @@ export async function getStudioTelegramPublication(
     target_content_version_id: contentVersionId.toLowerCase(),
   }, fetcher, signal);
   if (raw === null) return null;
-  return normalizedPublication(raw, contentItemId, contentVersionId, true);
+  return normalizedPublication(raw, contentItemId, contentVersionId, true, expectedClient);
 }
 
 export async function kickTelegramPublicationWorker(

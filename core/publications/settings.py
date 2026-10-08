@@ -30,6 +30,16 @@ _WORKER_TOKEN_FORBIDDEN_SECRET_NAMES = (
 )
 
 
+def parse_publication_allowed_clients(raw: str) -> tuple[str, ...]:
+    """Accept an explicit, canonical subset, never silently expand a canary."""
+    if not isinstance(raw, str):
+        raise ValueError("TELEGRAM_PUBLICATION_ALLOWED_CLIENTS is invalid")
+    clients = tuple(raw.split(","))
+    if not clients or clients != tuple(c for c in PUBLICATION_CLIENTS if c in clients):
+        raise ValueError("TELEGRAM_PUBLICATION_ALLOWED_CLIENTS is invalid")
+    return clients
+
+
 def telegram_publication_enabled(environ: Mapping[str, str] | None = None) -> bool:
     env = os.environ if environ is None else environ
     raw = env.get("TELEGRAM_PUBLICATION_ENABLED", "false")
@@ -168,6 +178,7 @@ class PublicationSettings:
     lease_seconds: int = 180
     max_claims: int = 1
     clients_dir: Path = Path("clients")
+    release_sha: str = ""
 
     @classmethod
     def from_env(
@@ -211,9 +222,7 @@ class PublicationSettings:
         service_key = _service_role_key(env)
         workspace_id = _workspace_id(env)
         raw_clients = env.get("TELEGRAM_PUBLICATION_ALLOWED_CLIENTS", "squid")
-        allowed_clients = tuple(raw_clients.split(","))
-        if allowed_clients != ("squid",):
-            raise ValueError("TELEGRAM_PUBLICATION_ALLOWED_CLIENTS is invalid")
+        allowed_clients = parse_publication_allowed_clients(raw_clients)
         _require_release_sha_fence(env)
         return cls(
             supabase_url=_supabase_url(env.get("SUPABASE_URL", "")),
@@ -227,4 +236,5 @@ class PublicationSettings:
                 env, "TELEGRAM_PUBLICATION_MAX_CLAIMS", 1, 1, 4
             ),
             clients_dir=clients_dir,
+            release_sha=env["RAILWAY_GIT_COMMIT_SHA"],
         )

@@ -2,8 +2,8 @@
 
 This module has no transport, database connection, publisher, or runtime mount.
 Only a trusted owner can supply the snapshot and durably record the decision.
-The current private decision ledger creates no approval or channel outbox. A
-rendered card or a valid HMAC is never publication authority by itself.
+Record-only cards create no channel work. Queue-mode cards require the separate
+atomic channel owner. A rendered card or HMAC alone is not publication authority.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from uuid import UUID
 
 from core.content_ops.review_buttons import ReviewSnapshot
 from core.content_ops.publication_route_verification import VerifiedPublicationRoutes
+from core.content_ops.prompt_reservation import canonical_timestamp
 
 
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\Z")
@@ -75,10 +76,21 @@ class FinalConfirmationSnapshot:
     typefully_route_binding: str
     telegram_destination_label: str
     typefully_x_destination_label: str
+    decision_mode: str = "record_only"
+    # card_id is the final ce2 delivery/card ID, never the original ce1 card.
+    parent_card_id: str | None = None
 
     def validate(self) -> None:
         _require(type(self.review) is ReviewSnapshot)
         self.review.validate()
+        _require(self.decision_mode in ("record_only", "telegram_and_typefully_draft"),
+                 "final_confirmation_mode_invalid")
+        if self.decision_mode == "telegram_and_typefully_draft":
+            _require(self.parent_card_id is not None,
+                     "final_confirmation_parent_card_required")
+            _require(0 < len(self.review.telegram_copy.encode("utf-16-le")) // 2 <= 1024
+                     and 0 < len(self.review.x_copy) <= 280,
+                     "final_confirmation_channel_copy_too_long")
         _require(self.review.eligibility == "daily_ready", "final_confirmation_not_ready")
         published = self.review.source_published_at
         _require(type(published) is str and bool(_TIME.fullmatch(published)),
@@ -92,6 +104,10 @@ class FinalConfirmationSnapshot:
         for value in (self.review_id, self.card_id, self.reviewer_id,
                       self.source_check_actor_id, self.claims_check_actor_id):
             _uuid(value)
+        if self.parent_card_id is not None:
+            _uuid(self.parent_card_id)
+            _require(self.parent_card_id != self.card_id,
+                     "final_confirmation_parent_card_conflict")
         _require(self.source_check_actor_id == self.reviewer_id
                  and self.claims_check_actor_id == self.reviewer_id,
                  "final_confirmation_checks_incomplete")
@@ -119,8 +135,16 @@ class FinalConfirmationSnapshot:
 
     def digest(self) -> str:
         self.validate()
-        payload = dict(review_sha256=self.review.digest(), review_id=self.review_id,
-            card_id=self.card_id, reviewer_id=self.reviewer_id,
+        # PostgreSQL preserves the instant, not the original timestamp spelling;
+        # provider handles are case-insensitive. Hash and show one deterministic
+        # representation so the registered card can be reconstructed exactly.
+        # Approved channel copy, source URL and banner bytes are never rewritten.
+        canonical_review = replace(self.review,
+            source_published_at=canonical_timestamp(self.review.source_published_at))
+        payload = dict(review_sha256=canonical_review.digest(), review_id=self.review_id,
+            decision_mode=self.decision_mode,
+            card_id=self.card_id, parent_card_id=self.parent_card_id,
+            reviewer_id=self.reviewer_id,
             source_check_actor_id=self.source_check_actor_id,
             claims_check_actor_id=self.claims_check_actor_id,
             review_epoch=self.review_epoch, source_check_epoch=self.source_check_epoch,
@@ -130,8 +154,8 @@ class FinalConfirmationSnapshot:
             release_sha=self.release_sha,
             telegram_route_binding=self.telegram_route_binding,
             typefully_route_binding=self.typefully_route_binding,
-            destination_labels=[self.telegram_destination_label,
-                                self.typefully_x_destination_label])
+            destination_labels=[self.telegram_destination_label.lower(),
+                                self.typefully_x_destination_label.lower()])
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
 
@@ -154,8 +178,8 @@ def pin_verified_routes(snapshot: FinalConfirmationSnapshot,
     pinned = replace(snapshot,
         telegram_route_binding=routes.telegram_route_binding,
         typefully_route_binding=routes.typefully_route_binding,
-        telegram_destination_label=routes.telegram_destination_label,
-        typefully_x_destination_label=routes.typefully_x_destination_label)
+        telegram_destination_label=routes.telegram_destination_label.lower(),
+        typefully_x_destination_label=routes.typefully_x_destination_label.lower())
     pinned.validate()
     return pinned
 
@@ -216,18 +240,25 @@ def final_confirmation_messages(snapshot: FinalConfirmationSnapshot,
     def button(action: str, label: str) -> dict:
         return {"text": label, "callback_data": signer.issue(snapshot, action,
             room_binding, now=now, expires_at=now + 900)}
+    consequence = (
+        "승인하면 이 버전의 공식 Telegram 게시와 Typefully X 초안 생성을 요청합니다. "
+        "X는 자동 게시하지 않으며 Typefully에서 최종 게시합니다. "
+        "전송 성공 여부는 별도 영수증으로 확인합니다.\n"
+        if snapshot.decision_mode == "telegram_and_typefully_draft" else
+        "승인은 이 정확한 버전의 최종 검수 결정만 기록합니다. "
+        "공개 게시 대기열이나 전송 완료를 뜻하지 않습니다.\n"
+    )
     controls = (
         f"{snapshot.review.client_id.upper()} · 최종 게시 확인 (2차)\n"
-        f"Telegram 공식 채널: {snapshot.telegram_destination_label}\n"
-        f"X 게시 준비 대상: Typefully {snapshot.typefully_x_destination_label}\n"
+        f"Telegram 공식 채널: {snapshot.telegram_destination_label.lower()}\n"
+        f"X 게시 준비 대상: Typefully {snapshot.typefully_x_destination_label.lower()}\n"
         f"콘텐츠 버전: {snapshot.review.content_version_id}\n"
         f"검수 카드: {snapshot.card_id}\n"
         f"공식 원문: {snapshot.review.source_url}\n"
-        f"공식 게시 시각: {snapshot.review.source_published_at}\n"
+        f"공식 게시 시각: {canonical_timestamp(snapshot.review.source_published_at)}\n"
         f"배너 SHA-256: {snapshot.review.banner_sha256}\n"
         "아래 배너·Telegram·X 전문을 다시 확인하세요.\n"
-        "승인은 이 정확한 버전의 최종 검수 결정만 기록합니다. "
-        "공개 게시 대기열이나 전송 완료를 뜻하지 않습니다.\n"
+        + consequence +
         "버튼은 15분 후 만료되며, 수정·새 버전은 기존 확인을 무효화합니다."
     )
     return {"banner": {"sha256": snapshot.review.banner_sha256},
@@ -283,6 +314,8 @@ def handle_final_confirmation(event: VerifiedFinalCallback, *, enabled: bool,
     snapshot = owner.read_confirmation(event.room_binding, event.message_binding,
         event.bot_binding, event.human_binding)
     snapshot.validate()
+    _require(getattr(owner, "decision_mode", "record_only") == snapshot.decision_mode,
+             "final_confirmation_mode_conflict")
     _require(event.actor_id == snapshot.reviewer_id,
              "final_confirmation_actor_forbidden")
     _require(snapshot.release_sha == runtime_release_sha,
@@ -295,8 +328,10 @@ def handle_final_confirmation(event: VerifiedFinalCallback, *, enabled: bool,
         room_binding=event.room_binding, human_binding=event.human_binding,
         runtime_release_sha=runtime_release_sha, action=action,
         idempotency_key=hashlib.sha256(event.callback_id.encode()).hexdigest())
+    expected_status = ("channels_queued" if snapshot.decision_mode ==
+        "telegram_and_typefully_draft" else "confirmed_pending_publication_owner")
     _require(type(result) is dict and set(result) == {"status", "reused", "decision_id"}
-             and result["status"] in {"confirmed_pending_publication_owner", "held"}
+             and result["status"] in {expected_status, "held"}
              and type(result["reused"]) is bool and type(result["decision_id"]) is str
              and bool(_UUID.fullmatch(result["decision_id"])),
              "final_confirmation_owner_readback_unknown")

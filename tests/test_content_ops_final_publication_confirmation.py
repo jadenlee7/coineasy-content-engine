@@ -130,6 +130,18 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
                     review=replace(self.s.review, source_published_at=value)),
                     self.signer, ROOM, now=NOW)
 
+    def test_metadata_digest_and_display_are_reconstructible_from_database(self):
+        same_instant = replace(self.s,
+            review=replace(self.s.review, source_published_at="2026-09-25T21:15:00.000000+09:00"),
+            telegram_destination_label=self.s.telegram_destination_label.upper(),
+            typefully_x_destination_label=self.s.typefully_x_destination_label.upper())
+        self.assertEqual(self.s.digest(), same_instant.digest())
+        self.assertEqual(final_confirmation_messages(self.s, self.signer, ROOM, now=NOW),
+                         final_confirmation_messages(same_instant, self.signer, ROOM, now=NOW))
+        different_instant = replace(self.s,
+            review=replace(self.s.review, source_published_at="2026-09-25T12:15:00.000001Z"))
+        self.assertNotEqual(self.s.digest(), different_instant.digest())
+
     def test_confirm_is_private_decision_never_a_queue_or_provider_send(self):
         self.assertEqual(self.handle(),
                          {"status": "confirmed_pending_publication_owner",

@@ -89,7 +89,7 @@ def test_exact_reservation_commit_and_bounded_receipt():
     sql, args = conn.cursor_value.statements[1]
     assert "reserve_content_ops_final_card_delivery" in sql
     assert args == (D, R, C, A, SHA, SHA, SHA, SHA, SHA, SHA, RELEASE,
-                    "b" * 64, "c" * 64)
+                    "b" * 64, "c" * 64, "record_only")
 
 
 def test_part_begin_and_confirmation_use_separate_transactions():

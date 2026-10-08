@@ -7,6 +7,7 @@
 !core/publications/models.py
 !core/publications/handoff.py
 !core/publications/settings.py
+!core/publications/typefully_approval.py
 !core/publications/typefully_daily.py
 !core/publications/typefully_draft_once.py
 !core/publications/typefully_media_once.py

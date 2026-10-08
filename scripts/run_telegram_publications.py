@@ -21,8 +21,6 @@ _VALIDATE_REQUIRED_ENV = (
     "SUPABASE_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
     "CONTENT_STUDIO_WORKSPACE_ID",
-    "TELEGRAM_BOT_TOKEN_SQUID",
-    "TELEGRAM_CHANNEL_SQUID",
     "RAILWAY_GIT_COMMIT_SHA",
     "TELEGRAM_PUBLICATION_RELEASE_SHA",
 )
@@ -105,21 +103,25 @@ def _validate_only(
     )
     from core.publishers.telegram_exact import load_telegram_exact_config
 
-    telegram = load_telegram_exact_config(
-        "squid",
-        clients_dir=settings.clients_dir,
-        environ=env,
-    )
-    return {
+    targets = [load_telegram_exact_config(client_id,
+        clients_dir=settings.clients_dir, environ=env)
+        for client_id in settings.allowed_clients]
+    result = {
         "ok": True,
         "mode": "validate_only",
         "enabled": enabled,
-        "client_id": telegram.client_id,
-        "public_username": telegram.public_username,
         "runtime_release_verified": True,
         "provider_calls": False,
         "database_calls": False,
     }
+    if len(targets) == 1:
+        result.update(client_id=targets[0].client_id,
+            public_username=targets[0].public_username)
+    else:
+        result["allowed_clients"] = list(settings.allowed_clients)
+        result["targets"] = [{"client_id": target.client_id,
+            "public_username": target.public_username} for target in targets]
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

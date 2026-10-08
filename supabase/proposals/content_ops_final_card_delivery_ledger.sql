@@ -16,6 +16,8 @@ create table private.content_ops_final_card_deliveries (
     release_sha text not null check (release_sha ~ '^[a-f0-9]{40}$'),
     telegram_route_binding text not null check (telegram_route_binding ~ '^[a-f0-9]{64}$'),
     typefully_route_binding text not null check (typefully_route_binding ~ '^[a-f0-9]{64}$'),
+    decision_mode text not null default 'record_only'
+        check (decision_mode in ('record_only','telegram_and_typefully_draft')),
     bot_binding text not null check (bot_binding ~ '^[a-f0-9]{64}$'),
     room_binding text not null check (room_binding ~ '^[a-f0-9]{64}$'),
     human_binding text not null check (human_binding ~ '^[a-f0-9]{64}$'),
@@ -99,7 +101,8 @@ create function private.reserve_content_ops_final_card_delivery(
     target_actor_id uuid,expected_fingerprint text,verified_bot_binding text,
     verified_room_binding text,verified_human_binding text,
     target_snapshot_sha256 text,target_packet_sha256 text,target_release_sha text,
-    expected_telegram_binding text,expected_typefully_binding text
+    expected_telegram_binding text,expected_typefully_binding text,
+    requested_decision_mode text default 'record_only'
 ) returns jsonb language plpgsql volatile security invoker set search_path='' as $$
 declare
     r private.content_ops_button_reviews;
@@ -111,7 +114,9 @@ begin
     if target_id is null or target_id='00000000-0000-0000-0000-000000000000'::uuid
        or target_snapshot_sha256 is null or target_snapshot_sha256 !~ '^[a-f0-9]{64}$'
        or target_packet_sha256 is null or target_packet_sha256 !~ '^[a-f0-9]{64}$'
-       or target_release_sha is null or target_release_sha !~ '^[a-f0-9]{40}$' then
+       or target_release_sha is null or target_release_sha !~ '^[a-f0-9]{40}$'
+       or requested_decision_mode is null
+       or requested_decision_mode not in ('record_only','telegram_and_typefully_draft') then
         raise exception 'final_card_delivery_arguments_invalid' using errcode='22023';
     end if;
     select * into r from private.content_ops_button_reviews where id=target_review_id;
@@ -134,11 +139,11 @@ begin
     if expiry<=observed then raise exception 'final_card_delivery_expired' using errcode='23514';end if;
     insert into private.content_ops_final_card_deliveries(id,review_id,parent_card_id,
         actor_id,epoch,version_fingerprint,snapshot_sha256,packet_sha256,
-        release_sha,telegram_route_binding,typefully_route_binding,
+        release_sha,telegram_route_binding,typefully_route_binding,decision_mode,
         bot_binding,room_binding,human_binding,expires_at)
     values(target_id,r.id,parent.id,target_actor_id,r.epoch,r.version_fingerprint,
         target_snapshot_sha256,target_packet_sha256,target_release_sha,
-        expected_telegram_binding,expected_typefully_binding,
+        expected_telegram_binding,expected_typefully_binding,requested_decision_mode,
         verified_bot_binding,verified_room_binding,verified_human_binding,expiry);
     return jsonb_build_object('status','delivery_reserved','delivery_id',target_id,
         'expires_at',expiry,'execution_authorized',false);
@@ -297,7 +302,7 @@ end $$;
 revoke all on function private.guard_content_ops_final_card_ledger()
     from public,anon,authenticated,service_role;
 revoke all on function private.reserve_content_ops_final_card_delivery(
-    uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)
+    uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text)
     from public,anon,authenticated,service_role;
 revoke all on function private.begin_content_ops_final_card_part(uuid,smallint,text)
     from public,anon,authenticated,service_role;

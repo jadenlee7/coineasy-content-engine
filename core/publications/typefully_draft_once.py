@@ -215,6 +215,22 @@ class SupabaseTypefullyDraftOwner:
             or not 1 <= _positive(raw.get("asset_height")) <= 10000):
             _fail("typefully_candidate_invalid")
         _stamp(raw.get("version_created_at"))
+        source = raw.get("reviewer_source", "studio_session")
+        if source not in {"studio_session", "telegram_principal"}:
+            _fail("typefully_final_approval_invalid")
+        proof = raw.get("telegram_principal_approval")
+        if source == "telegram_principal":
+            from core.publications.typefully_approval import validate_telegram_principal_approval
+            try:
+                validate_telegram_principal_approval(proof,
+                    workspace_id=self.settings.workspace_id, client_id=self.settings.client_id,
+                    banner_sha256=raw["asset_sha256"], x_copy=raw["x_copy"],
+                    release_sha=self.settings.authorized_sha,
+                    social_set_id=self.settings.social_set_id)
+            except ValueError:
+                _fail("typefully_final_approval_invalid")
+        elif proof is not None:
+            _fail("typefully_final_approval_invalid")
         return raw
 
     async def media_receipt(self) -> Mapping:

@@ -41,6 +41,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
         config,
         contentItemId,
         item.current_version_id,
+        undefined,
+        undefined,
+        item.client_id,
       );
       reviewReadinessAvailable = true;
     } catch {

@@ -16,6 +16,7 @@ COPY core/publications/__init__.py ./core/publications/__init__.py
 COPY core/publications/models.py ./core/publications/models.py
 COPY core/publications/handoff.py ./core/publications/handoff.py
 COPY core/publications/settings.py ./core/publications/settings.py
+COPY core/publications/typefully_approval.py ./core/publications/typefully_approval.py
 COPY core/publications/typefully_daily.py ./core/publications/typefully_daily.py
 COPY core/publications/typefully_draft_once.py ./core/publications/typefully_draft_once.py
 COPY core/publications/typefully_media_once.py ./core/publications/typefully_media_once.py

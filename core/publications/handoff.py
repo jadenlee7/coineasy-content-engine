@@ -180,7 +180,9 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
     if not isinstance(now, datetime):
         _reject("handoff_timestamp_invalid")
     decision_now = _time(now)
-    data = _record(snapshot, _ROOT, "handoff_snapshot_invalid")
+    fields = _ROOT | ({"coexisting_telegram_publication"}
+                      if isinstance(snapshot, Mapping) and "coexisting_telegram_publication" in snapshot else set())
+    data = _record(snapshot, fields, "handoff_snapshot_invalid")
     client = data["client_id"]
     if not isinstance(client, str) or client not in CLIENT_TARGETS:
         _reject("handoff_client_invalid")
@@ -189,18 +191,23 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
     if data["content_version_id"] != data["current_version_id"]:
         _reject("handoff_exact_version_mismatch")
     if (data["client_active"] is not True or data["content_kind"] != "daily_news"
-        or data["content_status"] != "approved" or data["mock_mode"] is not False):
+        or data["content_status"] not in {"approved", "published"} or data["mock_mode"] is not False):
         _reject("handoff_approved_nonmock_version_required")
-    if not _integer(data["existing_publication_count"], 0, 0):
+    if not _integer(data["existing_publication_count"], 0, 1):
         _reject("handoff_existing_publication_requires_readback")
     observed, created = _time(data["observed_at"]), _time(data["version_created_at"])
     if not created <= observed <= decision_now:
         _reject("handoff_evidence_time_conflict")
-    approval = _record(data["latest_approval"], _APPROVAL, "handoff_approval_invalid")
+    raw_approval = data["latest_approval"]
+    telegram_principal = (isinstance(raw_approval, Mapping)
+                          and raw_approval.get("reviewer_source") == "telegram_principal")
+    approval_fields = _APPROVAL | ({"review_principal_id", "telegram_principal_approval"}
+                                  if telegram_principal else set())
+    approval = _record(raw_approval, approval_fields, "handoff_approval_invalid")
     _binding(approval, data)
     approval_id = _id(approval["approval_id"])
     reviewed = _time(approval["reviewed_at"])
-    if (approval["decision"] != "approved" or approval["reviewer_source"] != "studio_session"
+    if (approval["decision"] != "approved" or approval["reviewer_source"] not in {"studio_session", "telegram_principal"}
         or approval["fact_check_policy_version"] != "double-fact-check@1"
         or approval["source_facts_verified"] is not True or approval["output_claims_verified"] is not True
         or not _integer(approval["review_sequence"], 1, 2**53 - 1)
@@ -232,6 +239,41 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
         or re.fullmatch(rf"https://x\.com/{official_handle}/status/[1-9][0-9]{{0,18}}", source["canonical_url"], re.IGNORECASE) is None
         or published > created):
         _reject("handoff_source_invalid")
+    proof = None
+    if telegram_principal:
+        from core.publications.typefully_approval import validate_telegram_principal_approval
+        try:
+            proof = validate_telegram_principal_approval(approval["telegram_principal_approval"],
+                workspace_id=data["workspace_id"], client_id=client,
+                banner_sha256=banner_hash, x_copy=x_copy, telegram_copy=telegram,
+                now=decision_now)
+            if _id(approval["review_principal_id"]) != proof["review_principal_id"]:
+                _reject("handoff_human_attestation_required")
+        except ValueError:
+            _reject("handoff_human_attestation_required")
+    coexist = data.get("coexisting_telegram_publication")
+    if data["existing_publication_count"]:
+        if proof is None:
+            _reject("handoff_existing_publication_requires_readback")
+        p = _record(coexist, _BINDING | {"publication_id", "approval_id", "client_id",
+            "channel", "workflow", "status", "decision_id", "route_binding",
+            "release_sha", "banner_sha256", "telegram_copy_sha256"},
+            "handoff_existing_publication_requires_readback")
+        _binding(p, data)
+        _id(p["publication_id"])
+        if (p["approval_id"] != approval_id or p["client_id"] != client
+            or p["channel"] != "telegram" or p["workflow"] != "exact_telegram_publication_v1"
+            or p["status"] not in {"queued", "publishing", "published"}
+            or any(p[key] != proof[proof_key] for key, proof_key in (
+                ("decision_id", "decision_id"), ("route_binding", "telegram_route_binding"),
+                ("release_sha", "release_sha"), ("banner_sha256", "banner_sha256"),
+                ("telegram_copy_sha256", "telegram_copy_sha256")))):
+            _reject("handoff_existing_publication_requires_readback")
+    elif coexist is not None:
+        _reject("handoff_existing_publication_requires_readback")
+    if data["content_status"] == "published" and not (
+        data["existing_publication_count"] == 1 and coexist["status"] == "published"):
+        _reject("handoff_approved_nonmock_version_required")
     packet = {
         "schema_version": "approved-publication-preparation@1",
         "purpose": "advisory_preparation_only", "client_id": client,
@@ -239,7 +281,7 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
         "observed_at": observed.isoformat(), "version_created_at": created.isoformat(),
         "approval": {
             "approval_id": approval_id, "reviewed_at": reviewed.isoformat(),
-            "review_sequence": approval["review_sequence"], "reviewer_source": "studio_session",
+            "review_sequence": approval["review_sequence"], "reviewer_source": approval["reviewer_source"],
             "fact_check_policy_version": "double-fact-check@1",
             "source_facts_verified": True, "output_claims_verified": True,
         },
@@ -250,12 +292,12 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
         "targets": {"telegram": telegram_target, "x": x_target},
         "capabilities": {
             "telegram": {
-                "adapter": "exact_version_implemented" if client == "squid" else "adapter_missing",
-                "payload": "within_caption_limit" if len(telegram) <= 1024 else "caption_limit_exceeded",
+                "adapter": "exact_version_implemented",
+                "payload": "within_caption_limit" if len(telegram.encode("utf-16-le")) // 2 <= 1024 else "caption_limit_exceeded",
                 "runtime": "unverified", "execution_authorized": False,
             },
             "typefully": {
-                "adapter": "exact_version_adapter_missing", "publish_at": None,
+                "adapter": "exact_version_draft_implemented", "publish_at": None,
                 "account_mapping": "live_verification_required", "execution_authorized": False,
             },
         },
@@ -268,5 +310,8 @@ def build_publication_handoff(snapshot: Mapping, *, now: datetime) -> dict[str, 
             "source_freshness_policy": "human_approved_publication_no_fixed_age_limit",
         },
     }
+    if proof is not None:
+        packet["approval"]["review_principal_id"] = proof["review_principal_id"]
+        packet["approval"]["telegram_principal_approval"] = proof
     encoded = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {"packet": packet, "packet_sha256": hashlib.sha256(encoded).hexdigest()}

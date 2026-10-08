@@ -435,6 +435,7 @@ jobs:
           from core.publications.typefully_daily import TypefullyDailySettings
           expected = {
               '__init__.py', 'models.py', 'handoff.py', 'settings.py',
+              'typefully_approval.py',
               'typefully_daily.py', 'typefully_draft_once.py',
               'typefully_media_once.py', 'typefully_media_upload.py',
               'typefully_readback.py',
@@ -1039,6 +1040,13 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_decision_ledger.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_publication_handoff_intent.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_decision_ledger.sql
+      - name: Prove atomic four-client human approval and channel admission
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_four_client_exact_telegram.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/four_client_exact_telegram_security.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_typefully_final_approval.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_publication_queue.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_publication_queue.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake

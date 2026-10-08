@@ -118,6 +118,16 @@ def prepare_typefully_draft(
     account_observed = _time(account["observed_at"])
     if not observed_now - timedelta(minutes=15) <= account_observed <= observed_now:
         _reject("typefully_account_readback_stale")
+    if packet["approval"]["reviewer_source"] == "telegram_principal":
+        from core.publications.typefully_approval import validate_telegram_principal_approval
+        try:
+            validate_telegram_principal_approval(packet["approval"]["telegram_principal_approval"],
+                workspace_id=packet["workspace_id"], client_id=packet["client_id"],
+                banner_sha256=packet["asset"]["sha256"], x_copy=packet["channel_copy"]["x"],
+                telegram_copy=packet["channel_copy"]["telegram"], social_set_id=social_set_id,
+                now=observed_now)
+        except ValueError:
+            _reject("typefully_final_approval_invalid")
 
     upload = _record(
         media,

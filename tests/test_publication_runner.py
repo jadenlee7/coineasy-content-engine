@@ -71,7 +71,7 @@ def test_validate_only_with_disabled_flag_has_structurally_zero_calls(
     [
         {"TELEGRAM_PUBLICATION_ENABLED": "1"},
         {"TELEGRAM_PUBLICATION_LEASE_SECONDS": "179"},
-        {"TELEGRAM_PUBLICATION_ALLOWED_CLIENTS": "yellow"},
+        {"TELEGRAM_PUBLICATION_ALLOWED_CLIENTS": "unknown"},
         {"SUPABASE_URL": ""},
         {"SUPABASE_SERVICE_ROLE_KEY": ""},
         {"CONTENT_STUDIO_WORKSPACE_ID": "invalid"},

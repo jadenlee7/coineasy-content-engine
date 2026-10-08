@@ -12,6 +12,7 @@ from core.content_ops.final_card_courier import (
 )
 from core.content_ops.final_publication_confirmation import (
     FinalConfirmationSigner, FinalConfirmationSnapshot,
+    VerifiedFinalCallback, handle_final_confirmation,
 )
 from core.content_ops.private_review_card_receipt import ObservedSend
 from core.content_ops.review_buttons import ReviewSnapshot
@@ -37,9 +38,9 @@ def prepared():
         "https://x.com/Yellow/status/123", source_at.isoformat(),
         "검수 완료된 Telegram 전문", "Verified X copy",
         hashlib.sha256(PNG).hexdigest(), "daily_ready")
-    snapshot = FinalConfirmationSnapshot(review, R, C, A, A, A, 0, 0, 0,
+    snapshot = FinalConfirmationSnapshot(review, R, D, A, A, A, 0, 0, 0,
         "b" * 64, 0, 0, RELEASE, "d" * 64, "e" * 64,
-        "@yellowkorea_ann", "@Yellow__Korea")
+        "@yellowkorea_ann", "@Yellow__Korea", parent_card_id=C)
     return PreparedFinalCard(snapshot, D, PNG, BOT, ROOM, HUMAN, None, NOW)
 
 
@@ -191,6 +192,40 @@ class FinalCardCourierTest(unittest.TestCase):
             **params, "parent_card_id": I}))
         self.assertNotEqual(actual, final_card_packet_sha256(**{
             **params, "release_sha": "c" * 40}))
+
+    def test_rendered_callback_targets_final_card_not_parent(self):
+        candidate = prepared()
+        self.assertEqual(self.run_card(candidate, enabled=True)["status"], "card_registered")
+        controls = self.sender.calls[3][0]
+        token = controls["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        room = self.bindings.digest("room", BOT, ROOM)
+        message = self.bindings.digest("final-card-message@1", BOT, ROOM, 103)
+        event = VerifiedFinalCallback("actual-rendered-button", A, False, room,
+            message, self.bindings.digest("bot", BOT),
+            self.bindings.digest("human", BOT, HUMAN), token)
+        applied = []
+        class DecisionOwner:
+            def read_confirmation(inner, *values):
+                self.assertEqual(values, (room, message, event.bot_binding, event.human_binding))
+                return candidate.snapshot
+            def apply_final_decision(inner, **values):
+                applied.append(values)
+                return dict(status="confirmed_pending_publication_owner", reused=False, decision_id=I)
+        result = handle_final_confirmation(event, enabled=True, signer=self.signer,
+            owner=DecisionOwner(), allowed_reviewers=frozenset({A}),
+            room_binding=room, runtime_release_sha=RELEASE, now=NOW+4)
+        self.assertFalse(result["public_send_attempted"])
+        self.assertEqual(applied[0]["card_id"], D)
+        self.assertNotEqual(applied[0]["card_id"], C)
+        self.assertEqual(self.owner.reservation["parent_card_id"], C)
+        self.assertEqual(applied[0]["snapshot_sha256"], self.owner.reservation["snapshot_sha256"])
+
+    def test_wrong_final_or_missing_parent_id_blocks_before_io(self):
+        candidate = prepared()
+        for snapshot in (replace(candidate.snapshot, card_id=I),
+                         replace(candidate.snapshot, parent_card_id=None)):
+            self.assertEqual(self.run_card(replace(candidate, snapshot=snapshot), enabled=True)["status"], "blocked")
+        self.assertEqual((self.owner.reserve_calls, self.sender.calls), (0, []))
 
     def test_unknown_send_stops_before_controls_and_registration(self):
         self.sender.fail_at = 2
