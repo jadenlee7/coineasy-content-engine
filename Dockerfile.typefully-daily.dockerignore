@@ -1,0 +1,16 @@
+**
+!Dockerfile.typefully-daily
+!core/
+!core/__init__.py
+!core/publications/
+!core/publications/__init__.py
+!core/publications/models.py
+!core/publications/handoff.py
+!core/publications/settings.py
+!core/publications/typefully_daily.py
+!core/publications/typefully_draft_once.py
+!core/publications/typefully_media_once.py
+!core/publications/typefully_media_upload.py
+!core/publications/typefully_readback.py
+!scripts/
+!scripts/run_typefully_daily.py

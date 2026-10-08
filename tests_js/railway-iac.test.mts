@@ -71,6 +71,10 @@ const legacyManifestHashes: Record<string, string> = {
   'railway.same-day-refresh.json': 'c2e0dc48925aeb33f36b9076c55bc57640077c09b51abf1ad52cdc6f6e121e42',
   'railway.telegram-publication-worker.json': '4cb5a085a58ef9d37fef5a124a54d9812162414326c999aecc9bb2d5f7014714',
 };
+const proposedManifestHashes: Record<string, string> = {
+  // Draft-only, not owned by the existing two-service Railway IaC program.
+  'railway.typefully-daily.json': 'f83de5cb67706ff358aba57b4859f6601b5c5036320748780d073254448653d9',
+};
 
 function assertPreservedVariables(actual: Record<string, unknown>, expected: string[]) {
   assert.deepEqual(Object.keys(actual).sort(), [...expected].sort());
@@ -89,11 +93,13 @@ test('Railway IaC has no auto-discovered root config and owns only two services'
     'CI must never apply Railway infrastructure');
   const manifests = readdirSync(new URL('..', import.meta.url))
     .filter((name) => /^railway\..+\.json$/.test(name)).sort();
-  assert.deepEqual(manifests, Object.keys(legacyManifestHashes).sort());
+  assert.deepEqual(manifests, [...Object.keys(legacyManifestHashes),
+    ...Object.keys(proposedManifestHashes)].sort());
   for (const name of manifests) {
     const sha256 = createHash('sha256')
       .update(readFileSync(new URL(`../${name}`, import.meta.url))).digest('hex');
-    assert.equal(sha256, legacyManifestHashes[name], `${name} changed outside its migration scope`);
+    assert.equal(sha256, legacyManifestHashes[name] ?? proposedManifestHashes[name],
+      `${name} changed outside its migration scope`);
   }
 
   assert.equal(partial, 'coineasy-content-engine-services');

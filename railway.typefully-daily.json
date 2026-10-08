@@ -1,0 +1,30 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.typefully-daily",
+    "watchPatterns": [
+      "/.dockerignore",
+      "/Dockerfile.typefully-daily",
+      "/Dockerfile.typefully-daily.dockerignore",
+      "/core/__init__.py",
+      "/core/publications/__init__.py",
+      "/core/publications/models.py",
+      "/core/publications/handoff.py",
+      "/core/publications/settings.py",
+      "/core/publications/typefully_daily.py",
+      "/core/publications/typefully_draft_once.py",
+      "/core/publications/typefully_media_once.py",
+      "/core/publications/typefully_media_upload.py",
+      "/core/publications/typefully_readback.py",
+      "/scripts/run_typefully_daily.py",
+      "/railway.typefully-daily.json"
+    ]
+  },
+  "deploy": {
+    "preDeployCommand": "python -m scripts.run_typefully_daily --validate-only",
+    "startCommand": "python -m scripts.run_typefully_daily",
+    "cronSchedule": "*/15 * * * *",
+    "restartPolicyType": "NEVER"
+  }
+}
