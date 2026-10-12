@@ -21,6 +21,7 @@ from uuid import UUID
 from core.content_ops.review_buttons import ReviewSnapshot
 from core.content_ops.publication_route_verification import VerifiedPublicationRoutes
 from core.content_ops.prompt_reservation import canonical_timestamp
+from core.content_ops.release_pair import valid_release_pair
 
 
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\Z")
@@ -76,6 +77,8 @@ class FinalConfirmationSnapshot:
     typefully_route_binding: str
     telegram_destination_label: str
     typefully_x_destination_label: str
+    callback_release_sha: str
+    release_pair_sha256: str
     decision_mode: str = "record_only"
     # card_id is the final ce2 delivery/card ID, never the original ce1 card.
     parent_card_id: str | None = None
@@ -121,6 +124,9 @@ class FinalConfirmationSnapshot:
                  and bool(_SHA.fullmatch(self.version_fingerprint)))
         _require(type(self.release_sha) is str
                  and bool(_RELEASE.fullmatch(self.release_sha)))
+        _require(valid_release_pair(self.release_sha, self.callback_release_sha,
+                                    self.release_pair_sha256),
+                 "final_confirmation_release_pair_invalid")
         for binding in (self.telegram_route_binding, self.typefully_route_binding):
             _require(type(binding) is str and bool(_SHA.fullmatch(binding)),
                      "final_confirmation_destination_unverified")
@@ -152,6 +158,8 @@ class FinalConfirmationSnapshot:
             version_fingerprint=self.version_fingerprint,
             approval_count=self.approval_count, publication_count=self.publication_count,
             release_sha=self.release_sha,
+            callback_release_sha=self.callback_release_sha,
+            release_pair_sha256=self.release_pair_sha256,
             telegram_route_binding=self.telegram_route_binding,
             typefully_route_binding=self.typefully_route_binding,
             destination_labels=[self.telegram_destination_label.lower(),
@@ -318,7 +326,7 @@ def handle_final_confirmation(event: VerifiedFinalCallback, *, enabled: bool,
              "final_confirmation_mode_conflict")
     _require(event.actor_id == snapshot.reviewer_id,
              "final_confirmation_actor_forbidden")
-    _require(snapshot.release_sha == runtime_release_sha,
+    _require(snapshot.callback_release_sha == runtime_release_sha,
              "final_confirmation_release_conflict")
     action = signer.verify(event.token, snapshot, room_binding, now=now)
     result = owner.apply_final_decision(snapshot_sha256=snapshot.digest(),

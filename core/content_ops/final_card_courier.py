@@ -217,6 +217,8 @@ class FinalCardCourier:
                 bot_binding=bot, room_binding=room, human_binding=human,
                 snapshot_sha256=snapshot_sha, packet_sha256=packet_sha,
                 release_sha=self._release_sha,
+                callback_release_sha=snapshot.callback_release_sha,
+                release_pair_sha256=snapshot.release_pair_sha256,
                 telegram_route_binding=snapshot.telegram_route_binding,
                 typefully_route_binding=snapshot.typefully_route_binding,
                 decision_mode=snapshot.decision_mode)

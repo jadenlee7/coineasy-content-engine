@@ -2,6 +2,7 @@
 -- Synthetic data rolls back; this test never calls Telegram, Typefully or X.
 begin;
 do $$
+<<fixture>>
 declare
     w uuid:=gen_random_uuid(); i uuid:=gen_random_uuid(); v uuid:=gen_random_uuid();
     feed uuid:=gen_random_uuid(); source uuid:=gen_random_uuid();
@@ -13,12 +14,20 @@ declare
     bot text:=repeat('a',64); room text:=repeat('b',64);
     human text:=repeat('c',64); source_time timestamptz;
     poll_time timestamptz;
+    callback_release_sha text:=repeat('5',40); release_pair_sha256 text; stale_pair text;
+    pair_case integer; pair_engine text; pair_callback text; pair_digest text;
     before_approvals bigint; before_publications bigint;
 begin
     insert into public.workspaces(id,name,slug) values
         (w,'Synthetic final-card preflight','synthetic-final-card-'||substr(w::text,1,8));
     insert into public.workspace_clients(workspace_id,client_id,display_name)
         values(w,'yellow','Synthetic Yellow');
+    release_pair_sha256:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||repeat('6',40)||E'\ncallback='||callback_release_sha||E'\n','UTF8')),'hex');
+    stale_pair:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||repeat('6',40)||E'\ncallback='||repeat('9',40)||E'\n','UTF8')),'hex');
+    insert into private.content_ops_release_pairs(release_sha,callback_release_sha,release_pair_sha256)
+        values(repeat('6',40),callback_release_sha,release_pair_sha256),
+              (repeat('6',40),repeat('9',40),stale_pair);
+    insert into private.content_ops_current_release_pairs values(w,'yellow',release_pair_sha256);
     insert into auth.users(id) values(actor);
     insert into private.content_ops_review_principals(id,workspace_id,bot_binding,human_binding)
         values(actor,w,bot,human);
@@ -100,7 +109,7 @@ begin
     begin
         perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
             actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-            repeat('6',40),repeat('7',64),repeat('8',64));
+            repeat('6',40),repeat('7',64),repeat('8',64),'record_only',callback_release_sha,release_pair_sha256);
         raise exception 'final_card_missing_routes_reserved';
     exception when check_violation then null; end;
     if exists(select 1 from private.content_ops_final_card_deliveries where id=delivery) then
@@ -118,7 +127,7 @@ begin
     begin
         perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
             actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-            repeat('6',40),repeat('7',64),repeat('8',64));
+            repeat('6',40),repeat('7',64),repeat('8',64),'record_only',callback_release_sha,release_pair_sha256);
         raise exception 'stale_destination_verification_reserved';
     exception when check_violation then null; end;
     if exists(select 1 from private.content_ops_final_card_deliveries where id=delivery) then
@@ -126,9 +135,31 @@ begin
     end if;
     update private.content_ops_publication_routes set verified_at=clock_timestamp()
         where workspace_id=w and channel='typefully_x';
+    for pair_case in 1..4 loop
+        pair_engine:=case when pair_case=3 then callback_release_sha else repeat('6',40) end;
+        pair_callback:=case when pair_case=1 then repeat('0',40)
+            when pair_case=3 then repeat('6',40) else callback_release_sha end;
+        pair_digest:=case when pair_case=2 then repeat('0',64) else release_pair_sha256 end;
+        begin
+            if pair_case=4 then
+                update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+                    where workspace_id=w;
+            end if;
+            begin
+                perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
+                    actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
+                    pair_engine,repeat('7',64),repeat('8',64),'record_only',pair_callback,pair_digest);
+                raise exception 'wrong_release_pair_reserved_card';
+            exception when check_violation then null;end;
+            if exists(select 1 from private.content_ops_final_card_deliveries where id=delivery) then
+                raise exception 'wrong_release_pair_created_delivery';
+            end if;
+            raise exception 'rollback_synthetic_pair_switch' using errcode='P7710';
+        exception when sqlstate 'P7710' then null;end;
+    end loop;
     result:=private.reserve_content_ops_final_card_delivery(delivery,review,card,
         actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-        repeat('6',40),repeat('7',64),repeat('8',64));
+        repeat('6',40),repeat('7',64),repeat('8',64),'record_only',callback_release_sha,release_pair_sha256);
     if result->>'status' <> 'delivery_reserved'
        or result->'execution_authorized' is distinct from 'false'::jsonb then
         raise exception 'final_card_delivery_reserve_invalid';
@@ -136,10 +167,24 @@ begin
     begin
         perform private.reserve_content_ops_final_card_delivery(delivery,review,card,
             actor,fingerprint,bot,room,human,repeat('4',64),repeat('5',64),
-            repeat('6',40),repeat('7',64),repeat('8',64));
+            repeat('6',40),repeat('7',64),repeat('8',64),'record_only',callback_release_sha,release_pair_sha256);
         raise exception 'final_card_duplicate_delivery_allowed';
     exception when unique_violation then null;
     end;
+    begin
+        update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+            where workspace_id=w;
+        update private.content_ops_current_release_pairs set release_pair_sha256=fixture.release_pair_sha256
+            where workspace_id=w;
+        begin
+            perform private.begin_content_ops_final_card_part(delivery,0::smallint,repeat('a',64));
+            raise exception 'old_pair_rollback_revived_transport';
+        exception when check_violation then null;end;
+        if exists(select 1 from private.content_ops_final_card_parts where delivery_id=delivery) then
+            raise exception 'stale_pair_began_transport';
+        end if;
+        raise exception 'rollback_synthetic_pair_switch' using errcode='P7710';
+    exception when sqlstate 'P7710' then null;end;
     update private.content_ops_publication_routes set route_binding=repeat('9',64)
         where workspace_id=w and channel='telegram';
     begin
@@ -216,6 +261,18 @@ begin
         exception when unique_violation then null;
         end;
     end loop;
+    begin
+        update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+            where workspace_id=w;
+        begin
+            perform private.register_content_ops_final_card(delivery);
+            raise exception 'stale_pair_registered_card';
+        exception when check_violation then null;end;
+        if exists(select 1 from private.content_ops_final_cards where id=delivery) then
+            raise exception 'stale_pair_registration_written';
+        end if;
+        raise exception 'rollback_synthetic_pair_switch' using errcode='P7710';
+    exception when sqlstate 'P7710' then null;end;
     update private.content_ops_publication_routes set active=false
         where workspace_id=w and channel='typefully_x';
     begin
@@ -313,7 +370,7 @@ begin
         raise exception 'final_card_preflight_runtime_grant_leaked';
     end if;
     if has_function_privilege('service_role',
-        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text)',
+        'private.reserve_content_ops_final_card_delivery(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,text,text)',
         'EXECUTE') or has_function_privilege('authenticated',
         'private.begin_content_ops_final_card_part(uuid,smallint,text)',
         'EXECUTE') or has_function_privilege('anon',

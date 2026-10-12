@@ -84,7 +84,8 @@ create function private.record_content_ops_final_publication(
     expected_fingerprint text,expected_snapshot_sha256 text,
     verified_control_message_binding text,verified_bot_binding text,
     verified_room_binding text,verified_human_binding text,
-    verified_runtime_release_sha text,requested_action text,operation_key text
+    verified_runtime_release_sha text,requested_action text,operation_key text,
+    verified_callback_release_sha text,verified_release_pair_sha256 text
 ) returns jsonb language plpgsql volatile security invoker set search_path='' as $$
 declare
     d private.content_ops_final_card_deliveries;
@@ -112,7 +113,8 @@ begin
         target_actor_id,target_content_version_id,expected_fingerprint,
         expected_snapshot_sha256,verified_control_message_binding,
         verified_bot_binding,verified_room_binding,verified_human_binding,
-        verified_runtime_release_sha,requested_action,operation_key);
+        verified_runtime_release_sha,requested_action,operation_key,
+        verified_callback_release_sha,verified_release_pair_sha256);
     terminal:=private.read_content_ops_final_publication_terminal(
         target_card_id,target_actor_id,operation_key);
     if terminal->>'status' in ('held','channels_queued') then
@@ -120,6 +122,9 @@ begin
             case when terminal->>'status'='held' then (decision->>'reused')::boolean
             else true end);
     end if;
+    perform private.require_content_ops_release_pair(r.workspace_id,r.client_id,
+        verified_runtime_release_sha,verified_callback_release_sha,verified_release_pair_sha256,
+        d.created_at);
     select * into v from public.content_versions where workspace_id=r.workspace_id
         and content_item_id=r.content_item_id and id=target_content_version_id;
     select coalesce(sum(case when ascii(ch)>65535 then 2 else 1 end),0)::integer
@@ -162,7 +167,7 @@ begin
         target_card_id,target_actor_id,operation_key)||jsonb_build_object('reused',false);
 end $$;
 revoke all on function private.record_content_ops_final_publication(
-    uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)
+    uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,text)
     from public,anon,authenticated,service_role;
 revoke all on function private.read_content_ops_final_publication_terminal(uuid,uuid,text)
     from public,anon,authenticated,service_role;

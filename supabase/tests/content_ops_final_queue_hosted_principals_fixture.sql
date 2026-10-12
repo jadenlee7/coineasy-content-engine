@@ -12,7 +12,7 @@ begin
        or current_database() !~ '^coineasy_[a-z0-9_]+_test$' then
         raise exception 'signup_free_fixture_requires_disposable_local_socket';
     end if;
-    if to_regprocedure('private.record_content_ops_final_publication(uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)') is null then
+    if to_regprocedure('private.record_content_ops_final_publication(uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,text)') is null then
         raise exception 'signup_free_fixture_final_owner_missing';
     end if;
     foreach t in array array['content_ops_review_principals',

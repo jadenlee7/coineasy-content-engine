@@ -32,13 +32,15 @@ class FinalPublicationOwnerTest(unittest.TestCase):
 
     def owner(self, enabled=True):
         return PostgresFinalPublicationOwner(self.factory, lambda *_: self.s,
-            release_sha=self.s.release_sha, enabled=enabled)
+            release_sha=self.s.release_sha,
+            callback_release_sha=self.s.callback_release_sha,
+            release_pair_sha256=self.s.release_pair_sha256, enabled=enabled)
 
     def request(self):
         return dict(snapshot_sha256=self.s.digest(), version_id=V, card_id=C,
             version_fingerprint=self.s.version_fingerprint,
             message_binding=MESSAGE, bot_binding=BOT, room_binding=ROOM,
-            human_binding=HUMAN, runtime_release_sha=self.s.release_sha,
+            human_binding=HUMAN, runtime_release_sha=self.s.callback_release_sha,
             reviewer_id=A, action="confirm_publication", idempotency_key="1" * 64)
 
     def test_default_off_zero_database_io(self):
@@ -82,7 +84,7 @@ class FinalPublicationOwnerTest(unittest.TestCase):
         with self.assertRaisesRegex(FinalConfirmationError, "mode_conflict"):
             handle_final_confirmation(event, enabled=True, signer=signer,
                 owner=owner, allowed_reviewers=frozenset({A}), room_binding=ROOM,
-                runtime_release_sha=self.s.release_sha, now=NOW)
+                runtime_release_sha=self.s.callback_release_sha, now=NOW)
         self.assertEqual(owner.applies, 0)
 
     def test_hold_has_no_channel_ids_and_terminal_is_read_only(self):
@@ -107,7 +109,9 @@ class FinalPublicationOwnerTest(unittest.TestCase):
             def __exit__(self, *_): raise RuntimeError("secret provider content")
         owner = PostgresFinalPublicationOwner(lambda: LostCommit({
             **self.receipt, "execution_authorized":False}), lambda *_:self.s,
-            release_sha=self.s.release_sha, enabled=True)
+            release_sha=self.s.release_sha,
+            callback_release_sha=self.s.callback_release_sha,
+            release_pair_sha256=self.s.release_pair_sha256, enabled=True)
         with self.assertRaisesRegex(FinalDecisionOwnerError, "outcome_unknown") as error:
             owner.apply_final_decision(**self.request())
         self.assertNotIn("secret", str(error.exception))

@@ -11,6 +11,7 @@ import re
 from uuid import UUID
 
 from core.content_ops.final_publication_confirmation import FinalConfirmationSnapshot
+from core.content_ops.release_pair import valid_release_pair
 
 
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -35,14 +36,18 @@ def _sha(value):
 class PostgresFinalDecisionOwner:
     """Requires a separately reviewed, least-privilege DB identity."""
 
-    def __init__(self, connection_factory, snapshot_reader, *, release_sha, enabled=False):
+    def __init__(self, connection_factory, snapshot_reader, *, release_sha,
+                 callback_release_sha, release_pair_sha256, enabled=False):
         if (not callable(connection_factory) or not callable(snapshot_reader)
             or type(release_sha) is not str or _RELEASE.fullmatch(release_sha) is None
+            or not valid_release_pair(release_sha, callback_release_sha, release_pair_sha256)
             or type(enabled) is not bool):
             raise FinalDecisionOwnerError("final_decision_owner_configuration_invalid")
         self._factory = connection_factory
         self._reader = snapshot_reader
         self._release_sha = release_sha
+        self._callback_release_sha = callback_release_sha
+        self._release_pair_sha256 = release_pair_sha256
         self._enabled = enabled
 
     def read_confirmation(self, room_binding, message_binding, bot_binding, human_binding):
@@ -57,7 +62,9 @@ class PostgresFinalDecisionOwner:
             if type(result) is not FinalConfirmationSnapshot:
                 raise ValueError("invalid snapshot")
             result.validate()
-            if result.release_sha != self._release_sha:
+            if (result.release_sha != self._release_sha
+                or result.callback_release_sha != self._callback_release_sha
+                or result.release_pair_sha256 != self._release_pair_sha256):
                 raise ValueError("release conflict")
             return result
         except Exception:
@@ -106,15 +113,16 @@ class PostgresFinalDecisionOwner:
             or not all(_sha(v) for v in (snapshot_sha256, version_fingerprint,
                  message_binding, bot_binding, room_binding, human_binding,
                  idempotency_key))
-            or runtime_release_sha != self._release_sha
+            or runtime_release_sha != self._callback_release_sha
             or action not in ("confirm_publication", "hold")):
             raise FinalDecisionOwnerError("final_decision_owner_arguments_invalid")
         result = self._call(
             "select private.record_content_ops_final_decision("
-            "%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (card_id, reviewer_id, version_id, version_fingerprint,
              snapshot_sha256, message_binding, bot_binding, room_binding,
-             human_binding, runtime_release_sha, action, idempotency_key),
+             human_binding, self._release_sha, action, idempotency_key,
+             runtime_release_sha, self._release_pair_sha256),
             {"status", "decision_id", "reused", "execution_authorized"})
         if (result["status"] not in ("held", "confirmed_pending_publication_owner")
             or not _uuid(result["decision_id"]) or type(result["reused"]) is not bool):

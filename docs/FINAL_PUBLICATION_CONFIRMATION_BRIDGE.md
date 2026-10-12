@@ -20,9 +20,12 @@ same-reviewer checks/epoch, full copy, banner hash, and trusted room. A `ce1:`
 private-card check or legacy approval token cannot be accepted as a `ce2:`
 decision. The callback result is at most a private decision receipt, not a
 public approval, publication request, or Telegram/X delivery receipt.
-The snapshot also binds an exact 40-character release SHA, both opaque
-destination digests, and the displayed destination labels. A future owner must
-compare the SHA with its own deployed runtime before honoring a decision.
+The snapshot now binds independent exact engine and callback release SHAs and
+their role-labelled compatibility digest, both opaque destination digests, and
+the displayed destination labels. The courier and channel workers attest E;
+the callback bot attests B. Both require the operator-registered current scoped
+pair. See [the release-pair contract](CONTENT_OPS_RELEASE_PAIR.md); a source pin
+or an unregistered digest is not deployment or authorization evidence.
 Displayed handles are not authority by themselves. The digests must come from
 a separately trusted verifier of the client, provider, exact account/destination,
 observed public handle and permitted action. Missing

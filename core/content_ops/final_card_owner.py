@@ -10,6 +10,7 @@ import asyncio
 import re
 from datetime import datetime
 from uuid import UUID
+from core.content_ops.release_pair import valid_release_pair
 
 
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -83,6 +84,7 @@ class PostgresFinalCardOwner:
                                room_binding, human_binding, snapshot_sha256,
                                packet_sha256, release_sha,
                                telegram_route_binding, typefully_route_binding,
+                               callback_release_sha, release_pair_sha256,
                                decision_mode="record_only"):
         if (not all(_uuid(v) for v in
                     (delivery_id, review_id, parent_card_id, actor_id))
@@ -91,15 +93,17 @@ class PostgresFinalCardOwner:
                      human_binding, snapshot_sha256, packet_sha256,
                      telegram_route_binding, typefully_route_binding))
             or not _release(release_sha)
+            or not valid_release_pair(release_sha, callback_release_sha, release_pair_sha256)
             or decision_mode not in ("record_only", "telegram_and_typefully_draft")):
             raise FinalCardOwnerError("final_card_owner_arguments_invalid")
         receipt = await asyncio.to_thread(self._call,
             "select private.reserve_content_ops_final_card_delivery("
-            "%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "%s::uuid,%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (delivery_id, review_id, parent_card_id, actor_id,
              version_fingerprint, bot_binding, room_binding, human_binding,
              snapshot_sha256, packet_sha256, release_sha,
-             telegram_route_binding, typefully_route_binding, decision_mode),
+             telegram_route_binding, typefully_route_binding, decision_mode,
+             callback_release_sha, release_pair_sha256),
             expected_keys={"status", "delivery_id", "expires_at",
                            "execution_authorized"})
         if (receipt["status"] != "delivery_reserved"

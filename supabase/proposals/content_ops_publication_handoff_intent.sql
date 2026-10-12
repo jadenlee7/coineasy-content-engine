@@ -104,12 +104,16 @@ begin
     select * into c from private.content_ops_final_cards where id=d.card_id for share;
     select * into delivery from private.content_ops_final_card_deliveries
         where id=d.card_id for share;
+    perform private.require_content_ops_release_pair(r.workspace_id,r.client_id,
+        d.release_sha,d.callback_release_sha,d.release_pair_sha256,delivery.created_at);
     if c.id is null or delivery.id is null
        or c.review_id is distinct from r.id or c.actor_id is distinct from target_actor_id
        or c.epoch is distinct from r.epoch or r.state is distinct from 'active'
        or c.version_fingerprint is distinct from d.version_fingerprint
        or c.snapshot_sha256 is distinct from d.snapshot_sha256
        or delivery.release_sha is distinct from verified_runtime_release_sha
+       or delivery.callback_release_sha is distinct from d.callback_release_sha
+       or delivery.release_pair_sha256 is distinct from d.release_pair_sha256
        or clock_timestamp()>=c.expires_at
        or (select count(*) from private.content_ops_final_card_parts p
            where p.delivery_id=c.id and p.state='confirmed')<>4 then

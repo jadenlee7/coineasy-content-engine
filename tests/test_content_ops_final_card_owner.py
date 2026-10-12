@@ -7,6 +7,7 @@ import pytest
 from core.content_ops.final_card_owner import (
     FinalCardOwnerError, PostgresFinalCardOwner,
 )
+from core.content_ops.release_pair import release_pair_sha256
 
 
 R = "44444444-4444-4444-8444-444444444444"
@@ -15,6 +16,8 @@ A = "66666666-6666-4666-8666-666666666666"
 D = "77777777-7777-4777-8777-777777777777"
 SHA = "a" * 64
 RELEASE = "b" * 40
+CALLBACK_RELEASE = "c" * 40
+PAIR = release_pair_sha256(RELEASE, CALLBACK_RELEASE)
 EXPIRY = "2026-09-25T13:10:00+00:00"
 
 
@@ -61,7 +64,8 @@ def reserve_args():
         version_fingerprint=SHA, bot_binding=SHA, room_binding=SHA,
         human_binding=SHA, snapshot_sha256=SHA, packet_sha256=SHA,
         release_sha=RELEASE, telegram_route_binding="b" * 64,
-        typefully_route_binding="c" * 64)
+        typefully_route_binding="c" * 64,
+        callback_release_sha=CALLBACK_RELEASE, release_pair_sha256=PAIR)
 
 
 @pytest.mark.parametrize("method,kwargs", [
@@ -89,7 +93,7 @@ def test_exact_reservation_commit_and_bounded_receipt():
     sql, args = conn.cursor_value.statements[1]
     assert "reserve_content_ops_final_card_delivery" in sql
     assert args == (D, R, C, A, SHA, SHA, SHA, SHA, SHA, SHA, RELEASE,
-                    "b" * 64, "c" * 64, "record_only")
+                    "b" * 64, "c" * 64, "record_only", CALLBACK_RELEASE, PAIR)
 
 
 def test_part_begin_and_confirmation_use_separate_transactions():

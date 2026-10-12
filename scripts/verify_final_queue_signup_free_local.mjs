@@ -24,7 +24,7 @@ const authSeed = '        insert into auth.users(id) values(actor);';
 if (queue.split(authSeed).length !== 2
     || !/^-- Disposable[^\n]*\nbegin;\n/.test(queue)
     || !/\nrollback;\s*$/.test(queue)
-    || !queue.includes('for scenario_index in 1..16 loop')) {
+    || !queue.includes('for scenario_index in 1..23 loop')) {
   throw Error('queue fixture shape changed; review signup-free adaptation');
 }
 queue = queue.replace(/^-- Disposable[^\n]*\nbegin;\n/,
@@ -66,8 +66,11 @@ const result = spawnSync('psql', ['-X', '--no-password', '-q', '-v', 'ON_ERROR_S
 if (result.error || result.status !== 0) {
   throw Error(`signup-free local fixture failed: ${String(result.stderr ?? '').slice(-1500)}`);
 }
-console.log(JSON.stringify({ signupFreeQueuePassed: true, scenarios: 16,
+console.log(JSON.stringify({ signupFreeQueuePassed: true, scenarios: 23,
   clients: 4, privateActorFksRebound: 7, authUserForReviewerCreated: false,
   crossWorkspaceAndIdentityFkRejections: true, rolledBack: true,
+  distinctEngineCallbackReleases: true, wrongOrSwappedPairRejected: true,
+  pairSwitchInvalidatesCards: true, pairRollbackCannotReviveCards: true,
+  expiredSourceAndPriorPairTerminalReplay: true, downstreamEngineReleasePinned: true,
   providerCalls: 0, productionCalls: 0,
   proofScope: 'local hosted-principal FK subset, not full hosted catalog or runtime identity' }));

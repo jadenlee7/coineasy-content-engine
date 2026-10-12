@@ -12,9 +12,18 @@ declare
     bot text:=repeat('a',64); room text:=repeat('b',64);
     human text:=repeat('c',64); control_binding text:=repeat('d',64);
     snapshot_hash text:=repeat('e',64); release_sha text:=repeat('f',40);
+    callback_release_sha text:=repeat('b',40); release_pair_sha256 text;
+    stale_pair text; stale_engine_pair text;
     operation_key text:=repeat('1',64); decision_id uuid;
     approval_id uuid; part_index integer; fact_report jsonb;
 begin
+    release_pair_sha256:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||release_sha||E'\ncallback='||callback_release_sha||E'\n','UTF8')),'hex');
+    stale_pair:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||release_sha||E'\ncallback='||repeat('c',40)||E'\n','UTF8')),'hex');
+    stale_engine_pair:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||repeat('e',40)||E'\ncallback='||callback_release_sha||E'\n','UTF8')),'hex');
+    insert into private.content_ops_release_pairs(release_sha,callback_release_sha,release_pair_sha256)
+        values(release_sha,callback_release_sha,release_pair_sha256),
+              (release_sha,repeat('c',40),stale_pair),
+              (repeat('e',40),callback_release_sha,stale_engine_pair);
     fact_report:=jsonb_build_object('schema_version','1.0',
         'policy_version','double-fact-check@1','content_kind','daily_news',
         'human_review_required',true,'status','pass',
@@ -43,6 +52,7 @@ begin
             (w,'Synthetic final decision','synthetic-decision-'||substr(w::text,1,8));
         insert into public.workspace_clients(workspace_id,client_id,display_name)
             values(w,client,'Synthetic client');
+        insert into private.content_ops_current_release_pairs values(w,client,release_pair_sha256);
         insert into private.content_ops_publication_routes(workspace_id,
             client_id,channel,route_binding,release_sha,verified_at,active)
         values(w,client,'telegram',repeat('a',64),release_sha,
@@ -113,10 +123,10 @@ begin
                 clock_timestamp()-interval '1 second',expiry,true);
         insert into private.content_ops_final_card_deliveries(id,review_id,parent_card_id,
             actor_id,epoch,version_fingerprint,snapshot_sha256,packet_sha256,
-            release_sha,telegram_route_binding,typefully_route_binding,
+            release_sha,callback_release_sha,release_pair_sha256,telegram_route_binding,typefully_route_binding,
             bot_binding,room_binding,human_binding,expires_at)
             values(card,review,parent,actor,0,fingerprint,snapshot_hash,repeat('8',64),
-                release_sha,repeat('a',64),repeat('b',64),bot,room,human,expiry);
+                release_sha,callback_release_sha,release_pair_sha256,repeat('a',64),repeat('b',64),bot,room,human,expiry);
         insert into private.content_ops_final_cards(id,review_id,parent_card_id,
             actor_id,epoch,version_fingerprint,snapshot_sha256,
             control_message_binding,expires_at)
@@ -138,14 +148,14 @@ begin
             where id=feed;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'stale_poll_final_decision_allowed';
         exception when check_violation then null; end;
         update public.source_feeds set last_polled_at=clock_timestamp() where id=feed;
         update public.content_items set current_version_id=null where id=i;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'noncurrent_version_final_decision_allowed';
         exception when check_violation then null; end;
         update public.content_items set current_version_id=v where id=i;
@@ -153,7 +163,7 @@ begin
             where workspace_id=w and client_id=client and actor_id=actor;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'revoked_actor_final_decision_allowed';
         exception when check_violation then null; end;
         update private.content_ops_button_reviewers set active=true
@@ -163,18 +173,18 @@ begin
             values(w,client,i,v,'studio_session','commented');
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'already_approved_final_decision_allowed';
         exception when check_violation then null; end;
         delete from public.approvals where workspace_id=w and content_item_id=i;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,repeat('0',40),choice,operation_key);
+                snapshot_hash,control_binding,bot,room,human,repeat('0',40),choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'wrong_release_final_decision_allowed';
         exception when check_violation then null; end;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,repeat('a',64),bot,room,human,release_sha,choice,operation_key);
+                snapshot_hash,repeat('a',64),bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
             raise exception 'wrong_control_message_allowed';
         exception when check_violation then null; end;
         if exists(select 1 from private.content_ops_final_decisions where review_id=review) then
@@ -184,7 +194,7 @@ begin
             begin
                 perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
                     snapshot_hash,control_binding,bot,room,human,release_sha,
-                    choice,previous_confirmation_key);
+                    choice,previous_confirmation_key,callback_release_sha,release_pair_sha256);
                 raise exception 'global_callback_key_reused_for_another_card';
             exception when unique_violation then null; end;
         end if;
@@ -194,7 +204,7 @@ begin
                     where workspace_id=w and channel=destination_channel;
                 begin
                     perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                        snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+                        snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
                     raise exception 'changed_destination_final_confirmation_allowed';
                 exception when check_violation then null; end;
                 if exists(select 1 from private.content_ops_final_decisions where review_id=review) then
@@ -206,7 +216,7 @@ begin
             end loop;
         end if;
         result:=private.record_content_ops_final_decision(card,actor,v,fingerprint,
-            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
         if result->>'status' is distinct from (case when choice='hold' then 'held'
             else 'confirmed_pending_publication_owner' end)
            or result->>'reused' <> 'false'
@@ -215,13 +225,13 @@ begin
         end if;
         decision_id:=(result->>'decision_id')::uuid;
         result:=private.record_content_ops_final_decision(card,actor,v,fingerprint,
-            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
         if result->>'reused' <> 'true' or (result->>'decision_id')::uuid<>decision_id then
             raise exception 'final_decision_replay_invalid';
         end if;
         begin
             perform private.record_content_ops_final_decision(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,repeat('9',64));
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,repeat('9',64),callback_release_sha,release_pair_sha256);
             raise exception 'second_final_decision_allowed';
         exception when unique_violation then null; end;
         if private.read_content_ops_final_decision_terminal(card,actor,operation_key)
@@ -337,7 +347,7 @@ begin
         end if;
     end loop;
     if has_function_privilege('service_role',
-        'private.record_content_ops_final_decision(uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)',
+        'private.record_content_ops_final_decision(uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,text)',
         'EXECUTE') or has_function_privilege('authenticated',
         'private.read_content_ops_final_decision_terminal(uuid,uuid,text)','EXECUTE')
        or has_table_privilege('service_role','private.content_ops_final_decisions','SELECT') then

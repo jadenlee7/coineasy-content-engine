@@ -17,6 +17,7 @@ from core.content_ops.final_publication_confirmation import (
 from core.content_ops.private_review_card_receipt import ObservedSend
 from core.content_ops.review_buttons import ReviewSnapshot
 from core.content_ops.review_edit_ingress import EditBindings
+from core.content_ops.release_pair import release_pair_sha256
 
 
 NOW = int(datetime(2026, 9, 25, 13, 0, tzinfo=timezone.utc).timestamp())
@@ -30,6 +31,8 @@ D = "77777777-7777-4777-8777-777777777777"
 BOT, ROOM, HUMAN = 123456, -1001234567890, 234567
 PNG = b"\x89PNG\r\n\x1a\nfixture-final-card-banner"
 RELEASE = "a" * 40
+CALLBACK_RELEASE = "c" * 40
+PAIR = release_pair_sha256(RELEASE, CALLBACK_RELEASE)
 
 
 def prepared():
@@ -40,7 +43,9 @@ def prepared():
         hashlib.sha256(PNG).hexdigest(), "daily_ready")
     snapshot = FinalConfirmationSnapshot(review, R, D, A, A, A, 0, 0, 0,
         "b" * 64, 0, 0, RELEASE, "d" * 64, "e" * 64,
-        "@yellowkorea_ann", "@Yellow__Korea", parent_card_id=C)
+        "@yellowkorea_ann", "@Yellow__Korea",
+        callback_release_sha=CALLBACK_RELEASE, release_pair_sha256=PAIR,
+        parent_card_id=C)
     return PreparedFinalCard(snapshot, D, PNG, BOT, ROOM, HUMAN, None, NOW)
 
 
@@ -213,7 +218,7 @@ class FinalCardCourierTest(unittest.TestCase):
                 return dict(status="confirmed_pending_publication_owner", reused=False, decision_id=I)
         result = handle_final_confirmation(event, enabled=True, signer=self.signer,
             owner=DecisionOwner(), allowed_reviewers=frozenset({A}),
-            room_binding=room, runtime_release_sha=RELEASE, now=NOW+4)
+            room_binding=room, runtime_release_sha=CALLBACK_RELEASE, now=NOW+4)
         self.assertFalse(result["public_send_attempted"])
         self.assertEqual(applied[0]["card_id"], D)
         self.assertNotEqual(applied[0]["card_id"], C)

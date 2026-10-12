@@ -56,7 +56,7 @@ class PollingFinalPublicationAdapter:
             or owner._enabled is not True
             or type(runtime_release_sha) is not str
             or not _RELEASE.fullmatch(runtime_release_sha)
-            or owner._release_sha != runtime_release_sha):
+            or owner._callback_release_sha != runtime_release_sha):
             raise ReviewIngressError("final_polling_configuration_invalid")
         policy.validate()
         if (not all(_UUID.fullmatch(actor) for _, actor in policy.reviewers)

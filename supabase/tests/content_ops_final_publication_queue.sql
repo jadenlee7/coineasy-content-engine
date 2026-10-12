@@ -23,10 +23,19 @@ declare
     bot text:=repeat('a',64); room text:=repeat('b',64);
     human text:=repeat('c',64); control_binding text:=repeat('d',64);
     snapshot_hash text:=repeat('e',64); release_sha text:=repeat('f',40);
+    callback_release_sha text:=repeat('b',40); release_pair_sha256 text;
+    stale_pair text; stale_engine_pair text;
     operation_key text:=repeat('1',64); decision_id uuid;
     approval_id uuid; part_index integer; fact_report jsonb;
     rejected boolean; failed boolean; replay jsonb; sent_before bigint;
 begin
+    release_pair_sha256:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||release_sha||E'\ncallback='||callback_release_sha||E'\n','UTF8')),'hex');
+    stale_pair:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||release_sha||E'\ncallback='||repeat('c',40)||E'\n','UTF8')),'hex');
+    stale_engine_pair:=encode(sha256(convert_to(E'content-ops-release-pair@1\nengine='||repeat('e',40)||E'\ncallback='||callback_release_sha||E'\n','UTF8')),'hex');
+    insert into private.content_ops_release_pairs(release_sha,callback_release_sha,release_pair_sha256)
+        values(release_sha,callback_release_sha,release_pair_sha256),
+              (release_sha,repeat('c',40),stale_pair),
+              (repeat('e',40),callback_release_sha,stale_engine_pair);
     fact_report:=jsonb_build_object('schema_version','1.0',
         'policy_version','double-fact-check@1','content_kind','daily_news',
         'human_review_required',true,'status','pass',
@@ -36,7 +45,7 @@ begin
                 'label','Synthetic source check','detail','Synthetic only','metrics','{}'::jsonb),
             jsonb_build_object('id','output_claims','status','pass',
                 'label','Synthetic output check','detail','Synthetic only','metrics','{}'::jsonb)));
-    for scenario_index in 1..16 loop
+    for scenario_index in 1..23 loop
         client:=(array['yellow','babylon','squid','origintrail'])[((scenario_index-1)%4)+1];
         official_handle:=case client when 'yellow' then 'Yellow'
             when 'babylon' then 'babylonlabs_io' when 'squid' then 'SquidRouter'
@@ -55,6 +64,7 @@ begin
             (w,'Synthetic final decision','synthetic-decision-'||substr(w::text,1,8));
         insert into public.workspace_clients(workspace_id,client_id,display_name)
             values(w,client,'Synthetic client');
+        insert into private.content_ops_current_release_pairs values(w,client,release_pair_sha256);
         insert into private.content_ops_publication_routes(workspace_id,
             client_id,channel,route_binding,release_sha,verified_at,active)
         values(w,client,'telegram',repeat('a',64),release_sha,
@@ -127,10 +137,10 @@ begin
                 clock_timestamp()-interval '1 second',expiry,true);
         insert into private.content_ops_final_card_deliveries(id,review_id,parent_card_id,
             actor_id,epoch,version_fingerprint,snapshot_sha256,packet_sha256,
-            release_sha,telegram_route_binding,typefully_route_binding,decision_mode,
+            release_sha,callback_release_sha,release_pair_sha256,telegram_route_binding,typefully_route_binding,decision_mode,
             bot_binding,room_binding,human_binding,expires_at)
             values(card,review,parent,actor,0,fingerprint,snapshot_hash,repeat('8',64),
-                release_sha,repeat('a',64),repeat('b',64),
+                release_sha,callback_release_sha,release_pair_sha256,repeat('a',64),repeat('b',64),
                 case when scenario_index=5 then 'record_only' else 'telegram_and_typefully_draft' end,
                 bot,room,human,expiry);
         insert into private.content_ops_final_cards(id,review_id,parent_card_id,
@@ -159,6 +169,21 @@ begin
         elsif scenario_index=16 then
             update public.source_feeds set last_polled_at=clock_timestamp()-interval '1 hour'
                 where id=feed;
+        elsif scenario_index in (20,23) then
+            update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+                where workspace_id=w and client_id=client;
+            if scenario_index=23 then
+                -- Returning to the same pair must not revive an old card.
+                update private.content_ops_current_release_pairs set release_pair_sha256=fixture.release_pair_sha256
+                    where workspace_id=w and client_id=client;
+            end if;
+        elsif scenario_index=21 then
+            update private.content_ops_current_release_pairs set release_pair_sha256=stale_engine_pair
+                where workspace_id=w and client_id=client;
+        elsif scenario_index=22 then
+            -- Attempted caller backdating is ignored by the DB trigger.
+            update private.content_ops_current_release_pairs set selected_at='2000-01-01Z'
+                where workspace_id=w and client_id=client;
         end if;
         rejected:=scenario_index between 5 and 9 or scenario_index>=11;
         failed:=false;
@@ -167,8 +192,12 @@ begin
                 case when scenario_index=11 then gen_random_uuid() else actor end,
                 v,case when scenario_index=14 then repeat('0',64) else fingerprint end,
                 snapshot_hash,control_binding,bot,room,human,
-                case when scenario_index=13 then repeat('0',40) else release_sha end,
-                choice,operation_key);
+                case when scenario_index=13 then repeat('0',40)
+                     when scenario_index=19 then callback_release_sha else release_sha end,
+                choice,operation_key,
+                case when scenario_index=17 then repeat('0',40)
+                     when scenario_index=19 then release_sha else callback_release_sha end,
+                case when scenario_index=18 then repeat('0',64) else release_pair_sha256 end);
         exception when check_violation or invalid_parameter_value then
             if not rejected then raise; end if;
             failed:=true;
@@ -194,6 +223,14 @@ begin
                or exists(select 1 from public.publications where content_item_id=i) then
                 raise exception 'hold_created_channel_work';
             end if;
+            update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+                where workspace_id=w and client_id=client;
+            replay:=private.record_content_ops_final_publication(card,actor,v,fingerprint,
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,
+                callback_release_sha,release_pair_sha256);
+            if replay-'reused'<>result-'reused' or replay->'reused'<>'true'::jsonb then
+                raise exception 'held_pair_switch_replay_changed';
+            end if;
             continue;
         end if;
         if result->>'status'<>'channels_queued'
@@ -205,14 +242,27 @@ begin
            or (select count(*) from private.typefully_daily_slots where content_item_id=i)<>1 then
             raise exception 'final_queue_atomic_receipt_invalid client=%',client;
         end if;
+        if release_sha=callback_release_sha
+           or exists(select 1 from private.content_ops_channel_handoffs h
+               where h.content_item_id=i and h.release_sha<>fixture.release_sha)
+           or exists(select 1 from public.jobs j where j.content_item_id=i and j.job_kind='publish'
+               and j.input->>'content_ops_release_sha' is distinct from release_sha)
+           or exists(select 1 from public.publications p where p.content_item_id=i
+               and p.request_payload->>'content_ops_release_sha' is distinct from release_sha)
+           or not exists(select 1 from private.content_ops_final_decisions d where d.card_id=card
+               and d.release_sha=fixture.release_sha
+               and d.callback_release_sha=fixture.callback_release_sha
+               and d.release_pair_sha256=fixture.release_pair_sha256) then
+            raise exception 'downstream_engine_release_pin_lost';
+        end if;
         replay:=private.record_content_ops_final_publication(card,actor,v,fingerprint,
-            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key);
+            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,callback_release_sha,release_pair_sha256);
         if replay-'reused' <> result-'reused' or replay->'reused'<>'true'::jsonb then
             raise exception 'final_queue_replay_changed_ids';
         end if;
         begin
             perform private.record_content_ops_final_publication(card,actor,v,fingerprint,
-                snapshot_hash,control_binding,bot,room,human,release_sha,choice,repeat('9',64));
+                snapshot_hash,control_binding,bot,room,human,release_sha,choice,repeat('9',64),callback_release_sha,release_pair_sha256);
             raise exception 'different_callback_key_created_second_queue';
         exception when unique_violation then null; end;
         -- Claim/attempt proof is a deliberately rolled-back subtransaction:
@@ -307,6 +357,9 @@ begin
                or projected#>>'{telegram_principal_approval,decision_id}'<>result->>'decision_id'
                or projected#>>'{telegram_principal_approval,review_principal_id}'<>actor::text then
                 raise exception 'typefully_queued_pair_candidate_missing';
+            end if;
+            if projected#>>'{telegram_principal_approval,release_sha}' is distinct from release_sha then
+                raise exception 'typefully_proof_used_callback_release';
             end if;
             update private.content_ops_button_reviewers set active=false
                 where workspace_id=w and client_id=client and actor_id=actor;
@@ -414,9 +467,18 @@ begin
         -- Reconciliation survives stale source/revocation and never requeues.
         update public.source_feeds set last_polled_at=clock_timestamp()-interval '2 hours' where id=feed;
         update private.content_ops_button_reviewers set active=false where workspace_id=w;
+        update public.source_items set published_at=clock_timestamp()-interval '25 hours' where id=source;
+        update private.content_ops_current_release_pairs set release_pair_sha256=stale_pair
+            where workspace_id=w and client_id=client;
         replay:=private.read_content_ops_final_publication_terminal(card,actor,operation_key);
         if replay <> result-'reused' then
             raise exception 'final_queue_terminal_lost_original_receipt';
+        end if;
+        replay:=private.record_content_ops_final_publication(card,actor,v,fingerprint,
+            snapshot_hash,control_binding,bot,room,human,release_sha,choice,operation_key,
+            callback_release_sha,release_pair_sha256);
+        if replay-'reused'<>result-'reused' or replay->'reused'<>'true'::jsonb then
+            raise exception 'expired_source_old_pair_exact_replay_lost_receipt';
         end if;
         if (select count(*) from public.jobs where content_item_id=i and job_kind='publish')<>1 then
             raise exception 'final_queue_duplicated';

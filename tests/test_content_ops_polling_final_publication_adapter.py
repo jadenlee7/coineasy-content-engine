@@ -44,9 +44,10 @@ def fixture(*, action="p", lost_commit=False):
             bindings.digest("final-card-message@1",101,-100999000,501),
             bindings.digest("bot",101),bindings.digest("human",101,201))
         return s
-    owner=PostgresFinalPublicationOwner(connect,read,release_sha=s.release_sha,enabled=True)
+    owner=PostgresFinalPublicationOwner(connect,read,release_sha=s.release_sha,
+        callback_release_sha=s.callback_release_sha, release_pair_sha256=s.release_pair_sha256,enabled=True)
     adapter=PollingFinalPublicationAdapter(enabled=True,policy=policy,signer=signer,
-        review_signer=ButtonSigner(b"s"*32),bindings=bindings,owner=owner,runtime_release_sha=s.release_sha)
+        review_signer=ButtonSigner(b"s"*32),bindings=bindings,owner=owner,runtime_release_sha=s.callback_release_sha)
     update={"update_id":1,"callback_query":{"id":"callback1","from":{"id":201,"is_bot":False},
         "message":{"message_id":501,"date":NOW-1,"chat":{"id":policy.chat_id,"type":"supergroup"},
             "from":{"id":policy.bot_id,"is_bot":True}},
@@ -71,7 +72,11 @@ def test_actual_signed_confirmation_uses_final_not_parent_card_and_exact_callbac
     query,args=connections[0].cursor_value.queries[1]
     assert "private.record_content_ops_final_publication" in query
     assert args[0]==C and args[0]!=PARENT
-    assert args[-1]==hashlib.sha256(b"callback1").hexdigest()
+    assert args[11]==hashlib.sha256(b"callback1").hexdigest()
+    assert args[9]==adapter.owner._release_sha
+    assert args[12]==adapter.runtime_release_sha
+    assert args[9]!=args[12]
+    assert args[13]==adapter.owner._release_pair_sha256
     assert connections[0].committed
 
 

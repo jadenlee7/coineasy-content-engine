@@ -12,10 +12,14 @@ create table private.content_ops_final_decisions (
     version_fingerprint text not null check (version_fingerprint ~ '^[a-f0-9]{64}$'),
     snapshot_sha256 text not null check (snapshot_sha256 ~ '^[a-f0-9]{64}$'),
     release_sha text not null check (release_sha ~ '^[a-f0-9]{40}$'),
+    callback_release_sha text not null check (callback_release_sha ~ '^[a-f0-9]{40}$'),
+    release_pair_sha256 text not null check (release_pair_sha256 ~ '^[a-f0-9]{64}$'),
     idempotency_key text not null unique check (idempotency_key ~ '^[a-f0-9]{64}$'),
     action text not null check (action in ('confirm_publication','hold')),
     status text not null check (status in ('confirmed_pending_publication_owner','held')),
-    decided_at timestamptz not null default clock_timestamp()
+    decided_at timestamptz not null default clock_timestamp(),
+    foreign key(release_sha,callback_release_sha,release_pair_sha256)
+        references private.content_ops_release_pairs(release_sha,callback_release_sha,release_pair_sha256)
 );
 alter table private.content_ops_final_decisions enable row level security;
 alter table private.content_ops_final_decisions force row level security;
@@ -30,7 +34,8 @@ create function private.record_content_ops_final_decision(
     expected_fingerprint text, expected_snapshot_sha256 text,
     verified_control_message_binding text, verified_bot_binding text,
     verified_room_binding text, verified_human_binding text,
-    verified_runtime_release_sha text, requested_action text, operation_key text
+    verified_runtime_release_sha text, requested_action text, operation_key text,
+    verified_callback_release_sha text,verified_release_pair_sha256 text
 ) returns jsonb language plpgsql volatile security invoker set search_path='' as $$
 declare
     card private.content_ops_final_cards;
@@ -52,6 +57,8 @@ begin
        or verified_human_binding is null or verified_human_binding !~ '^[a-f0-9]{64}$'
        or verified_runtime_release_sha is null
        or verified_runtime_release_sha !~ '^[a-f0-9]{40}$'
+       or verified_callback_release_sha is null or verified_callback_release_sha !~ '^[a-f0-9]{40}$'
+       or verified_release_pair_sha256 is null or verified_release_pair_sha256 !~ '^[a-f0-9]{64}$'
        or requested_action is null or requested_action not in ('confirm_publication','hold')
        or operation_key is null or operation_key !~ '^[a-f0-9]{64}$' then
         raise exception 'final_decision_arguments_invalid' using errcode='22023';
@@ -79,7 +86,9 @@ begin
        or delivery.bot_binding is distinct from verified_bot_binding
        or delivery.room_binding is distinct from verified_room_binding
        or delivery.human_binding is distinct from verified_human_binding
-       or delivery.release_sha is distinct from verified_runtime_release_sha then
+       or delivery.release_sha is distinct from verified_runtime_release_sha
+       or delivery.callback_release_sha is distinct from verified_callback_release_sha
+       or delivery.release_pair_sha256 is distinct from verified_release_pair_sha256 then
         raise exception 'final_decision_binding_conflict' using errcode='23514';
     end if;
     select * into previous from private.content_ops_final_decisions
@@ -91,6 +100,8 @@ begin
            or previous.version_fingerprint is distinct from expected_fingerprint
            or previous.snapshot_sha256 is distinct from expected_snapshot_sha256
            or previous.release_sha is distinct from verified_runtime_release_sha
+           or previous.callback_release_sha is distinct from verified_callback_release_sha
+           or previous.release_pair_sha256 is distinct from verified_release_pair_sha256
            or previous.action is distinct from requested_action
            or previous.idempotency_key is distinct from operation_key then
             raise exception 'final_decision_replay_conflict' using errcode='23505';
@@ -102,6 +113,9 @@ begin
        or review.state is distinct from 'active' then
         raise exception 'final_decision_card_expired_or_superseded' using errcode='23514';
     end if;
+    perform private.require_content_ops_release_pair(review.workspace_id,review.client_id,
+        verified_runtime_release_sha,verified_callback_release_sha,verified_release_pair_sha256,
+        delivery.created_at);
     preflight:=private.content_ops_final_card_preflight(review.id,
         card.parent_card_id,target_actor_id,expected_fingerprint,
         verified_bot_binding,verified_room_binding,verified_human_binding);
@@ -119,9 +133,11 @@ begin
     end if;
     insert into private.content_ops_final_decisions(card_id,review_id,actor_id,
         content_version_id,version_fingerprint,snapshot_sha256,release_sha,
+        callback_release_sha,release_pair_sha256,
         idempotency_key,action,status)
     values(card.id,review.id,target_actor_id,target_content_version_id,
         expected_fingerprint,expected_snapshot_sha256,verified_runtime_release_sha,
+        verified_callback_release_sha,verified_release_pair_sha256,
         operation_key,requested_action,decision_status)
     returning id into decision_id;
     if requested_action='hold' then
@@ -149,7 +165,7 @@ begin
 end $$;
 
 revoke all on function private.record_content_ops_final_decision(
-    uuid,uuid,uuid,text,text,text,text,text,text,text,text,text)
+    uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,text)
     from public,anon,authenticated,service_role;
 revoke all on function private.read_content_ops_final_decision_terminal(uuid,uuid,text)
     from public,anon,authenticated,service_role;

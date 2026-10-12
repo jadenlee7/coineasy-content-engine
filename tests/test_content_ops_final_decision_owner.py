@@ -54,13 +54,15 @@ class FinalDecisionOwnerTest(unittest.TestCase):
 
     def owner(self, enabled=True):
         return PostgresFinalDecisionOwner(self.factory, self.reader,
-            release_sha=self.s.release_sha, enabled=enabled)
+            release_sha=self.s.release_sha,
+            callback_release_sha=self.s.callback_release_sha,
+            release_pair_sha256=self.s.release_pair_sha256, enabled=enabled)
 
     def request(self):
         return dict(snapshot_sha256=self.s.digest(), version_id=V, card_id=C,
             version_fingerprint=self.s.version_fingerprint,
             message_binding=MESSAGE, bot_binding=BOT, room_binding=ROOM,
-            human_binding=HUMAN, runtime_release_sha=self.s.release_sha,
+            human_binding=HUMAN, runtime_release_sha=self.s.callback_release_sha,
             reviewer_id=A, action="confirm_publication", idempotency_key="1" * 64)
 
     def test_default_off_does_not_read_or_write(self):

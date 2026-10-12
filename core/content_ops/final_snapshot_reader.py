@@ -10,6 +10,7 @@ import re
 
 from core.content_ops.final_publication_confirmation import FinalConfirmationSnapshot
 from core.content_ops.prompt_reservation import canonical_timestamp
+from core.content_ops.release_pair import release_pair_sha256 as compute_release_pair_sha256
 from core.content_ops.review_buttons import ReviewSnapshot
 from core.publications.handoff import CLIENT_TARGETS
 
@@ -20,6 +21,7 @@ _KEYS = {"read_only", "workspace_id", "client_id", "content_item_id", "content_v
     "source_check_actor_id", "claims_check_actor_id", "source_check_epoch", "claims_check_epoch",
     "version_fingerprint", "source_url", "source_published_at", "telegram_copy", "x_copy",
     "banner_sha256", "approval_count", "publication_count", "release_sha",
+    "callback_release_sha", "release_pair_sha256",
     "telegram_route_binding", "typefully_route_binding", "decision_mode", "snapshot_sha256"}
 
 # One statement snapshot, exact binding predicates, bounded at two rows to reject
@@ -40,7 +42,9 @@ FINAL_SNAPSHOT_QUERY = """select jsonb_build_object(
         where z.workspace_id=r.workspace_id and z.content_item_id=r.content_item_id),
     'publication_count',(select count(*) from public.publications z
         where z.workspace_id=r.workspace_id and z.content_item_id=r.content_item_id),
-    'release_sha',d.release_sha,'telegram_route_binding',d.telegram_route_binding,
+    'release_sha',d.release_sha,'callback_release_sha',d.callback_release_sha,
+    'release_pair_sha256',d.release_pair_sha256,
+    'telegram_route_binding',d.telegram_route_binding,
     'typefully_route_binding',d.typefully_route_binding,'decision_mode',d.decision_mode,
     'snapshot_sha256',c.snapshot_sha256)
 from private.content_ops_final_cards c
@@ -50,6 +54,12 @@ join private.content_ops_final_card_deliveries d on d.id=c.id
     and d.version_fingerprint=c.version_fingerprint and d.snapshot_sha256=c.snapshot_sha256
 join private.content_ops_button_reviews r on r.id=c.review_id
     and r.epoch=c.epoch and r.version_fingerprint=c.version_fingerprint and r.state='active'
+join private.content_ops_current_release_pairs current_pair
+    on current_pair.workspace_id=r.workspace_id and current_pair.client_id=r.client_id
+join private.content_ops_release_pairs pair
+    on pair.release_pair_sha256=current_pair.release_pair_sha256
+    and pair.release_sha=d.release_sha and pair.callback_release_sha=d.callback_release_sha
+    and pair.release_pair_sha256=d.release_pair_sha256
 join private.content_ops_button_cards parent on parent.id=c.parent_card_id
     and parent.review_id=r.id and parent.epoch=r.epoch
     and parent.version_fingerprint=r.version_fingerprint and parent.active
@@ -98,6 +108,8 @@ join private.content_ops_publication_routes x on x.workspace_id=r.workspace_id
     and x.release_sha=d.release_sha and x.route_binding=d.typefully_route_binding
 where d.room_binding=%s and c.control_message_binding=%s
     and d.bot_binding=%s and d.human_binding=%s and d.release_sha=%s
+    and d.callback_release_sha=%s and d.release_pair_sha256=%s
+    and d.created_at>=current_pair.selected_at
     and c.id<>c.parent_card_id
     and c.registered_at<=clock_timestamp() and c.expires_at>clock_timestamp()
     and d.created_at<=clock_timestamp() and d.expires_at>clock_timestamp()
@@ -149,11 +161,19 @@ class FinalSnapshotReaderError(RuntimeError):
 
 
 class PostgresFinalSnapshotReader:
-    def __init__(self, connection_factory, *, release_sha, enabled=False):
+    def __init__(self, connection_factory, *, release_sha, callback_release_sha,
+                 release_pair_sha256, enabled=False):
+        # E is the Engine release and B the callback owner's release. Validate
+        # their ordered identity binding even while disabled, before any I/O.
         if (not callable(connection_factory) or type(enabled) is not bool
-            or type(release_sha) is not str or not _RELEASE.fullmatch(release_sha)):
+            or type(release_sha) is not str or not _RELEASE.fullmatch(release_sha)
+            or type(callback_release_sha) is not str or not _RELEASE.fullmatch(callback_release_sha)
+            or type(release_pair_sha256) is not str or not _HASH.fullmatch(release_pair_sha256)
+            or release_pair_sha256 != compute_release_pair_sha256(release_sha, callback_release_sha)):
             raise FinalSnapshotReaderError("final_snapshot_reader_configuration_invalid")
         self._factory, self._release, self._enabled = connection_factory, release_sha, enabled
+        self._callback_release = callback_release_sha
+        self._release_pair = release_pair_sha256
 
     def __call__(self, room_binding, message_binding, bot_binding, human_binding):
         if not self._enabled:
@@ -173,7 +193,8 @@ class PostgresFinalSnapshotReader:
                     if tuple(cursor.fetchone()) != ("5000", "2000"):
                         raise ValueError("bounded timeout required")
                     cursor.execute(FINAL_SNAPSHOT_QUERY,
-                        (room_binding, message_binding, bot_binding, human_binding, self._release))
+                        (room_binding, message_binding, bot_binding, human_binding,
+                         self._release, self._callback_release, self._release_pair))
                     rows = cursor.fetchall()
                     if len(rows) != 1 or type(rows[0]) not in (tuple, list) or len(rows[0]) != 1:
                         raise ValueError("ambiguous or missing card")
@@ -181,7 +202,9 @@ class PostgresFinalSnapshotReader:
                     if type(data) is not dict or set(data) != _KEYS or data["read_only"] is not True:
                         raise ValueError("invalid projection")
                     client = data["client_id"]
-                    if client not in CLIENT_TARGETS or data["release_sha"] != self._release:
+                    if (client not in CLIENT_TARGETS or data["release_sha"] != self._release
+                        or data["callback_release_sha"] != self._callback_release
+                        or data["release_pair_sha256"] != self._release_pair):
                         raise ValueError("scope conflict")
                     review = ReviewSnapshot(data["workspace_id"], client, data["content_item_id"],
                         data["content_version_id"], data["source_url"],
@@ -192,7 +215,8 @@ class PostgresFinalSnapshotReader:
                             "reviewer_id", "source_check_actor_id", "claims_check_actor_id",
                             "review_epoch", "source_check_epoch", "claims_check_epoch",
                             "version_fingerprint", "approval_count", "publication_count",
-                            "release_sha", "telegram_route_binding", "typefully_route_binding",
+                            "release_sha", "callback_release_sha", "release_pair_sha256",
+                            "telegram_route_binding", "typefully_route_binding",
                             "decision_mode")},
                         telegram_destination_label="@"+CLIENT_TARGETS[client][0],
                         typefully_x_destination_label="@"+CLIENT_TARGETS[client][1])

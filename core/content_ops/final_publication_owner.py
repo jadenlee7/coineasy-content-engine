@@ -34,15 +34,16 @@ class PostgresFinalPublicationOwner(PostgresFinalDecisionOwner):
         if (not all(_uuid(v) for v in (version_id, card_id, reviewer_id))
             or not all(_sha(v) for v in (snapshot_sha256, version_fingerprint,
                 message_binding, bot_binding, room_binding, human_binding, idempotency_key))
-            or runtime_release_sha != self._release_sha
+            or runtime_release_sha != self._callback_release_sha
             or action not in ("confirm_publication", "hold")):
             raise FinalDecisionOwnerError("final_publication_owner_arguments_invalid")
         result = self._call(
             "select private.record_content_ops_final_publication("
-            "%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "%s::uuid,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (card_id, reviewer_id, version_id, version_fingerprint,
              snapshot_sha256, message_binding, bot_binding, room_binding,
-             human_binding, runtime_release_sha, action, idempotency_key),
+             human_binding, self._release_sha, action, idempotency_key,
+             runtime_release_sha, self._release_pair_sha256),
             {"status", "decision_id", "approval_id", "publication_id", "job_id",
              "typefully_slot_id", "reused", "execution_authorized"})
         self._validate_receipt(result, terminal=False)

@@ -9,6 +9,7 @@ from core.content_ops.final_publication_confirmation import (
     pin_verified_routes,
 )
 from core.content_ops.review_buttons import ReviewSnapshot
+from core.content_ops.release_pair import release_pair_sha256
 from core.publications.handoff import CLIENT_TARGETS
 
 
@@ -36,7 +37,9 @@ def snapshot(client="yellow"):
         "확인된 X 문안", "a" * 64, "daily_ready")
     return FinalConfirmationSnapshot(review, R, C, A, A, A, 2, 2, 2,
         "b" * 64, 0, 0, "c" * 40, "d" * 64, "e" * 64,
-        "@" + CLIENT_TARGETS[client][0], "@" + CLIENT_TARGETS[client][1])
+        "@" + CLIENT_TARGETS[client][0], "@" + CLIENT_TARGETS[client][1],
+        callback_release_sha="d" * 40,
+        release_pair_sha256=release_pair_sha256("c" * 40, "d" * 40))
 
 
 class FakeOwner:
@@ -81,7 +84,7 @@ class FinalPublicationConfirmationTest(unittest.TestCase):
     def handle(self, event=None, **changes):
         args = dict(enabled=True, signer=self.signer, owner=self.owner,
                     allowed_reviewers=frozenset({A, OTHER}), room_binding=ROOM,
-                    runtime_release_sha=self.s.release_sha, now=NOW)
+                    runtime_release_sha=self.s.callback_release_sha, now=NOW)
         args.update(changes)
         return handle_final_confirmation(event or self.event(), **args)
 
