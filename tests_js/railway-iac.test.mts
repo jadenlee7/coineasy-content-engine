@@ -72,6 +72,8 @@ const legacyManifestHashes: Record<string, string> = {
   'railway.telegram-publication-worker.json': '4cb5a085a58ef9d37fef5a124a54d9812162414326c999aecc9bb2d5f7014714',
 };
 const proposedManifestHashes: Record<string, string> = {
+  // Staged private final-card worker: OFF, no schedule, outside the two-service IaC owner.
+  'railway.final-card-preparation.json': 'be7944facbf29a4959294aa245432e93ffc9732fc9b3b6ef72ea5e58ba85088e',
   // Draft-only, not owned by the existing two-service Railway IaC program.
   // Scoped final-human-approval module watch dependency only; cron/OFF unchanged.
   'railway.typefully-daily.json': '45f9f24d6b30ce557f0a063e90553b4280f0b1e4387456e4c923081ac6a57520',
@@ -174,6 +176,22 @@ test('Railway IaC has no auto-discovered root config and owns only two services'
     },
   });
   assertPreservedVariables(managed.variables, managedVariables);
+});
+
+test('staged final-card preparation stays isolated, default OFF, and unscheduled', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../railway.final-card-preparation.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.build.builder, 'DOCKERFILE');
+  assert.equal(manifest.build.dockerfilePath, 'Dockerfile.final-card-preparation');
+  assert.deepEqual(manifest.deploy, {
+    preDeployCommand: 'python -m scripts.run_final_card_preparations --validate-only',
+    startCommand: 'python -m scripts.run_final_card_preparations',
+    healthcheckPath: null,
+    cronSchedule: null,
+    restartPolicyType: 'NEVER',
+  });
+  const docker = readFileSync(new URL('../Dockerfile.final-card-preparation', import.meta.url), 'utf8');
+  assert.match(docker, /^ENV .*CONTENT_OPS_FINAL_PREPARATION_ENABLED=false$/m);
+  assert.match(docker, /^USER nobody$/m);
 });
 
 const legacyMigrationChanges = [

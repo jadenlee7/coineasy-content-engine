@@ -1035,6 +1035,11 @@ jobs:
         run: |
           for smoke in supabase/tests/*_security.sql \
                        supabase/tests/*_least_privilege.sql; do
+            # Proposal-only functions do not exist in the migration baseline.
+            # This security fixture runs below, immediately after its proposal.
+            case "$smoke" in
+              supabase/tests/four_client_exact_telegram_security.sql) continue ;;
+            esac
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
       - name: Prove isolated same-day refresh and one-shot concurrency
