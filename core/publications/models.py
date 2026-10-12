@@ -30,6 +30,10 @@ class ClaimedTelegramPublication:
     lease_expires_at: datetime
     telegram_text: str
     asset: StoredPng
+    approval_reviewer_source: str | None = None
+    content_ops_decision_id: str | None = None
+    telegram_route_binding: str | None = None
+    content_ops_release_sha: str | None = None
 
 
 @dataclass(frozen=True)

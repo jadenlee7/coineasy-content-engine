@@ -37,7 +37,8 @@ def test_no_legacy_owner_fallback_configuration():
         PollingReviewAdapter(enabled=True,policy=POLICY,review_owner=Mock(),transactional_review_owner=owner)
 
 
-def test_newer_feed_source_denies_private_callback_before_durable_action():
+@pytest.mark.parametrize('hook_outcome',[None,'recorded','reused','failure'])
+def test_newer_feed_source_denies_private_callback_before_durable_action(hook_outcome):
     """A linked, unchanged source is not enough when a newer tweet arrived."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
     ids = {name: str(uuid4()) for name in
@@ -72,6 +73,13 @@ def test_newer_feed_source_denies_private_callback_before_durable_action():
         'message':{'message_id':31,'date':int(now.timestamp()),
             'from':{'id':POLICY.bot_id,'is_bot':True},
             'chat':{'id':POLICY.chat_id,'type':'supergroup'}}}}
+    hook = None
+    if hook_outcome is not None:
+        from core.content_ops.final_card_preparation import FinalPreparationHook
+        from core.content_ops.release_pair import release_pair_sha256
+        hook = FinalPreparationHook(release_sha='a'*40,callback_release_sha='b'*40,
+            release_pair_sha256=release_pair_sha256('a'*40,'b'*40),
+            runtime_callback_release_sha='b'*40,enabled=True)
 
     class Connection:
         autocommit = False
@@ -109,8 +117,14 @@ def test_newer_feed_source_denies_private_callback_before_durable_action():
                         self.rows = [(connection.latest,)]
                     elif 'record_content_ops_button_action' in sql:
                         connection.actions += 1
-                        self.rows = [({'status':'checked','reused':False,
+                        self.rows = [({'status':'checked','reused':hook_outcome=='reused',
                             'execution_authorized':False},)]
+                    elif 'request_content_ops_final_card_preparation' in sql:
+                        if hook_outcome=='failure':
+                            raise OSError('synthetic lost DB response')
+                        assert params[1:4] == (ids['review'],ids['card'],POLICY.reviewers[0][1])
+                        self.rows = [({'status':'preparation_recorded','intent_id':ids['asset'],
+                            'reused':hook_outcome=='reused','execution_authorized':False},)]
                     else:
                         raise AssertionError('unexpected SQL')
                 def fetchone(self): return self.rows[0] if self.rows else None
@@ -118,16 +132,25 @@ def test_newer_feed_source_denies_private_callback_before_durable_action():
             return Cursor()
 
     def call(connection):
-        return PostgresPrivateReviewOwner(lambda:connection,bindings).handle_update(
+        return PostgresPrivateReviewOwner(lambda:connection,bindings,final_preparation_hook=hook).handle_update(
             enabled=True,raw_body=json.dumps(update).encode(),
             headers=[('Content-Type','application/json'),
                 ('X-Telegram-Bot-Api-Secret-Token',POLICY.webhook_secret)],
             policy=POLICY,signer=signer,now=int(now.timestamp()))
 
     old = Connection(ids['source'])
-    assert call(old) == {'status':'checked','reused':False,'public_send_attempted':False}
-    assert old.actions == 1 and old.exit_kind is None
-    assert sum('from public.source_items s' in sql for sql,_ in old.statements) == 2
+    if hook_outcome=='failure':
+        with pytest.raises(ReviewIngressError,match='^review_private_owner_outcome_unknown$'):
+            call(old)
+        assert old.actions==1 and old.exit_kind is OSError
+    else:
+        assert call(old) == {'status':'checked','reused':hook_outcome=='reused','public_send_attempted':False}
+        assert old.actions == 1 and old.exit_kind is None
+        assert sum('from public.source_items s' in sql for sql,_ in old.statements) == (3 if hook else 2)
+    if hook:
+        action = next(n for n,(sql,_) in enumerate(old.statements) if 'record_content_ops_button_action' in sql)
+        intent = next(n for n,(sql,_) in enumerate(old.statements) if 'request_content_ops_final_card_preparation' in sql)
+        assert action < intent
     newer = Connection(ids['newer'])
     with pytest.raises(ReviewIngressError,match='^review_private_owner_outcome_unknown$'):
         call(newer)

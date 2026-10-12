@@ -23,6 +23,8 @@ _SHA64 = re.compile(r"[a-f0-9]{64}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32,256}\Z")
 _SCOPE = "button_card_v1"
 DAILY_PACKET_MODE = "daily_button_card_v1"
+YBO_DAILY_SCOPE = "ybo_v1"
+YBO_CLIENTS = frozenset({"yellow", "babylon", "origintrail"})
 _OWNER_STEPS = frozenset({"prepare", "bind", "reserve", "confirm", "register", "terminal"})
 
 
@@ -38,7 +40,7 @@ def _uuid(value):
 
 
 async def _post_receipt(*, origin, token, release, mode, version, packet_mode,
-                        transport, body, result_key):
+                        transport, body, result_key, daily_scope=None):
     """One bounded request; no implicit transport retry or response reflection."""
     headers = {"Authorization": "Bearer " + token,
                "x-content-ops-expected-release-sha": release,
@@ -46,6 +48,10 @@ async def _post_receipt(*, origin, token, release, mode, version, packet_mode,
                "x-content-ops-packet-mode": packet_mode, "Accept": "application/json"}
     if version is not None:
         headers["x-content-ops-version-id"] = version
+    expected_scope = {"mode": mode, "content_version_id": version, "packet_mode": packet_mode}
+    if daily_scope is not None:
+        headers["x-content-ops-daily-scope"] = daily_scope
+        expected_scope["daily_scope"] = daily_scope
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=False,
                 trust_env=False, transport=transport) as client:
@@ -57,8 +63,7 @@ async def _post_receipt(*, origin, token, release, mode, version, packet_mode,
         if (type(receipt) is not dict
             or set(receipt) != {"ok", "release_sha", "scope", result_key}
             or receipt["ok"] is not True or receipt["release_sha"] != release
-            or receipt["scope"] != {"mode": mode, "content_version_id": version,
-                                    "packet_mode": packet_mode}):
+            or receipt["scope"] != expected_scope):
             raise ValueError
         return receipt[result_key]
     except Exception:
@@ -87,18 +92,22 @@ class ButtonCanaryGateway:
         self._image_verified = False
         self._begin_attempted = False
         self._mode, self._packet_mode = "canary", _SCOPE
+        self._daily_scope = None
 
     @property
     def content_version_id(self):
         return self._version
 
     def _headers(self):
-        return {"Authorization": "Bearer " + self._token,
+        headers = {"Authorization": "Bearer " + self._token,
                 "x-content-ops-expected-release-sha": self._release,
                 "x-content-ops-mode": self._mode,
                 "x-content-ops-version-id": self._version,
                 "x-content-ops-packet-mode": self._packet_mode,
                 "Accept": "application/json"}
+        if self._daily_scope is not None:
+            headers["x-content-ops-daily-scope"] = self._daily_scope
+        return headers
 
     async def _post(self, body, result_key):
         if not self._enabled:
@@ -106,7 +115,7 @@ class ButtonCanaryGateway:
         return await _post_receipt(origin=self._origin, token=self._token,
             release=self._release, mode=self._mode, version=self._version,
             packet_mode=self._packet_mode, transport=self._transport,
-            body=body, result_key=result_key)
+            body=body, result_key=result_key, daily_scope=self._daily_scope)
 
     async def reconcile(self):
         if self._reconciled:
@@ -204,11 +213,13 @@ class ButtonCanaryGateway:
 class BoundDailyButtonGateway(ButtonCanaryGateway):
     """Exact claimed-version session; cannot rediscover/reclaim another version."""
 
-    def __init__(self, *, claim, **kwargs):
-        if type(claim) is not ReviewClaim:
+    def __init__(self, *, claim, daily_scope=None, **kwargs):
+        if (type(claim) is not ReviewClaim or daily_scope not in (None, YBO_DAILY_SCOPE)
+            or (daily_scope is not None and claim.client_id not in YBO_CLIENTS)):
             raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
         super().__init__(content_version_id=claim.content_version_id, **kwargs)
         self._mode, self._packet_mode = "daily", DAILY_PACKET_MODE
+        self._daily_scope = daily_scope
         self._reconciled = self._claim_attempted = True
         self._claimed = claim
 
@@ -228,11 +239,11 @@ class DailyButtonGateway:
     """
 
     def __init__(self, *, origin, gateway_token, release_sha, enabled=False,
-                 transport=None, clock=None):
+                 transport=None, clock=None, daily_scope=None):
         if (origin != APP_ORIGIN or type(gateway_token) is not str
             or _TOKEN.fullmatch(gateway_token) is None
             or type(release_sha) is not str or _SHA40.fullmatch(release_sha) is None
-            or type(enabled) is not bool):
+            or type(enabled) is not bool or daily_scope not in (None, YBO_DAILY_SCOPE)):
             raise PrivateCardGatewayError("private_card_gateway_configuration_invalid")
         self._origin, self._token, self._release = origin, gateway_token, release_sha
         self._enabled, self._transport = enabled, transport
@@ -240,6 +251,11 @@ class DailyButtonGateway:
         self._reconciled = self._ended = False
         self._tokens, self._bound, self._clients, self._versions = set(), set(), set(), set()
         self._claims = {}
+        self._daily_scope = daily_scope
+
+    @property
+    def max_cards(self):
+        return 3 if self._daily_scope == YBO_DAILY_SCOPE else 4
 
     async def _post(self, body, result_key):
         if not self._enabled:
@@ -247,7 +263,7 @@ class DailyButtonGateway:
         return await _post_receipt(origin=self._origin, token=self._token,
             release=self._release, mode="daily", version=None,
             packet_mode=DAILY_PACKET_MODE, transport=self._transport,
-            body=body, result_key=result_key)
+            body=body, result_key=result_key, daily_scope=self._daily_scope)
 
     async def reconcile(self):
         if self._reconciled:
@@ -255,7 +271,7 @@ class DailyButtonGateway:
         self._reconciled = True
         self._ended = True
         queued = await self._post({"action": "reconcile"}, "queued")
-        if type(queued) is not int or not 0 <= queued <= 4:
+        if type(queued) is not int or not 0 <= queued <= self.max_cards:
             raise PrivateCardGatewayError("private_card_gateway_outcome_unknown")
         self._ended = False
         return queued
@@ -264,7 +280,7 @@ class DailyButtonGateway:
         if not _uuid(claim_token):
             raise PrivateCardGatewayError("private_card_gateway_arguments_invalid")
         if (not self._reconciled or self._ended or claim_token in self._tokens
-            or len(self._tokens) >= 4):
+            or len(self._tokens) >= self.max_cards):
             raise PrivateCardGatewayError("private_card_gateway_replay_denied")
         self._tokens.add(claim_token)
         # Any lost/malformed ACK ends discovery, including direct caller retries.
@@ -275,7 +291,8 @@ class DailyButtonGateway:
         try:
             claim = ReviewClaim.parse(raw, self._clock())
             if (claim.claim_token != claim_token or claim.client_id in self._clients
-                or claim.content_version_id in self._versions):
+                or claim.content_version_id in self._versions
+                or (self._daily_scope is not None and claim.client_id not in YBO_CLIENTS)):
                 raise ValueError
         except Exception:
             raise PrivateCardGatewayError("private_card_gateway_outcome_unknown") from None
@@ -293,4 +310,4 @@ class DailyButtonGateway:
         self._bound.add(claim.claim_token)
         return BoundDailyButtonGateway(claim=claim, origin=self._origin,
             gateway_token=self._token, release_sha=self._release, enabled=self._enabled,
-            transport=self._transport, clock=self._clock)
+            transport=self._transport, clock=self._clock, daily_scope=self._daily_scope)

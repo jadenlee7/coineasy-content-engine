@@ -49,6 +49,14 @@ import {
 } from "./_shared/content-catalog.mts";
 import { isVerifiedSquidSourceNativeNoOverlay } from "./_shared/squid-source-native.mts";
 import { validateSquidTranslationRegions } from "./_shared/squid-translation-regions.mts";
+import {
+  QUALITY_BANNER_POLICY, MAX_QUALITY_BANNER_BYTES, qualityBannerEnabled,
+  qualityBannerClient, parseQualityGenerationContext, getQualityGenerationContext,
+  qualityContextHash, validQualityBannerMetadata, validQualityBannerPng,
+  validQualityBannerPixels,
+  qualityUpstreamError,
+  type QualityGenerationContext,
+} from "./_shared/quality-banner.mts";
 
 type NewsCardRequest = {
   source_content?: unknown;
@@ -59,6 +67,7 @@ type NewsCardRequest = {
   source_image_url?: unknown;
   style_references?: unknown;
   style_reference_pack_hash?: unknown;
+  quality_context?: unknown;
 };
 
 type RailwayNewsCardResponse = {
@@ -387,6 +396,7 @@ type NewsCardRequestHashInput = {
   sourceImageUrl?: string;
   styleReferences?: StyleReference[];
   styleReferencePackHash?: string;
+  qualityContext?: QualityGenerationContext;
 };
 
 function buildNewsCardRequestHash(
@@ -406,7 +416,10 @@ function buildNewsCardRequestHash(
   // The Squid generated visual is server-routed from immutable source text.
   // Bind the routing policy to idempotency so a reviewed older family cannot
   // be silently reused after the deterministic policy changes.
-  if (input.clientId === "squid" && includeBrandPolicy) {
+  if (input.qualityContext) {
+    payload.quality_banner_policy = QUALITY_BANNER_POLICY;
+    payload.quality_context_sha256 = qualityContextHash(input.qualityContext);
+  } else if (input.clientId === "squid" && includeBrandPolicy) {
     payload.creative_family_policy_version = SQUID_CREATIVE_FAMILY_POLICY_VERSION;
     payload.visual_reference_pack_version = SQUID_VISUAL_REFERENCE_PACK_VERSION;
     // A generated-stage geometry change must not replay a durable PNG rendered
@@ -764,6 +777,7 @@ async function catalogRetryResponse(
   deadline: number,
   expectedVerifiedSourceImageUrl = "",
   strictAutomationRemix = false,
+  qualityMode = false,
 ): Promise<Record<string, unknown>> {
   if (existing.assets.length !== 1) {
     throw new ContentCatalogError("durable_storage_invalid_response");
@@ -780,12 +794,16 @@ async function catalogRetryResponse(
   ) {
     throw new ContentCatalogError("durable_storage_invalid_response");
   }
-  if (replayAsset.byteSize > MAX_NEWS_CARD_BYTES) {
+  const maximumBytes = qualityMode ? MAX_QUALITY_BANNER_BYTES : MAX_NEWS_CARD_BYTES;
+  if (replayAsset.byteSize > maximumBytes) {
     throw new ContentCatalogError("generated_image_too_large");
   }
   const render = objectValue(existing.content.render);
   const source = objectValue(existing.content.source);
   const spec = objectValue(existing.content.spec);
+  if (qualityMode ? !validQualityBannerMetadata(spec) : Object.hasOwn(spec, "quality_banner")) {
+    throw new ContentCatalogError("invalid_generation_response");
+  }
   if (newsCardKoreanLocalizationError(spec)) {
     throw new ContentCatalogError(
       NEWS_CARD_KOREAN_LOCALIZATION_REGENERATION_ERROR,
@@ -812,6 +830,12 @@ async function catalogRetryResponse(
     : "";
   const isSquidRemix = clientId === "squid" && actualTemplateStyle === "remix";
   const isLegacySquidSquare = isSquidRemix && !Object.hasOwn(spec, "output_policy");
+  if (qualityMode && (requestedTemplateStyle !== "remix" || actualTemplateStyle !== "remix"
+    || !expectedVerifiedSourceImageUrl || storedSourceImageUrl !== expectedVerifiedSourceImageUrl
+    || render.source_image_used !== true || !storedSourceImageSha256
+    || render.figma_template != null || render.source_visual_file != null)) {
+    throw new ContentCatalogError("invalid_generation_response");
+  }
   if (
     isSquidRemix
     && (
@@ -852,12 +876,16 @@ async function catalogRetryResponse(
     fetch,
     deadlineSignal(deadline, 8_000),
   );
-  if (imageBytes.byteLength > MAX_NEWS_CARD_BYTES) {
+  if (imageBytes.byteLength > maximumBytes) {
     throw new ContentCatalogError("generated_image_too_large");
   }
   const replayDimensions = pngDimensions(imageBytes);
   if (!replayDimensions) {
     throw new ContentCatalogError("durable_asset_invalid");
+  }
+  if (qualityMode && (!validQualityBannerPng(spec, imageBytes, replayDimensions)
+    || !await validQualityBannerPixels(imageBytes))) {
+    throw new ContentCatalogError("invalid_generation_response");
   }
   if (
     isSquidRemix
@@ -896,7 +924,7 @@ async function catalogRetryResponse(
     fact_check: factCheck,
     output_width: replayDimensions.width,
     output_height: replayDimensions.height,
-    image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
+    image_data_url: qualityMode ? "" : `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
     filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
     storage_backend: "supabase",
     content_item_id: existing.contentItemId,
@@ -923,8 +951,9 @@ export function normalizedSourceVisualFile(value: unknown, clientId: string): st
       ? value.slice(markerIndex + 1)
       : "";
   const escapedClientId = clientId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const run = "(?:news_[0-9]+|news_request_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})";
   return new RegExp(
-    `^${escapedClientId}/news_[0-9]+/source_visual_cleaned\\.jpg$`,
+    `^${escapedClientId}/${run}/source_visual_cleaned\\.jpg$`,
   ).test(candidate)
     ? candidate
     : null;
@@ -1052,6 +1081,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
+  // A browser/caller can never assert a natural job or source identity.
+  if (Object.hasOwn(body, "quality_context")) {
+    return json({ error: "quality_banner_context_server_only" }, 403);
+  }
+  let qualityMode = false;
+  try {
+    qualityMode = qualityBannerEnabled(Netlify.env.get("QUALITY_BANNER_ENABLED"))
+      && automationRequest && qualityBannerClient(clientId);
+  } catch { return json({ error: "quality_banner_configuration_invalid" }, 503); }
 
   const sourceContent = typeof body.source_content === "string" ? body.source_content.trim() : "";
   const sourceType = typeof body.source_type === "string" ? body.source_type : "tweet";
@@ -1112,12 +1150,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return json({ error: code }, 422);
   }
   const mockMode = body.mock_mode === true;
+  if (qualityMode && (mockMode || sourceType !== "tweet" || templateStyle !== "remix" || !pinnedSourceImageUrl)) {
+    return json({ error: "quality_banner_natural_remix_required" }, 422);
+  }
   const requiresVerifiedOfficialSource = isOfficialSourceClient(clientId)
     && templateStyle === "remix";
   const strictAutomationRemix = automationRequest
     && requiresVerifiedOfficialSource
     && AUTOMATION_STRICT_REMIX_CLIENTS.has(clientId);
-  const requestHashInput = {
+  const requestHashInput: NewsCardRequestHashInput = {
     clientId,
     sourceContent,
     sourceType,
@@ -1128,7 +1169,8 @@ export default async (req: Request, context: Context): Promise<Response> => {
     styleReferences: styleReferencePack.references,
     styleReferencePackHash: styleReferencePack.packHash,
   };
-  const requestHash = newsCardRequestHash(requestHashInput);
+  let requestHash = newsCardRequestHash(requestHashInput);
+  let qualityContext: QualityGenerationContext | undefined;
 
   let existingGeneration: ContentCatalogLookup | null;
   try {
@@ -1161,9 +1203,24 @@ export default async (req: Request, context: Context): Promise<Response> => {
       || Date.now() >= requestDeadline - 100;
     return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, deadlineExceeded ? 504 : 503);
   }
+  if (qualityMode) {
+    const expected = { workspaceId: storageConfig.workspaceId, clientId, requestId,
+      sourceContent, sourceUrl, sourceImageUrl: pinnedSourceImageUrl };
+    try {
+      qualityContext = existingGeneration
+        ? parseQualityGenerationContext(existingGeneration.content.quality_context, expected)
+        : await getQualityGenerationContext(storageConfig, expected, fetch,
+          deadlineSignal(requestDeadline, 4_000));
+      requestHashInput.qualityContext = qualityContext;
+      requestHash = newsCardRequestHash(requestHashInput);
+    } catch (error) {
+      const code = error instanceof ContentCatalogError ? error.code : "quality_banner_context_unavailable";
+      return json({ error: code }, code === "quality_banner_context_invalid" ? 409 : 503);
+    }
+  }
   if (existingGeneration) {
     const storedRequestHash = catalogRequestHash(existingGeneration);
-    const isCompatibleLegacyBrandRetry = (
+    const isCompatibleLegacyBrandRetry = !qualityMode && (
       clientId === "squid"
         ? isLegacySquidCreativeRecord(existingGeneration)
         : isLegacyStandardBrandRecord(existingGeneration)
@@ -1180,6 +1237,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           requestDeadline,
           pinnedSourceImageUrl,
           strictAutomationRemix,
+          qualityMode,
         ));
       } catch (error) {
         const code = error instanceof ContentCatalogError
@@ -1256,6 +1314,17 @@ export default async (req: Request, context: Context): Promise<Response> => {
       ? json({ error: "source_media_unavailable" }, 422)
       : json({ error: "source_image_required" }, 422);
   }
+  if (qualityContext) {
+    // Source import still proves official account/media. The immutable natural
+    // source, not a new import or caller text, owns the Korean copy identity.
+    if (resolvedSource.content !== qualityContext.source_content
+      || canonicalXStatusUrl(resolvedSource.url) !== canonicalXStatusUrl(qualityContext.source_url)
+      || resolvedSource.imageUrl !== qualityContext.source_image_url) {
+      return json({ error: "quality_banner_source_changed" }, 409);
+    }
+    resolvedSource = { ...resolvedSource, content: qualityContext.source_content,
+      url: qualityContext.source_url, imageUrl: qualityContext.source_image_url };
+  }
 
   if (existingGeneration) {
     try {
@@ -1266,6 +1335,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         requestDeadline,
         requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
         strictAutomationRemix,
+        qualityMode,
       ));
     } catch (error) {
       const code = error instanceof ContentCatalogError
@@ -1285,6 +1355,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const upstreamHeaders = {
     "Content-Type": "application/json",
     "X-API-Key": apiSecret,
+    "Idempotency-Key": requestId,
   };
 
   try {
@@ -1300,6 +1371,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           source_image_url: resolvedSource.imageUrl,
           mock_mode: mockMode,
           template_style: templateStyle,
+          ...(qualityContext ? { quality_context: qualityContext } : {}),
           ...(styleReferencePack.packHash
             ? {
               style_references: styleReferencePack.references,
@@ -1320,6 +1392,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
 
     if (!generationResponse.ok) {
       const detail = await generationResponse.text();
+      if (qualityMode) {
+        const failure = qualityUpstreamError(detail);
+        return json({ error: failure.error }, failure.status);
+      }
       const koreanLocalizationError = upstreamNewsCardKoreanLocalizationError(detail);
       if (koreanLocalizationError) {
         return json({ error: koreanLocalizationError }, 502);
@@ -1339,6 +1415,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const result = rawResult;
+    if (qualityMode ? !validQualityBannerMetadata(result.spec) : Object.hasOwn(result.spec, "quality_banner")) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    if (qualityMode && (result.figma_template != null || result.source_visual_path != null)) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
     const filePath = generatedFilePath(result.png_path, clientId);
     if (!filePath) {
       return json({ error: "invalid_generated_file_path" }, 502);
@@ -1402,6 +1484,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
     if (
       clientId !== "squid"
+      && !qualityMode
       && !validStandardNewsBrandMetadata(
         result.spec,
         clientId,
@@ -1448,16 +1531,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
 
     const declaredBytes = Number(imageResponse.headers.get("content-length"));
-    if (Number.isFinite(declaredBytes) && declaredBytes > MAX_NEWS_CARD_BYTES) {
+    const maximumBytes = qualityMode ? MAX_QUALITY_BANNER_BYTES : MAX_NEWS_CARD_BYTES;
+    if (Number.isFinite(declaredBytes) && declaredBytes > maximumBytes) {
       return json({ error: "generated_image_too_large" }, 502);
     }
     const imageBytes = await imageResponse.arrayBuffer();
-    if (imageBytes.byteLength > MAX_NEWS_CARD_BYTES) {
+    if (imageBytes.byteLength > maximumBytes) {
       return json({ error: "generated_image_too_large" }, 502);
     }
     const imageDimensions = pngDimensions(imageBytes);
     if (!imageDimensions) {
       return json({ error: "invalid_generated_png" }, 502);
+    }
+    if (qualityMode && (!validQualityBannerPng(result.spec, imageBytes, imageDimensions)
+      || !await validQualityBannerPixels(imageBytes))) {
+      return json({ error: "invalid_generation_response" }, 502);
     }
     if (
       clientId === "squid"
@@ -1467,7 +1555,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const resultSpec = result.spec;
-    const brandProfileAudit = clientId === "squid"
+    const brandProfileAudit = qualityMode
+      ? { quality_banner: resultSpec.quality_banner,
+        brand_profile_policy_version: resultSpec.brand_profile_policy_version,
+        render_strategy: resultSpec.render_strategy, channel_profile: resultSpec.channel_profile,
+        template_version: resultSpec.template_version, asset_pack_version: resultSpec.asset_pack_version }
+      : clientId === "squid"
       ? {
         creative_family: resultSpec.creative_family,
         render_strategy: resultSpec.render_strategy,
@@ -1562,6 +1655,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           : `${clientId} 데일리 뉴스`,
         content: {
           request_hash: requestHash,
+          ...(qualityContext ? { quality_context: qualityContext } : {}),
           spec: resultSpec,
           source: {
             submitted_content: sourceContent,
@@ -1588,7 +1682,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         generationMeta: {
           request_hash: requestHash,
           duration_ms: result.duration_ms,
-          renderer: "railway",
+          renderer: qualityMode ? "higgsfield-sunburst-max" : "railway",
           storage_backend: "supabase",
           mock_mode: mockMode,
           ...referenceAudit,
@@ -1599,7 +1693,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
           fact_check: factCheck,
         },
         asset: storedAsset,
-        promptVersion: clientId === "squid" ? "news-card@3" : "news-card@2",
+        promptVersion: qualityMode ? QUALITY_BANNER_POLICY : clientId === "squid" ? "news-card@3" : "news-card@2",
       }, fetch, deadlineSignal(requestDeadline, 6_000));
       catalogCommitted = true;
       return json({
@@ -1623,7 +1717,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         fact_check: factCheck,
         output_width: imageDimensions.width,
         output_height: imageDimensions.height,
-        image_data_url: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
+        image_data_url: qualityMode ? "" : `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}`,
         filename: `${clientId}-${actualTemplateStyle}-news-card.png`,
         storage_backend: "supabase",
         content_item_id: catalog.contentItemId,
@@ -1673,6 +1767,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
               requestDeadline,
               requiresVerifiedOfficialSource ? resolvedSource.imageUrl : "",
               strictAutomationRemix,
+              qualityMode,
             ));
           }
           return json({ error: "news_card_idempotency_conflict" }, 409);
@@ -1689,6 +1784,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       const providerResultError = NEWS_CARD_PROVIDER_RESULT_ERRORS.has(error.code);
       return json({ error: error.code }, providerResultError ? 502 : 503);
     }
+    if (qualityMode) return json({ error: "quality_banner_upstream_unknown" }, 409);
     const message = error instanceof Error ? error.message : "unknown_error";
     const timedOut = error instanceof Error && error.name === "TimeoutError";
     return json(

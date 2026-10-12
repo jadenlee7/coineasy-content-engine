@@ -129,7 +129,7 @@ test("exact feature flag is closed unless its value is exactly true", () => {
   assert.equal(studioTelegramPublishEnabled(() => "true"), true);
 });
 
-test("first-slice client allowlist accepts only the exact Squid value", () => {
+test("client allowlist accepts only explicit canonical subsets", () => {
   const allowed = studioTelegramPublishAllowedClients((name) => (
     name === "STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS" ? "squid" : undefined
   ));
@@ -141,9 +141,6 @@ test("first-slice client allowlist accepts only the exact Squid value", () => {
     "Squid",
     " squid",
     "squid ",
-    "yellow",
-    "origintrail",
-    "babylon",
     "squid,yellow",
     "squid, yellow",
     "squid,",
@@ -155,6 +152,9 @@ test("first-slice client allowlist accepts only the exact Squid value", () => {
       [],
       `expected ${String(value)} to fail closed`,
     );
+  }
+  for (const value of ["yellow", "origintrail", "babylon", "yellow,squid", "yellow,origintrail,squid,babylon"]) {
+    assert.deepEqual([...studioTelegramPublishAllowedClients(() => value)], value.split(","));
   }
 });
 
@@ -208,6 +208,7 @@ test("publication helpers bind the service-only RPC to one immutable Telegram ve
 test("publication parser requires a canonical URL only for published state", async () => {
   for (const polluted of [
     { ...publication("published", true), external_url: null },
+    { ...publication("published", true), external_url: "https://t.me/other_channel/123" },
     { ...publication("queued", true), external_url: "https://t.me/squid_kor_update/123" },
     { ...publication("delivery_unknown", true), delivery_started_at: "not-an-iso-timestamp" },
     { ...publication("delivery_unknown", true), delivery_started_at: "2026-02-30T12:00:00Z" },
@@ -225,6 +226,36 @@ test("publication parser requires a canonical URL only for published state", asy
       ),
     );
   }
+});
+
+test("published receipt cannot cross a known exact client destination", async () => {
+  const wrong = {...publication("published", true), external_url: "https://t.me/babylonbtc/123"};
+  await assert.rejects(() => getStudioTelegramPublication(catalogConfig(), ITEM_ID,
+    VERSION_ID, async () => Response.json(wrong), undefined, "yellow"),
+    /telegram_publication_invalid_response/);
+  const right = {...wrong, external_url: "https://t.me/yellowkorea_ann/123"};
+  assert.equal((await getStudioTelegramPublication(catalogConfig(), ITEM_ID,
+    VERSION_ID, async () => Response.json(right), undefined, "yellow"))?.external_url,
+    right.external_url);
+});
+
+test("POST explicit Yellow subset queues only the server-selected exact version", async () => {
+  const calls: string[] = [];
+  await withEnvironment({STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
+    STUDIO_TELEGRAM_PUBLISH_ENABLED: "true", STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS: "yellow",
+    SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
+    CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID}, async (input) => {
+    const url = String(input); calls.push(url);
+    if (url.endsWith("/rpc/get_content_library_item")) return Response.json(detailRpcResult("yellow"));
+    if (url.endsWith("/rpc/request_studio_telegram_publication")) return Response.json(publication("queued", false));
+    throw new Error("unexpected provider call");
+  }, async () => {
+    const response = await publicationHandler(postRequest(), {params: {contentId: ITEM_ID}} as never);
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).status, "queued");
+    assert.deepEqual(calls.map((url) => new URL(url).pathname),
+      ["/rest/v1/rpc/get_content_library_item", "/rest/v1/rpc/request_studio_telegram_publication"]);
+  });
 });
 
 test("worker kick uses the dedicated secret, empty body, and validated Railway origin", async () => {
@@ -435,7 +466,7 @@ test("POST rejects a non-allowlisted Yellow item before creating a publication",
   await withEnvironment({
     STUDIO_ACCESS_TOKEN: ACCESS_TOKEN,
     STUDIO_TELEGRAM_PUBLISH_ENABLED: "true",
-    STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS: "yellow",
+    STUDIO_TELEGRAM_PUBLISH_ALLOWED_CLIENTS: "squid",
     SUPABASE_URL: "https://project.supabase.co",
     SUPABASE_SERVICE_ROLE_KEY: "server-only-service-role",
     CONTENT_STUDIO_WORKSPACE_ID: WORKSPACE_ID,

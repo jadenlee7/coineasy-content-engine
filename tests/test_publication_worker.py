@@ -131,8 +131,8 @@ def _worker(repository, publisher):
     )
 
 
-def test_worker_constructor_cannot_expand_the_squid_canary():
-    with pytest.raises(ValueError, match="Squid-only"):
+def test_worker_constructor_rejects_noncanonical_client_subset():
+    with pytest.raises(ValueError, match="ALLOWED_CLIENTS is invalid"):
         ExactTelegramPublicationWorker(
             repository=FakeRepository(),
             publisher_factory=lambda _client: FakePublisher(),

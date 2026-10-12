@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+import re
+import secrets
 from typing import Callable, Protocol
 
 from core.publications.models import (
@@ -11,7 +13,7 @@ from core.publications.repository import (
     PublicationRepositoryError,
     SupabasePublicationRepository,
 )
-from core.publications.settings import PublicationSettings
+from core.publications.settings import PublicationSettings, parse_publication_allowed_clients
 from core.publishers.telegram_exact import (
     ExactTelegramPublisher,
     TelegramExactError,
@@ -42,9 +44,12 @@ class ExactTelegramPublicationWorker:
         allowed_clients: tuple[str, ...] = ("squid",),
         lease_seconds: int = 180,
         worker_id: str | None = None,
+        workspace_id: str | None = None,
+        release_sha: str = "",
     ):
-        if tuple(allowed_clients) != ("squid",):
-            raise ValueError("the exact Telegram canary is Squid-only")
+        allowed_clients = parse_publication_allowed_clients(
+            ",".join(allowed_clients)
+        )
         if not 180 <= lease_seconds <= 600:
             raise ValueError("publication lease must be between 180 and 600 seconds")
         self.repository = repository
@@ -52,6 +57,8 @@ class ExactTelegramPublicationWorker:
         self.allowed_clients = frozenset(allowed_clients)
         self.lease_seconds = lease_seconds
         self.worker_id = worker_id or f"telegram-publication:{uuid.uuid4()}"
+        self.workspace_id = workspace_id
+        self.release_sha = release_sha
 
     async def _fail_before_attempt(
         self,
@@ -98,7 +105,27 @@ class ExactTelegramPublicationWorker:
 
         try:
             publisher = self.publisher_factory(claim.client_id)
-            await publisher.preflight()
+            pins = (claim.content_ops_decision_id, claim.telegram_route_binding,
+                    claim.content_ops_release_sha)
+            if claim.approval_reviewer_source == "telegram_principal" or any(
+                pin is not None for pin in pins
+            ):
+                if (claim.approval_reviewer_source != "telegram_principal"
+                    or not self.workspace_id
+                    or not re.fullmatch(r"[a-f0-9]{40}", self.release_sha)
+                    or not isinstance(claim.content_ops_decision_id, str)
+                    or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", claim.content_ops_decision_id)
+                    or not isinstance(claim.telegram_route_binding, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", claim.telegram_route_binding)
+                    or claim.content_ops_release_sha != self.release_sha):
+                    raise TelegramExactError("telegram_publication_route_mismatch")
+                actual_route = await publisher.verify_content_ops_route(
+                    workspace_id=self.workspace_id, release_sha=self.release_sha
+                )
+                if not secrets.compare_digest(actual_route, claim.telegram_route_binding):
+                    raise TelegramExactError("telegram_publication_route_mismatch")
+            else:
+                await publisher.preflight()
             image_bytes = await self.repository.download_asset(claim)
         except TelegramExactError as exc:
             return await self._fail_before_attempt(
@@ -202,6 +229,7 @@ def build_exact_telegram_publication_worker(
         supabase_url=settings.supabase_url,
         service_role_key=settings.supabase_service_role_key,
         workspace_id=settings.workspace_id,
+        allowed_clients=settings.allowed_clients,
     )
     effective_factory = publisher_factory or (
         lambda client_id: ExactTelegramPublisher(load_telegram_exact_config(
@@ -214,6 +242,8 @@ def build_exact_telegram_publication_worker(
         publisher_factory=effective_factory,
         allowed_clients=settings.allowed_clients,
         lease_seconds=settings.lease_seconds,
+        workspace_id=settings.workspace_id,
+        release_sha=settings.release_sha,
     )
 
 

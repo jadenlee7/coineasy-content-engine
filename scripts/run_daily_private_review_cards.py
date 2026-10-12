@@ -12,7 +12,7 @@ from core.content_ops.daily_private_review import DailyPrivateCardWorker
 from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.private_review_card_canary import PrivateCardCanary
 from core.content_ops.private_review_card_courier import PrivateCardCourier
-from core.content_ops.private_review_card_gateway import DailyButtonGateway
+from core.content_ops.private_review_card_gateway import DailyButtonGateway, YBO_DAILY_SCOPE
 from core.content_ops.private_review_card_owner_gateway import GatewayPrivateCardOwner
 from core.content_ops.private_review_card_sender import TelegramPrivateCardSender
 from core.content_ops.review_buttons import ButtonSigner
@@ -43,6 +43,11 @@ class DailyPrivateCardSettings:
     bot_policy: ExistingReviewBotPolicy
     start_kst: str
     runtime_git_sha_state: str
+    daily_scope: str | None = None
+
+    @property
+    def max_cards(self):
+        return 3 if self.daily_scope == YBO_DAILY_SCOPE else 4
 
     @property
     def provenance(self):
@@ -63,13 +68,17 @@ class DailyPrivateCardSettings:
         start = env.get("AUTOMATION_DAILY_REVIEW_START_KST", "09:00")
         if type(start) is not str or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", start) is None:
             raise ValueError("daily_private_card_start_invalid")
+        scope = env.get("CONTENT_OPS_DAILY_CLIENT_SCOPE")
+        if scope not in (None, YBO_DAILY_SCOPE) or (scope is not None and start != "09:00"):
+            raise ValueError("daily_private_card_scope_invalid")
         return cls(workspace, provenance.release_sha, *identity, start,
-                   provenance.runtime_git_sha_state)
+                   provenance.runtime_git_sha_state, scope)
 
 
 def build_runner(settings):
     discovery = DailyButtonGateway(origin=APP_ORIGIN,
-        gateway_token=settings.gateway_token, release_sha=settings.release_sha, enabled=True)
+        gateway_token=settings.gateway_token, release_sha=settings.release_sha, enabled=True,
+        daily_scope=settings.daily_scope)
     signer, bindings = ButtonSigner(settings.signing_key), EditBindings(settings.binding_key)
 
     def exact_runner(gateway):
@@ -103,7 +112,9 @@ def run(*, validate_only=False, environ=None, stamp_reader=None, runner_factory=
         if validate_only:
             return {"ok": True, "mode": mode, "enabled": enabled,
                     **zero_io, "public_send_attempted": False,
-                    "provenance": settings.provenance}
+                    "provenance": settings.provenance,
+                    **({"daily_scope": settings.daily_scope, "maximum_daily_clients": 3,
+                        "start_kst": "09:00"} if settings.daily_scope else {})}
         outcome = asyncio.run(runner_factory(settings).run(enabled=True))
         keys = {"status", "queued", "claimed", "cards_recorded", "confirmed_parts",
                 "public_send_attempted"}
@@ -112,8 +123,9 @@ def run(*, validate_only=False, environ=None, stamp_reader=None, runner_factory=
             or outcome["status"] not in {"completed", "no_candidate", "waiting_for_window",
                 "day_rolled_over", "blocked", "outbox_unknown", "delivery_unknown"}
             or any(type(outcome[key]) is not int or not 0 <= outcome[key] <= limit
-                   for key, limit in (("queued", 4), ("claimed", 4),
-                                      ("cards_recorded", 4), ("confirmed_parts", 16)))
+                   for key, limit in (("queued", settings.max_cards), ("claimed", settings.max_cards),
+                                      ("cards_recorded", settings.max_cards),
+                                      ("confirmed_parts", settings.max_cards * 4)))
             or outcome["cards_recorded"] > outcome["claimed"]
             or outcome["confirmed_parts"] < outcome["cards_recorded"] * 4):
             raise ValueError("daily_private_card_receipt_invalid")

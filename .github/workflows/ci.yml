@@ -27,6 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             -r requirements.txt \
+            'psycopg[binary]==3.2.9' \
             pytest==8.4.2 \
             pytest-asyncio==1.2.0
       - name: Run Python tests
@@ -34,6 +35,37 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
+
+  final-preparation-image:
+    name: Final confirmation card image (OFF, no delivery)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated final-card preparation image
+        run: >-
+          docker build --file Dockerfile.final-card-preparation
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-final-preparation-ci .
+      - name: Verify OFF run and validate-only in the real image without I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in run validate_only; do
+            args=()
+            if [ "$mode" = validate_only ]; then args+=(--validate-only); fi
+            output="$(docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges coineasy-final-preparation-ci \
+              python -m scripts.run_final_card_preparations "${args[@]}")"
+            jq -e --arg mode "$mode" '. == {"mode":$mode,"ok":true,"enabled":false,
+              "status":"disabled","network_calls":false,"database_calls":false,
+              "telegram_calls":false,"public_send_attempted":false,
+              "runtime_acl_verified":false,"release_pair_registered":false}' <<< "$output"
+          done
 
   daily-review-image:
     name: Private daily review image (OFF, no delivery)
@@ -400,6 +432,91 @@ jobs:
             AWS_ACCESS_KEY_ID GOOGLE_APPLICATION_CREDENTIALS PGSERVICEFILE; do
             reject "$sha" "$sha" false --env "$key=synthetic_blocked"
           done
+
+  typefully-daily-image:
+    name: Private Typefully daily image (OFF, no provider I/O)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build with a synthetic SHA stamp (not origin proof)
+        run: >-
+          docker build --file Dockerfile.typefully-daily
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-typefully-daily-ci .
+      - name: Reject an image without a build SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker build --file Dockerfile.typefully-daily \
+            --tag coineasy-typefully-daily-unstamped-ci . >/dev/null 2>&1; then
+            echo "unstamped Typefully image unexpectedly built" >&2
+            exit 1
+          fi
+      - name: Prove the image contains only required Typefully owner modules
+        shell: bash
+        run: |
+          docker run --rm -i --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python \
+            coineasy-typefully-daily-ci - <<'PY'
+          from pathlib import Path
+          from core.publications.typefully_daily import TypefullyDailySettings
+          expected = {
+              '__init__.py', 'models.py', 'handoff.py', 'settings.py',
+              'typefully_approval.py',
+              'typefully_daily.py', 'typefully_draft_once.py',
+              'typefully_media_once.py', 'typefully_media_upload.py',
+              'typefully_readback.py',
+          }
+          assert {entry.name for entry in Path('/app/core/publications').iterdir()} == expected
+          assert TypefullyDailySettings.from_env({}) is None
+          print('typefully_isolated_default_off')
+          PY
+      - name: Prove disabled execution has zero I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges coineasy-typefully-daily-ci)"
+          jq -e '. == {"ok":true,"mode":"run","enabled":false,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+      - name: Validate image stamp and synthetic active config without I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":false,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env TYPEFULLY_DAILY_ENABLED=true \
+            --env TYPEFULLY_DAILY_CLIENTS=yellow \
+            --env TYPEFULLY_SOCIAL_SET_YELLOW=12345 \
+            --env TYPEFULLY_DAILY_RELEASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env SUPABASE_URL=https://synthetic.supabase.co \
+            --env SUPABASE_SERVICE_ROLE_KEY=ssssssssssssssssssssssssssssssssssssssss \
+            --env CONTENT_STUDIO_WORKSPACE_ID=11111111-1111-4111-8111-111111111111 \
+            --env TYPEFULLY_API_KEY=tttttttttttttttttttttttttttttttttttttttt \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          jq -e '. == {"ok":true,"mode":"validate_only","enabled":true,"network_calls":false,"database_calls":false,"provider_calls":false}' <<< "$output"
+          set +e
+          output="$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env RAILWAY_GIT_COMMIT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            coineasy-typefully-daily-ci \
+            python -m scripts.run_typefully_daily --validate-only)"
+          status=$?
+          set -e
+          test "$status" -eq 2
+          jq -e '.ok == false and .network_calls == false and .database_calls == false and .provider_calls == false' <<< "$output"
 
   automation-image:
     runs-on: ubuntu-latest
@@ -918,6 +1035,11 @@ jobs:
         run: |
           for smoke in supabase/tests/*_security.sql \
                        supabase/tests/*_least_privilege.sql; do
+            # Proposal-only functions do not exist in the migration baseline.
+            # This security fixture runs below, immediately after its proposal.
+            case "$smoke" in
+              supabase/tests/four_client_exact_telegram_security.sql) continue ;;
+            esac
             psql -X -v ON_ERROR_STOP=1 -f "$smoke"
           done
       - name: Prove isolated same-day refresh and one-shot concurrency
@@ -936,6 +1058,34 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_producer_binding.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_reconcile_producer_binding.sql
           psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_review_outbox.sql
+      - name: Verify final approval attribution on disposable full schema
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_approval_attribution_fixture.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution_preapply_readonly.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_approval_attribution.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_approval_attribution.sql
+      - name: Prove final card preflight and delivery ledger fail closed
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_review_state.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_edit_reply.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_prompt_registration.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_button_durable_attempt.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_preflight.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_publication_routes.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_release_pair_registry.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_release_pair_registry.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_card_delivery_ledger.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_card_preflight.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_decision_ledger.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_publication_handoff_intent.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_decision_ledger.sql
+      - name: Prove atomic four-client human approval and channel admission
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_four_client_exact_telegram.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/four_client_exact_telegram_security.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_typefully_final_approval.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/proposals/content_ops_final_publication_queue.sql
+          psql -X -v ON_ERROR_STOP=1 -f supabase/tests/content_ops_final_publication_queue.sql
       - name: Prove Content QA concurrency fences
         run: bash supabase/tests/content_qa_jobs_concurrency.sh
       - name: Serialize Squid recovery behind official X intake

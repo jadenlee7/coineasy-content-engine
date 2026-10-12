@@ -96,8 +96,8 @@ class PublicationHandoffTests(unittest.TestCase):
                 tg, x, _ = CLIENT_TARGETS[client]
                 self.assertEqual(packet["targets"], {"telegram": tg, "x": x})
                 cap = packet["capabilities"]
-                self.assertEqual(cap["telegram"]["adapter"], "exact_version_implemented" if client == "squid" else "adapter_missing")
-                self.assertEqual(cap["typefully"]["adapter"], "exact_version_adapter_missing")
+                self.assertEqual(cap["telegram"]["adapter"], "exact_version_implemented")
+                self.assertEqual(cap["typefully"]["adapter"], "exact_version_draft_implemented")
                 self.assertIsNone(cap["typefully"]["publish_at"])
                 self.assertFalse(cap["telegram"]["execution_authorized"])
                 self.assertFalse(cap["typefully"]["execution_authorized"])
@@ -267,14 +267,14 @@ class PublicationHandoffTests(unittest.TestCase):
             mutation(value)
             self.assertNotEqual(build_publication_handoff(value, now=NOW)["packet_sha256"], baseline)
 
-    def test_caption_count_matches_existing_python_and_sql_codepoint_policy(self):
-        for length in (1024, 1025):
+    def test_caption_count_matches_conservative_final_card_utf16_limit(self):
+        for length in (512, 513, 1024):
             value = _snapshot()
             value["channel_copy"]["telegram"] = "🚀" * length
             packet = build_publication_handoff(value, now=NOW)["packet"]
             self.assertEqual(packet["channel_copy"]["telegram"], value["channel_copy"]["telegram"])
             self.assertEqual(packet["capabilities"]["telegram"]["payload"],
-                             "within_caption_limit" if length == 1024 else "caption_limit_exceeded")
+                             "within_caption_limit" if length == 512 else "caption_limit_exceeded")
 
     def test_missing_or_extra_root_and_nested_fields_fail_closed(self):
         for key in _snapshot():

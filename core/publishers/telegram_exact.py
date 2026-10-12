@@ -13,6 +13,7 @@ import yaml
 
 from core.publications.models import TelegramReceipt
 from core.publications.settings import PUBLICATION_TELEGRAM_USERNAMES
+from core.publications.telegram_route import telegram_route_binding
 
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
@@ -130,6 +131,7 @@ class ExactTelegramPublisher:
         self.config = config
         self.timeout_seconds = timeout_seconds
         self.transport = transport
+        self._content_ops_channel_id: int | None = None
 
     def _url(self, method: str) -> str:
         return f"{TELEGRAM_API_BASE}/bot{self.config.bot_token}/{method}"
@@ -176,6 +178,59 @@ class ExactTelegramPublisher:
         ):
             raise TelegramExactError("telegram_publication_target_mismatch")
 
+    async def verify_content_ops_route(self, *, workspace_id: str, release_sha: str) -> str:
+        """Read provider identity/rights and pin a numeric destination, never send.
+
+        Used only for attributed final-review handoffs. The old Studio canary
+        retains its existing preflight contract.
+        """
+        self._content_ops_channel_id = None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds,
+                follow_redirects=False, trust_env=False, transport=self.transport) as client:
+                async def read(method: str, payload: dict[str, object]):
+                    response = await client.post(self._url(method), json=payload)
+                    if not 200 <= response.status_code < 300:
+                        raise TelegramExactError("telegram_publication_route_mismatch")
+                    return self._result(response)
+
+                me = await read("getMe", {})
+                bot_id = me.get("id")
+                if (isinstance(bot_id, bool) or not isinstance(bot_id, int)
+                    or bot_id <= 0 or me.get("is_bot") is not True
+                    or not _BOT_TOKEN_RE.fullmatch(self.config.bot_token)
+                    or int(self.config.bot_token.split(":", 1)[0]) != bot_id):
+                    raise TelegramExactError("telegram_publication_route_mismatch")
+                chat = await read("getChat", {"chat_id": self.config.chat_id})
+                channel_id = chat.get("id")
+                if (isinstance(channel_id, bool) or not isinstance(channel_id, int)
+                    or channel_id >= 0 or chat.get("type") != "channel"
+                    or not isinstance(chat.get("username"), str)
+                    or chat["username"].lower() != self.config.public_username
+                    or self.config.public_username != PUBLICATION_TELEGRAM_USERNAMES.get(self.config.client_id)
+                    or (not self.config.chat_id.startswith("@") and str(channel_id) != self.config.chat_id)
+                    or (self.config.chat_id.startswith("@") and self.config.chat_id.lower() != "@" + self.config.public_username)):
+                    raise TelegramExactError("telegram_publication_route_mismatch")
+                member = await read("getChatMember", {"chat_id": channel_id, "user_id": bot_id})
+                user = member.get("user")
+                if (member.get("status") != "administrator"
+                    or member.get("can_post_messages") is not True
+                    or not isinstance(user, Mapping) or user.get("id") != bot_id
+                    or user.get("is_bot") is not True):
+                    raise TelegramExactError("telegram_publication_route_mismatch")
+                binding = telegram_route_binding(workspace_id=workspace_id,
+                    client_id=self.config.client_id, release_sha=release_sha,
+                    channel_id=channel_id, bot_id=bot_id, username=self.config.public_username)
+        except (httpx.TimeoutException, httpx.TransportError):
+            raise TelegramExactError("telegram_preflight_unavailable",
+                retryable_before_attempt=True) from None
+        except TelegramExactError:
+            raise
+        except Exception:
+            raise TelegramExactError("telegram_publication_route_mismatch") from None
+        self._content_ops_channel_id = channel_id
+        return binding
+
     async def send_photo_once(
         self,
         *,
@@ -193,12 +248,13 @@ class ExactTelegramPublisher:
             async with httpx.AsyncClient(
                 timeout=self.timeout_seconds,
                 follow_redirects=False,
+                trust_env=self._content_ops_channel_id is None,
                 transport=self.transport,
             ) as client:
                 response = await client.post(
                     self._url("sendPhoto"),
                     data={
-                        "chat_id": self.config.chat_id,
+                        "chat_id": str(self._content_ops_channel_id) if self._content_ops_channel_id is not None else self.config.chat_id,
                         "caption": caption,
                     },
                     files={
@@ -229,6 +285,10 @@ class ExactTelegramPublisher:
             or not isinstance(username, str)
             or username.lower() != self.config.public_username
             or chat.get("type") != "channel"
+            or (self._content_ops_channel_id is not None and (
+                chat.get("id") != self._content_ops_channel_id
+                or result.get("caption") != caption
+            ))
         ):
             raise TelegramExactError("telegram_delivery_unknown")
         return TelegramReceipt(

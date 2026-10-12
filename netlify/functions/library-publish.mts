@@ -147,6 +147,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
       contentItemId,
       contentVersionId,
       idempotencyKey,
+      undefined,
+      undefined,
+      item.client_id,
     );
     let current = publication;
     if (!publication.reused && publication.status === "queued") {
@@ -158,6 +161,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
             config,
             contentItemId,
             contentVersionId,
+            undefined,
+            undefined,
+            item.client_id,
           ) || publication;
         } catch {
           // The queue receipt is durable. A status projection or worker kick

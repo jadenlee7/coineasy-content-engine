@@ -1,0 +1,44 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements-final-card-preparation.txt ./requirements-final-card-preparation.txt
+RUN python -m pip install --no-cache-dir -r requirements-final-card-preparation.txt
+
+# A build stamp is not origin proof: separately verify GitHub-origin deployment metadata.
+ARG RAILWAY_GIT_COMMIT_SHA
+RUN test -n "$RAILWAY_GIT_COMMIT_SHA" && \
+    echo "$RAILWAY_GIT_COMMIT_SHA" | grep -Eq '^[a-f0-9]{40}$' && \
+    printf '%s' "$RAILWAY_GIT_COMMIT_SHA" > /app/content-ops-build-sha && \
+    chmod 444 /app/content-ops-build-sha
+
+COPY core/__init__.py ./core/__init__.py
+COPY core/content_ops/__init__.py ./core/content_ops/__init__.py
+COPY core/content_ops/final_card_courier.py ./core/content_ops/final_card_courier.py
+COPY core/content_ops/final_card_owner.py ./core/content_ops/final_card_owner.py
+COPY core/content_ops/final_card_preparation.py ./core/content_ops/final_card_preparation.py
+COPY core/content_ops/final_card_preparation_adapters.py ./core/content_ops/final_card_preparation_adapters.py
+COPY core/content_ops/final_card_preparation_runtime.py ./core/content_ops/final_card_preparation_runtime.py
+COPY core/content_ops/final_publication_confirmation.py ./core/content_ops/final_publication_confirmation.py
+COPY core/content_ops/private_review_bot_policy.py ./core/content_ops/private_review_bot_policy.py
+COPY core/content_ops/private_review_card_receipt.py ./core/content_ops/private_review_card_receipt.py
+COPY core/content_ops/private_review_card_sender.py ./core/content_ops/private_review_card_sender.py
+COPY core/content_ops/prompt_attempt.py ./core/content_ops/prompt_attempt.py
+COPY core/content_ops/prompt_receipt.py ./core/content_ops/prompt_receipt.py
+COPY core/content_ops/prompt_reservation.py ./core/content_ops/prompt_reservation.py
+COPY core/content_ops/publication_route_verification.py ./core/content_ops/publication_route_verification.py
+COPY core/content_ops/release_pair.py ./core/content_ops/release_pair.py
+COPY core/content_ops/review_buttons.py ./core/content_ops/review_buttons.py
+COPY core/content_ops/review_edit_ingress.py ./core/content_ops/review_edit_ingress.py
+COPY core/content_ops/review_ingress.py ./core/content_ops/review_ingress.py
+COPY core/publications/__init__.py ./core/publications/__init__.py
+COPY core/publications/handoff.py ./core/publications/handoff.py
+COPY core/publications/models.py ./core/publications/models.py
+COPY core/publications/typefully_approval.py ./core/publications/typefully_approval.py
+COPY scripts/run_final_card_preparations.py ./scripts/run_final_card_preparations.py
+COPY certs/supabase-prod-ca-2021.crt ./certs/supabase-prod-ca-2021.crt
+RUN echo '700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7  certs/supabase-prod-ca-2021.crt' | sha256sum -c - && \
+    chmod 444 certs/supabase-prod-ca-2021.crt
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 CONTENT_OPS_FINAL_PREPARATION_ENABLED=false
+USER nobody
+CMD ["python", "-m", "scripts.run_final_card_preparations"]

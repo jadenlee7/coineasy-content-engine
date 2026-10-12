@@ -129,9 +129,9 @@ def test_feature_flag_only_accepts_literal_true_or_false(value):
 
 @pytest.mark.parametrize(
     "allowlist",
-    ["squid, yellow", "yellow", "squid,yellow", "SQUID"],
+    ["squid, yellow", "unknown", "squid,yellow", "SQUID"],
 )
-def test_worker_token_and_non_squid_allowlist_fail_closed(allowlist):
+def test_worker_token_and_noncanonical_allowlist_fail_closed(allowlist):
     with pytest.raises(ValueError, match="invalid format"):
         publication_worker_token({"PUBLICATION_WORKER_TOKEN": " " + WORKER_TOKEN})
     with pytest.raises(ValueError, match="dedicated secret"):

@@ -19,6 +19,7 @@ from core.publications.settings import (
     PUBLICATION_CLIENTS,
     PUBLICATION_TELEGRAM_USERNAMES,
     _supabase_url,
+    parse_publication_allowed_clients,
 )
 
 
@@ -41,6 +42,7 @@ _FAILURE_CODES = frozenset({
     "telegram_publication_preflight_failed",
     "telegram_publication_request_invalid",
     "telegram_delivery_unknown",
+    "telegram_publication_route_mismatch",
 })
 
 
@@ -151,6 +153,12 @@ class _SupabasePublicationRpcClient:
 
 class SupabasePublicationRepository(_SupabasePublicationRpcClient):
 
+    def __init__(self, *, allowed_clients: tuple[str, ...] = ("squid",), **kwargs):
+        self.allowed_clients = parse_publication_allowed_clients(
+            ",".join(allowed_clients)
+        )
+        super().__init__(**kwargs)
+
     @staticmethod
     def _worker_id(value: str) -> str:
         if not isinstance(value, str) or not _WORKER_RE.fullmatch(value):
@@ -166,11 +174,16 @@ class SupabasePublicationRepository(_SupabasePublicationRpcClient):
         worker_id = self._worker_id(worker_id)
         if not 180 <= lease_seconds <= 600:
             raise ValueError("lease_seconds must be between 180 and 600")
-        raw = await self._rpc("claim_exact_telegram_publication_job", {
+        payload = {
             "target_workspace_id": self.workspace_id,
             "target_worker_id": worker_id,
             "target_lease_seconds": lease_seconds,
-        })
+        }
+        rpc_name = "claim_exact_telegram_publication_job"
+        if self.allowed_clients != ("squid",):
+            rpc_name += "_v2"
+            payload["target_allowed_clients"] = list(self.allowed_clients)
+        raw = await self._rpc(rpc_name, payload)
         if raw is None:
             return None
         if not isinstance(raw, Mapping) or not isinstance(raw.get("asset"), Mapping):
@@ -182,7 +195,7 @@ class SupabasePublicationRepository(_SupabasePublicationRpcClient):
         attempts = raw.get("attempts")
         max_attempts = raw.get("max_attempts")
         if (
-            client_id not in PUBLICATION_CLIENTS
+            client_id not in self.allowed_clients
             or telegram_public_username
                 != PUBLICATION_TELEGRAM_USERNAMES.get(str(client_id))
             or raw.get("locked_by") != worker_id
@@ -212,6 +225,18 @@ class SupabasePublicationRepository(_SupabasePublicationRpcClient):
             or storage_path != expected_path
         ):
             raise PublicationRepositoryError("invalid_publication_claim_response")
+        reviewer_source = raw.get("approval_reviewer_source")
+        decision_id = raw.get("content_ops_decision_id")
+        route_binding = raw.get("telegram_route_binding")
+        release_sha = raw.get("content_ops_release_sha")
+        handoff_present = any(v is not None for v in (decision_id, route_binding, release_sha))
+        if reviewer_source == "telegram_principal" or handoff_present:
+            if (reviewer_source != "telegram_principal"
+                or not isinstance(decision_id, str)
+                or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", decision_id)
+                or not isinstance(route_binding, str) or not _SHA256_RE.fullmatch(route_binding)
+                or not isinstance(release_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", release_sha)):
+                raise PublicationRepositoryError("invalid_publication_claim_response")
         return ClaimedTelegramPublication(
             job_id=_uuid(raw.get("job_id"), "publication_job_id"),
             publication_id=_uuid(raw.get("publication_id"), "publication_id"),
@@ -234,6 +259,10 @@ class SupabasePublicationRepository(_SupabasePublicationRpcClient):
                 width=width,
                 height=height,
             ),
+            approval_reviewer_source=reviewer_source,
+            content_ops_decision_id=decision_id,
+            telegram_route_binding=route_binding,
+            content_ops_release_sha=release_sha,
         )
 
     async def download_asset(self, claim: ClaimedTelegramPublication) -> bytes:
