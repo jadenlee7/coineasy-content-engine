@@ -1,0 +1,45 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.final-card-preparation",
+    "watchPatterns": [
+      "/Dockerfile.final-card-preparation",
+      "/Dockerfile.final-card-preparation.dockerignore",
+      "/requirements-final-card-preparation.txt",
+      "/certs/supabase-prod-ca-2021.crt",
+      "/core/__init__.py",
+      "/core/content_ops/__init__.py",
+      "/core/content_ops/final_card_courier.py",
+      "/core/content_ops/final_card_owner.py",
+      "/core/content_ops/final_card_preparation.py",
+      "/core/content_ops/final_card_preparation_adapters.py",
+      "/core/content_ops/final_card_preparation_runtime.py",
+      "/core/content_ops/final_publication_confirmation.py",
+      "/core/content_ops/private_review_bot_policy.py",
+      "/core/content_ops/private_review_card_receipt.py",
+      "/core/content_ops/private_review_card_sender.py",
+      "/core/content_ops/prompt_attempt.py",
+      "/core/content_ops/prompt_receipt.py",
+      "/core/content_ops/prompt_reservation.py",
+      "/core/content_ops/publication_route_verification.py",
+      "/core/content_ops/release_pair.py",
+      "/core/content_ops/review_buttons.py",
+      "/core/content_ops/review_edit_ingress.py",
+      "/core/content_ops/review_ingress.py",
+      "/core/publications/__init__.py",
+      "/core/publications/handoff.py",
+      "/core/publications/models.py",
+      "/core/publications/typefully_approval.py",
+      "/scripts/run_final_card_preparations.py",
+      "/railway.final-card-preparation.json"
+    ]
+  },
+  "deploy": {
+    "preDeployCommand": "python -m scripts.run_final_card_preparations --validate-only",
+    "startCommand": "python -m scripts.run_final_card_preparations",
+    "healthcheckPath": null,
+    "cronSchedule": null,
+    "restartPolicyType": "NEVER"
+  }
+}

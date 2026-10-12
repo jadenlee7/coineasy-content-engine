@@ -69,6 +69,11 @@ from api.output_retention import (
     mark_run_active,
 )
 from api.grok_qa_security import has_grok_qa_relay_access
+from core.automation.news_generation_journal import (
+    NewsGenerationJournal,
+    NewsGenerationJournalError,
+    canonical_request_id,
+)
 
 
 # ────────────────────────────────────────────────────
@@ -424,6 +429,9 @@ class NewsCardRequest(BaseModel):
         pattern=r"^(?:|[a-f0-9]{32})$",
     )
     brand_review_guidance: Optional[BrandReviewGuidanceRequest] = None
+    # Resolved by the authenticated gateway from the natural running job, not
+    # accepted as browser/client-supplied generation or approval authority.
+    quality_context: Optional[dict[str, Any]] = None
 
     @model_validator(mode="after")
     def require_complete_style_reference_pack(self):
@@ -1012,63 +1020,7 @@ async def generate_carousel(
     )
 
 
-@app.post("/clients/{client_id}/generate/news-card", response_model=NewsCardResponse)
-async def generate_news(
-    client_id: str,
-    req: NewsCardRequest,
-    background_tasks: BackgroundTasks,
-    x_api_key: str = Header(default=""),
-):
-    """Generate one news image; official Squid remixes keep source aspect."""
-    authenticated_client = _check_client_auth(x_api_key, client_id)
-    if (
-        (req.style_references or req.style_reference_pack_hash)
-        and authenticated_client != "admin"
-    ):
-        raise HTTPException(403, "style_references_require_admin_key")
-    if req.brand_review_guidance is not None and authenticated_client != "admin":
-        raise HTTPException(403, "brand_review_guidance_requires_admin_key")
-    _require_brand_review_kind(req.brand_review_guidance, "daily_news")
-
-    try:
-        load_client_config(client_id)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Client '{client_id}' not found")
-
-    # Nanosecond-resolution directory names keep simultaneous card requests
-    # from overwriting each other's cleaned source visual before Netlify fetches it.
-    ts = time.time_ns()
-    output_dir = OUTPUT_ROOT / client_id / f"news_{ts}"
-    mark_run_active(OUTPUT_ROOT, output_dir)
-
-    try:
-        result = await generate_news_card(
-            client_id=client_id,
-            source_content=req.source_content,
-            source_type=req.source_type,
-            source_url=req.source_url,
-            source_image_url=req.source_image_url,
-            output_dir=output_dir,
-            mock_mode=req.mock_mode,
-            template_style=req.template_style,
-            style_references=[
-                reference.model_dump()
-                for reference in req.style_references
-            ],
-            brand_review_guidance=(
-                req.brand_review_guidance.model_dump()
-                if req.brand_review_guidance is not None
-                else None
-            ),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
-    finally:
-        _finish_output_run(output_dir, background_tasks)
-
+def _news_card_response(result):
     return NewsCardResponse(
         client_id=result.client_id,
         content_type=result.content_type,
@@ -1084,6 +1036,196 @@ async def generate_news(
         manifest_path=result.manifest_path,
         duration_ms=result.duration_ms,
     )
+
+
+async def _invoke_news_card(client_id, req, output_dir):
+    """Single generation boundary; stable mode reserves before invoking it."""
+    return await generate_news_card(
+        client_id=client_id,
+        source_content=req.source_content,
+        source_type=req.source_type,
+        source_url=req.source_url,
+        source_image_url=req.source_image_url,
+        output_dir=output_dir,
+        mock_mode=req.mock_mode,
+        template_style=req.template_style,
+        style_references=[reference.model_dump() for reference in req.style_references],
+        brand_review_guidance=(req.brand_review_guidance.model_dump()
+                               if req.brand_review_guidance is not None else None),
+    )
+
+
+def _news_generation_journal_error(exc):
+    """Expose only local fixed metadata codes, never provider or SQL text."""
+    code = str(exc)
+    held_codes = {
+        "news_generation_request_conflict", "news_generation_mode_conflict",
+        "news_generation_outcome_unknown", "news_generation_cached_assets_unavailable",
+        "news_generation_output_exists",
+    }
+    config_codes = {
+        "news_generation_request_id_invalid", "news_generation_payload_invalid",
+        "news_generation_journal_unavailable", "news_generation_private_volume_required",
+        "news_generation_output_root_invalid", "news_generation_response_invalid",
+        "news_generation_reservation_invalid", "news_generation_mode_invalid",
+    }
+    if code not in held_codes | config_codes:
+        code = "news_generation_outcome_unknown"
+    return HTTPException(409 if code in held_codes else 503, code)
+
+
+def _pin_quality_news_mode(client_id, req, request_id):
+    """Shared fence commits before constructing the separate quality service.
+
+    No generic started row: same-mode pending quality resumes still use its
+    own one-shot provider ledger. Existing v1 stores require explicit offline
+    reconciliation/provisioning, never automatic HTTP schema migration.
+    """
+    try:
+        journal = NewsGenerationJournal(os.environ.get("NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT", ""),
+                                        output_root=OUTPUT_ROOT)
+        journal.pin_mode(request_id, client_id, req.model_dump(mode="json"), "quality")
+    except NewsGenerationJournalError as exc:
+        raise _news_generation_journal_error(exc) from None
+    except Exception:
+        raise HTTPException(503, "news_generation_outcome_unknown") from None
+
+
+async def _guarded_generate_news(client_id, req, request_id, invoke):
+    """Reserve durably before paid work; terminal unknown never auto-retries.
+
+    The private persistent journal and stable output volume must be shared by all
+    replicas. This protects request retries, not budget or source/day uniqueness.
+    UUID output runs are excluded from legacy timestamp-directory retention.
+    """
+    try:
+        journal = NewsGenerationJournal(os.environ.get("NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT", ""),
+                                        output_root=OUTPUT_ROOT)
+        reservation = journal.reserve(request_id, client_id, req.model_dump(mode="json"))
+        if reservation.response is not None:
+            return NewsCardResponse.model_validate(reservation.response)
+        reservation.output_dir.mkdir(parents=True, exist_ok=False)
+        result = await invoke(reservation.output_dir)
+        response = _news_card_response(result)
+        journal.record_success(reservation, response.model_dump(mode="json"))
+        return response
+    except NewsGenerationJournalError as exc:
+        raise _news_generation_journal_error(exc) from None
+    except Exception:
+        # Cancellation/crash also leaves the durable started row held. No
+        # cleanup, re-reservation or second generator invocation is attempted.
+        raise HTTPException(503, "news_generation_outcome_unknown") from None
+
+
+@app.post("/clients/{client_id}/generate/news-card", response_model=NewsCardResponse)
+async def generate_news(
+    client_id: str,
+    req: NewsCardRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str = Header(default=""),
+    idempotency_key: Optional[list[str]] = Header(default=None),
+):
+    """Generate one news image; official Squid remixes keep source aspect."""
+    authenticated_client = _check_client_auth(x_api_key, client_id)
+    stable_flag = os.environ.get("NEWS_CARD_IDEMPOTENCY_ENABLED", "false")
+    if stable_flag not in {"false", "true"}:
+        raise HTTPException(503, "news_generation_idempotency_config_invalid")
+    stable_mode = stable_flag == "true"
+    request_id = None
+    if not stable_mode and idempotency_key is not None:
+        # The gateway always forwards its stable UUID. Turning this flag OFF
+        # must hold that workflow, never fall back to an untracked paid run.
+        # Headerless legacy callers remain compatible and do not access the DB.
+        raise HTTPException(503, "news_generation_idempotency_disabled")
+    if stable_mode:
+        if authenticated_client != "admin":
+            raise HTTPException(403, "news_generation_idempotency_requires_admin")
+        try:
+            if type(idempotency_key) is not list or len(idempotency_key) != 1:
+                raise ValueError()
+            request_id = canonical_request_id(idempotency_key[0])
+        except ValueError:
+            raise HTTPException(400, "news_generation_request_id_invalid") from None
+    if (
+        (req.style_references or req.style_reference_pack_hash)
+        and authenticated_client != "admin"
+    ):
+        raise HTTPException(403, "style_references_require_admin_key")
+    if req.brand_review_guidance is not None and authenticated_client != "admin":
+        raise HTTPException(403, "brand_review_guidance_requires_admin_key")
+    _require_brand_review_kind(req.brand_review_guidance, "daily_news")
+
+    try:
+        load_client_config(client_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Client '{client_id}' not found")
+
+    if req.quality_context is not None:
+        # Quality owns persisted copy plus a one-shot image attempt. A pending
+        # result resumes its recorded ID with GET only, not the legacy renderer.
+        if authenticated_client != "admin" or not stable_mode:
+            raise HTTPException(403, "quality_news_admin_idempotency_required")
+        if os.environ.get("QUALITY_BANNER_ENABLED", "false") == "false":
+            raise HTTPException(503, "quality_news_disabled")
+        _pin_quality_news_mode(client_id, req, request_id)
+        from core.automation.quality_news_card import service_from_env
+        from core.automation.higgsfield_banner import QualityBannerError
+        retry_codes = {
+            "quality_banner_pending", "quality_banner_collect_unknown",
+            "quality_news_configuration_invalid", "quality_news_release_mismatch",
+            "quality_news_store_unavailable",
+            "quality_news_budget_evidence_required",
+            "quality_banner_estimate_unavailable", "quality_banner_estimate_invalid",
+            "quality_banner_estimate_expired",
+        }
+        held_codes = {
+            "quality_news_invalid", "quality_news_binding_conflict", "quality_news_copy_unknown",
+            "quality_news_copy_too_dense", "quality_news_logo_required", "quality_news_output_invalid",
+            "quality_news_reference_invalid", "quality_news_daily_limit",
+            "quality_news_daily_budget_limit",
+            "quality_banner_invalid", "quality_banner_source_stale", "quality_banner_image_invalid",
+            "quality_banner_reference_invalid", "quality_banner_reference_unavailable",
+            "quality_banner_submit_unknown", "quality_banner_submit_already_reserved",
+            "quality_banner_provider_unknown", "quality_banner_provider_failed",
+            "quality_banner_image_unavailable", "quality_banner_owner_required",
+        }
+        try:
+            service = service_from_env(os.environ)
+            if service is None:
+                raise QualityBannerError("quality_news_configuration_invalid")
+            result = await service.generate(client_id=client_id, request_id=request_id,
+                payload=req.model_dump(mode="json"), output_root=OUTPUT_ROOT)
+            return NewsCardResponse.model_validate(result)
+        except QualityBannerError as exc:
+            code = str(exc)
+            if code not in retry_codes | held_codes:
+                code = "quality_news_outcome_unknown"
+            raise HTTPException(503 if code in retry_codes else 409, code) from None
+        except Exception:
+            raise HTTPException(409, "quality_news_outcome_unknown") from None
+
+    if stable_mode:
+        async def invoke(output_dir):
+            return await _invoke_news_card(client_id, req, output_dir)
+        return await _guarded_generate_news(client_id, req, request_id, invoke)
+
+    # Nanosecond-resolution directory names keep simultaneous card requests
+    # from overwriting each other's cleaned source visual before Netlify fetches it.
+    ts = time.time_ns()
+    output_dir = OUTPUT_ROOT / client_id / f"news_{ts}"
+    mark_run_active(OUTPUT_ROOT, output_dir)
+
+    try:
+        result = await _invoke_news_card(client_id, req, output_dir)
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"Generation failed: {type(e).__name__}: {e}")
+    finally:
+        _finish_output_run(output_dir, background_tasks)
+
+    return _news_card_response(result)
 
 
 @app.post("/clients/{client_id}/generate/article", response_model=ArticleResponse)

@@ -141,6 +141,36 @@ function dailyButtonRequest(body: unknown, version: string | null = null) {
   return req;
 }
 
+test("YBO daily scope uses scoped SQL before claiming and binds caller to exact server policy", async () => {
+  const env = { ...DAILY_BUTTON_ENV, CONTENT_OPS_DAILY_CLIENT_SCOPE: "ybo_v1" };
+  for (const [body, result, rpc] of [[{ action: "reconcile" }, 3, "content_ops_reconcile_daily_ybo"],
+    [{ action: "claim", claim_token: ID }, null, "content_ops_claim_daily_ybo"]] as const) {
+    const h = harness(env, result); const req = dailyButtonRequest(body);
+    assert.equal((await h.handler(req)).status, 409);
+    assert.equal(h.calls.length, 0);
+    const selected = dailyButtonRequest(body); selected.headers.set("x-content-ops-daily-scope", "ybo_v1");
+    const response = await h.handler(selected);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).scope.daily_scope, "ybo_v1");
+    assert.equal(h.calls.length, 1); assert.ok(h.calls[0].url.endsWith(`/rpc/${rpc}`));
+    assert.deepEqual(h.calls[0].body, { target_workspace_id: ID,
+      ...(body.action === "claim" ? { target_claim_token: ID } : {}) });
+  }
+});
+
+test("YBO rejects invalid server scope, wider receipts and caller-requested scope on legacy", async () => {
+  for (const selected of ["", "YBO_V1", "yellow,babylon,squid"]) {
+    const h = harness({ ...DAILY_BUTTON_ENV, CONTENT_OPS_DAILY_CLIENT_SCOPE: selected });
+    assert.equal((await h.handler(dailyButtonRequest({ action: "reconcile" }))).status, 503);
+    assert.equal(h.calls.length, 0);
+  }
+  const req = dailyButtonRequest({ action: "reconcile" }); req.headers.set("x-content-ops-daily-scope", "ybo_v1");
+  const legacy = harness(DAILY_BUTTON_ENV);
+  assert.equal((await legacy.handler(req)).status, 409); assert.equal(legacy.calls.length, 0);
+  assert.equal((await harness({ ...DAILY_BUTTON_ENV, CONTENT_OPS_DAILY_CLIENT_SCOPE: "ybo_v1" }, 4)
+    .handler(req)).status, 503);
+});
+
 test("daily button cards require a separate explicit opt-in and no leftover canary version", async () => {
   for (const env of [
     { ...ENV, CONTENT_OPS_REVIEW_PACKET_MODE: "daily_button_card_v1" },

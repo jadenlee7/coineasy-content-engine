@@ -3413,6 +3413,7 @@ def generate_news_card_spec(
     ] = None,
     style_references: Sequence[Mapping[str, str]] = (),
     brand_review_guidance: Mapping[str, object] | None = None,
+    single_attempt: bool = False,
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -3486,7 +3487,11 @@ def generate_news_card_spec(
     except ImportError:
         raise ImportError("pip install anthropic")
 
-    client = Anthropic()
+    if type(single_attempt) is not bool:
+        raise ValueError("single_attempt must be a boolean")
+    # Durable quality jobs own retry/reconciliation. One SDK invocation must
+    # not silently become multiple paid POSTs after an ambiguous response.
+    client = Anthropic(max_retries=0) if single_attempt else Anthropic()
     # The SDK retries timeouts by default, which can silently multiply an 8s
     # visual call past Netlify's 55s upstream limit. Visual discovery/audit has
     # its own bounded retry policy, so keep each SDK request single-attempt.

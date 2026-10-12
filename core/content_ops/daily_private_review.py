@@ -57,7 +57,7 @@ class DailyPrivateCardWorker:
             day = now.date().isoformat()
             discovery_attempted = True
             counts["queued"] = await self._gateway.reconcile()
-            for _ in range(4):
+            for _ in range(self._gateway.max_cards):
                 current = self._local_now()
                 if current.date().isoformat() != day or current.time() < self._start:
                     return result("day_rolled_over")

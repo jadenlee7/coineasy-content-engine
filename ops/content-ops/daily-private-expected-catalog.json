@@ -1,0 +1,30 @@
+{
+  "schema": "daily-private-expected-catalog@1",
+  "provenance": "disposable PostgreSQL 16.13, complete historical migrations plus eight ordered local proposals, no hosted proof",
+  "function_common": {"owner":"postgres","config":["search_path=\"\""],"anon_execute":false,"authenticated_execute":false},
+  "functions": [
+    {"signature":"private.confirm_content_ops_button_card_send(uuid,uuid,smallint,text,bigint,text,text,timestamptz)","source_sha256":"c2efa71ce53160dd2b1c2639f39e1c0db1ad67f912db2cae80fc9d78bf0b4c4c","security_definer":false,"volatility":"v","service_role_execute":false},
+    {"signature":"private.content_ops_button_version_fingerprint(uuid,uuid,uuid)","source_sha256":"3e0ef935f1f4bcb53a4574bf83afcbff47b93c71407e2b98efd554c4d1ec4076","security_definer":false,"volatility":"s","service_role_execute":false},
+    {"signature":"private.content_ops_review_candidate(uuid,uuid,uuid)","source_sha256":"0b84888bed8c13241757523984d30946608a6f8865f0679cf2bce36a6656db6d","security_definer":true,"volatility":"v","service_role_execute":false},
+    {"signature":"private.content_ops_ybo_quality_version(uuid,uuid)","source_sha256":"e7dc906e67fcaf957cace81c9007414a07ef6f2ba999d12f4d0e6c76c1d7c9be","security_definer":true,"volatility":"s","service_role_execute":false},
+    {"signature":"private.prepare_content_ops_button_review_from_claim(uuid,uuid,uuid,uuid,uuid)","source_sha256":"0ff8e00acc53c69f4f016577836d59b062d2ba5e1924beef07ae8521cedd00f1","security_definer":false,"volatility":"v","service_role_execute":false},
+    {"signature":"private.record_content_ops_button_card(uuid,uuid,text,bigint,jsonb,jsonb,timestamptz,timestamptz)","source_sha256":"0fe4b8da47e089d1c16d3dfde079ff8e20be84d27fe1bc22dbc59975da477e17","security_definer":false,"volatility":"v","service_role_execute":false},
+    {"signature":"private.reserve_content_ops_button_card_send(uuid,uuid,smallint,text)","source_sha256":"87cd30bd5ed0af000978bcc5dcfac03269ac053c70ebe9c52b1284b3e2109f3f","security_definer":false,"volatility":"v","service_role_execute":false},
+    {"signature":"public.content_ops_begin_review_send(uuid,uuid,uuid,text,uuid)","source_sha256":"1dcc1fb48328070aae3ec11a32ce8b49ca45d6ba00160115e96985526469a1c2","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_button_card_image_locator(uuid,uuid,uuid,uuid)","source_sha256":"1051eab2f4703da7725245f3801d770cde6902d174d9b0cc44790b2c2b391124","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_button_card_owner_step(uuid,uuid,text,jsonb)","source_sha256":"4377cef5716a68ea371c24d8d46a50cfa5eee0b2fd2a8003e8a4d4f38a0a87e5","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_claim_daily_ybo(uuid,uuid)","source_sha256":"2a7ba2a5907c64ccf711e6a0216050f984f0976e2576489fb334119cc60f3820","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_claim_review(uuid,uuid,uuid)","source_sha256":"87e5737bac993dec7e9f840c28ca5f87c8d251e6f5f469aa2c783a5ae6b0fa77","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_reconcile_daily(uuid,uuid)","source_sha256":"444fd4a6a4bc0211d5d36e4815789d69f1e15e616265547828249351a8fa5301","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.content_ops_reconcile_daily_ybo(uuid)","source_sha256":"69df7b7567d59cc538989a19800f894af81315b883b619b1f2d85ac454688020","security_definer":true,"volatility":"v","service_role_execute":true},
+    {"signature":"public.get_quality_banner_generation_context(uuid,text,uuid)","source_sha256":"ddf0376b0bda5d253e2a4f3351b0fce2f81c9d459b6881ab2a20de8ae9656ab0","security_definer":true,"volatility":"s","service_role_execute":true}
+  ],
+  "table_common":{"rls":true,"anon_direct":false,"authenticated_direct":false,"service_role_direct":false},
+  "tables":[
+    {"name":"private.content_ops_button_card_outbox_owners","force_rls":true},
+    {"name":"private.content_ops_button_card_send_attempts","force_rls":true},
+    {"name":"private.content_ops_button_cards","force_rls":true},
+    {"name":"private.content_ops_button_reviews","force_rls":false},
+    {"name":"private.content_ops_review_outbox","force_rls":true}
+  ]
+}

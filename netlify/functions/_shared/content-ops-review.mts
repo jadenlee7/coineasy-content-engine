@@ -24,7 +24,7 @@ const CLAIM_KEYS = [
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
 type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null;
-  packet_mode?: "button_card_v1" | "daily_button_card_v1" };
+  packet_mode?: "button_card_v1" | "daily_button_card_v1"; daily_scope?: "ybo_v1" };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch };
 
 const json = (value: Json, status = 200) => Response.json(value, {
@@ -40,6 +40,8 @@ function configuredScope(getEnv: Env): ReviewScope | null {
   const mode = getEnv("CONTENT_OPS_REVIEW_MODE");
   const version = getEnv("CONTENT_OPS_REVIEW_CANARY_VERSION_ID");
   const packetMode = getEnv("CONTENT_OPS_REVIEW_PACKET_MODE") ?? "link_card";
+  const dailyScope = getEnv("CONTENT_OPS_DAILY_CLIENT_SCOPE");
+  if (dailyScope !== undefined && (dailyScope !== "ybo_v1" || packetMode !== "daily_button_card_v1")) return null;
   // Button cards are a separate default-OFF, exact-version canary. This
   // does not activate the sender, callback owner, approval or publication.
   if (packetMode === "button_card_v1") {
@@ -54,7 +56,8 @@ function configuredScope(getEnv: Env): ReviewScope | null {
   if (packetMode === "daily_button_card_v1") {
     return getEnv("CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED") === "true"
       && mode === "daily" && (version === undefined || version === "")
-      ? { mode, content_version_id: null, packet_mode: "daily_button_card_v1" }
+      ? { mode, content_version_id: null, packet_mode: "daily_button_card_v1",
+        ...(dailyScope === "ybo_v1" ? { daily_scope: dailyScope } : {}) }
       : null;
   }
   // The existing daily-review release exposes link cards only.
@@ -94,11 +97,15 @@ function rpcRequest(body: Json, workspaceId: string, scope: ReviewScope): { name
     target_content_version_id: scope.content_version_id,
   };
   if (body.action === "reconcile" && exact(body, ["action"])) {
+    if (scope.daily_scope === "ybo_v1") return {
+      name: "content_ops_reconcile_daily_ybo", params: { target_workspace_id: workspaceId } };
     return { name: "content_ops_reconcile_daily", params };
   }
   if (!isCatalogUuid(body.claim_token)) return null;
   params.target_claim_token = body.claim_token;
   if (body.action === "claim" && exact(body, ["action", "claim_token"])) {
+    if (scope.daily_scope === "ybo_v1") return { name: "content_ops_claim_daily_ybo",
+      params: { target_workspace_id: workspaceId, target_claim_token: body.claim_token } };
     return { name: "content_ops_claim_review", params };
   }
   if (!isCatalogUuid(body.outbox_id)) return null;
@@ -383,7 +390,8 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     }
     if (req.headers.get("x-content-ops-mode") !== scope.mode
       || req.headers.get("x-content-ops-version-id") !== scope.content_version_id
-      || req.headers.get("x-content-ops-packet-mode") !== (scope.packet_mode ?? null)) {
+      || req.headers.get("x-content-ops-packet-mode") !== (scope.packet_mode ?? null)
+      || req.headers.get("x-content-ops-daily-scope") !== (scope.daily_scope ?? null)) {
       return json({ error: "content_ops_scope_mismatch" }, 409);
     }
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") || "")) {
@@ -418,13 +426,14 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       const value: unknown = await result.json();
       const receipt = { ok: true, release_sha: release, scope };
       if (body.action === "reconcile" && Number.isSafeInteger(value) && Number(value) >= 0
-        && Number(value) <= (scope.mode === "canary" ? 1 : 4)) {
+        && Number(value) <= (scope.mode === "canary" ? 1 : scope.daily_scope ? 3 : 4)) {
         return json({ ...receipt, queued: value });
       }
       if (body.action === "claim") {
         if (value === null) return json({ ...receipt, claim: null });
         const claim = claimProjection(value, body.claim_token);
-        if (claim && (scope.content_version_id === null || claim.content_version_id === scope.content_version_id)) {
+        if (claim && (scope.content_version_id === null || claim.content_version_id === scope.content_version_id)
+          && (!scope.daily_scope || ["yellow", "babylon", "origintrail"].includes(String(claim.client_id)))) {
           return json({ ...receipt, claim });
         }
       }

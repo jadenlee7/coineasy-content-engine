@@ -39,8 +39,12 @@ def private_snapshot(review, version, source, asset):
 
 
 class PostgresPrivateReviewOwner:
-    def __init__(self, connection_factory, bindings):
+    def __init__(self, connection_factory, bindings, *, final_preparation_hook=None):
         _check(callable(connection_factory) and type(bindings) is EditBindings)
+        if final_preparation_hook is not None:
+            from core.content_ops.final_card_preparation import FinalPreparationHook
+            _check(type(final_preparation_hook) is FinalPreparationHook)
+        self._final_preparation_hook = final_preparation_hook
         self._connect, self._bindings = connection_factory, bindings
 
     def handle_update(self, *, enabled=False, raw_body=None, headers=(),
@@ -156,6 +160,15 @@ class PostgresPrivateReviewOwner:
                     # Revalidate AFTER permission/SQL lock waits. Failure rolls
                     # back the action. Never acknowledge a commit before exit.
                     _check(verify_clock() == action)
+                    if (receipt['status'] == 'checked' and self._final_preparation_hook is not None):
+                        # Same transaction as the authenticated human check.
+                        # A duplicate gets the original durable intent; no send
+                        # or fresh approval is inferred from this private action.
+                        self._final_preparation_hook.in_transaction(cur,
+                            review_id=review_id, parent_card_id=card_id, actor_id=actor,
+                            version_fingerprint=review['version_fingerprint'],
+                            bot_binding=bot, room_binding=room, human_binding=human)
+                        _check(verify_clock() == action)
                     result = {'status': receipt['status'], 'reused': receipt['reused'],
                               'public_send_attempted': False}
             return result

@@ -62,9 +62,17 @@ module grants production access or activates a worker.
 
 ## Not yet operational
 
-- The snapshot reader and `ce2` callback adapter must still be packaged and
-  mounted in the existing sole bot poller. Automatic final-card preparation
-  after both source/claim checks also needs its host trigger. A separately
+- The snapshot reader and `ce2` callback adapter are packaged from a committed
+  engine closure in the local `coineasy-review-bot-integration` checkout;
+  its package pin and hash manifest identify the exact source. Its `main()`
+  composes both routes in the existing sole poller, with a separate default-OFF
+  final flag, key and restricted DB role. This is not a merged/deployed bot.
+  The local role-specific E/B/P contract now supports distinct bot/engine
+  releases. Actual activation still requires verified builds, an explicitly
+  authorized scoped pair registration, and restricted hosted ACLs. A digest
+  alone cannot authorize a pair. See [the pair contract](CONTENT_OPS_RELEASE_PAIR.md).
+  Automatic final-card preparation after both source/claim checks still
+  needs its host trigger. A separately
   provisioned signing key and narrowly scoped owner RPC access are required;
   do not reuse the private `ce1` key or its DB credentials.
 - Staff identities/reviewer rows are existing registrations; do not recreate
@@ -120,3 +128,22 @@ module grants production access or activates a worker.
 The operator's content approval remains separate from permission to deploy or
 enable a service. Keep existing employee and public send flags unchanged until
 the corresponding exact production action is authorized.
+
+## Quality-first follow-up, 2026-10-12
+
+The operator requested the accepted three-banner quality for recurring latest
+official-X updates. The initial quality scope is Yellow, Babylon and OriginTrail;
+no additional Squid generation or publication is admitted by this increment.
+See [the reference-quality contract](HIGGSFIELD_REFERENCE_QUALITY.md) and
+[the integration decision and remaining gates](ADR_QUALITY_FIRST_DAILY_APPROVAL.md).
+
+The provider adapter, persistent single-submit/copy journal and natural
+gateway/server path are now connected locally behind explicit default-OFF flags.
+The real natural completion and initial private-review outbox contracts are
+retained; see [the current connection](QUALITY_NEWS_TO_STAFF_CARD.md).
+They are not deployed or enabled in the live natural generator.
+No new image was purchased, no worker was deployed/enabled, and no staff or
+public message was sent in this increment. Historical suite counts above refer
+to their original baseline, not a production receipt for this follow-up.
+Current test results and incomplete full-suite checks are recorded in
+[the October 12 validation receipt](QUALITY_FIRST_VALIDATION_20261012.md).

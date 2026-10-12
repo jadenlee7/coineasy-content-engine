@@ -63,6 +63,33 @@ def test_validate_only_checks_pinned_existing_bot_without_clients_or_secret_outp
     assert SHA not in output
 
 
+def test_ybo_validate_only_pins_three_clients_and_nine_kst_without_io():
+    env = daily_config(CONTENT_OPS_DAILY_CLIENT_SCOPE="ybo_v1")
+    settings = cli.DailyPrivateCardSettings.from_env(env, stamp_reader=lambda: SHA)
+    assert settings.max_cards == 3 and settings.daily_scope == "ybo_v1"
+    result = cli.run(validate_only=True, environ=env, stamp_reader=lambda: SHA,
+                     runner_factory=lambda _: pytest.fail("validate-only built runner"))
+    assert result["ok"] and result["daily_scope"] == "ybo_v1"
+    assert result["maximum_daily_clients"] == 3 and result["start_kst"] == "09:00"
+    assert result["network_calls"] is result["database_calls"] is result["telegram_calls"] is False
+
+
+@pytest.mark.parametrize("scope,start", [("", "09:00"), ("yellow,babylon,squid", "09:00"),
+    ("YBO_V1", "09:00"), ("ybo_v1", "08:59"), ("ybo_v1", "00:00")])
+def test_ybo_scope_cannot_widen_or_start_early(scope, start):
+    env = daily_config(CONTENT_OPS_DAILY_CLIENT_SCOPE=scope, AUTOMATION_DAILY_REVIEW_START_KST=start)
+    assert cli.run(validate_only=True, environ=env, stamp_reader=lambda: SHA)["ok"] is False
+
+
+def test_ybo_manifest_is_separate_off_deployable_and_does_not_activate_schedule():
+    manifest = json.loads((ROOT / "ops/content-ops/railway.daily-private-card.json").read_text())
+    assert manifest["build"]["dockerfilePath"] == "Dockerfile.private-review-card"
+    assert manifest["deploy"] == {
+        "preDeployCommand": "python -m scripts.run_daily_private_review_cards --validate-only",
+        "startCommand": "python -m scripts.run_daily_private_review_cards", "restartPolicyType": "NEVER"}
+    assert "cronSchedule" not in manifest["deploy"]
+
+
 @pytest.mark.parametrize("changes", [
     {"CONTENT_OPS_BUTTON_CARD_ENABLED": "true"},
     {"CONTENT_OPS_REVIEW_ENABLED": "true"},

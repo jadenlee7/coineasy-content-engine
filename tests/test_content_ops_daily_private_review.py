@@ -150,6 +150,58 @@ def test_four_unique_claims_bind_once_and_only_discovery_is_unversioned():
     assert all("x-content-ops-version-id" not in headers for _, headers in calls)
 
 
+def test_ybo_three_claims_bind_scope_on_every_exact_session_and_stop():
+    calls = []
+    indices = iter((0, 1, 3))
+    def handler(req):
+        calls.append(req)
+        assert req.headers["x-content-ops-daily-scope"] == "ybo_v1"
+        body = json.loads(req.content)
+        key, value = ("queued", 3) if body["action"] == "reconcile" else (
+            "claim", raw_claim(next(indices), body["claim_token"]))
+        result = receipt(key, value).json()
+        result["scope"]["daily_scope"] = "ybo_v1"
+        return httpx.Response(200, json=result)
+    discovery = DailyButtonGateway(origin=APP_ORIGIN, gateway_token=TOKEN,
+        release_sha=RELEASE, enabled=True, daily_scope="ybo_v1", clock=lambda: NOW,
+        transport=httpx.MockTransport(handler))
+    async def run():
+        assert discovery.max_cards == 3
+        assert await discovery.reconcile() == 3
+        for i in range(3):
+            claim = await discovery.claim(ident(100+i))
+            bound = discovery.bind(claim)
+            assert bound._headers()["x-content-ops-daily-scope"] == "ybo_v1"
+            assert bound.content_version_id == claim.content_version_id
+        with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
+            await discovery.claim(ident(104))
+    asyncio.run(run())
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("case", ["wrong_receipt_scope", "four_queued", "squid"])
+def test_ybo_scope_fail_closed_without_continuation(case):
+    calls = []
+    def handler(req):
+        body = json.loads(req.content); calls.append(body)
+        key, value = ("queued", 4 if case == "four_queued" else 1) if body["action"] == "reconcile" else (
+            "claim", raw_claim(2, body["claim_token"]))
+        result = receipt(key, value).json()
+        if case != "wrong_receipt_scope": result["scope"]["daily_scope"] = "ybo_v1"
+        return httpx.Response(200, json=result)
+    discovery = DailyButtonGateway(origin=APP_ORIGIN, gateway_token=TOKEN,
+        release_sha=RELEASE, enabled=True, daily_scope="ybo_v1", clock=lambda: NOW,
+        transport=httpx.MockTransport(handler))
+    async def run():
+        with pytest.raises(PrivateCardGatewayError, match="outcome_unknown"):
+            await discovery.reconcile()
+            await discovery.claim(ident(100))
+        with pytest.raises(PrivateCardGatewayError, match="replay_denied"):
+            await discovery.claim(ident(101))
+    asyncio.run(run())
+    assert len(calls) == (2 if case == "squid" else 1)
+
+
 @pytest.mark.parametrize("duplicate", ["client", "version"])
 def test_duplicate_claim_ends_batch_without_another_attempt(duplicate):
     calls = []
@@ -175,12 +227,19 @@ def test_duplicate_claim_ends_batch_without_another_attempt(duplicate):
     assert calls == ["reconcile", "claim", "claim"]
 
 
-def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW, start="09:00"):
+def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW, start="09:00", daily_scope=None):
     """Real gateway/owner/courier/coordinator with only synthetic HTTP/sends."""
     network, sends, preflights, sessions = [], [], [], []
     states = {}
     next_claim = 0
     signer, bindings = ButtonSigner(b"s" * 32), EditBindings(b"e" * 32)
+
+    def scoped_receipt(*args):
+        result = receipt(*args)
+        if daily_scope:
+            value = result.json(); value["scope"]["daily_scope"] = daily_scope
+            return httpx.Response(200, json=value)
+        return result
 
     def handler(req):
         nonlocal next_claim
@@ -189,18 +248,19 @@ def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW
         version = req.headers.get("x-content-ops-version-id")
         assert req.headers["x-content-ops-mode"] == "daily"
         assert req.headers["x-content-ops-packet-mode"] == DAILY_PACKET_MODE
+        assert req.headers.get("x-content-ops-daily-scope") == daily_scope
         network.append((action, step, version))
         if action == "reconcile":
             assert version is None
-            return receipt("queued", clients)
+            return scoped_receipt("queued", clients)
         if action == "claim":
             assert version is None
             if next_claim == clients:
-                return receipt("claim", None)
-            raw = raw_claim(next_claim, body["claim_token"])
+                return scoped_receipt("claim", None)
+            raw = raw_claim((0, 1, 3)[next_claim] if daily_scope else next_claim, body["claim_token"])
             next_claim += 1
             states[raw["content_version_id"]] = {"raw": raw}
-            return receipt("claim", raw)
+            return scoped_receipt("claim", raw)
         assert version in states  # no wildcard send or cross-version transport
         state, raw = states[version], states[version]["raw"]
         if (version == ident(30 + fail_client) and fail is not None
@@ -218,7 +278,7 @@ def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW
                 "X-Content-Ops-Banner-Sha256": HASH})
         if action == "begin":
             state["packet"] = body["packet_sha256"]
-            return receipt("accepted", True, version)
+            return scoped_receipt("accepted", True, version)
         assert action == "owner"
         args = body["args"]
         assert not {"workspace_id", "content_version_id"} & set(args)
@@ -243,7 +303,7 @@ def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW
             assert step == "terminal"
             value = {"status": "sent", "card_id": args["card_id"],
                      "outbox_id": raw["outbox_id"], "execution_authorized": False}
-        return receipt("owner", value, version)
+        return scoped_receipt("owner", value, version)
 
     class Sender:
         def __init__(self, version):
@@ -285,9 +345,21 @@ def integration(*, clients=4, fail=None, fail_client=0, worker_clock=lambda: NOW
         return runner
 
     tokens = iter(ident(100 + i) for i in range(4))
-    worker = DailyPrivateCardWorker(gateway=gateway(handler), runner_factory=exact_runner,
+    discovery = DailyButtonGateway(origin=APP_ORIGIN, gateway_token=TOKEN,
+        release_sha=RELEASE, enabled=True, daily_scope=daily_scope, clock=lambda: NOW,
+        transport=httpx.MockTransport(handler))
+    worker = DailyPrivateCardWorker(gateway=discovery, runner_factory=exact_runner,
         start_kst=start, clock=worker_clock, uuid_factory=lambda: next(tokens))
     return worker, network, sends, preflights, sessions
+
+
+def test_ybo_full_three_private_packets_stop_at_twelve_parts_without_squid():
+    worker, network, sends, preflights, _ = integration(clients=3, daily_scope="ybo_v1")
+    assert asyncio.run(worker.run(enabled=True)) == {"status": "completed", "queued": 3,
+        "claimed": 3, "cards_recorded": 3, "confirmed_parts": 12, "public_send_attempted": False}
+    assert len(preflights) == 3 and len(sends) == 12
+    assert {version for version, _ in sends} == {ident(30), ident(31), ident(33)}
+    assert sum(action == "claim" for action, _, _ in network) == 3
 
 
 def test_four_client_full_private_packets_and_six_edit_only_buttons_are_version_bound():
