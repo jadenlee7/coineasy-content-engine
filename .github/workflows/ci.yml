@@ -27,6 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             -r requirements.txt \
+            'psycopg[binary]==3.2.9' \
             pytest==8.4.2 \
             pytest-asyncio==1.2.0
       - name: Run Python tests
@@ -34,6 +35,37 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: .
         run: python -m pytest -p no:cacheprovider -q
+
+  final-preparation-image:
+    name: Final confirmation card image (OFF, no delivery)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated final-card preparation image
+        run: >-
+          docker build --file Dockerfile.final-card-preparation
+          --build-arg RAILWAY_GIT_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          --tag coineasy-final-preparation-ci .
+      - name: Verify OFF run and validate-only in the real image without I/O
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in run validate_only; do
+            args=()
+            if [ "$mode" = validate_only ]; then args+=(--validate-only); fi
+            output="$(docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges coineasy-final-preparation-ci \
+              python -m scripts.run_final_card_preparations "${args[@]}")"
+            jq -e --arg mode "$mode" '. == {"mode":$mode,"ok":true,"enabled":false,
+              "status":"disabled","network_calls":false,"database_calls":false,
+              "telegram_calls":false,"public_send_attempted":false,
+              "runtime_acl_verified":false,"release_pair_registered":false}' <<< "$output"
+          done
 
   daily-review-image:
     name: Private daily review image (OFF, no delivery)
