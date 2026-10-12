@@ -10,12 +10,13 @@ from core.content_ops.private_review_prompt_courier import (
     PrivateReviewPromptCourier, TelegramPrivatePromptSender,
 )
 from core.content_ops.private_review_prompt_owner import PostgresPrivatePromptOwner
+from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.review_edit_ingress import EditBindings
 
 
 def compose_private_prompt_factory(*, enabled=False, connection_factory=None,
                                    bindings=None, bot_token=None, bot_id=None,
-                                   chat_id=None):
+                                   chat_id=None, bot_policy: ExistingReviewBotPolicy | None = None):
     if enabled is not True:
         return None
     if (not callable(connection_factory) or type(bindings) is not EditBindings
@@ -25,7 +26,7 @@ def compose_private_prompt_factory(*, enabled=False, connection_factory=None,
     try:
         # Construction validates the exact bot/room configuration without I/O.
         TelegramPrivatePromptSender(bot_token=bot_token, bot_id=bot_id,
-                                    chat_id=chat_id)
+                                    chat_id=chat_id, bot_policy=bot_policy)
     except Exception:
         raise ValueError("private_prompt_runtime_invalid") from None
 
@@ -34,7 +35,7 @@ def compose_private_prompt_factory(*, enabled=False, connection_factory=None,
         return PrivateReviewPromptCourier(
             PostgresPrivatePromptOwner(connection_factory, bindings),
             TelegramPrivatePromptSender(bot_token=bot_token, bot_id=bot_id,
-                                        chat_id=chat_id),
+                                        chat_id=chat_id, bot_policy=bot_policy),
             bindings,
         )
 
