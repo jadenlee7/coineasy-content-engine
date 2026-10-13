@@ -1,0 +1,18 @@
+{
+  "schema": "public-official-logo-reference@1",
+  "client_id": "yellow",
+  "file": "official-og-e9c8c8361fa6937b.png",
+  "source_page": "https://yellow.com/",
+  "source_url": "https://static.yellow.com/assets/media/yellow_og.png",
+  "observed_at": "2026-10-13T10:42:09.357Z",
+  "source_evidence": "Official homepage og:image and twitter:image both reference this public raster.",
+  "sha256": "e9c8c8361fa6937b3060e5c7687a58801edfa1b57bffbd720334faf683cd9a19",
+  "format": "PNG",
+  "width": 1200,
+  "height": 765,
+  "transformation": "none; byte-identical copy of already public official image",
+  "purpose": "Hash-bound logo identity reference for approved Korean announcement banners.",
+  "private_asset": false,
+  "activation_or_public_channel_approval": false,
+  "usage": "Use a full 40-character Git commit URL, never a moving branch URL. Preserve this asset branch while the reference is in use. This asset-only commit is not a production application release."
+}
