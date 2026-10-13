@@ -52,6 +52,7 @@ class PreparedCard:
     outbox_id: str | None = None
     claim_token: str | None = None
     packet_sha256: str | None = None
+    delivery_only: bool = False
 
 
 class CardOwner(Protocol):
@@ -119,7 +120,7 @@ class PrivateCardCourier:
             if prepared.card_id in self._attempted_cards:
                 raise CardCourierError("private_card_replay_denied")
             requests = prepare_private_card(prepared.snapshot, self._signer,
-                prepared.room_binding, now=prepared.now)
+                prepared.room_binding, now=prepared.now, delivery_only=prepared.delivery_only)
             if private_card_packet_sha256(requests, banner_sha256,
                     prepared.review["id"], prepared.card_id) != prepared.packet_sha256:
                 raise CardCourierError("private_card_packet_mismatch")
@@ -176,7 +177,7 @@ class PrivateCardCourier:
                 room_binding=prepared.room_binding, bot_id=prepared.bot_id,
                 chat_id=prepared.chat_id, thread_id=prepared.thread_id,
                 now=prepared.now, banner_sha256=banner_sha256,
-                observations=observations)
+                observations=observations, delivery_only=prepared.delivery_only)
             try:
                 receipt = await self._owner.register_card(evidence)
             except Exception:

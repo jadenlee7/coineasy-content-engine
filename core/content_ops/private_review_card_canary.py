@@ -49,13 +49,13 @@ class PrivateCardCanary:
     def __init__(self, *, workspace_id, content_version_id, bot_id, chat_id, gateway, owner,
                  png_reader: CanonicalPngReader, courier: PrivateCardCourier,
                  signer: ButtonSigner, bindings: EditBindings,
-                 clock=None, uuid_factory=None, bot_policy=None):
+                 clock=None, uuid_factory=None, bot_policy=None, delivery_only=False):
         # The concrete one-shot HTTP gateway must own claim, image and begin
         # together. Synthetic tests may inject separate fake contracts only.
         from core.content_ops.private_review_card_gateway import ButtonCanaryGateway
         from core.content_ops.private_review_card_owner_gateway import GatewayPrivateCardOwner
 
-        if (not _uuid(workspace_id) or not _uuid(content_version_id)
+        if (type(delivery_only) is not bool or not _uuid(workspace_id) or not _uuid(content_version_id)
             or type(bot_id) is not int or bot_id <= 0
             or type(chat_id) is not int
             or re.fullmatch(r"-100[1-9][0-9]{6,12}", str(chat_id)) is None
@@ -76,6 +76,7 @@ class PrivateCardCanary:
             except Exception:
                 raise PrivateCardCanaryError("private_card_canary_configuration_invalid") from None
         self._bot_policy = bot_policy
+        self._delivery_only = delivery_only
         self._workspace_id, self._version_id = workspace_id, content_version_id
         self._bot_id, self._chat_id = bot_id, chat_id
         self._gateway, self._owner = gateway, owner
@@ -155,7 +156,7 @@ class PrivateCardCanary:
                 workspace_id=self._workspace_id, card_id=card_id, png=image.data,
                 signer=self._signer, bindings=self._bindings,
                 bot_id=self._bot_id, chat_id=self._chat_id,
-                now=int(current.timestamp()), bot_policy=self._bot_policy)
+                now=int(current.timestamp()), bot_policy=self._bot_policy, delivery_only=self._delivery_only)
             begin_attempted = True
             begin_receipt = await self._gateway.begin(claim, prepared.packet_sha256)
             if begin_receipt != {"status": "begun", "outbox_id": claim.outbox_id,

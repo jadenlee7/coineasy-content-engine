@@ -275,7 +275,8 @@ class HiggsfieldQualityBanner:
     """
 
     def __init__(self, *, key_id, key_secret, owner, reference_hosts, output_hosts,
-                 transport=None, clock=None, sleep=asyncio.sleep):
+                 transport=None, clock=None, sleep=asyncio.sleep,
+                 before_effect=None):
         for credential in (key_id, key_secret):
             _require(type(credential) is str and 8 <= len(credential) <= 512
                      and re.fullmatch(r"[A-Za-z0-9_.-]+", credential) is not None)
@@ -289,11 +290,13 @@ class HiggsfieldQualityBanner:
         self._auth = "Key " + key_id + ":" + key_secret
         self._owner, self._references, self._outputs = owner, reference_hosts, output_hosts
         self._transport, self._clock, self._sleep = transport, clock or (lambda: datetime.now(timezone.utc)), sleep
+        self._before_effect = before_effect or (lambda: None)
 
     async def _json(self, client, method, path, *, body=None, operation=None):
         headers = {"Authorization": self._auth}
         if operation is not None:
             headers["Idempotency-Key"] = operation
+        self._before_effect()
         async with client.stream(method, API + path, headers=headers, json=body) as response:
             _require(200 <= response.status_code < 300, "quality_banner_provider_unknown")
             chunks = bytearray()
@@ -316,6 +319,7 @@ class HiggsfieldQualityBanner:
             async with self._client() as client:
                 for reference in request.references:
                     url = _public_url(reference.url, self._references)
+                    self._before_effect()
                     async with client.stream("GET", url) as response:
                         _require(response.status_code == 200,
                                  "quality_banner_reference_unavailable")
@@ -337,6 +341,7 @@ class HiggsfieldQualityBanner:
             # Reference reads may outlive the source's admission window. Do not
             # spend or consume a journal reservation after freshness expires.
             request.validate(now=self._clock(), reference_hosts=self._references)
+            self._before_effect()
             _require(self._owner.begin_submit(request.operation_id, digest,
                      workspace_id=request.workspace_id, client_id=request.client_id,
                      source_item_id=request.source_item_id) is True,
@@ -430,6 +435,7 @@ class HiggsfieldQualityBanner:
                                  "quality_banner_provider_unknown")
                         url = _public_url(images[0].get("url"), self._outputs)
                         # No credentials accompany the provider's output URL.
+                        self._before_effect()
                         async with client.stream("GET", url) as response:
                             _require(response.status_code == 200, "quality_banner_image_unavailable")
                             raw = bytearray()

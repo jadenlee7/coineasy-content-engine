@@ -21,6 +21,16 @@ RUN playwright install chromium
 
 COPY . .
 
+# Optional for ordinary builds. The one-shot trial refuses to run unless this
+# read-only image stamp exists and matches the pinned plan and Railway SHA.
+# Equality is not GitHub/deployment-origin proof; verify that separately.
+ARG RAILWAY_GIT_COMMIT_SHA=""
+RUN if test -n "$RAILWAY_GIT_COMMIT_SHA"; then \
+      echo "$RAILWAY_GIT_COMMIT_SHA" | grep -Eq '^[a-f0-9]{40}$' && \
+      printf '%s' "$RAILWAY_GIT_COMMIT_SHA" > /app/coineasy-api-build-sha && \
+      chmod 444 /app/coineasy-api-build-sha; \
+    fi
+
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 ENV OUTPUT_ROOT=/tmp/content_engine_output

@@ -40,7 +40,7 @@ def _uuid(value):
 
 
 def build_prepared_card(*, claim, review_receipt, workspace_id, card_id,
-                        png, signer, bindings, bot_id, chat_id, now, bot_policy=None):
+                        png, signer, bindings, bot_id, chat_id, now, bot_policy=None, delivery_only=False):
     """Return a packet-hash-bound `PreparedCard`, never send permission."""
     try:
         if (type(claim) is not ReviewClaim or not _uuid(workspace_id)
@@ -96,11 +96,11 @@ def build_prepared_card(*, claim, review_receipt, workspace_id, card_id,
         # Registration/DB identity remains the keyed numeric room digest.
         room_binding = (bot_policy.room_binding if bot_policy is not None
                         else bindings.digest("room", bot_id, chat_id))
-        requests = prepare_private_card(snapshot, signer, room_binding, now=now)
+        requests = prepare_private_card(snapshot, signer, room_binding, now=now, delivery_only=delivery_only)
         packet_sha = private_card_packet_sha256(requests, claim.banner_sha256,
             review["id"], card_id)
         return PreparedCard(review, snapshot, card_id, png, bot_id, chat_id,
             None, room_binding, now, claim.outbox_id, claim.claim_token,
-            packet_sha)
+            packet_sha, delivery_only)
     except Exception:
         raise PrivateCardCandidateError("private_card_candidate_invalid") from None
