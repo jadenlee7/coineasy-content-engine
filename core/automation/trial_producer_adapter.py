@@ -32,8 +32,8 @@ from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
 
 KST = ZoneInfo("Asia/Seoul")
-START = datetime(2026, 10, 14, tzinfo=timezone.utc)
-END = datetime(2026, 10, 14, 2, tzinfo=timezone.utc)
+START = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
+END = datetime(2026, 10, 14, 8, 22, 17, tzinfo=timezone.utc)
 DAY = date(2026, 10, 14)
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")

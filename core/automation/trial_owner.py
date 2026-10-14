@@ -26,8 +26,8 @@ import stat
 from uuid import UUID
 
 CLIENTS = ("yellow", "babylon", "origintrail")
-NOT_BEFORE = "2026-10-14T00:00:00Z"
-LATEST_DEADLINE = "2026-10-14T02:00:00Z"
+NOT_BEFORE = "2026-10-14T06:22:17Z"
+LATEST_DEADLINE = "2026-10-14T08:22:17Z"
 POLICY_SHA256 = "000a4243bf92c082db1120b6ccbd6aa8e2ade95ed355aaef124f79a31c6aa0a4"
 LIMIT_MICROS = 10_000_000
 PHASES = ("intake", "generate", "review", "send")

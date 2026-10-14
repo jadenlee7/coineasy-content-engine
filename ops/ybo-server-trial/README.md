@@ -1,13 +1,19 @@
 # Rollback-only exact natural claim proof
 
 These are synthetic disposable-database tests, **not an automatic production
-migration or installation command**. The exact function was separately approved
-and installed once; this package is for source traceability and reproducible CI.
+migration or installation command**. The prior exact function was installed once
+with the superseded window. This package now proves a time-only rewindow candidate.
 
-`exact-natural-claim.rollback.sql` contains the same installed function body and
-service-role ACL and ends in `ROLLBACK`. Function-body SHA-256:
+`exact-natural-claim.rollback.sql` preserves the installed signature, owner intent,
+service-role ACL and all checks, changing only its two fixed time constants to
+**2026-10-14T06:22:17Z–2026-10-14T08:22:17Z**. It ends in `ROLLBACK`.
+Rewindow candidate function-body SHA-256:
 
-`e319cfa49556c7d70837a01693a2a751fd986aea22b81adfdc499ed6784c5005`
+`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`
+
+Prior hosted body SHA-256:
+`e319cfa49556c7d70837a01693a2a751fd986aea22b81adfdc499ed6784c5005`.
+This file is not proof that the candidate has been applied to the hosted RPC.
 
 Never run the fixture SQL, fixture clock or test harness against production.
 The harness requires an explicit disposable database confirmation plus a local

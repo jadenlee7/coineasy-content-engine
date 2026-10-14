@@ -1,7 +1,8 @@
 # Fixed-window YBO private courier — local implementation
 
 This does not activate a service, install a schedule, or send a message. It is a
-one-time Oct 14, 2026 UTC 00:00–02:00 private delivery consumer, not the recurring
+one-time Oct 14, 2026 UTC 06:22:17–08:22:17 (KST 15:22:17–17:22:17)
+private delivery consumer, not the recurring
 daily workflow. The callback bot and official publication remain OFF.
 
 ## Hosted entrypoint

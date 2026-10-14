@@ -48,7 +48,7 @@ def manifest(clients=("yellow",)):
             "x_copy_sha256": hashlib.sha256(X.encode()).hexdigest()})
     p = {"contract": "ybo-trial-courier-manifest@1", "trial_id": uid(1), "plan_sha256": "b"*64,
         "release_sha": SHA, "destination_policy_sha256": env()["CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256"],
-        "not_before": "2026-10-14T00:00:00Z", "deadline": "2026-10-14T02:00:00Z", "entries": entries}
+        "not_before": "2026-10-14T06:22:17Z", "deadline": "2026-10-14T08:22:17Z", "entries": entries}
     return TrialManifest.from_mapping(p, canonical_sha256(p))
 
 
@@ -233,7 +233,7 @@ def test_real_exact_canary_four_parts_static_controls_mock_http():
             key, args, step = "owner", b["args"], b["step"]
             value = {"execution_authorized": False}
             if step == "prepare": value.update(status="review_prepared", review_id=args["review_id"], epoch=0,
-                state="active", version_fingerprint="e"*64, expires_at="2026-10-14T00:45:00Z")
+                state="active", version_fingerprint="e"*64, expires_at="2026-10-14T07:07:17Z")
             elif step == "bind": value.update(status="bound")
             elif step == "reserve": value.update(status="reserved", new_attempt=True)
             elif step == "confirm": value.update(status="confirmed", new_confirmation=True)

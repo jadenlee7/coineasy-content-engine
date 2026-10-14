@@ -5,7 +5,9 @@ CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
 
 ## Operator boundary
 
-- Earliest work: **2026-10-14 09:00 KST / 00:00 UTC**. Hard latest effect: 02:00 UTC.
+- Earliest work: **2026-10-14 15:22:17 KST / 06:22:17 UTC**. Hard latest effect:
+  **17:22:17 KST / 08:22:17 UTC**. This operator-approved two-hour rewindow is
+  fixed in code, not an arbitrary configurable start or deadline extension.
 - Yellow, Babylon and OriginTrail only, at most one new official source each.
 - Existing account-bound persistent image ledger: aggregate **USD 10 estimated**
   daily limit. Actual provider settlement may differ; no second budget or reset.
@@ -66,7 +68,7 @@ settings and the isolated courier entrypoint are documented in
 
 ## Work and shutdown evidence
 
-1. Before 00:00 UTC, validate the exact release and `controller_task_running`
+1. Before admission, validate the exact release and `controller_task_running`
    through authenticated `/internal/trial/status`. Owner must not be admitted.
    Check courier startup, no cron/restart, destination policy equality, budget
    balance and all broad/public flags OFF. This is the server registration proof.
@@ -96,13 +98,17 @@ key is granted to the content process just to perform that cleanup.
 
 ## SQL and test proof
 
-The separately authorized exact-claim function was installed once on October 13.
-Its body SHA-256 is
+The October 13 installed exact-claim function uses the **superseded 00:00–02:00 UTC**
+window. Its body SHA-256 is
 `e319cfa49556c7d70837a01693a2a751fd986aea22b81adfdc499ed6784c5005`.
 Existing security/dependency catalog readbacks were unchanged. The function was
 not called during installation. The local operator receipt is not a generation
 or delivery receipt. Do not run a second apply or include this as an automatic
-production migration.
+production migration. The rewindowed rollback-only proof changes only its two
+time constants; it is not evidence that the hosted RPC has been replaced.
+The hosted claim must match the revised fixed window before trial activation.
+The rollback candidate body SHA-256 is
+`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`.
 
 Local tests use mocks or explicitly disposable PostgreSQL only. The rollback
 SQL proof package is not a production migration. Hosted-version/runtime/image

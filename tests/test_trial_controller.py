@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 import hashlib
 import io
+from pathlib import Path
 
 import httpx
 from PIL import Image
@@ -14,14 +15,15 @@ import pytest
 from core.automation.trial_controller import (HostedTrialController, START, run_hosted_trial,
     TrialCatalogReadback, TrialControllerBlocked)
 from core.automation.trial_generation_gate import TrialGenerationGate
-from core.automation.trial_owner import TrialPlan, TrialOwner, canonical_sha256, POLICY_SHA256
+from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
+    canonical_sha256, POLICY_SHA256, NOT_BEFORE, LATEST_DEADLINE)
 
 
 def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
     tmp_path.chmod(0o700)
     now = [START - timedelta(seconds=10) if before_start else START + timedelta(seconds=1)]
-    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T00:00:00Z",
-        "deadline": "2026-10-14T02:00:00Z", "kst_date": "2026-10-14",
+    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T06:22:17Z",
+        "deadline": "2026-10-14T08:22:17Z", "kst_date": "2026-10-14",
         "client_ids": ["yellow", "babylon", "origintrail"], "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": 10_000_000, "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
@@ -93,6 +95,45 @@ def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
     previous = list(s.calls)
     replay = asyncio.run(s.controller.run())
     assert replay["status"] == "not_admitted" and s.calls == previous
+
+
+def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates(tmp_path):
+    from core.automation.trial_producer_adapter import START as producer_start, END as producer_end
+    from core.content_ops.trial_courier_adapter import START as courier_start, END as courier_end
+    start = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 14, 8, 22, 17, tzinfo=timezone.utc)
+    assert START == producer_start == courier_start == start
+    assert producer_end == courier_end == end
+    assert NOT_BEFORE == "2026-10-14T06:22:17Z"
+    assert LATEST_DEADLINE == "2026-10-14T08:22:17Z"
+    assert end - start == timedelta(hours=2)
+    root = Path(__file__).resolve().parents[1]
+    for filename in ("content-ops-trial.mts", "content-ops-trial-generation.mts",
+                     "content-ops-trial-resolver.mts", "content-ops-trial-state.mts"):
+        source = (root / "netlify/functions/_shared" / filename).read_text()
+        assert NOT_BEFORE in source and LATEST_DEADLINE in source
+        assert "2026-10-14T00:00:00Z" not in source
+        assert "2026-10-14T02:00:00Z" not in source
+    sql = (root / "ops/ybo-server-trial/exact-natural-claim.rollback.sql").read_text()
+    assert f"gate_start constant timestamptz := '{NOT_BEFORE}'" in sql
+    assert f"gate_end constant timestamptz := '{LATEST_DEADLINE}'" in sql
+    s = scenario(tmp_path)
+    payload = s.owner.plan.payload
+    assert payload["kst_date"] == "2026-10-14" and payload["max_total"] == 3
+    assert payload["max_per_client"] == 1 and payload["estimated_daily_limit_micros"] == 10_000_000
+    for changes in ({"not_before": "2026-10-14T00:00:00Z"},
+                    {"deadline": "2026-10-14T08:22:18Z"}):
+        altered = {**payload, **changes}
+        with pytest.raises(TrialError):
+            TrialPlan.from_mapping(altered, canonical_sha256(altered))
+    assert s.owner.admit(s.owner.plan.trial_id, start - timedelta(seconds=1)) is None
+    assert not s.owner.path.exists()
+    s.now[0] = start
+    admitted = s.owner.admit(s.owner.plan.trial_id, start)
+    s.now[0] = end - timedelta(microseconds=1)
+    assert admitted is not None and s.owner.is_active(admitted, s.now[0])
+    s.now[0] = end
+    assert not s.owner.is_active(admitted, end)
 
 
 def test_no_new_sources_are_skipped_and_no_manifest_created(tmp_path):

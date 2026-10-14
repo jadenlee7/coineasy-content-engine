@@ -1,4 +1,4 @@
--- LOCAL_ROLLBACK_PROOF: exact installed function body and service-only ACL.
+-- LOCAL_ROLLBACK_PROOF: time-only rewindow candidate and existing service-only ACL.
 -- Repository-only proof input, not a migration or production apply script.
 -- The transaction always rolls back; executable fixture tests separately
 -- substitute a local clock only inside a disposable PostgreSQL instance.
@@ -16,8 +16,8 @@ create function public.claim_exact_natural_review_draft_job(
     target_lease_seconds integer default 900
 ) returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-    gate_start constant timestamptz := '2026-10-14T00:00:00Z';
-    gate_end constant timestamptz := '2026-10-14T02:00:00Z';
+    gate_start constant timestamptz := '2026-10-14T06:22:17Z';
+    gate_end constant timestamptz := '2026-10-14T08:22:17Z';
     gate_day constant date := '2026-10-14';
     job public.jobs%rowtype;
     slot private.official_x_daily_slots%rowtype;

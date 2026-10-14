@@ -8,7 +8,7 @@ export type TrustedTrialResolver = (identity: Readonly<{ trial_id: string; plan_
 export type TrialScope = { mode: "trial"; content_version_id: string;
   packet_mode: "trial_delivery_only_v1"; trial_id: string; plan_sha256: string; manifest_sha256: string };
 export type TrialAdmission = { scope: TrialScope; entry: Json; assertActive: () => Promise<void> };
-const START = Date.parse("2026-10-14T00:00:00Z"), END = Date.parse("2026-10-14T02:00:00Z");
+const START = Date.parse("2026-10-14T06:22:17Z"), END = Date.parse("2026-10-14T08:22:17Z");
 const CLIENTS = ["yellow", "babylon", "origintrail"];
 const HEX = /^[a-f0-9]{64}$/;
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
@@ -66,7 +66,7 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
       "destination_policy_sha256", "entries"])
       && m.contract === "ybo-trial-courier-manifest@1" && m.trial_id === trialId && m.plan_sha256 === plan
       && m.release_sha === release && m.destination_policy_sha256 === policy
-      && m.not_before === "2026-10-14T00:00:00Z" && stamp(m.deadline) > START
+      && m.not_before === "2026-10-14T06:22:17Z" && stamp(m.deadline) > START
       && stamp(m.deadline) <= END && now < stamp(m.deadline)
       && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= 3);
     const clients = new Set(), ids = new Set();
