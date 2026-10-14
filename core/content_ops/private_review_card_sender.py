@@ -57,9 +57,9 @@ class TelegramPrivateCardSender:
     def __init__(self, *, bot_token: str, bot_id: int, chat_id: int,
                  bot_policy: ExistingReviewBotPolicy | None = None,
                  transport: httpx.AsyncBaseTransport | None = None,
-                 clock: Callable[[], datetime] | None = None):
+                 clock: Callable[[], datetime] | None = None, delivery_only=False):
         token = _TOKEN.fullmatch(bot_token) if type(bot_token) is str else None
-        if (token is None or type(bot_id) is not int or bot_id != int(token.group(1))
+        if (type(delivery_only) is not bool or token is None or type(bot_id) is not int or bot_id != int(token.group(1))
             or type(chat_id) is not int or _ROOM.fullmatch(str(chat_id)) is None):
             raise PrivateCardSenderError("private_card_sender_configuration_invalid")
         if bot_policy is not None:
@@ -80,6 +80,7 @@ class TelegramPrivateCardSender:
         self._attempted: set[str] = set()
         self._next_index = 0
         self._terminal = False
+        self._delivery_only = delivery_only
 
     async def _post(self, method: str, *, body=None, image=None):
         if method not in {"getMe", "getChat", "getChatMember", "sendPhoto", "sendMessage"}:
@@ -148,7 +149,21 @@ class TelegramPrivateCardSender:
             raise PrivateCardSenderError("private_card_request_invalid")
         if kind == "controls":
             markup = request["reply_markup"]
-            if (type(markup) is not dict or set(markup) != {"inline_keyboard"}
+            if self._delivery_only:
+                try:
+                    button = markup["inline_keyboard"][0][0]
+                    valid = (type(markup) is dict and set(markup) == {"inline_keyboard"}
+                        and markup["inline_keyboard"] == [[button]] and type(button) is dict
+                        and set(button) == {"text", "url"} and button["text"] == "공식 원문 보기"
+                        and type(button["url"]) is str and re.fullmatch(
+                            r"https://x\.com/(?:Yellow|yellow|babylonlabs_io|origin_trail)/status/[1-9][0-9]{0,18}", button["url"]) is not None
+                        and "버튼은 이번 시험에서 비활성 상태입니다." in text
+                        and "공식 Telegram/X 게시 보류 · 검수 봇 OFF" in text)
+                except (KeyError, IndexError, TypeError):
+                    valid = False
+                if not valid:
+                    raise PrivateCardSenderError("private_card_request_invalid")
+            elif (type(markup) is not dict or set(markup) != {"inline_keyboard"}
                 or type(markup["inline_keyboard"]) is not list
                 or len(markup["inline_keyboard"]) != 3
                 or any(type(row) is not list or len(row) != 2 for row in markup["inline_keyboard"])

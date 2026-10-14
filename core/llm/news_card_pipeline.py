@@ -3414,6 +3414,7 @@ def generate_news_card_spec(
     style_references: Sequence[Mapping[str, str]] = (),
     brand_review_guidance: Mapping[str, object] | None = None,
     single_attempt: bool = False,
+    before_external_call=None,
 ) -> dict:
     """
     Generate a news card spec for a given client.
@@ -3517,6 +3518,8 @@ def generate_news_card_spec(
             {"type": "text", "text": prompt},
         ]
 
+    if before_external_call is not None:
+        before_external_call()
     response = create_message(
         client,
         model=llm_cfg.model,

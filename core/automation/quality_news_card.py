@@ -255,7 +255,7 @@ class QualityNewsJournal(HiggsfieldBannerJournal):
             _require(count == 1, "quality_news_binding_conflict")
 
 
-async def _copy(payload, client_id):
+async def _copy(payload, client_id, *, before_effect=None):
     _validate_prompt_input(payload)
     # Import lazily: OFF validation does not construct an LLM client.
     from core.llm.news_card_pipeline import generate_news_card_spec
@@ -263,7 +263,8 @@ async def _copy(payload, client_id):
         source_content=payload["source_content"], source_type="tweet",
         source_url=payload["source_url"], mock_mode=False,
         style_references=payload.get("style_references", ()),
-        brand_review_guidance=payload.get("brand_review_guidance"), single_attempt=True)
+        brand_review_guidance=payload.get("brand_review_guidance"), single_attempt=True,
+        before_external_call=before_effect)
 
 
 def provision_quality_news_store(root, *, workspace_id, store_id, provider_account_sha256=None):
@@ -365,10 +366,12 @@ class QualityNewsService:
         self.copy_factory = copy_factory
         self.budget_authority = budget_authority
 
-    async def _source_bytes(self, url):
+    async def _source_bytes(self, url, *, before_effect=None):
         _public_url(url, self.references)
         async with httpx.AsyncClient(transport=self.transport, timeout=30,
                                      follow_redirects=False, trust_env=False) as client:
+            if before_effect is not None:
+                before_effect()
             async with client.stream("GET", url) as response:
                 _require(response.status_code == 200, "quality_news_reference_invalid")
                 data = bytearray()
@@ -379,7 +382,16 @@ class QualityNewsService:
         _reference_bytes(raw, _sha(raw))
         return raw
 
-    async def generate(self, *, client_id, request_id, payload, output_root):
+    async def generate(self, *, client_id, request_id, payload, output_root,
+                       before_effect=None, collect_only=False):
+        # The hosted one-shot trial supplies a durable owner/deadline readback.
+        # Ordinary quality callers remain governed by their existing owner.
+        guard = before_effect or (lambda: None)
+        _require(type(collect_only) is bool and (not collect_only or before_effect is not None),
+                 "quality_news_configuration_invalid")
+        _require(before_effect is None or self.copy_factory is _copy,
+                 "quality_news_configuration_invalid")
+        guard()
         context = validate_context(client_id, request_id, payload)
         _validate_prompt_input(payload)
         logo = self.logos.get(client_id)
@@ -411,17 +423,24 @@ class QualityNewsService:
                      "quality_news_budget_evidence_required")
         adapter = HiggsfieldQualityBanner(key_id=self.key_id, key_secret=self.key_secret,
             owner=owner, reference_hosts=self.references, output_hosts=self.outputs,
-            transport=self.transport, clock=self.clock)
+            transport=self.transport, clock=self.clock, before_effect=guard)
         input_sha = _sha(_json({"payload": payload, "logo": asdict(logo), "policy": POLICY,
                                "release": self.release, "spend_policy": self.spend_policy}).encode())
-        checkpoint = owner.start_or_read(context, input_sha,
-            admit_new=lambda: probe.validate(now=self.clock(), reference_hosts=self.references))
+        def admit_new():
+            _require(not collect_only, "quality_banner_submit_unknown")
+            probe.validate(now=self.clock(), reference_hosts=self.references)
+        checkpoint = owner.start_or_read(context, input_sha, admit_new=admit_new)
         if checkpoint is None:
             # An uncertain copy response is terminal; never rerun the LLM on
             # retry. Persist the exact accepted copy before the image POST.
-            source_bytes = await self._source_bytes(context["source_image_url"])
+            guard()
+            source_bytes = await self._source_bytes(context["source_image_url"], before_effect=guard)
             probe.validate(now=self.clock(), reference_hosts=self.references)
-            spec = _safe_spec(await self.copy_factory(payload, client_id))
+            guard()
+            if before_effect is not None:
+                spec = _safe_spec(await self.copy_factory(payload, client_id, before_effect=guard))
+            else:
+                spec = _safe_spec(await self.copy_factory(payload, client_id))
             request = _request(context, spec, _sha(source_bytes), logo)
             request.validate(now=self.clock(), reference_hosts=self.references)
             checkpoint = {"spec": spec, "request": asdict(request)}
@@ -429,16 +448,24 @@ class QualityNewsService:
         request = _restore_request(checkpoint["request"])
         request.validate(now=self.clock(), reference_hosts=self.references, require_fresh=False)
         state = owner.attempt_state(request_id, request.digest())
+        if collect_only:
+            _require(state in {"submitted", "result_ready"}, "quality_banner_submit_unknown")
+            # Persisted provider ID and exact request digest must both exist.
+            # No new estimate, copy or image POST can be opened by this mode.
+            owner.read_request_id(request_id, request.digest())
         if state is None:
             request.validate(now=self.clock(), reference_hosts=self.references)
             if type(self.budget_authority) is AuthenticatedEstimateAuthority:
+                guard()
                 proof = await adapter.estimate(request,
                     provider_account_sha256=self.budget_authority.account_sha256)
                 self.budget_authority.remember(request_id, proof)
+            guard()
             await adapter.submit_once(request)
         elif state == "submit_started":
             raise QualityBannerError("quality_banner_submit_unknown")
         try:
+            guard()
             png = await adapter.collect(request, max_polls=1)
         except QualityBannerError:
             # Retain the stale admission signal even if the GET-only provider
@@ -448,6 +475,7 @@ class QualityNewsService:
         # Completion never admits an expired source. Catalog and daily-card
         # owners must independently recheck latest source/current version.
         request.validate(now=self.clock(), reference_hosts=self.references)
+        guard()
         with Image.open(io.BytesIO(png)) as image:
             width, height = image.size
         spec = {**checkpoint["spec"], "brand_profile_policy_version": "official-reference-quality@1",
@@ -456,6 +484,7 @@ class QualityNewsService:
                 "quality_banner": {"policy": POLICY, "request_sha256": request.digest(),
                                    "png_sha256": _sha(png), "width": width, "height": height}}
         directory = output_root / client_id / ("news_request_" + request_id)
+        guard()
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         _require(directory.resolve() == directory, "quality_news_output_invalid")
         image_path, manifest_path = directory / "news_card_quality.png", directory / "manifest.json"
@@ -469,21 +498,34 @@ class QualityNewsService:
         for path, data in ((image_path, png), (manifest_path, _json(result).encode())):
             temporary = directory / ("." + uuid4().hex + ".tmp")
             try:
+                guard()
                 with temporary.open("xb") as file:
                     os.chmod(temporary, 0o600)
                     file.write(data); file.flush(); os.fsync(file.fileno())
+                guard()
                 temporary.replace(path)
             finally:
                 temporary.unlink(missing_ok=True)
+        guard()
         return result
 
 
-def service_from_env(env):
-    """No client/DB construction when OFF. No credentials in validation output."""
-    if env.get("QUALITY_BANNER_ENABLED", "false") == "false":
+def service_from_env(env, *, trial_authority=None):
+    """No client/DB construction when OFF, except an already gated trial.
+
+    `trial_authority` is passed only after the API has read an exact reserved
+    TrialOwner phase. It is not inferred from environment or request content.
+    """
+    from core.automation.trial_generation_gate import TrialGenerationGate
+    trial_only = trial_authority is not None
+    _require(not trial_only or type(trial_authority) is TrialGenerationGate,
+             "quality_news_configuration_invalid")
+    if not trial_only and env.get("QUALITY_BANNER_ENABLED", "false") == "false":
         return None
-    _require(env.get("QUALITY_BANNER_ENABLED") == "true"
-             and env.get("NEWS_CARD_IDEMPOTENCY_ENABLED") == "true",
+    _require(((env.get("QUALITY_BANNER_ENABLED", "false") == "false"
+               and env.get("NEWS_CARD_IDEMPOTENCY_ENABLED", "false") == "false") if trial_only
+              else (env.get("QUALITY_BANNER_ENABLED") == "true"
+                    and env.get("NEWS_CARD_IDEMPOTENCY_ENABLED") == "true")),
              "quality_news_configuration_invalid")
     release = env.get("RAILWAY_GIT_COMMIT_SHA", "")
     _require(release == env.get("QUALITY_BANNER_RELEASE_SHA")

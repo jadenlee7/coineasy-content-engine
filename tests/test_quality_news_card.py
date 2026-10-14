@@ -157,6 +157,38 @@ def test_pending_restart_reuses_copy_and_same_provider_request(tmp_path):
     assert state["posts"] == state["copies"] == 1
 
 
+def test_collect_only_requires_durable_submitted_id_and_never_reopens_paid_work(tmp_path, monkeypatch):
+    from core.automation import quality_news_card
+    kwargs, output, state = setup(tmp_path, pending=True)
+    monkeypatch.setattr(quality_news_card, "_copy", kwargs["copy_factory"])
+    def collect_only():
+        return asyncio.run(QualityNewsService(**kwargs).generate(
+            client_id="yellow", request_id=REQUEST, payload=payload(), output_root=output,
+            before_effect=lambda: None, collect_only=True))
+    with pytest.raises(QualityBannerError, match="quality_banner_submit_unknown"):
+        collect_only()
+    assert state["copies"] == state["posts"] == state["estimates"] == 0
+    with pytest.raises(QualityBannerError, match="quality_banner_pending"):
+        invoke(kwargs, output)
+    assert state["posts"] == state["copies"] == 1
+    state["pending"] = False
+    assert collect_only()["content_type"] == "news_card"
+    assert state["posts"] == state["copies"] == 1
+
+
+def test_collect_only_rejects_ambiguous_submit_started(tmp_path, monkeypatch):
+    from core.automation import quality_news_card
+    kwargs, output, state = setup(tmp_path, fail_submit=True)
+    monkeypatch.setattr(quality_news_card, "_copy", kwargs["copy_factory"])
+    with pytest.raises(QualityBannerError, match="quality_banner_submit_unknown"):
+        invoke(kwargs, output)
+    with pytest.raises(QualityBannerError, match="quality_banner_submit_unknown"):
+        asyncio.run(QualityNewsService(**kwargs).generate(
+            client_id="yellow", request_id=REQUEST, payload=payload(), output_root=output,
+            before_effect=lambda: None, collect_only=True))
+    assert state["posts"] == state["copies"] == 1
+
+
 def test_unknown_submit_and_new_uuid_cannot_repeat(tmp_path):
     kwargs, output, state = setup(tmp_path, fail_submit=True)
     with pytest.raises(QualityBannerError, match="submit_unknown"):
@@ -527,6 +559,26 @@ def test_quality_copy_uses_one_sdk_post_after_timeout(monkeypatch):
     finally:
         client.close()
     assert calls == ["POST"]
+
+
+def test_quality_copy_deadline_gate_runs_immediately_before_sdk_post(monkeypatch):
+    import anthropic
+    from core.automation.quality_news_card import _copy
+    actual = anthropic.Anthropic
+    calls = []
+    def http(request):
+        calls.append(request.method)
+        raise AssertionError("LLM dispatch after trial deadline")
+    client = httpx.Client(transport=httpx.MockTransport(http))
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs:
+        actual(api_key="fixture-only-key", http_client=client, **kwargs))
+    try:
+        with pytest.raises(ValueError, match="trial_deadline_closed"):
+            asyncio.run(_copy(payload(), "yellow", before_effect=lambda:
+                (_ for _ in ()).throw(ValueError("trial_deadline_closed"))))
+    finally:
+        client.close()
+    assert calls == []
 
 
 def test_freshness_rechecked_before_paid_copy(tmp_path):

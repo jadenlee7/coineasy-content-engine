@@ -14,14 +14,14 @@ import re
 import secrets
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
 import yaml
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -74,6 +74,9 @@ from core.automation.news_generation_journal import (
     NewsGenerationJournalError,
     canonical_request_id,
 )
+from core.automation.trial_generation_gate import TrialGenerationDenied, TrialGenerationGate
+from core.automation.trial_manifest import TrialManifestDenied, TrialManifestNotReady, TrialManifestStore
+from core.automation.trial_owner import canonical_sha256 as trial_canonical_sha256
 
 
 # ────────────────────────────────────────────────────
@@ -454,6 +457,35 @@ class NewsCardResponse(BaseModel):
     figma_template: Optional[dict] = None
     manifest_path: str
     duration_ms: int
+
+
+class TrialManifestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trial_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    plan_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class TrialGenerationAuthorizationRequest(TrialManifestRequest):
+    release_sha: str = Field(pattern=r"^[a-f0-9]{40}$")
+    client_id: Literal["yellow", "babylon", "origintrail"]
+    request_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    payload: NewsCardRequest
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def exact_payload_keys(cls, value):
+        if not isinstance(value, dict) or set(value) != set(NewsCardRequest.model_fields):
+            raise ValueError("trial_generation_payload_shape_invalid")
+        return value
+
+
+class TrialDeliveryConfirmationRequest(TrialManifestRequest):
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_version_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    card_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    outbox_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    confirmed_parts: Literal[4]
+    status: Literal["sent"]
 
 
 class DailyNewsRequest(BaseModel):
@@ -1117,6 +1149,81 @@ async def _guarded_generate_news(client_id, req, request_id, invoke):
         raise HTTPException(503, "news_generation_outcome_unknown") from None
 
 
+def _authenticated_trial_gate(x_api_key):
+    if _check_auth(x_api_key) != "admin":
+        raise HTTPException(403, "trial_admin_required")
+    if any(os.environ.get(key, "false") != "false" for key in (
+            "QUALITY_BANNER_ENABLED", "NEWS_CARD_IDEMPOTENCY_ENABLED", "TELEGRAM_PUBLICATION_ENABLED")):
+        raise HTTPException(503, "trial_generation_global_flag_on")
+    try:
+        return TrialGenerationGate.from_env(os.environ)
+    except TrialGenerationDenied as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/internal/trial/generation-authorize")
+async def authorize_trial_generation(req: TrialGenerationAuthorizationRequest,
+                                     x_api_key: str = Header(default="")):
+    """Read existing exact generation reservation; no admission or paid work."""
+    gate = _authenticated_trial_gate(x_api_key)
+    if req.plan_sha256 != gate.plan.sha256 or req.release_sha != gate.plan.payload["release_sha"]:
+        raise HTTPException(403, "trial_generation_not_admitted")
+    try:
+        gate.require_generation(trial_id=req.trial_id, client_id=req.client_id,
+            request_id=req.request_id, payload=req.payload.model_dump(mode="json"))
+    except TrialGenerationDenied as exc:
+        raise HTTPException(403, str(exc)) from None
+    return {"authorized": True, "trial_id": req.trial_id, "plan_sha256": req.plan_sha256,
+        "release_sha": req.release_sha, "client_id": req.client_id, "request_id": req.request_id,
+        "observed_at": gate.clock().astimezone(timezone.utc).isoformat()}
+
+
+@app.post("/internal/trial/manifest")
+async def read_trial_manifest(req: TrialManifestRequest, x_api_key: str = Header(default="")):
+    """Read server-owned immutable manifest; callers cannot publish one."""
+    gate = _authenticated_trial_gate(x_api_key)
+    try:
+        store = TrialManifestStore(owner=gate.owner,
+            destination_policy_sha256=os.environ.get("YBO_TRIAL_DESTINATION_POLICY_SHA256", ""),
+            clock=gate.clock)
+        return store.resolve(trial_id=req.trial_id, plan_sha256=req.plan_sha256)
+    except TrialManifestNotReady:
+        return JSONResponse({"error": "trial_manifest_not_ready"}, status_code=409)
+    except TrialManifestDenied:
+        raise HTTPException(409, "trial_manifest_unavailable") from None
+
+
+@app.post("/internal/trial/delivery-confirm")
+async def confirm_trial_delivery(req: TrialDeliveryConfirmationRequest, x_api_key: str = Header(default="")):
+    """Trusted gateway's verified DB receipt closes authority, never opens it."""
+    gate = _authenticated_trial_gate(x_api_key)
+    try:
+        for identity in (req.content_version_id, req.card_id, req.outbox_id):
+            canonical_request_id(identity)
+        store = TrialManifestStore(owner=gate.owner,
+            destination_policy_sha256=os.environ.get("YBO_TRIAL_DESTINATION_POLICY_SHA256", ""),
+            clock=gate.clock)
+        value = store.resolve(trial_id=req.trial_id, plan_sha256=req.plan_sha256)
+        if value["manifest_sha256"] != req.manifest_sha256 or not gate.owner.confirm_external_delivery(
+                value["manifest"]["entries"], req.content_version_id,
+                trial_canonical_sha256(req.model_dump(mode="json")), gate.clock()):
+            raise TrialManifestDenied("trial_delivery_confirmation_denied")
+    except (TrialManifestDenied, ValueError):
+        raise HTTPException(409, "trial_delivery_confirmation_denied") from None
+    return {"recorded": True}
+
+
+@app.get("/internal/trial/status")
+async def read_trial_status(x_api_key: str = Header(default="")):
+    gate = _authenticated_trial_gate(x_api_key)
+    task = getattr(app.state, "ybo_trial_task", None)
+    state = gate.owner.inspect(gate.clock())
+    return {"trial_id": gate.plan.trial_id, "plan_sha256": gate.plan.sha256,
+        "release_sha": gate.plan.payload["release_sha"], "not_before": gate.plan.payload["not_before"],
+        "deadline": gate.plan.payload["deadline"], "controller_task_running": task is not None and not task.done(),
+        "owner": state, "public_send_attempted": False}
+
+
 @app.post("/clients/{client_id}/generate/news-card", response_model=NewsCardResponse)
 async def generate_news(
     client_id: str,
@@ -1124,13 +1231,27 @@ async def generate_news(
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(default=""),
     idempotency_key: Optional[list[str]] = Header(default=None),
+    x_ybo_trial_id: Optional[list[str]] = Header(default=None),
+    x_ybo_trial_collect_only: Optional[list[str]] = Header(default=None),
 ):
     """Generate one news image; official Squid remixes keep source aspect."""
     authenticated_client = _check_client_auth(x_api_key, client_id)
+    if x_ybo_trial_collect_only is not None and (
+            type(x_ybo_trial_collect_only) is not list or len(x_ybo_trial_collect_only) != 1
+            or x_ybo_trial_collect_only[0] != "true" or x_ybo_trial_id is None):
+        raise HTTPException(403, "trial_generation_not_admitted")
     stable_flag = os.environ.get("NEWS_CARD_IDEMPOTENCY_ENABLED", "false")
     if stable_flag not in {"false", "true"}:
         raise HTTPException(503, "news_generation_idempotency_config_invalid")
-    stable_mode = stable_flag == "true"
+    if (os.environ.get("YBO_TRIAL_API_MODE") == "true"
+            and client_id in {"yellow", "babylon", "origintrail"}
+            and x_ybo_trial_id is None):
+        raise HTTPException(403, "trial_generation_not_admitted")
+    # A trial-tagged request may use the persistent journal without globally
+    # enabling idempotent paid generation for unrelated callers.
+    trial_candidate = (x_ybo_trial_id is not None and
+                       os.environ.get("YBO_TRIAL_API_MODE") == "true")
+    stable_mode = stable_flag == "true" or trial_candidate
     request_id = None
     if not stable_mode and idempotency_key is not None:
         # The gateway always forwards its stable UUID. Turning this flag OFF
@@ -1160,13 +1281,37 @@ async def generate_news(
     except FileNotFoundError:
         raise HTTPException(404, f"Client '{client_id}' not found")
 
+    if req.quality_context is None and (x_ybo_trial_id is not None or
+            (os.environ.get("YBO_TRIAL_API_MODE") == "true" and
+             client_id in {"yellow", "babylon", "origintrail"})):
+        # A tagged trial request cannot strip context to enter the legacy
+        # renderer. While trial mode is mounted, YBO has no generic paid path.
+        raise HTTPException(403, "trial_generation_not_admitted")
+
     if req.quality_context is not None:
         # Quality owns persisted copy plus a one-shot image attempt. A pending
         # result resumes its recorded ID with GET only, not the legacy renderer.
         if authenticated_client != "admin" or not stable_mode:
             raise HTTPException(403, "quality_news_admin_idempotency_required")
-        if os.environ.get("QUALITY_BANNER_ENABLED", "false") == "false":
+        trial_gate = None
+        if x_ybo_trial_id is not None or os.environ.get("YBO_TRIAL_API_MODE") == "true":
+            if type(x_ybo_trial_id) is not list or len(x_ybo_trial_id) != 1:
+                raise HTTPException(403, "trial_generation_not_admitted")
+            try:
+                trial_gate = TrialGenerationGate.from_env(os.environ)
+                trial_gate.require_generation(trial_id=x_ybo_trial_id[0], client_id=client_id,
+                    request_id=request_id, payload=req.model_dump(mode="json"))
+            except TrialGenerationDenied as exc:
+                raise HTTPException(503 if str(exc) in {"trial_generation_disabled",
+                    "trial_generation_release_mismatch", "trial_generation_owner_unavailable"} else 403,
+                    str(exc)) from None
+        if trial_gate is None and os.environ.get("QUALITY_BANNER_ENABLED", "false") == "false":
             raise HTTPException(503, "quality_news_disabled")
+        if x_ybo_trial_collect_only is not None and trial_gate is None:
+            raise HTTPException(403, "trial_generation_not_admitted")
+        if trial_gate is not None and (os.environ.get("QUALITY_BANNER_ENABLED", "false") != "false"
+                or os.environ.get("NEWS_CARD_IDEMPOTENCY_ENABLED", "false") != "false"):
+            raise HTTPException(503, "trial_generation_global_flag_on")
         _pin_quality_news_mode(client_id, req, request_id)
         from core.automation.quality_news_card import service_from_env
         from core.automation.higgsfield_banner import QualityBannerError
@@ -1190,17 +1335,25 @@ async def generate_news(
             "quality_banner_image_unavailable", "quality_banner_owner_required",
         }
         try:
-            service = service_from_env(os.environ)
+            service = service_from_env(os.environ,
+                **({"trial_authority": trial_gate} if trial_gate is not None else {}))
             if service is None:
                 raise QualityBannerError("quality_news_configuration_invalid")
             result = await service.generate(client_id=client_id, request_id=request_id,
-                payload=req.model_dump(mode="json"), output_root=OUTPUT_ROOT)
+                payload=req.model_dump(mode="json"), output_root=OUTPUT_ROOT,
+                **({"collect_only": True} if x_ybo_trial_collect_only is not None else {}),
+                **({"before_effect": lambda: trial_gate.require_generation(
+                    trial_id=x_ybo_trial_id[0], client_id=client_id, request_id=request_id,
+                    payload=req.model_dump(mode="json"))} if trial_gate is not None else {}))
             return NewsCardResponse.model_validate(result)
         except QualityBannerError as exc:
             code = str(exc)
             if code not in retry_codes | held_codes:
                 code = "quality_news_outcome_unknown"
             raise HTTPException(503 if code in retry_codes else 409, code) from None
+        except TrialGenerationDenied as exc:
+            raise HTTPException(503 if str(exc) == "trial_generation_owner_unavailable" else 403,
+                                str(exc)) from None
         except Exception:
             raise HTTPException(409, "quality_news_outcome_unknown") from None
 
@@ -1494,6 +1647,26 @@ async def startup():
     print(f"✓ Content Engine started with {len(clients)} active clients:")
     for cfg in clients:
         print(f"  - {cfg.client_id:12s} {cfg.name}")
+    if os.environ.get("YBO_TRIAL_CONTROLLER_ENABLED", "false") == "true":
+        from core.automation.trial_controller import run_hosted_trial
+
+        async def bounded_trial():
+            receipt = await run_hosted_trial(dict(os.environ))
+            app.state.ybo_trial_receipt = receipt
+            print(json.dumps({"ybo_trial": receipt}, separators=(",", ":")))
+
+        app.state.ybo_trial_task = asyncio.create_task(bounded_trial())
+
+
+@app.on_event("shutdown")
+async def shutdown_trial():
+    task = getattr(app.state, "ybo_trial_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":

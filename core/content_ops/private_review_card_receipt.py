@@ -91,14 +91,31 @@ class ObservedSend:
     observed_at: datetime
 
 
-def prepare_private_card(snapshot, signer, room_binding, *, now):
+def prepare_private_card(snapshot, signer, room_binding, *, now, delivery_only=False):
     """Render all four immutable requests without sending any of them."""
     _require(type(snapshot) is ReviewSnapshot and type(signer) is ButtonSigner)
-    _require(type(now) is int and now > 0 and snapshot.eligibility == "blocked")
-    messages = review_messages(snapshot, signer, room_binding, now=now, private_only=True)
+    _require(type(now) is int and now > 0 and snapshot.eligibility == "blocked"
+             and type(delivery_only) is bool)
+    if delivery_only:
+        snapshot.validate()
+        # No signed callback is minted: the existing callback bot stays OFF.
+        messages = {
+            "telegram": {"text": "[Telegram 공지 전문]\n" + snapshot.telegram_copy},
+            "x": {"text": "[X 게시글 전문]\n" + snapshot.x_copy},
+            "controls": {"text": (f"{snapshot.client_id.upper()} · 직원방 전달 시험 · needs_review\n"
+                f"버전: {snapshot.content_version_id}\n"
+                "자동 검사는 시각 품질 검수나 공식 채널 게시 승인이 아닙니다.\n"
+                "수정·재제작·승인 버튼은 이번 시험에서 비활성 상태입니다.\n"
+                "수정 의견은 이 메시지에 답글로 남겨주세요. 답글만으로 자동 게시되지 않습니다.\n"
+                "공식 Telegram/X 게시 보류 · 검수 봇 OFF"),
+                "reply_markup": {"inline_keyboard": [[{"text": "공식 원문 보기", "url": snapshot.source_url}]]}},
+        }
+    else:
+        messages = review_messages(snapshot, signer, room_binding, now=now, private_only=True)
     caption = (f"{snapshot.client_id.upper()} · 비공개 검수용 (공개 게시 아님)\n"
                f"버전: {snapshot.content_version_id}\n"
-               "이미지·Telegram·X 전문과 검수 버튼을 모두 확인해주세요.")
+               + ("이미지·Telegram·X 전문을 확인해주세요. 검수 버튼은 비활성입니다."
+                if delivery_only else "이미지·Telegram·X 전문과 검수 버튼을 모두 확인해주세요."))
     _require(len(caption.encode("utf-16-le")) // 2 <= 1024)
     return (
         {"kind": "image", "method": "sendPhoto", "text": caption},
@@ -192,7 +209,7 @@ def _validate_candidate(review, snapshot, card_id, *, now):
 
 def card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
                                room_binding, bot_id, chat_id, thread_id, now,
-                               banner_sha256, observations):
+                               banner_sha256, observations, delivery_only=False):
     """Build exact registration evidence for the guarded DB wrapper.
 
     The caller must prove the review was owner-created, source/current version
@@ -206,7 +223,7 @@ def card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
         return _card_registration_evidence(review=review, snapshot=snapshot, card_id=card_id,
             signer=signer, bindings=bindings, room_binding=room_binding, bot_id=bot_id,
             chat_id=chat_id, thread_id=thread_id, now=now,
-            banner_sha256=banner_sha256, observations=observations)
+            banner_sha256=banner_sha256, observations=observations, delivery_only=delivery_only)
     except Exception:
         # Including malformed JSON, dates and DB projections: no private body,
         # identity or transport response may escape through an error message.
@@ -215,7 +232,7 @@ def card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
 
 def _card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
                                 room_binding, bot_id, chat_id, thread_id, now,
-                                banner_sha256, observations):
+                                banner_sha256, observations, delivery_only=False):
     _require(type(review) is dict and type(snapshot) is ReviewSnapshot
              and type(bindings) is EditBindings and type(signer) is ButtonSigner
              and type(bot_id) is int and bot_id > 0
@@ -224,7 +241,7 @@ def _card_registration_evidence(*, review, snapshot, card_id, signer, bindings,
              and type(observations) in (list, tuple) and len(observations) == 4
              and banner_sha256 == snapshot.banner_sha256)
     _validate_candidate(review, snapshot, card_id, now=now)
-    packet = prepare_private_card(snapshot, signer, room_binding, now=now)
+    packet = prepare_private_card(snapshot, signer, room_binding, now=now, delivery_only=delivery_only)
     validated = tuple(_validated_response(o, p, bot_id=bot_id, chat_id=chat_id,
                                           thread_id=thread_id)
                       for p, o in zip(packet, observations))

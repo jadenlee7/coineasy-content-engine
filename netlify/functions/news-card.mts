@@ -19,7 +19,9 @@ import {
   hasValidStudioAutomationAccess,
   requireStudioGenerationAccess,
 } from "./_shared/studio-session.mts";
-import { requireExpectedStudioRelease } from "./_shared/studio-release.mts";
+import { currentStudioReleaseSha, requireExpectedStudioRelease } from "./_shared/studio-release.mts";
+import { admitTrialGeneration, canonicalTrialPayload, TrialGenerationError,
+  type TrialGenerationAdmission } from "./_shared/content-ops-trial-generation.mts";
 import {
   parseStyleReferencePack,
   StyleReferenceInputError,
@@ -68,6 +70,7 @@ type NewsCardRequest = {
   style_references?: unknown;
   style_reference_pack_hash?: unknown;
   quality_context?: unknown;
+  trial_payload?: unknown;
 };
 
 type RailwayNewsCardResponse = {
@@ -1044,7 +1047,8 @@ function needsCleanedSquidVisual(
     && spec.translation_regions.length > 0;
 }
 
-export default async (req: Request, context: Context): Promise<Response> => {
+export function createNewsCardHandler(releaseSha: () => string | null = currentStudioReleaseSha) {
+return async (req: Request, context: Context): Promise<Response> => {
   if (req.method !== "POST") {
     return json({ error: "method_not_allowed" }, 405);
   }
@@ -1053,7 +1057,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   const studioAccessError = requireStudioGenerationAccess(req);
   if (studioAccessError) return studioAccessError;
   const automationRequest = hasValidStudioAutomationAccess(req);
-  const studioReleaseError = requireExpectedStudioRelease(req);
+  const studioReleaseError = requireExpectedStudioRelease(req, releaseSha());
   if (studioReleaseError) return studioReleaseError;
 
   const clientParam = context.params.clientId;
@@ -1081,14 +1085,31 @@ export default async (req: Request, context: Context): Promise<Response> => {
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "invalid_json" }, 400);
+  }
   // A browser/caller can never assert a natural job or source identity.
   if (Object.hasOwn(body, "quality_context")) {
     return json({ error: "quality_banner_context_server_only" }, 403);
   }
+  const trialRequested = req.headers.has("x-ybo-trial-id")
+    || req.headers.has("x-ybo-trial-plan-sha256") || req.headers.has("x-ybo-trial-collect-only")
+    || Object.hasOwn(body, "trial_payload");
+  let trial: TrialGenerationAdmission | undefined;
+  if (trialRequested) {
+    try {
+      trial = await admitTrialGeneration({ req, runtime: context, body, clientId, requestId,
+        automation: automationRequest, env: name => Netlify.env.get(name), release: releaseSha() });
+    } catch { return json({ error: "trial_generation_blocked" }, 503); }
+  } else if (Netlify.env.get("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") === "true" && qualityBannerClient(clientId)) {
+    // Trial mounting must not expose the legacy YBO generator to untagged calls.
+    return json({ error: "trial_generation_blocked" }, 503);
+  }
+  const requestFetch = trial?.fetcher ?? fetch;
   let qualityMode = false;
   try {
-    qualityMode = qualityBannerEnabled(Netlify.env.get("QUALITY_BANNER_ENABLED"))
-      && automationRequest && qualityBannerClient(clientId);
+    qualityMode = !!trial || (qualityBannerEnabled(Netlify.env.get("QUALITY_BANNER_ENABLED"))
+      && automationRequest && qualityBannerClient(clientId));
   } catch { return json({ error: "quality_banner_configuration_invalid" }, 503); }
 
   const sourceContent = typeof body.source_content === "string" ? body.source_content.trim() : "";
@@ -1177,13 +1198,13 @@ export default async (req: Request, context: Context): Promise<Response> => {
     await Promise.all([
       verifyPrivateContentBucket(
         storageConfig,
-        fetch,
+        requestFetch,
         deadlineSignal(requestDeadline, 5_000),
       ),
       verifyContentStorageScope(
         storageConfig,
         clientId,
-        fetch,
+        requestFetch,
         deadlineSignal(requestDeadline, 5_000),
       ),
     ]);
@@ -1192,7 +1213,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       requestId,
       clientId,
       "daily_news",
-      fetch,
+      requestFetch,
       deadlineSignal(requestDeadline, 4_000),
     );
   } catch (error) {
@@ -1203,14 +1224,21 @@ export default async (req: Request, context: Context): Promise<Response> => {
       || Date.now() >= requestDeadline - 100;
     return json({ error: deadlineExceeded ? "news_card_deadline_exceeded" : code }, deadlineExceeded ? 504 : 503);
   }
+  if (trial && existingGeneration) {
+    // A once-only trial does not admit a preexisting or concurrent result.
+    return json({ error: "trial_generation_already_exists" }, 409);
+  }
   if (qualityMode) {
     const expected = { workspaceId: storageConfig.workspaceId, clientId, requestId,
       sourceContent, sourceUrl, sourceImageUrl: pinnedSourceImageUrl };
     try {
       qualityContext = existingGeneration
         ? parseQualityGenerationContext(existingGeneration.content.quality_context, expected)
-        : await getQualityGenerationContext(storageConfig, expected, fetch,
+        : await getQualityGenerationContext(storageConfig, expected, requestFetch,
           deadlineSignal(requestDeadline, 4_000));
+      if (trial && canonicalTrialPayload(qualityContext) !== canonicalTrialPayload(trial.payload.quality_context)) {
+        throw new TrialGenerationError();
+      }
       requestHashInput.qualityContext = qualityContext;
       requestHash = newsCardRequestHash(requestHashInput);
     } catch (error) {
@@ -1254,14 +1282,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
   let brandReviewGuidance = emptyBrandReviewGuidance();
   let brandReviewGuidanceAvailable = false;
   try {
-    brandReviewGuidance = await getBrandReviewGuidance(
-      storageConfig,
-      clientId,
-      "daily_news",
-      fetch,
-      deadlineSignal(requestDeadline, 4_000),
-    );
-    brandReviewGuidanceAvailable = true;
+    if (!trial) {
+      brandReviewGuidance = await getBrandReviewGuidance(
+        storageConfig,
+        clientId,
+        "daily_news",
+        requestFetch,
+        deadlineSignal(requestDeadline, 4_000),
+      );
+      brandReviewGuidanceAvailable = true;
+    }
   } catch {
     // Human-review guidance improves brand fit but is not factual evidence.
     // A missing projection must not block source-locked generation.
@@ -1272,7 +1302,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     resolvedSource = await resolveSourceInput(
       sourceContent,
       sourceUrl,
-      fetch,
+      requestFetch,
       templateStyle === "remix",
     );
   } catch (error) {
@@ -1348,7 +1378,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
-  const railwayUrl = cleanBaseUrl(
+  const railwayUrl = trial?.apiUrl ?? cleanBaseUrl(
     Netlify.env.get("RAILWAY_API_URL") ||
       "https://coineasy-content-engine-production.up.railway.app",
   );
@@ -1356,15 +1386,17 @@ export default async (req: Request, context: Context): Promise<Response> => {
     "Content-Type": "application/json",
     "X-API-Key": apiSecret,
     "Idempotency-Key": requestId,
+    ...(trial ? { "X-YBO-Trial-ID": trial.trialId } : {}),
+    ...(trial?.collectOnly ? { "X-YBO-Trial-Collect-Only": "true" } : {}),
   };
 
   try {
-    const generationResponse = await fetch(
+    const generationResponse = await requestFetch(
       `${railwayUrl}/clients/${encodeURIComponent(clientId)}/generate/news-card`,
       {
         method: "POST",
         headers: upstreamHeaders,
-        body: JSON.stringify({
+        body: JSON.stringify(trial?.payload ?? {
           source_content: resolvedSource.content,
           source_type: sourceType,
           source_url: resolvedSource.url,
@@ -1515,7 +1547,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
 
-    const imageResponse = await fetch(
+    const imageResponse = await requestFetch(
       `${railwayUrl}/files/${filePath.split("/").map(encodeURIComponent).join("/")}`,
       {
         headers: { "X-API-Key": apiSecret },
@@ -1643,7 +1675,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         clientId,
         assetId,
         imageBytes,
-        fetch,
+        requestFetch,
         deadlineSignal(requestDeadline, 7_000),
       );
       const catalog = await recordGeneratedContent(storageConfig, {
@@ -1694,7 +1726,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
         },
         asset: storedAsset,
         promptVersion: qualityMode ? QUALITY_BANNER_POLICY : clientId === "squid" ? "news-card@3" : "news-card@2",
-      }, fetch, deadlineSignal(requestDeadline, 6_000));
+      }, requestFetch, deadlineSignal(requestDeadline, 6_000));
       catalogCommitted = true;
       return json({
         client_id: result.client_id,
@@ -1727,13 +1759,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
       });
     } catch (error) {
       if (
-        !catalogCommitted
+        // Trial writes never trigger an automatic compensating DELETE after
+        // an uncertain outcome or after the durable authority has closed.
+        !trial && !catalogCommitted
         && (!(error instanceof ContentCatalogError) || error.cleanupSafe)
       ) {
         await removeContentAssets(
           storageConfig,
           [attemptedStoragePath],
-          fetch,
+          requestFetch,
           AbortSignal.timeout(2_000),
         );
       }
@@ -1746,14 +1780,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
       if (deadlineExceeded) {
         return json({ error: "news_card_deadline_exceeded" }, 504);
       }
-      if (error.code === "content_idempotency_conflict") {
+      if (!trial && error.code === "content_idempotency_conflict") {
         try {
           const concurrentGeneration = await findGeneratedContent(
             storageConfig,
             requestId,
             clientId,
             "daily_news",
-            fetch,
+            requestFetch,
             deadlineSignal(requestDeadline, 4_000),
           );
           if (
@@ -1784,6 +1818,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       const providerResultError = NEWS_CARD_PROVIDER_RESULT_ERRORS.has(error.code);
       return json({ error: error.code }, providerResultError ? 502 : 503);
     }
+    if (trial) return json({ error: "trial_generation_blocked" }, 503);
     if (qualityMode) return json({ error: "quality_banner_upstream_unknown" }, 409);
     const message = error instanceof Error ? error.message : "unknown_error";
     const timedOut = error instanceof Error && error.name === "TimeoutError";
@@ -1793,6 +1828,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
     );
   }
 };
+}
+
+export default createNewsCardHandler();
 
 export const config: Config = {
   path: "/api/news-card/:clientId",

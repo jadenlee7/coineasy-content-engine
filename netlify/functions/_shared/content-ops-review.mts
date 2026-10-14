@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import type { Context } from "@netlify/functions";
 import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
+import { admitTrial, trialFlagsOff, verifyTrialProjection, type TrialAdmission,
+  type TrustedTrialResolver } from "./content-ops-trial.mts";
+import type { TrialDeliveryConfirmation } from "./content-ops-trial-resolver.mts";
 
 // This gateway holds the existing database authority. The courier never does.
 // It exposes no arbitrary RPC, workspace, destination, approval, or publisher.
@@ -23,9 +26,11 @@ const CLAIM_KEYS = [
 ];
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
-type ReviewScope = { mode: "canary" | "daily"; content_version_id: string | null;
-  packet_mode?: "button_card_v1" | "daily_button_card_v1"; daily_scope?: "ybo_v1" };
-type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch };
+type ReviewScope = { mode: "canary" | "daily" | "trial"; content_version_id: string | null;
+  packet_mode?: "button_card_v1" | "daily_button_card_v1" | "trial_delivery_only_v1"; daily_scope?: "ybo_v1";
+  trial_id?: string; plan_sha256?: string; manifest_sha256?: string };
+type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch;
+  clock?: () => number; trialResolver?: TrustedTrialResolver; trialDeliveryConfirm?: TrialDeliveryConfirmation };
 
 const json = (value: Json, status = 200) => Response.json(value, {
   status,
@@ -169,8 +174,8 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
 }
 
 async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
-                           release: string, fetcher: typeof fetch): Promise<Response> {
-  if (!["button_card_v1", "daily_button_card_v1"].includes(scope.packet_mode ?? "")
+                           release: string, fetcher: typeof fetch, trial?: TrialAdmission): Promise<Response> {
+  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1"].includes(scope.packet_mode ?? "")
     || !isCatalogUuid(scope.content_version_id)
     || !exact(body, ["action", "outbox_id", "claim_token"])
     || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
@@ -208,6 +213,8 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
       || Number(value.byte_size) > MAX_IMAGE_BYTES) {
       return json({ error: "content_ops_image_unavailable" }, 503);
     }
+    if (trial && (value.client_id !== trial.entry.client_id || value.content_item_id !== trial.entry.content_item_id
+      || value.sha256 !== trial.entry.banner_sha256)) return json({ error: "content_ops_image_unavailable" }, 503);
     const image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
@@ -233,6 +240,9 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
       "X-Content-Ops-Item-Id": String(value.content_item_id),
       "X-Content-Ops-Version-Id": String(value.content_version_id),
       "X-Content-Ops-Banner-Sha256": String(value.sha256),
+      ...(trial ? { "X-Content-Ops-Mode": "trial", "X-Content-Ops-Packet-Mode": "trial_delivery_only_v1",
+        "X-Content-Ops-Trial-Id": trial.scope.trial_id, "X-Content-Ops-Trial-Plan-Sha256": trial.scope.plan_sha256,
+        "X-Content-Ops-Trial-Manifest-Sha256": trial.scope.manifest_sha256 } : {}),
     } });
   } catch { return json({ error: "content_ops_image_unavailable" }, 503); }
 }
@@ -319,8 +329,9 @@ function ownerReceipt(step: string, value: unknown, args: Json): value is Json {
 }
 
 async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
-                           release: string, fetcher: typeof fetch): Promise<Response> {
-  if (!["button_card_v1", "daily_button_card_v1"].includes(scope.packet_mode ?? "")
+                           release: string, fetcher: typeof fetch,
+                           confirmedTerminal?: (value: Json) => Promise<void>): Promise<Response> {
+  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1"].includes(scope.packet_mode ?? "")
     || !isCatalogUuid(scope.content_version_id) || !exact(body, ["action", "step", "args"])
     || typeof body.step !== "string" || !ownerArgs(body.step, body.args)) {
     return json({ error: "invalid_request" }, 400);
@@ -344,6 +355,12 @@ async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
     if (!ownerReceipt(body.step as string, value, body.args as Json)) {
       return json({ error: "content_ops_owner_unavailable" }, 503);
     }
+    if (scope.mode === "trial" && body.step === "terminal" && value.status === "sent") {
+      if (!confirmedTerminal) return json({ error: "content_ops_owner_unavailable" }, 503);
+      // Only the verified DB terminal result, never a caller's sent assertion.
+      // An ambiguous API acknowledgement cannot authorize provider replay.
+      await confirmedTerminal(value);
+    }
     return json({ ok: true, release_sha: release, scope, owner: value });
   } catch { return json({ error: "content_ops_owner_unavailable" }, 503); }
 }
@@ -351,7 +368,9 @@ async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
 export function createContentOpsReviewHandler(deps: Dependencies) {
   return async (req: Request, runtime?: ContentOpsReviewRuntime): Promise<Response> => {
     if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    if (deps.getEnv("CONTENT_OPS_GATEWAY_ENABLED") !== "true") {
+    const trialRequested = req.headers.get("x-content-ops-mode") === "trial";
+    if (trialRequested ? (deps.getEnv("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") !== "true" || !trialFlagsOff(deps.getEnv))
+      : deps.getEnv("CONTENT_OPS_GATEWAY_ENABLED") !== "true") {
       return json({ error: "content_ops_disabled" }, 503);
     }
     // Only Netlify's native second handler argument proves a published
@@ -381,7 +400,13 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!hasContentOpsGatewayAccess(req, token)) {
       return json({ error: "invalid_token" }, 401);
     }
-    let scope = configuredScope(deps.getEnv);
+    let trial: TrialAdmission | undefined;
+    let scope: ReviewScope | null;
+    if (trialRequested) {
+      try { trial = await admitTrial(req, deps.getEnv, release, deps.clock ?? Date.now, deps.trialResolver); }
+      catch { return json({ error: "content_ops_trial_blocked" }, 503); }
+      scope = trial.scope;
+    } else scope = configuredScope(deps.getEnv);
     if (!scope) return json({ error: "content_ops_scope_not_configured" }, 503);
     const requestedVersion = req.headers.get("x-content-ops-version-id");
     if (scope.packet_mode === "daily_button_card_v1" && requestedVersion !== null) {
@@ -411,13 +436,31 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     }
     const cfg = contentCatalogConfig(deps.getEnv);
     if (!cfg) return json({ error: "content_ops_database_not_configured" }, 503);
-    if (body.action === "image") return buttonImage(body, scope, cfg, release, deps.fetcher || fetch);
-    if (body.action === "owner") return buttonOwner(body, scope, cfg, release, deps.fetcher || fetch);
+    const baseFetcher = deps.fetcher || fetch;
+    let fetcher = baseFetcher;
+    if (trial) {
+      // Validate action before any database read. No broad discovery or public route.
+      if (!["image", "owner", "reconcile", "claim", "begin"].includes(String(body.action))) {
+        return json({ error: "invalid_request" }, 400);
+      }
+      try { await verifyTrialProjection(trial, cfg, baseFetcher, deps.clock ?? Date.now); }
+      catch { return json({ error: "content_ops_trial_blocked" }, 503); }
+      // Every separate HTTP effect (including storage) needs fresh owner admission.
+      const admitted = trial;
+      fetcher = async (url, init) => { await admitted.assertActive(); return baseFetcher(url, init); };
+    }
+    if (body.action === "image") return buttonImage(body, scope, cfg, release, fetcher, trial);
+    if (body.action === "owner") return buttonOwner(body, scope, cfg, release, fetcher, trial && deps.trialDeliveryConfirm
+      ? async value => { await deps.trialDeliveryConfirm!({ trial_id: trial!.scope.trial_id,
+          plan_sha256: trial!.scope.plan_sha256, manifest_sha256: trial!.scope.manifest_sha256,
+          content_version_id: trial!.scope.content_version_id, card_id: String(value.card_id),
+          outbox_id: String(value.outbox_id), confirmed_parts: 4, status: "sent" }); }
+      : undefined);
     const rpc = rpcRequest(body, cfg.workspaceId, scope);
     if (!rpc) return json({ error: "invalid_request" }, 400);
     try {
       // At most one RPC. A lost acknowledgement must never cause an implicit retry.
-      const result = await (deps.fetcher || fetch)(`${cfg.supabaseUrl}/rest/v1/rpc/${rpc.name}`, {
+      const result = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/${rpc.name}`, {
         method: "POST",
         headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`, "Content-Type": "application/json" },
         body: JSON.stringify(rpc.params), signal: AbortSignal.timeout(10_000), redirect: "error",
@@ -426,12 +469,19 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       const value: unknown = await result.json();
       const receipt = { ok: true, release_sha: release, scope };
       if (body.action === "reconcile" && Number.isSafeInteger(value) && Number(value) >= 0
-        && Number(value) <= (scope.mode === "canary" ? 1 : scope.daily_scope ? 3 : 4)) {
+        && Number(value) <= (scope.content_version_id !== null ? 1 : scope.daily_scope ? 3 : 4)) {
         return json({ ...receipt, queued: value });
       }
       if (body.action === "claim") {
         if (value === null) return json({ ...receipt, claim: null });
         const claim = claimProjection(value, body.claim_token);
+        if (trial && claim && (claim.client_id !== trial.entry.client_id || claim.kst_date !== "2026-10-14"
+          || claim.generate_job_id !== trial.entry.job_id || claim.source_item_id !== trial.entry.source_item_id
+          || claim.content_item_id !== trial.entry.content_item_id || claim.banner_sha256 !== trial.entry.banner_sha256
+          || createHash("sha256").update(String(claim.telegram_copy), "utf8").digest("hex") !== trial.entry.telegram_copy_sha256
+          || createHash("sha256").update(String(claim.x_copy), "utf8").digest("hex") !== trial.entry.x_copy_sha256)) {
+          return json({ error: "content_ops_invalid_receipt" }, 503);
+        }
         if (claim && (scope.content_version_id === null || claim.content_version_id === scope.content_version_id)
           && (!scope.daily_scope || ["yellow", "babylon", "origintrail"].includes(String(claim.client_id)))) {
           return json({ ...receipt, claim });

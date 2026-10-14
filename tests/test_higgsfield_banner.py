@@ -258,6 +258,57 @@ def test_quality_policy_is_fact_neutral_and_digest_covers_exact_reference():
     assert "10/8" not in prompt and "HashKey" not in prompt and "SCAN" not in prompt
     assert req.digest() != replace(req, headline="수정된 공지").digest()
     assert req.digest() != replace(req, workspace_id=str(uuid4())).digest()
+
+
+@pytest.mark.parametrize("deny_at,expected_http,owner_started", [
+    (1, 0, False),  # first reference GET
+    (2, 1, False),  # second reference GET
+    (3, 2, False),  # durable submit reservation
+    (4, 2, True),   # provider generation POST
+])
+def test_deadline_guard_runs_at_every_submit_dispatch(deny_at, expected_http, owner_started):
+    owner, req, calls, checks = Owner(), request(), [], []
+    def guard():
+        checks.append(True)
+        if len(checks) == deny_at:
+            raise ValueError("trial_deadline_closed")
+    def route(http):
+        calls.append(http)
+        return httpx.Response(200, json=SUBMITTED)
+    with pytest.raises(QualityBannerError):
+        run(adapter(owner, route, before_effect=guard,
+            reference_handler=lambda http: (calls.append(http), httpx.Response(200, content=REFERENCE_BYTES))[1]
+        ).submit_once(req))
+    assert len(calls) == expected_http
+    assert (req.operation_id in owner.started) is owner_started
+
+
+def test_deadline_guard_stops_estimate_and_each_collect_http():
+    owner, req, calls = Owner(), request(), []
+    def route(http):
+        calls.append(http)
+        if http.url.host == "api.higgsfield.ai":
+            return httpx.Response(200, json={"status": "completed", "request_id": PROVIDER_ID,
+                "images": [{"url": "https://output.example.com/result.webp"}]})
+        return httpx.Response(200, content=image_bytes("WEBP"))
+    def deny():
+        raise ValueError("trial_deadline_closed")
+    with pytest.raises(QualityBannerError):
+        run(adapter(owner, route, before_effect=deny).estimate(req,
+            provider_account_sha256="a" * 64))
+    assert calls == []
+    owner.started[req.operation_id], owner.ids[req.operation_id] = req.digest(), PROVIDER_ID
+    with pytest.raises(QualityBannerError):
+        run(adapter(owner, route, before_effect=deny).collect(req))
+    assert calls == []
+    checks = []
+    def deny_image():
+        checks.append(True)
+        if len(checks) == 2:
+            raise ValueError("trial_deadline_closed")
+    with pytest.raises(QualityBannerError):
+        run(adapter(owner, route, before_effect=deny_image).collect(req))
+    assert len(calls) == 1 and calls[0].url.host == "api.higgsfield.ai"
     assert req.digest() != replace(req, source_item_id=str(uuid4())).digest()
     assert req.digest() != replace(req, client_id="babylon").digest()
     revised = replace(req.references[0], sha256="d" * 64)

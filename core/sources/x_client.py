@@ -54,8 +54,11 @@ class XRequestError(RuntimeError):
 class XClient:
     """Minimal X API v2 client for fetching recent tweets from a user."""
 
-    def __init__(self, bearer_token: Optional[str] = None):
+    def __init__(self, bearer_token: Optional[str] = None, *, before_effect=None):
         self.bearer = bearer_token or os.getenv("X_BEARER_TOKEN")
+        self._before_effect = before_effect or (lambda: None)
+        if not callable(self._before_effect):
+            raise ValueError("invalid X request guard")
         if not self.bearer:
             raise RuntimeError("X_BEARER_TOKEN env var not set")
 
@@ -72,6 +75,7 @@ class XClient:
                 if delay:
                     await asyncio.sleep(delay)
                 try:
+                    self._before_effect()
                     response = await client.get(
                         url,
                         headers={"Authorization": f"Bearer {self.bearer}"},
