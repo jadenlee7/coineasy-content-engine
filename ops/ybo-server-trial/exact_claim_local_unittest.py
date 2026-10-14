@@ -76,8 +76,8 @@ class ExactNaturalClaimLocalTests(unittest.TestCase):
         cls.original = (HERE / 'exact-natural-claim.rollback.sql').read_text()
         assert 'LOCAL_ROLLBACK_PROOF' in cls.original
         assert cls.original.count('clock_timestamp()') == 3
-        assert "'2026-10-14T06:22:17Z'" in cls.original
-        assert "'2026-10-14T08:22:17Z'" in cls.original
+        assert "'2026-10-14T12:44:51Z'" in cls.original
+        assert "'2026-10-14T14:44:51Z'" in cls.original
         assert re.search(r'rollback;[^\n]*\s*$', cls.original, re.I)
         assert sql("select to_regprocedure('" + SIGNATURE + "') is null") == 't'
         assert sql("select to_regnamespace('exact_claim_fixture') is null") == 't'
@@ -130,7 +130,7 @@ rollback;
 
     def test_04_lock_wait_crosses_expiry_no_claim(self):
         ctx = json.loads(sql('select exact_claim_fixture.seed();'))
-        sql("update public.source_feeds set last_polled_at='2026-10-14T08:17:17Z' where id="
+        sql("update public.source_feeds set last_polled_at='2026-10-14T14:39:51Z' where id="
             + repr(ctx['feed_id']))
         baseline = sql('select exact_claim_fixture.snapshot();')
         # One backend holds the exact workspace/day lock, matching natural intake.
@@ -145,7 +145,7 @@ rollback;
                 time.sleep(.02)
             else:
                 self.fail('fixture_lock_not_observed')
-            result = invoke(ctx, "select set_config('exact_claim_fixture.now','2026-10-14T08:21:16.5Z',false);"
+            result = invoke(ctx, "select set_config('exact_claim_fixture.now','2026-10-14T14:43:50.5Z',false);"
                 "select set_config('exact_claim_fixture.advance','true',false);")
             holder.result()
         self.assertEqual(result, 'null')
@@ -157,9 +157,9 @@ rollback;
 
     def test_07_time_consumed_by_validation_rechecked_before_write(self):
         for final_now, setup in (
-            ('2026-10-14T08:22:17Z', ''),
-            ('2026-10-14T06:53:17Z', "update public.source_feeds set last_polled_at='2026-10-14T06:23:17Z' where id=FEED;"),
-            ('2026-10-14T06:53:17Z', "update public.source_items set published_at='2026-10-13T06:53:17Z' where id=SOURCE;"),
+            ('2026-10-14T14:44:51Z', ''),
+            ('2026-10-14T13:15:51Z', "update public.source_feeds set last_polled_at='2026-10-14T12:45:51Z' where id=FEED;"),
+            ('2026-10-14T13:15:51Z', "update public.source_items set published_at='2026-10-13T13:15:51Z' where id=SOURCE;"),
         ):
             with self.subTest(final_now=final_now, boundary=setup):
                 ctx = json.loads(sql('select exact_claim_fixture.seed();'))

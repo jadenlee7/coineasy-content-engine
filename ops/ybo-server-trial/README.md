@@ -6,14 +6,16 @@ with the superseded window. This package now proves a time-only rewindow candida
 
 `exact-natural-claim.rollback.sql` preserves the installed signature, owner intent,
 service-role ACL and all checks, changing only its two fixed time constants to
-**2026-10-14T06:22:17Z–2026-10-14T08:22:17Z**. It ends in `ROLLBACK`.
+**2026-10-14T12:44:51Z–2026-10-14T14:44:51Z**. It ends in `ROLLBACK`.
 Rewindow candidate function-body SHA-256:
 
-`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`
+`ee0807cfe2c2b37101d171ab421e4ce578f69df09c245a1032dc79a9ce39cefe`
 
-Prior hosted body SHA-256:
-`e319cfa49556c7d70837a01693a2a751fd986aea22b81adfdc499ed6784c5005`.
+Expected preceding body SHA-256 (06:22:17–08:22:17 UTC; verify live before apply):
+`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`.
 This file is not proof that the candidate has been applied to the hosted RPC.
+Existing daily slots, including the prior Yellow unknown trial, stay untouched;
+a fresh trial skips them instead of reusing or retrying their jobs.
 
 Never run the fixture SQL, fixture clock or test harness against production.
 The harness requires an explicit disposable database confirmation plus a local

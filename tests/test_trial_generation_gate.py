@@ -13,7 +13,7 @@ from core.automation.trial_generation_gate import TrialGenerationDenied, TrialGe
 from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS, NOT_BEFORE,
     POLICY_SHA256, TrialOwner, TrialPlan, canonical_sha256)
 
-NOW = datetime(2026, 10, 14, 6, 52, 17, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 14, 13, 14, 51, tzinfo=timezone.utc)
 RELEASE = "a" * 40
 
 
@@ -43,7 +43,7 @@ def admitted(tmp_path):
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     data = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
-        "not_before": NOT_BEFORE, "deadline": "2026-10-14T08:22:17Z",
+        "not_before": NOT_BEFORE, "deadline": "2026-10-14T14:44:51Z",
         "kst_date": "2026-10-14", "client_ids": list(CLIENTS),
         "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": LIMIT_MICROS,

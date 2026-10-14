@@ -26,7 +26,7 @@ from core.automation.trial_owner import CLIENTS, canonical_sha256
 from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter
 from core.sources.x_client import XClient
 
-START = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
+START = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
 
 
 class TrialControllerBlocked(ValueError):
@@ -52,6 +52,44 @@ class EffectTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self):
         pass  # shared backend closes only at the controller's end
+
+
+class TrialGenerationPreflight:
+    """Authenticated local Netlify config proof; no slot, job or provider call."""
+    def __init__(self, studio, gate, guard):
+        self.studio, self.gate, self.guard = studio, gate, guard
+
+    async def verify(self):
+        self.guard()
+        studio, plan = self.studio, self.gate.plan
+        require(studio.base_url == "https://coineasy-newscard.netlify.app")
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=False, transport=studio.transport) as client:
+                async with client.stream("GET", studio.base_url + "/api/ybo-trial-preflight", headers={
+                    "X-Studio-Automation-Key": studio.automation_token,
+                    "X-Studio-Expected-Release-Sha": plan.payload["release_sha"],
+                    "X-Ybo-Trial-Id": plan.trial_id, "X-Ybo-Trial-Plan-Sha256": plan.sha256,
+                }) as response:
+                    require(response.status_code == 200 and not response.history
+                        and response.headers.get("content-type", "").split(";", 1)[0] == "application/json")
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        raw.extend(chunk)
+                        require(len(raw) <= 4096)
+            body = json.loads(raw)
+            require(type(body) is dict and set(body) == {"schema_version", "ready", "netlify_release_sha",
+                "trial_id", "plan_sha256", "generation_gateway_enabled", "broad_public_flags_off", "observed_at"}
+                and body["schema_version"] == "ybo-trial-preflight@1" and body["ready"] is True
+                and body["netlify_release_sha"] == plan.payload["release_sha"]
+                and body["trial_id"] == plan.trial_id and body["plan_sha256"] == plan.sha256
+                and body["generation_gateway_enabled"] is True and body["broad_public_flags_off"] is True
+                and type(body["observed_at"]) is str
+                and re.search(r"(?:Z|[+-]\d{2}:\d{2})$", body["observed_at"]))
+            observed = datetime.fromisoformat(body["observed_at"].replace("Z", "+00:00"))
+            require(0 <= (self.guard() - observed).total_seconds() <= 5)
+        except Exception:
+            # Never log response bodies, upstream error text or credentials.
+            raise TrialControllerBlocked("trial_generation_preflight_blocked") from None
 
 
 class TrialCatalogReadback:
@@ -124,8 +162,9 @@ class TrialCatalogReadback:
 
 
 class HostedTrialController:
-    def __init__(self, *, gate, producer, catalog, destination_policy_sha256, sleep=asyncio.sleep):
+    def __init__(self, *, gate, producer, catalog, preflight, destination_policy_sha256, sleep=asyncio.sleep):
         self.gate, self.owner, self.producer, self.catalog = gate, gate.owner, producer, catalog
+        self.preflight = preflight
         self.sleep, self.admission = sleep, None
         self.store = TrialManifestStore(owner=self.owner, destination_policy_sha256=destination_policy_sha256, clock=gate.clock)
 
@@ -146,6 +185,9 @@ class HostedTrialController:
         entries = []
         try:
             for client in CLIENTS:
+                # Prove the published gateway's exact pins and literal OFF
+                # flags before even reserving an intake phase/daily slot/job.
+                require(await self.preflight() is None)
                 require(self.owner.reserve_phase(self.admission, f"{client}:intake", client,
                     canonical_sha256({"trial_id": self.gate.plan.trial_id, "client_id": client}), self.guard()))
                 slot = await self.producer.intake(client, before_effect=self.guard)
@@ -226,6 +268,7 @@ async def run_hosted_trial(env, *, clock=None, sleep=asyncio.sleep):
             owner=gate.owner, workspace_id=workspace, trial_id=gate.plan.trial_id, clock=gate.clock)
         controller = HostedTrialController(gate=gate, producer=producer,
             catalog=TrialCatalogReadback(repository, workspace, guard),
+            preflight=TrialGenerationPreflight(studio, gate, guard).verify,
             destination_policy_sha256=env["YBO_TRIAL_DESTINATION_POLICY_SHA256"], sleep=sleep)
         holder["controller"] = controller
         return await controller.run()

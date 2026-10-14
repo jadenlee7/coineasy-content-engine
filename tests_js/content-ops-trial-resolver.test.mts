@@ -8,7 +8,7 @@ import { admitTrial, trialManifestHash } from "../netlify/functions/_shared/cont
 
 const SHA = "a".repeat(40), PLAN = "b".repeat(64), POLICY = "c".repeat(64);
 const ID = "11111111-1111-4111-8111-111111111111", VERSION = "22222222-1111-4111-8111-111111111111";
-const NOW = Date.parse("2026-10-14T06:37:17Z"), API_ORIGIN = "https://fixture-api.up.railway.app";
+const NOW = Date.parse("2026-10-14T12:59:51Z"), API_ORIGIN = "https://fixture-api.up.railway.app";
 const SECRET = "synthetic-only-api-secret-32-characters";
 const env: Record<string,string> = { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true",
   CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
@@ -18,7 +18,7 @@ const env: Record<string,string> = { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true",
   RAILWAY_API_URL: API_ORIGIN, API_SECRET: SECRET };
 const identity = { trial_id: ID, plan_sha256: PLAN };
 const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: ID, plan_sha256: PLAN,
-  release_sha: SHA, not_before: "2026-10-14T06:22:17Z", deadline: "2026-10-14T08:22:17Z",
+  release_sha: SHA, not_before: "2026-10-14T12:44:51Z", deadline: "2026-10-14T14:44:51Z",
   destination_policy_sha256: POLICY, entries: [{ client_id: "yellow",
     job_id: "33333333-1111-4111-8111-111111111111", request_id: "44444444-1111-4111-8111-111111111111",
     source_item_id: "55555555-1111-4111-8111-111111111111", source_sha256: "d".repeat(64),
@@ -67,12 +67,12 @@ test("resolver integrates with admission freshness/canonical manifest and resolv
 });
 
 test("fixed rewindow includes exact start but excludes prior window and exact deadline", async () => {
-  const start = Date.parse("2026-10-14T06:22:17Z"), end = Date.parse("2026-10-14T08:22:17Z");
+  const start = Date.parse("2026-10-14T12:44:51Z"), end = Date.parse("2026-10-14T14:44:51Z");
   assert.equal(end - start, 2 * 3600_000);
   const fresh = {...value, observed_at: new Date(start).toISOString()};
   const accepted = setup({clock: () => start, response: () => Response.json(fresh)});
   assert.deepEqual(await accepted.resolver!(identity), fresh);
-  for (const time of [Date.parse("2026-10-14T00:15:00Z"), start - 1, end, end + 1]) {
+  for (const time of [Date.parse("2026-10-14T00:15:00Z"), Date.parse("2026-10-14T06:37:17Z"), start - 1, end, end + 1]) {
     const closed = setup({clock: () => time});
     await assert.rejects(closed.resolver!(identity), ERROR);
     assert.equal(closed.calls.length, 0);
@@ -106,7 +106,7 @@ test("caller cannot select origin, credential, manifest or other trial", async (
   }
 });
 test("window gate rejects early/expired and config is rechecked after HTTP", async () => {
-  for (const time of [NOW - 3600_000, Date.parse("2026-10-14T08:22:17Z")]) {
+  for (const time of [NOW - 3600_000, Date.parse("2026-10-14T14:44:51Z")]) {
     const h = setup({ clock: () => time }); await assert.rejects(h.resolver!(identity), ERROR); assert.equal(h.calls.length,0);
   }
   const h = setup({ afterFetch: e => { e.CONTENT_OPS_TRIAL_GATEWAY_ENABLED = "false"; } });
@@ -209,7 +209,7 @@ test("state endpoint returns409 only for typed not-ready, terminal/stale state c
     [async()=>{throw new TrialManifestNotReady();},409],
     [async()=>{throw Error("provider-secret");},503],
     [async()=>({...value,active:false}),503],
-    [async()=>({...value,observed_at:"2026-10-14T06:36:17Z"}),503],
+    [async()=>({...value,observed_at:"2026-10-14T12:58:51Z"}),503],
   ] as const) {
     const handler=createTrialStateHandler({getEnv:k=>local[k],releaseSha:()=>SHA,clock:()=>NOW,resolver:resolve});
     const r=await handler(req(),native);assert.equal(r.status,expected);assert.doesNotMatch(await r.text(),/provider-secret/);

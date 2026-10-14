@@ -13,7 +13,7 @@ from PIL import Image
 import pytest
 
 from core.automation.trial_controller import (HostedTrialController, START, run_hosted_trial,
-    TrialCatalogReadback, TrialControllerBlocked)
+    TrialCatalogReadback, TrialControllerBlocked, TrialGenerationPreflight)
 from core.automation.trial_generation_gate import TrialGenerationGate
 from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
     canonical_sha256, POLICY_SHA256, NOT_BEFORE, LATEST_DEADLINE)
@@ -22,14 +22,19 @@ from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
 def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
     tmp_path.chmod(0o700)
     now = [START - timedelta(seconds=10) if before_start else START + timedelta(seconds=1)]
-    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T06:22:17Z",
-        "deadline": "2026-10-14T08:22:17Z", "kst_date": "2026-10-14",
+    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T12:44:51Z",
+        "deadline": "2026-10-14T14:44:51Z", "kst_date": "2026-10-14",
         "client_ids": ["yellow", "babylon", "origintrail"], "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": 10_000_000, "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
     owner = TrialOwner(tmp_path / f"{plan.trial_id}.trial-owner.sqlite3", plan, clock=lambda: now[0])
     gate = TrialGenerationGate(plan=plan, owner=owner, clock=lambda: now[0])
-    calls, entries = [], {}
+    calls, entries, preflight_calls = [], {}, []
+
+    async def preflight():
+        preflight_calls.append(now[0])
+        if fail == "preflight":
+            raise TrialControllerBlocked("trial_generation_preflight_blocked")
 
     class Producer:
         async def intake(self, client, *, before_effect):
@@ -80,8 +85,9 @@ def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
                 canonical_sha256({"version": entry["content_version_id"], "confirmed_parts": 4}), now[0])
 
     controller = HostedTrialController(gate=gate, producer=Producer(), catalog=Catalog(),
-        destination_policy_sha256="5" * 64, sleep=sleep)
-    return SimpleNamespace(controller=controller, owner=owner, now=now, calls=calls, entries=entries)
+        preflight=preflight, destination_policy_sha256="5" * 64, sleep=sleep)
+    return SimpleNamespace(controller=controller, owner=owner, now=now, calls=calls, entries=entries,
+        preflight_calls=preflight_calls)
 
 
 def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
@@ -92,6 +98,7 @@ def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
     assert result["visual_qa_performed"] is False and result["public_send_attempted"] is False
     assert all(when >= START for _, _, when in s.calls)
     assert len([c for c in s.calls if c[0] == "generate"]) == 3
+    assert len(s.preflight_calls) == 3
     previous = list(s.calls)
     replay = asyncio.run(s.controller.run())
     assert replay["status"] == "not_admitted" and s.calls == previous
@@ -100,20 +107,22 @@ def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
 def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates(tmp_path):
     from core.automation.trial_producer_adapter import START as producer_start, END as producer_end
     from core.content_ops.trial_courier_adapter import START as courier_start, END as courier_end
-    start = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
-    end = datetime(2026, 10, 14, 8, 22, 17, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 14, 14, 44, 51, tzinfo=timezone.utc)
     assert START == producer_start == courier_start == start
     assert producer_end == courier_end == end
-    assert NOT_BEFORE == "2026-10-14T06:22:17Z"
-    assert LATEST_DEADLINE == "2026-10-14T08:22:17Z"
+    assert NOT_BEFORE == "2026-10-14T12:44:51Z"
+    assert LATEST_DEADLINE == "2026-10-14T14:44:51Z"
     assert end - start == timedelta(hours=2)
     root = Path(__file__).resolve().parents[1]
     for filename in ("content-ops-trial.mts", "content-ops-trial-generation.mts",
-                     "content-ops-trial-resolver.mts", "content-ops-trial-state.mts"):
+                     "content-ops-trial-resolver.mts", "content-ops-trial-state.mts", "ybo-trial-preflight.mts"):
         source = (root / "netlify/functions/_shared" / filename).read_text()
         assert NOT_BEFORE in source and LATEST_DEADLINE in source
         assert "2026-10-14T00:00:00Z" not in source
         assert "2026-10-14T02:00:00Z" not in source
+        assert "2026-10-14T06:22:17Z" not in source
+        assert "2026-10-14T08:22:17Z" not in source
     sql = (root / "ops/ybo-server-trial/exact-natural-claim.rollback.sql").read_text()
     assert f"gate_start constant timestamptz := '{NOT_BEFORE}'" in sql
     assert f"gate_end constant timestamptz := '{LATEST_DEADLINE}'" in sql
@@ -122,7 +131,8 @@ def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates
     assert payload["kst_date"] == "2026-10-14" and payload["max_total"] == 3
     assert payload["max_per_client"] == 1 and payload["estimated_daily_limit_micros"] == 10_000_000
     for changes in ({"not_before": "2026-10-14T00:00:00Z"},
-                    {"deadline": "2026-10-14T08:22:18Z"}):
+                    {"not_before": "2026-10-14T06:22:17Z"},
+                    {"deadline": "2026-10-14T14:44:52Z"}):
         altered = {**payload, **changes}
         with pytest.raises(TrialError):
             TrialPlan.from_mapping(altered, canonical_sha256(altered))
@@ -142,6 +152,36 @@ def test_no_new_sources_are_skipped_and_no_manifest_created(tmp_path):
     assert result["status"] == "completed_no_new_source" and not s.controller.store.path.exists()
     assert s.owner.inspect(s.now[0])["effective_on"] is False
     assert all(action == "intake" for action, _, _ in s.calls)
+
+
+def test_generation_preflight_failure_precedes_all_intake_job_slot_and_provider_effects(tmp_path):
+    s = scenario(tmp_path, fail="preflight")
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "unknown" and result["effective_on"] is False
+    assert s.calls == [] and len(s.preflight_calls) == 1
+    assert s.owner.inspect(s.now[0])["phases"] == 0
+    assert not s.controller.store.path.exists()
+    assert asyncio.run(s.controller.run())["status"] == "not_admitted"
+    assert s.calls == [] and len(s.preflight_calls) == 1
+
+
+def test_published_missing_off_flag_response_stops_real_preflight_before_intake(tmp_path):
+    s = scenario(tmp_path)
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.method == "GET" and request.url.path == "/api/ybo-trial-preflight"
+        return httpx.Response(503, json={"error": "trial_preflight_blocked"})
+
+    studio = SimpleNamespace(base_url="https://coineasy-newscard.netlify.app",
+        automation_token="fixture-existing-automation-token", transport=httpx.MockTransport(handle))
+    s.controller.preflight = TrialGenerationPreflight(studio, s.controller.gate, s.controller.guard).verify
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "unknown" and result["effective_on"] is False
+    assert len(requests) == 1 and s.calls == []
+    assert s.owner.inspect(s.now[0])["phases"] == 0
+    assert not s.controller.store.path.exists()
 
 
 @pytest.mark.parametrize("failure", ["intake", "generate", "catalog", "delivery"])

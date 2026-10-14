@@ -18,7 +18,7 @@ from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS, NOT_BEFORE,
 from core.automation.trial_producer_adapter import (DAY, ClaimedTrialGeneration,
     NaturalSlot, TrialNaturalProducerAdapter, TrialProducerBlocked, fixed_natural_input_sha256)
 
-NOW = datetime(2026, 10, 14, 6, 52, 17, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 14, 13, 14, 51, tzinfo=timezone.utc)
 BODY = "Yellow launches a mainnet upgrade for this exact trial source"
 IMAGE = "https://pbs.twimg.com/media/fixture.jpg"
 CANONICAL_IMAGE = IMAGE + "?name=orig"
@@ -68,7 +68,7 @@ def trial(tmp_path):
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     data = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
-        "not_before": NOT_BEFORE, "deadline": "2026-10-14T08:22:17Z",
+        "not_before": NOT_BEFORE, "deadline": "2026-10-14T14:44:51Z",
         "kst_date": "2026-10-14", "client_ids": list(CLIENTS),
         "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": LIMIT_MICROS,
