@@ -2,7 +2,7 @@
 -- quality context candidate. No production/provider/Telegram execution.
 begin;
 select set_config('request.jwt.claim.role','service_role',true);
-select set_config('exact_claim_fixture.now','2026-10-14T13:14:51Z',true);
+select set_config('exact_claim_fixture.now','2026-10-14T15:40:51Z',true);
 do $$
 declare ctx jsonb; c text; j uuid; s uuid; f uuid; w uuid; r uuid; result jsonb;
   changes jsonb; before_state jsonb; scenario integer; extra_item uuid;
@@ -42,21 +42,21 @@ begin
           when 9 then update public.source_items set media='[null]' where id=s;
           when 10 then update public.source_items set media='[{}]' where id=s;
           when 11 then update public.source_items set media='[{"type":"photo"}]' where id=s;
-          when 12 then case_ctx:=exact_claim_fixture.seed(c,'2026-10-14T12:44:50Z');
-          when 13 then case_ctx:=exact_claim_fixture.seed(c,'2026-10-14T13:14:52Z');
+          when 12 then case_ctx:=exact_claim_fixture.seed(c,'2026-10-14T15:10:50Z');
+          when 13 then case_ctx:=exact_claim_fixture.seed(c,'2026-10-14T15:40:52Z');
           when 14 then update public.jobs set attempts=2 where id=j;
           when 15 then update public.jobs set max_attempts=4 where id=j;
           when 16 then update public.jobs set idempotency_key='not-natural' where id=j;
-          when 17 then update public.jobs set lease_expires_at='2026-10-14T14:44:52Z' where id=j;
+          when 17 then update public.jobs set lease_expires_at='2026-10-14T17:10:52Z' where id=j;
           when 18 then update public.jobs set input=input||'{"same_day_refresh_id":"unexpected"}' where id=j;
-          when 19 then update public.source_items set published_at='2026-10-13T13:14:51Z' where id=s;
-          when 20 then update public.source_feeds set last_polled_at='2026-10-14T12:44:51Z' where id=f;
+          when 19 then update public.source_items set published_at='2026-10-13T15:40:51Z' where id=s;
+          when 20 then update public.source_feeds set last_polled_at='2026-10-14T15:10:51Z' where id=f;
           when 21 then update public.source_feeds set active=false where id=f;
           when 22 then insert into public.source_items(workspace_id,client_id,source_feed_id,
             external_id,source_type,canonical_url,author_handle,published_at,body,source_hash)
             select workspace_id,client_id,source_feed_id,'987654321','tweet',
               regexp_replace(canonical_url,'123456789$','987654321'),author_handle,
-              '2026-10-14T13:13:51Z','Newer synthetic official source',repeat('c',64)
+              '2026-10-14T15:39:51Z','Newer synthetic official source',repeat('c',64)
               from public.source_items where id=s;
           when 23 then insert into public.jobs(workspace_id,client_id,job_kind,status,input)
             select workspace_id,client_id,job_kind,'failed',input from public.jobs where id=j;
@@ -70,7 +70,7 @@ begin
           when 26 then update public.jobs set input=jsonb_set(input,'{source_content}','"Changed body"') where id=j;
           when 27 then update public.jobs set input=jsonb_set(input,'{source_url}',
             '"https://x.com/Wrong/status/123456789"') where id=j;
-          when 28 then update public.jobs set lease_expires_at='2026-10-14T13:14:50Z' where id=j;
+          when 28 then update public.jobs set lease_expires_at='2026-10-14T15:40:50Z' where id=j;
           when 29 then update public.jobs set input=jsonb_set(input,'{manual_only}','true') where id=j;
         end case;
         if scenario in (12,13) then
@@ -80,8 +80,8 @@ begin
           case_j:=(case_ctx->>'job_id')::uuid;case_s:=(case_ctx->>'source_item_id')::uuid;
           update public.source_items set media='[]' where id=case_s;
           update public.jobs set input=jsonb_set(input,'{source_image_url}','""'),status='running',
-            attempts=1,locked_by='synthetic-worker',locked_at='2026-10-14T13:14:51Z',
-            lease_expires_at='2026-10-14T13:29:51Z' where id=case_j;
+            attempts=1,locked_by='synthetic-worker',locked_at='2026-10-14T15:40:51Z',
+            lease_expires_at='2026-10-14T15:55:51Z' where id=case_j;
         end if;
         before_state:=exact_claim_fixture.snapshot();
         perform exact_claim_fixture.assert_true(public.get_quality_banner_generation_context(case_w,c,case_r) is null,
@@ -106,10 +106,10 @@ begin
 
     -- Only the new empty-media branch is window-gated. Existing attached media
     -- still works outside that window when its original freshness checks pass.
-    perform set_config('exact_claim_fixture.now','2026-10-14T14:45:51Z',true);
-    update public.source_items set published_at='2026-10-14T13:45:51Z' where id=s;
-    update public.source_feeds set last_polled_at='2026-10-14T14:40:51Z' where id=f;
-    update public.jobs set lease_expires_at='2026-10-14T14:59:51Z' where id=j;
+    perform set_config('exact_claim_fixture.now','2026-10-14T17:11:51Z',true);
+    update public.source_items set published_at='2026-10-14T16:11:51Z' where id=s;
+    update public.source_feeds set last_polled_at='2026-10-14T17:06:51Z' where id=f;
+    update public.jobs set lease_expires_at='2026-10-14T17:25:51Z' where id=j;
     perform exact_claim_fixture.assert_true(public.get_quality_banner_generation_context(w,c,r) is null,
       'logo_context_expired_window_'||c);
     update public.source_items set media='[{"type":"photo","url":"https://pbs.twimg.com/media/fixture.jpg"}]'
@@ -118,7 +118,7 @@ begin
     result:=public.get_quality_banner_generation_context(w,c,r);
     perform exact_claim_fixture.assert_true(result is not null
       and result->>'source_image_url'='https://pbs.twimg.com/media/fixture.jpg','existing_media_context_unchanged_'||c);
-    perform set_config('exact_claim_fixture.now','2026-10-14T13:14:51Z',true);
+    perform set_config('exact_claim_fixture.now','2026-10-14T15:40:51Z',true);
   end loop;
   perform set_config('request.jwt.claim.role','authenticated',true);
   begin perform public.get_quality_banner_generation_context(w,c,r);

@@ -4,7 +4,7 @@ Run explicitly with --local-only; not discovered by the general pytest suite.
 Use an explicit /tmp UNIX socket, or CI's loopback Docker service only when
 EXACT_CLAIM_LOCAL_CI=true. Confirm EXACT_CLAIM_DISPOSABLE_DATABASE in either case.
 This harness never starts/stops servers, deletes resources or creates roles.
-It installs the unmodified candidate first and verifies rollback. A second
+It installs the exact prior bodies locally, checks the replacement and rollback. A second
 LOCAL-ONLY copy replaces exactly three clock_timestamp() calls with the fixture
 clock to exercise the fixed future window without widening the candidate.
 """
@@ -69,6 +69,25 @@ def invoke(ctx, extra=''):
         + literal(ctx) + ")::text,'null');").splitlines()[-1]
 
 
+def previous_function(candidate, name, expected_sha256):
+    """Local-only reconstruction, pinned to the exact previously hosted body.
+
+    Reversing only the two timestamps and KST day must reproduce its digest.
+    Any non-window body edit fails before disposable installation.
+    """
+    match = re.search(r'create or replace function public\.' + re.escape(name)
+        + r'[\s\S]*? as \$\$([\s\S]*?end )\$\$;', candidate)
+    if match is None:
+        raise AssertionError('candidate_function_not_found')
+    previous = match.group(0).replace('2026-10-14T15:10:51Z', '2026-10-14T12:44:51Z') \
+        .replace('2026-10-14T17:10:51Z', '2026-10-14T14:44:51Z') \
+        .replace('2026-10-15', '2026-10-14')
+    body = previous.split(' as $$', 1)[1].rsplit('$$;', 1)[0]
+    if hashlib.sha256(body.encode()).hexdigest() != expected_sha256:
+        raise AssertionError('candidate_not_time_day_only')
+    return previous
+
+
 class ExactNaturalClaimLocalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -76,11 +95,20 @@ class ExactNaturalClaimLocalTests(unittest.TestCase):
         cls.original = (HERE / 'exact-natural-claim.rollback.sql').read_text()
         assert 'LOCAL_ROLLBACK_PROOF' in cls.original
         assert cls.original.count('clock_timestamp()') == 3
-        assert "'2026-10-14T12:44:51Z'" in cls.original
-        assert "'2026-10-14T14:44:51Z'" in cls.original
+        assert "'2026-10-14T15:10:51Z'" in cls.original
+        assert "'2026-10-14T17:10:51Z'" in cls.original
         assert re.search(r'rollback;[^\n]*\s*$', cls.original, re.I)
         assert sql("select to_regprocedure('" + SIGNATURE + "') is null") == 't'
         assert sql("select to_regnamespace('exact_claim_fixture') is null") == 't'
+        # Only the disposable bootstrap installs the prior exact routine/ACL.
+        # The candidate is replacement-only and cannot grant/revoke privileges.
+        previous = previous_function(cls.original, 'claim_exact_natural_review_draft_job',
+            '6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477')
+        sql(previous + ' revoke all on function ' + SIGNATURE
+            + ' from public,anon,authenticated,service_role; grant execute on function '
+            + SIGNATURE + ' to service_role;')
+        query = "select to_jsonb(p)::text from pg_proc p where oid='" + SIGNATURE + "'::regprocedure"
+        before = sql(query)
         # This parses/compiles the ORIGINAL fixed-date body and verifies its ACL
         # while inside the original transaction, then rolls the entire DDL back.
         proof = """
@@ -93,7 +121,7 @@ end $$;
 rollback;
 """.replace('SIGNATURE', SIGNATURE)
         sql(re.sub(r'rollback;[^\n]*\s*$', lambda _: proof, cls.original, flags=re.I))
-        assert sql("select to_regprocedure('" + SIGNATURE + "') is null") == 't'
+        assert sql(query) == before
         # The only body modification is clock substitution in the disposable DB.
         fixture = (HERE / 'exact_claim_fixture.sql').read_text()
         body = cls.original.replace('clock_timestamp()', 'exact_claim_fixture.clock()')
@@ -101,6 +129,16 @@ rollback;
         # Helpers reference the candidate; PL/pgSQL resolves it at invocation.
         sql(fixture)
         sql(body)
+        after = json.loads(sql(query))
+        expected = json.loads(before)
+        assert after.pop('prosrc') != expected.pop('prosrc')
+        assert after == expected
+        try:
+            sql(cls.original)
+        except AssertionError as error:
+            assert 'exact_claim_previous_body_mismatch' in str(error)
+        else:
+            raise AssertionError('changed_claim_body_not_rejected')
 
     @classmethod
     def tearDownClass(cls):
@@ -130,11 +168,11 @@ rollback;
 
     def test_04_lock_wait_crosses_expiry_no_claim(self):
         ctx = json.loads(sql('select exact_claim_fixture.seed();'))
-        sql("update public.source_feeds set last_polled_at='2026-10-14T14:39:51Z' where id="
+        sql("update public.source_feeds set last_polled_at='2026-10-14T17:05:51Z' where id="
             + repr(ctx['feed_id']))
         baseline = sql('select exact_claim_fixture.snapshot();')
         # One backend holds the exact workspace/day lock, matching natural intake.
-        lock = "begin; select pg_advisory_xact_lock(hashtextextended(" + repr(ctx['workspace_id'] + ':2026-10-14') \
+        lock = "begin; select pg_advisory_xact_lock(hashtextextended(" + repr(ctx['workspace_id'] + ':2026-10-15') \
             + ",0)); select pg_sleep(2); commit;"
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             holder = pool.submit(sql, "set application_name='exact-claim-fixture-lock';" + lock)
@@ -145,7 +183,7 @@ rollback;
                 time.sleep(.02)
             else:
                 self.fail('fixture_lock_not_observed')
-            result = invoke(ctx, "select set_config('exact_claim_fixture.now','2026-10-14T14:43:50.5Z',false);"
+            result = invoke(ctx, "select set_config('exact_claim_fixture.now','2026-10-14T17:09:50.5Z',false);"
                 "select set_config('exact_claim_fixture.advance','true',false);")
             holder.result()
         self.assertEqual(result, 'null')
@@ -157,9 +195,9 @@ rollback;
 
     def test_07_time_consumed_by_validation_rechecked_before_write(self):
         for final_now, setup in (
-            ('2026-10-14T14:44:51Z', ''),
-            ('2026-10-14T13:15:51Z', "update public.source_feeds set last_polled_at='2026-10-14T12:45:51Z' where id=FEED;"),
-            ('2026-10-14T13:15:51Z', "update public.source_items set published_at='2026-10-13T13:15:51Z' where id=SOURCE;"),
+            ('2026-10-14T17:10:51Z', ''),
+            ('2026-10-14T15:41:51Z', "update public.source_feeds set last_polled_at='2026-10-14T15:11:51Z' where id=FEED;"),
+            ('2026-10-14T15:41:51Z', "update public.source_items set published_at='2026-10-13T15:41:51Z' where id=SOURCE;"),
         ):
             with self.subTest(final_now=final_now, boundary=setup):
                 ctx = json.loads(sql('select exact_claim_fixture.seed();'))
@@ -195,7 +233,7 @@ rollback;
 
     def test_08_python_nine_key_hash_matches_postgresql_jsonb_unicode(self):
         from core.automation.trial_producer_adapter import fixed_natural_input_sha256
-        value = {'workflow': 'official_x_review_draft_v1', 'kst_date': '2026-10-14',
+        value = {'workflow': 'official_x_review_draft_v1', 'kst_date': '2026-10-15',
             'source_item_ids': ['11111111-1111-4111-8111-111111111111'],
             'content_kind': 'daily_news',
             'request_id': '22222222-2222-4222-8222-222222222222',
@@ -222,15 +260,17 @@ rollback;
         candidate = candidate_path.read_text()
         self.assertIn('LOCAL_ROLLBACK_PROOF', candidate)
         self.assertRegex(candidate, r'rollback;[^\n]*\s*$')
-        self.assertIn("'2026-10-14T12:44:51Z'", candidate)
-        self.assertIn("'2026-10-14T14:44:51Z'", candidate)
+        self.assertIn("'2026-10-14T15:10:51Z'", candidate)
+        self.assertIn("'2026-10-14T17:10:51Z'", candidate)
         self.assertEqual(sql("select to_regprocedure('" + signature + "') is null"), 't')
         sql(historical)
+        sql(previous_function(candidate, 'get_quality_banner_generation_context',
+            '52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e'))
         try:
             query = "select to_jsonb(p)::text from pg_proc p where oid='" + signature + "'::regprocedure"
             before = sql(query)
             # Untouched proposal must compile and roll back, preserving its
-            # exact historical prosrc and all non-body catalog fields/ACL.
+            # exact prior hosted prosrc and all non-body catalog fields/ACL.
             sql(candidate)
             self.assertEqual(before, sql(query))
             local = candidate.replace('statement_timestamp()', 'exact_claim_fixture.clock()')

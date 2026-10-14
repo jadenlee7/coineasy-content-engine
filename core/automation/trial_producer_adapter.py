@@ -32,9 +32,9 @@ from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
 
 KST = ZoneInfo("Asia/Seoul")
-START = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
-END = datetime(2026, 10, 14, 14, 44, 51, tzinfo=timezone.utc)
-DAY = date(2026, 10, 14)
+START = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
+END = datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)
+DAY = date(2026, 10, 15)
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 

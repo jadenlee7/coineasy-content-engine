@@ -5,8 +5,8 @@ CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
 
 ## Operator boundary
 
-- Earliest work: **2026-10-14 21:44:51 KST / 12:44:51 UTC**. Hard latest effect:
-  **23:44:51 KST / 14:44:51 UTC**. This operator-approved two-hour rewindow is
+- Earliest work: **2026-10-15 00:10:51 KST / 2026-10-14 15:10:51 UTC**. Hard latest effect:
+  **2026-10-15 02:10:51 KST / 2026-10-14 17:10:51 UTC**. This operator-approved two-hour rewindow is
   fixed in code, not an arbitrary configurable start or deadline extension.
 - Yellow, Babylon and OriginTrail only, at most one new official source each.
 - Existing account-bound persistent image ledger: aggregate **USD 10 estimated**
@@ -15,6 +15,10 @@ CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
   changes, callback bot startup, official Telegram/X posts or Typefully publish.
 - Repeated deployment/start cannot admit the same durable trial again. An
   uncertain generation/send/acknowledgment is held, never automatically repeated.
+- Yellow is explicitly skipped before all per-client preflight/intake/phase I/O,
+  even though the KST daily slot is now October 15. Its earlier uncertain job
+  is not resumed, retried or replaced. The other clients retain the existing
+  daily-slot skip and exact-source deduplication guards.
 - The earlier Yellow trial and its existing daily slot remain preserved. A fresh
   trial must skip every existing daily slot before polling or reserving work;
   this time-window change does not resume, clear or replace an unknown job,
@@ -107,8 +111,9 @@ preflight still precedes each client intake. Any failure after admission closes
 the owner unknown without retrying intake, generation or delivery. Fixed
 allowlisted stage/code/status diagnostics omit response bodies and credentials.
 Neither readiness success nor these diagnostics prove generation or delivery.
-Never reset an existing owner to repeat. The same preflight can be read after Netlify trial
-activation and before API controller activation. No eligible fresh source is
+Never reset an existing owner to repeat. The same preflight succeeds only after
+the exact new API ON container is reachable, not merely after Netlify activation.
+No eligible fresh source is
 not a reason to enable or force a trial; leave every trial flag OFF instead.
 
 ## Work and shutdown evidence
@@ -143,19 +148,19 @@ key is granted to the content process just to perform that cleanup.
 
 ## SQL and test proof
 
-The preceding **06:22:17–08:22:17 UTC** candidate's body SHA-256 is
-`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`.
+The preceding **12:44:51–14:44:51 UTC** candidate's body SHA-256 is
+`6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477`.
 Before any separately authorized replacement, read the hosted body and its
 security/dependency catalog; require that exact previous body and unchanged
 catalog. The local operator receipt is not a generation or delivery receipt.
 Do not replay an earlier apply or include this as an automatic production
-migration. The current rollback-only claim candidate is **no longer a time-only
-rewindow**: it also admits an exact empty `source.media=[]` collection paired
+migration. The current rollback-only claim candidate is a **time/day-only
+rewindow** of that deployed body. It retains an exact empty `source.media=[]` collection paired
 with the explicit JSON string `job.input.source_image_url=""`. Missing, NULL,
 non-string, whitespace or nonempty/malformed media cannot use this logo path.
 All existing identity, lease, latest-source, freshness, dedupe, role and fixed
 window checks remain. The claim candidate body SHA-256 is
-`6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477`.
+`5373553023dbfae5270c631d087811ad40517f693638f71b6c8904b4509b720d`.
 
 The historical `supabase/proposals/quality_banner_generation_context.sql` is
 unchanged. A separate rollback-only proposal,
@@ -164,10 +169,10 @@ retains its attached-media path and permits the same explicit empty-media pair
 only inside the fixed trial window, for a naturally bound initial job created
 inside that window, attempts=1/max=3, exact nine-field input and a lease ending
 no later than the trial deadline. It changes no owner, ACL, signature, volatility
-or other non-body catalog field; its guard verifies the historical body SHA
-`ddf0376b0bda5d253e2a4f3351b0fce2f81c9d459b6881ab2a20de8ae9656ab0`.
-The new quality-context candidate body SHA-256 is
+or other non-body catalog field; its guard verifies the preceding deployed body SHA
 `52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e`.
+The new quality-context candidate body SHA-256 is
+`4ab8c89d807d428e392e2cf63dbf2cfd17125a8e6d3203baf6a4585aba010197`.
 
 **Both behavioral SQL replacements require separate production approval** and
 exact hosted pre/post catalog readbacks. Code/CI/merge authorization is not

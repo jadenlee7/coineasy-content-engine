@@ -26,8 +26,8 @@ import stat
 from uuid import UUID
 
 CLIENTS = ("yellow", "babylon", "origintrail")
-NOT_BEFORE = "2026-10-14T12:44:51Z"
-LATEST_DEADLINE = "2026-10-14T14:44:51Z"
+NOT_BEFORE = "2026-10-14T15:10:51Z"
+LATEST_DEADLINE = "2026-10-14T17:10:51Z"
 POLICY_SHA256 = "000a4243bf92c082db1120b6ccbd6aa8e2ade95ed355aaef124f79a31c6aa0a4"
 LIMIT_MICROS = 10_000_000
 PHASES = ("intake", "generate", "review", "send")
@@ -95,7 +95,7 @@ class TrialPlan:
         _uuid(payload["trial_id"])
         if (payload["contract"] != "ybo-server-trial@1"
             or payload["not_before"] != NOT_BEFORE
-            or payload["kst_date"] != "2026-10-14"
+            or payload["kst_date"] != "2026-10-15"
             or payload["client_ids"] != list(CLIENTS)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))

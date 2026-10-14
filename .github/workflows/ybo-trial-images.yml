@@ -86,8 +86,8 @@ jobs:
           assert not pathlib.Path('/app/coineasy-api-build-sha').exists()
           plan = {'contract': 'ybo-server-trial@1',
               'trial_id': '11111111-1111-4111-8111-111111111111',
-              'not_before': '2026-10-14T12:44:51Z', 'deadline': '2026-10-14T14:44:51Z',
-              'kst_date': '2026-10-14', 'client_ids': ['yellow', 'babylon', 'origintrail'],
+              'not_before': '2026-10-14T15:10:51Z', 'deadline': '2026-10-14T17:10:51Z',
+              'kst_date': '2026-10-15', 'client_ids': ['yellow', 'babylon', 'origintrail'],
               'max_per_client': 1, 'max_total': 3, 'estimated_daily_limit_micros': 10_000_000,
               'estimate_policy_sha256': POLICY_SHA256, 'release_sha': 'a' * 40}
           env = {'YBO_TRIAL_API_MODE': 'true', 'YBO_TRIAL_PLAN_JSON': json.dumps(plan),

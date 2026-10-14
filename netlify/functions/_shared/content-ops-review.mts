@@ -475,7 +475,7 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       if (body.action === "claim") {
         if (value === null) return json({ ...receipt, claim: null });
         const claim = claimProjection(value, body.claim_token);
-        if (trial && claim && (claim.client_id !== trial.entry.client_id || claim.kst_date !== "2026-10-14"
+        if (trial && claim && (claim.client_id !== trial.entry.client_id || claim.kst_date !== "2026-10-15"
           || claim.generate_job_id !== trial.entry.job_id || claim.source_item_id !== trial.entry.source_item_id
           || claim.content_item_id !== trial.entry.content_item_id || claim.banner_sha256 !== trial.entry.banner_sha256
           || createHash("sha256").update(String(claim.telegram_copy), "utf8").digest("hex") !== trial.entry.telegram_copy_sha256
