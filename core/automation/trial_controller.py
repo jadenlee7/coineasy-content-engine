@@ -26,7 +26,7 @@ from core.automation.trial_owner import CLIENTS, canonical_sha256
 from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter
 from core.sources.x_client import XClient
 
-START = datetime(2026, 10, 14, tzinfo=timezone.utc)
+START = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
 
 
 class TrialControllerBlocked(ValueError):

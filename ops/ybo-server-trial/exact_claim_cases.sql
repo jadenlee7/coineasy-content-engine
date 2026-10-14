@@ -34,8 +34,8 @@ begin
        and result->>'locked_by'='fixture-worker' and result->'origintrail_batch_eligible'='false'::jsonb
        and result->'batch_handoff_recovery_only'='false'::jsonb and result->'input'=original_job->'input'
        and (select count(*) from jsonb_object_keys(result))=11,'positive_return_shape');
-     perform exact_claim_fixture.assert_true((after_job->>'locked_at')::timestamptz='2026-10-14T00:30:00Z'::timestamptz
-       and (after_job->>'lease_expires_at')::timestamptz='2026-10-14T00:45:00Z'::timestamptz,
+     perform exact_claim_fixture.assert_true((after_job->>'locked_at')::timestamptz='2026-10-14T06:52:17Z'::timestamptz
+       and (after_job->>'lease_expires_at')::timestamptz='2026-10-14T07:07:17Z'::timestamptz,
        'lease_transition');
      perform exact_claim_fixture.assert_true((after_job-array['status','attempts','locked_by','locked_at',
        'lease_expires_at','started_at','finished_at','last_error_code','last_error_message','updated_at'])=
@@ -67,13 +67,13 @@ begin
        when 9 then update public.jobs set status='failed' where id=j;
        when 10 then update public.jobs set attempts=1 where id=j;
        when 11 then update public.jobs set max_attempts=1 where id=j;
-       when 12 then update public.jobs set available_at='2026-10-14T00:30:01Z' where id=j;
-       when 13 then case_ctx:=exact_claim_fixture.seed('yellow','2026-10-13T23:59:59Z');
-       when 14 then case_ctx:=exact_claim_fixture.seed('yellow','2026-10-14T00:30:01Z');
+       when 12 then update public.jobs set available_at='2026-10-14T06:52:18Z' where id=j;
+       when 13 then case_ctx:=exact_claim_fixture.seed('yellow','2026-10-14T06:22:16Z');
+       when 14 then case_ctx:=exact_claim_fixture.seed('yellow','2026-10-14T06:52:18Z');
        when 15 then update public.jobs set output='{"execution_plane":"studio_sync"}' where id=j;
-       when 16 then update public.jobs set started_at='2026-10-14T00:29:00Z' where id=j;
-       when 17 then update public.jobs set finished_at='2026-10-14T00:29:00Z' where id=j;
-       when 18 then update public.jobs set locked_at='2026-10-14T00:29:00Z' where id=j;
+       when 16 then update public.jobs set started_at='2026-10-14T06:51:17Z' where id=j;
+       when 17 then update public.jobs set finished_at='2026-10-14T06:51:17Z' where id=j;
+       when 18 then update public.jobs set locked_at='2026-10-14T06:51:17Z' where id=j;
        when 19 then update public.jobs set idempotency_key='unrelated-key' where id=j;
        when 20 then update public.jobs set input=jsonb_set(input,'{manual_only}','true') where id=j;
        when 21 then update public.jobs set input=jsonb_set(input,'{content_kind}','"tutorial"') where id=j;
@@ -87,13 +87,13 @@ begin
        when 29 then update public.source_items set author_handle='@Wrong' where id=s;
        when 30 then update public.source_items set external_id='42' where id=s;
        when 31 then update public.source_items set body='Short' where id=s;
-       when 32 then update public.source_items set published_at='2026-10-13T00:30:00Z' where id=s;
-       when 33 then update public.source_items set published_at='2026-10-14T00:30:01Z' where id=s;
+       when 32 then update public.source_items set published_at='2026-10-13T06:52:17Z' where id=s;
+       when 33 then update public.source_items set published_at='2026-10-14T06:52:18Z' where id=s;
        when 34 then update public.source_feeds set active=false where id=f;
        when 35 then update public.source_feeds set handle='@Wrong' where id=f;
        when 36 then update public.source_feeds set poll_interval_minutes=30 where id=f;
-       when 37 then update public.source_feeds set last_polled_at='2026-10-14T00:00:00Z' where id=f;
-       when 38 then update public.source_feeds set last_polled_at='2026-10-14T00:30:01Z' where id=f;
+       when 37 then update public.source_feeds set last_polled_at='2026-10-14T06:22:17Z' where id=f;
+       when 38 then update public.source_feeds set last_polled_at='2026-10-14T06:52:18Z' where id=f;
        when 39 then update public.source_items set media='[]' where id=s;
        when 40 then update public.source_items set media=jsonb_set(media,'{0,type}','"other"') where id=s;
        when 41 then update public.workspace_clients set active=false where workspace_id=w;
@@ -111,10 +111,10 @@ begin
        when 48 then insert into public.source_items(workspace_id,client_id,source_feed_id,external_id,source_type,
            canonical_url,author_handle,published_at,body,source_hash)
            values(w,'yellow',f,'987654321','tweet','https://x.com/Yellow/status/987654321','@Yellow',
-             '2026-10-14T00:29:00Z','A newer synthetic source',repeat('c',64));
-       when 49 then perform set_config('exact_claim_fixture.now','2026-10-13T23:59:59Z',true);
-       when 50 then perform set_config('exact_claim_fixture.now','2026-10-14T02:00:00Z',true);
-       when 51 then perform set_config('exact_claim_fixture.now','2026-10-14T01:59:00Z',true);
+             '2026-10-14T06:51:17Z','A newer synthetic source',repeat('c',64));
+       when 49 then perform set_config('exact_claim_fixture.now','2026-10-14T06:22:16Z',true);
+       when 50 then perform set_config('exact_claim_fixture.now','2026-10-14T08:22:17Z',true);
+       when 51 then perform set_config('exact_claim_fixture.now','2026-10-14T08:21:17Z',true);
        when 52 then update public.jobs set input=input-'source_image_url' where id=j;
        when 53 then extra_ctx:=exact_claim_fixture.seed('babylon');
          update public.jobs set input=jsonb_set(input,'{request_id}',to_jsonb(r::text))
@@ -123,8 +123,8 @@ begin
          insert into public.content_items(id,workspace_id,client_id,content_kind) values(extra_item,w,'yellow','daily_news');
          insert into public.content_source_links(workspace_id,client_id,content_item_id,source_item_id)
          values(w,'yellow',extra_item,s);
-       when 55 then update public.jobs set status='running',locked_by='other-worker',locked_at='2026-10-14T00:29:00Z',
-         lease_expires_at='2026-10-14T00:45:00Z' where id=j;
+       when 55 then update public.jobs set status='running',locked_by='other-worker',locked_at='2026-10-14T06:51:17Z',
+         lease_expires_at='2026-10-14T07:07:17Z' where id=j;
        when 56 then update public.jobs set job_kind='render' where id=j;
        when 57 then update public.source_feeds set provider='rss' where id=f;
        when 58 then update public.source_items set published_at=null where id=s;
@@ -155,10 +155,10 @@ begin
  exception when insufficient_privilege then null; end;
  perform exact_claim_fixture.assert_true(before_state=exact_claim_fixture.snapshot(),'wrong_role_unchanged');
  -- Lease close to fixed gate end is clipped, never extends beyond trial deadline.
- perform set_config('exact_claim_fixture.now','2026-10-14T01:58:59Z',true);
- update public.source_feeds set last_polled_at='2026-10-14T01:55:00Z' where id=f;
+ perform set_config('exact_claim_fixture.now','2026-10-14T08:21:16Z',true);
+ update public.source_feeds set last_polled_at='2026-10-14T08:17:17Z' where id=f;
  result:=exact_claim_fixture.call_claim(ctx);
- perform exact_claim_fixture.assert_true((result->>'lease_expires_at')::timestamptz='2026-10-14T02:00:00Z',
+ perform exact_claim_fixture.assert_true((result->>'lease_expires_at')::timestamptz='2026-10-14T08:22:17Z',
    'lease_bounded_by_gate_end');
  raise notice 'exact_claim_fixture_cases_passed: % positive/negative + ACL/role/lease checks',case_total;
 end $$;

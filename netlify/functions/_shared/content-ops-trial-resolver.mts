@@ -4,7 +4,7 @@ import { trialFlagsOff, type TrustedTrialResolver } from "./content-ops-trial.mt
 type Env = (key: string) => string | undefined;
 type Dependencies = { getEnv: Env; releaseSha: () => string | null;
   fetcher?: typeof fetch; clock?: () => number };
-const START = Date.parse("2026-10-14T00:00:00Z"), END = Date.parse("2026-10-14T02:00:00Z");
+const START = Date.parse("2026-10-14T06:22:17Z"), END = Date.parse("2026-10-14T08:22:17Z");
 const MAX_BYTES = 16_384;
 const HASH = /^[a-f0-9]{64}$/, SHA = /^[a-f0-9]{40}$/;
 const PATH = "/internal/trial/manifest";
