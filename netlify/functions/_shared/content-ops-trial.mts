@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { isCatalogUuid, type contentCatalogConfig } from "./content-catalog.mts";
+import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow,
+  type TrialWindow } from "./content-ops-trial-window.mts";
 
 type Json = Record<string, any>;
 type Env = (key: string) => string | undefined;
@@ -7,9 +9,8 @@ type Config = NonNullable<ReturnType<typeof contentCatalogConfig>>;
 export type TrustedTrialResolver = (identity: Readonly<{ trial_id: string; plan_sha256: string }>) => Promise<unknown>;
 export type TrialScope = { mode: "trial"; content_version_id: string;
   packet_mode: "trial_delivery_only_v1"; trial_id: string; plan_sha256: string; manifest_sha256: string };
-export type TrialAdmission = { scope: TrialScope; entry: Json; assertActive: () => Promise<void> };
-const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
-const CLIENTS = ["yellow", "babylon", "origintrail"];
+export type TrialAdmission = { scope: TrialScope; entry: Json; window: TrialWindow; assertActive: () => Promise<void> };
+const CLIENTS = ["babylon", "origintrail"];
 const HEX = /^[a-f0-9]{64}$/;
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Json, keys: string[]) => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -39,7 +40,9 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
   requireTrue(env("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true" && trialFlagsOff(env));
   const trialId = env("CONTENT_OPS_TRIAL_ID"), plan = env("CONTENT_OPS_TRIAL_PLAN_SHA256");
   const policy = env("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256");
-  requireTrue(uuid(trialId) && hash(plan) && hash(policy) && typeof resolver === "function");
+  const bounds = configuredTrialWindow(env, "CONTENT_OPS_TRIAL");
+  requireTrue(trialId === READY_ANCHORED_TRIAL_ID && hash(plan) && hash(policy) && bounds && typeof resolver === "function"
+    && /^[a-f0-9]{40}$/.test(release) && env("CONTENT_OPS_REVIEW_RELEASE_SHA") === release);
   const version = req.headers.get("x-content-ops-version-id"), manifestHash = req.headers.get("x-content-ops-trial-manifest-sha256");
   requireTrue(uuid(version) && hash(manifestHash)
     && req.headers.get("x-content-ops-mode") === "trial"
@@ -49,8 +52,10 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
     && req.headers.get("x-content-ops-trial-plan-sha256") === plan);
   function window() {
     const now = clock();
-    requireTrue(Number.isFinite(now) && START <= now && now < END && trialFlagsOff(env)
-      && env("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true");
+    requireTrue(withinTrialWindow(bounds!, now) && trialWindowUnchanged(env, "CONTENT_OPS_TRIAL", bounds!) && trialFlagsOff(env)
+      && env("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true"
+      && env("CONTENT_OPS_TRIAL_ID") === trialId && env("CONTENT_OPS_TRIAL_PLAN_SHA256") === plan
+      && env("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256") === policy && env("CONTENT_OPS_REVIEW_RELEASE_SHA") === release);
     return now;
   }
   let pinned: string | undefined;
@@ -66,9 +71,8 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
       "destination_policy_sha256", "entries"])
       && m.contract === "ybo-trial-courier-manifest@1" && m.trial_id === trialId && m.plan_sha256 === plan
       && m.release_sha === release && m.destination_policy_sha256 === policy
-      && m.not_before === "2026-10-14T15:10:51Z" && stamp(m.deadline) > START
-      && stamp(m.deadline) <= END && now < stamp(m.deadline)
-      && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= 3);
+      && m.not_before === bounds!.notBefore && m.deadline === bounds!.deadline
+      && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= 2);
     const clients = new Set(), ids = new Set();
     for (const e of m.entries) {
       requireTrue(record(e) && exact(e, ["client_id", "job_id", "request_id", "source_item_id", "source_sha256",
@@ -89,7 +93,7 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
   const m = await resolve(), entry = m.entries.find((e: Json) => e.content_version_id === version);
   requireTrue(entry);
   return { scope: { mode: "trial", content_version_id: version!, packet_mode: "trial_delivery_only_v1",
-      trial_id: trialId!, plan_sha256: plan!, manifest_sha256: manifestHash! }, entry: Object.freeze({ ...entry }),
+      trial_id: trialId!, plan_sha256: plan!, manifest_sha256: manifestHash! }, entry: Object.freeze({ ...entry }), window: bounds!,
     assertActive: async () => { await resolve(); } };
 }
 
@@ -98,6 +102,7 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
 export async function verifyTrialProjection(admission: TrialAdmission, cfg: Config,
   fetcher: typeof fetch, clock: () => number): Promise<void> {
   const e = admission.entry;
+  const { start, end, kstDate } = admission.window;
   async function one(table: string, select: string, filters: Record<string, string>) {
     await admission.assertActive();
     const query = new URLSearchParams({ select, workspace_id: `eq.${cfg.workspaceId}`, ...filters, limit: "2" });
@@ -125,12 +130,12 @@ export async function verifyTrialProjection(admission: TrialAdmission, cfg: Conf
     // complete_review_draft_job preserves the natural job's null item column;
     // immutable generated identities are persisted in output, checked below.
     && job.content_item_id === null
-    && job.idempotency_key === `official-x-review:v1:2026-10-15:${e.client_id}`
-    && [job.created_at, job.started_at, job.finished_at].every(t => START <= stamp(t) && stamp(t) <= clock() && stamp(t) < END)
+    && job.idempotency_key === `official-x-review:v1:${kstDate}:${e.client_id}`
+    && [job.created_at, job.started_at, job.finished_at].every(t => start <= stamp(t) && stamp(t) <= clock() && stamp(t) < end)
     && stamp(job.created_at) <= stamp(job.started_at) && stamp(job.started_at) <= stamp(job.finished_at)
     && record(job.input) && record(job.output)
     && job.input.workflow === "official_x_review_draft_v1" && job.input.content_kind === "daily_news"
-    && job.input.manual_only === false && job.input.kst_date === "2026-10-15" && job.input.request_id === e.request_id
+    && job.input.manual_only === false && job.input.kst_date === kstDate && job.input.request_id === e.request_id
     && canonical(job.input.source_item_ids) === canonical([e.source_item_id])
     && job.output.content_item_id === e.content_item_id && job.output.content_version_id === e.content_version_id
     && canonical(job.output.source_item_ids) === canonical([e.source_item_id]));
@@ -145,7 +150,8 @@ export async function verifyTrialProjection(admission: TrialAdmission, cfg: Conf
     && sha(version.channel_copy.telegram) === e.telegram_copy_sha256 && sha(version.channel_copy.x) === e.x_copy_sha256
     && record(version.generation_meta) && version.generation_meta.mock_mode === false
     && version.generation_meta.request_id === e.request_id && record(version.deliverables)
-    && uuid(version.deliverables.primary_asset_id) && START <= stamp(version.created_at) && stamp(version.created_at) <= clock());
+    && uuid(version.deliverables.primary_asset_id) && start <= stamp(version.created_at)
+    && stamp(version.created_at) <= clock() && stamp(version.created_at) < end);
   const asset = await one("assets", "id,content_item_id,content_version_id,asset_kind,mime_type,sha256,storage_bucket,storage_path",
     { id: `eq.${version.deliverables.primary_asset_id}`, content_version_id: `eq.${e.content_version_id}` });
   requireTrue(asset.id === version.deliverables.primary_asset_id && asset.content_item_id === e.content_item_id

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from uuid import uuid4
+from trial_test_fixtures import TRIAL_ID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from core.automation.trial_owner import TrialPlan, POLICY_SHA256, canonical_sha2
 def ready(tmp_path, monkeypatch):
     from api import server, security
     from core.automation.trial_owner import TrialOwner
-    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
+    payload = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
         "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
         "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10000000,
@@ -54,6 +55,7 @@ def test_exact_on_readiness_has_no_owner_or_task_dependency(ready):
     assert r.json() == {"schema_version": "ybo-api-readiness@1", "ready": True,
         "trial_id": ready.plan.trial_id, "plan_sha256": ready.plan.sha256,
         "release_sha": "a" * 40, "controller_enabled": True, "broad_public_flags_off": True,
+        **{key: ready.plan.payload[key] for key in ("not_before", "deadline", "kst_date")},
         "client_ids": ["yellow", "babylon", "origintrail"], "observed_at": ready.now[0].isoformat()}
     assert list(ready.root.iterdir()) == []
 

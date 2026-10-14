@@ -1,13 +1,18 @@
 # YBO server-hosted one-shot trial
 
-This is a fixed-window private trial, not a recurring daily scheduler. Code and
+This is a readiness-anchored private trial, not a recurring daily scheduler. Code and
 CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
 
 ## Operator boundary
 
-- Earliest work: **2026-10-15 00:10:51 KST / 2026-10-14 15:10:51 UTC**. Hard latest effect:
-  **2026-10-15 02:10:51 KST / 2026-10-14 17:10:51 UTC**. This operator-approved two-hour rewindow is
-  fixed in code, not an arbitrary configurable start or deadline extension.
+- The approved one-shot ID is **1a2bef47-4827-4bc3-9b4d-5baf2714015d**.
+  Complete code/CI and exact-SHA OFF deployment before starting its clock.
+  The operator then inserts one immutable `private.ybo_trial_readiness_anchor`
+  row with a fresh UTC-second start, exactly two-hour deadline, same KST date,
+  workspace, release SHA and canonical plan SHA. No runtime write grant exists.
+  UPDATE/DELETE/TRUNCATE and a second anchor are refused. A restart never moves
+  this clock or grants a second trial. The preceding PR211 fixed window expired
+  without admission and is historical evidence only.
 - Yellow, Babylon and OriginTrail only, at most one new official source each.
 - Existing account-bound persistent image ledger: aggregate **USD 10 estimated**
   daily limit. Actual provider settlement may differ; no second budget or reset.
@@ -50,10 +55,14 @@ the **same exact 40-character merge SHA**. Verify native deployment metadata,
 immutable image stamp, runtime SHA and authenticated release readback; a saved
 environment value alone is not provenance. Keep auto-deploy disabled.
 
-Deploy initially OFF. An explicit trial plan pins a fresh UUID, the release SHA,
-the fixed date, the shorter deadline, the three clients and the USD 10 policy.
+Deploy initially OFF. The preparation plan is non-authoritative while OFF.
+After readiness, the single anchored plan pins the fixed UUID, release SHA,
+start/deadline, derived KST date, the three clients and the USD 10 policy.
 The canonical sorted compact ASCII JSON SHA is shared by all three services.
 Do not replace a partially executed plan or remove its journal to retry.
+The runtime journal path stays unchanged and the owner filename is the fixed
+trial UUID, never a plan-hash-specific owner path. Local operator preparation
+and activation receipt directories may differ; runtime state must not.
 
 API trial settings (never log secret values):
 
@@ -70,7 +79,8 @@ API trial settings (never log secret values):
   `CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED` stay literally `false`.
 
 Netlify generation uses only `YBO_TRIAL_GENERATION_GATEWAY_ENABLED` plus
-`YBO_TRIAL_ID`, `YBO_TRIAL_PLAN_SHA256` and `YBO_TRIAL_RELEASE_SHA`. Its delivery
+`YBO_TRIAL_ID`, `YBO_TRIAL_PLAN_SHA256`, `YBO_TRIAL_RELEASE_SHA`,
+`YBO_TRIAL_NOT_BEFORE` and `YBO_TRIAL_DEADLINE`. Its delivery
 settings and the isolated courier entrypoint are documented in
 [the courier contract](YBO_TRIAL_COURIER_RUNTIME.md). All trial flags default OFF.
 
@@ -113,6 +123,10 @@ allowlisted stage/code/status diagnostics omit response bodies and credentials.
 Neither readiness success nor these diagnostics prove generation or delivery.
 Never reset an existing owner to repeat. The same preflight succeeds only after
 the exact new API ON container is reachable, not merely after Netlify activation.
+Readiness proves the configured immutable plan identity, including exact
+`not_before`, `deadline`, and `kst_date`; it does not write the DB anchor.
+The operator must compare the durable anchor to the final plan before every
+activation. A preparation plan or absent anchor cannot authorize activation.
 No eligible fresh source is
 not a reason to enable or force a trial; leave every trial flag OFF instead.
 
@@ -148,36 +162,48 @@ key is granted to the content process just to perform that cleanup.
 
 ## SQL and test proof
 
-The preceding **12:44:51–14:44:51 UTC** candidate's body SHA-256 is
-`6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477`.
-Before any separately authorized replacement, read the hosted body and its
-security/dependency catalog; require that exact previous body and unchanged
-catalog. The local operator receipt is not a generation or delivery receipt.
-Do not replay an earlier apply or include this as an automatic production
-migration. The current rollback-only claim candidate is a **time/day-only
-rewindow** of that deployed body. It retains an exact empty `source.media=[]` collection paired
-with the explicit JSON string `job.input.source_image_url=""`. Missing, NULL,
-non-string, whitespace or nonempty/malformed media cannot use this logo path.
-All existing identity, lease, latest-source, freshness, dedupe, role and fixed
-window checks remain. The claim candidate body SHA-256 is
+The prior PR #211 exact-claim body SHA-256 is
 `5373553023dbfae5270c631d087811ad40517f693638f71b6c8904b4509b720d`.
+The readiness-anchored replacement body is
+`b4f4ef59b2cba338c33b22e8263d270dfcfcddbfed1dc84eb7063c6d476ff086`.
+The separate empty-schema proposal is
+`supabase/proposals/ybo_trial_readiness_anchor.rollback.sql`, file SHA-256
+`89aa4936658ad8f8a0c51889e405cfc1c021eb1113e18c06d6e8ee06821165fe`.
+It creates no anchor row and grants no runtime access. The operator applies
+the empty schema and two body replacements atomically after matching the exact
+hosted preflight catalog. A different prior body, existing anchor schema,
+changed OID/owner/ACL/non-body metadata, or unrelated security/dependency drift
+must abort the transaction. Do not replay any earlier apply or install these
+rollback-only proposals as automatic migrations.
+
+The exact-claim body reads one immutable anchor for the code-pinned trial and
+workspace. It refuses Yellow and any other worker identity before business
+locks. All source, request, style-pack, lease, latest-source, freshness, dedupe
+and role checks remain. The logo path still requires the exact empty
+`source.media=[]` collection paired with the explicit JSON string
+`job.input.source_image_url=""`; missing, NULL, non-string, whitespace or
+nonempty/malformed media cannot use this path.
 
 The historical `supabase/proposals/quality_banner_generation_context.sql` is
 unchanged. A separate rollback-only proposal,
 `supabase/proposals/quality_banner_generation_context_ybo_logo.rollback.sql`,
 retains its attached-media path and permits the same explicit empty-media pair
-only inside the fixed trial window, for a naturally bound initial job created
+only inside the immutable anchored window, for a naturally bound initial job created
 inside that window, attempts=1/max=3, exact nine-field input and a lease ending
 no later than the trial deadline. It changes no owner, ACL, signature, volatility
 or other non-body catalog field; its guard verifies the preceding deployed body SHA
-`52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e`.
-The new quality-context candidate body SHA-256 is
 `4ab8c89d807d428e392e2cf63dbf2cfd17125a8e6d3203baf6a4585aba010197`.
+The readiness-anchored quality-context body SHA-256 is
+`b475ed241a64827ef7294a48691f1954a9314e2fb22ed57d028f52bb3c56cd19`.
 
-**Both behavioral SQL replacements require separate production approval** and
+**The schema and both behavioral SQL replacements require explicit production approval** and
 exact hosted pre/post catalog readbacks. Code/CI/merge authorization is not
 production SQL apply authority. Neither rollback file installs its candidate,
 and no trial may activate until both hosted bodies and runtime release agree.
+Only after exact OFF runtime readiness may the operator insert the anchor once,
+with a start no more than 60 seconds old. UPDATE, DELETE and TRUNCATE are denied;
+restarts cannot advance the deadline. Every activation checks the full stored
+anchor against the final plan, including plan hash and exact release SHA.
 An official logo supplies visual identity only; it does not supply source facts
 or authorize publication. Attribution/claim review remains mandatory.
 

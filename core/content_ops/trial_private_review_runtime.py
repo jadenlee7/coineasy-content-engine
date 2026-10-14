@@ -21,8 +21,9 @@ from core.content_ops.private_review_card_sender import TelegramPrivateCardSende
 from core.content_ops.review_buttons import ButtonSigner
 from core.content_ops.review_edit_ingress import EditBindings
 from core.content_ops.trial_courier_adapter import (
-    START, END, ORIGIN, TrialManifest, build_exact_session, canonical_sha256, _uuid,
+    ORIGIN, TrialManifest, build_exact_session, canonical_sha256,
 )
+from core.content_ops.trial_window import ELIGIBLE_CLIENTS, TRIAL_ID, trial_window
 from scripts.run_private_review_card_canary import _private_card_identity, _validated_scope_and_provenance
 
 STATE_PATH = "/.netlify/functions/content-ops-trial-state"
@@ -58,6 +59,8 @@ class TrialCourierSettings:
     trial_id: str
     plan_sha256: str
     policy_sha256: str
+    not_before: datetime
+    deadline: datetime
     provenance: dict
 
     @classmethod
@@ -71,17 +74,19 @@ class TrialCourierSettings:
         require(type(policy) is ExistingReviewBotPolicy)
         trial, plan, policy_sha = (env.get(k, "") for k in (
             "CONTENT_OPS_TRIAL_ID", "CONTENT_OPS_TRIAL_PLAN_SHA256", "CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256"))
-        require(_uuid(trial) and all(type(v) is str and re.fullmatch(r"[a-f0-9]{64}", v) for v in (plan, policy_sha)))
+        require(trial == TRIAL_ID and all(type(v) is str and re.fullmatch(r"[a-f0-9]{64}", v) for v in (plan, policy_sha)))
+        start, end = trial_window(env.get("CONTENT_OPS_TRIAL_NOT_BEFORE"), env.get("CONTENT_OPS_TRIAL_DEADLINE"))
         # Hash the existing validated policy projection, never a newly inferred role.
         require(canonical_sha256(json.loads(env["CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON"])) == policy_sha)
         return cls(workspace, gateway, bot, bid, room, signing, binding, policy,
-                   proof.release_sha, trial, plan, policy_sha, proof.receipt())
+                   proof.release_sha, trial, plan, policy_sha, start, end, proof.receipt())
 
 
-def window(clock, *, manifest=None):
+def window(clock, *, manifest=None, settings=None):
     now = clock()
-    end = END if manifest is None else datetime.fromisoformat(manifest.payload["deadline"].replace("Z", "+00:00"))
-    require(type(now) is datetime and now.utcoffset() is not None and START <= now < end <= END)
+    bound = manifest if manifest is not None else settings
+    require(bound is not None and type(now) is datetime and now.utcoffset() is not None
+            and bound.not_before <= now < bound.deadline)
     return now
 
 
@@ -94,7 +99,7 @@ class TrialStateClient:
             transport=transport or httpx.AsyncHTTPTransport(retries=0))
 
     async def read(self):
-        window(self.clock)
+        window(self.clock, settings=self.settings)
         response = None
         try:
             request = self.http.build_request("POST", ORIGIN + STATE_PATH,
@@ -115,7 +120,7 @@ class TrialStateClient:
                 require(len(data) + len(chunk) <= MAX_STATE_BYTES)
                 data.extend(chunk)
             require(declared is None or int(declared) == len(data))
-            observed = window(self.clock)
+            observed = window(self.clock, settings=self.settings)
             value = json.loads(data)
             if response.status_code == 409:
                 require(value == {"error": "trial_manifest_not_ready"})
@@ -127,7 +132,8 @@ class TrialStateClient:
             manifest = TrialManifest.from_mapping(value["manifest"], value["manifest_sha256"])
             p = manifest.payload
             require(p["trial_id"] == self.settings.trial_id and p["plan_sha256"] == self.settings.plan_sha256
-                and p["release_sha"] == self.settings.release_sha and p["destination_policy_sha256"] == self.settings.policy_sha256)
+                and p["release_sha"] == self.settings.release_sha and p["destination_policy_sha256"] == self.settings.policy_sha256
+                and manifest.not_before == self.settings.not_before and manifest.deadline == self.settings.deadline)
             window(self.clock, manifest=manifest)
             return manifest
         except Exception:
@@ -207,27 +213,29 @@ async def run_trial(settings, *, clock=None, sleep=asyncio.sleep, state_factory=
     state, cards, parts, attempted = None, 0, 0, 0
     status = "blocked"
     try:
+        start, end = settings.not_before, settings.deadline
         prior = clock()
-        require(type(prior) is datetime and prior.utcoffset() is not None and START-prior <= timedelta(days=1))
+        require(type(prior) is datetime and prior.utcoffset() is not None and start-prior <= timedelta(days=1))
         for _ in range(2881):
             now = clock()
             require(now >= prior); prior = now
-            if now >= END:
+            if now >= end:
                 status = "expired"; return result(status, cards, parts, attempted)
-            if now >= START: break
-            await sleep(min(30, (START-now).total_seconds()))
+            if now >= start: break
+            await sleep(min(30, (start-now).total_seconds()))
         else: raise TrialRuntimeError("trial_private_wait_bound")
         state = state_factory(settings, clock=clock)
         manifest = None
         for _ in range(481):
             now = clock(); require(now >= prior); prior = now
-            if now >= END:
+            if now >= end:
                 status = "expired"; return result(status, cards, parts, attempted)
             manifest = await state.read()
             if manifest is not None: break
-            await sleep(min(15, (END-clock()).total_seconds()))
+            await sleep(min(15, max(0, (end-clock()).total_seconds())))
         require(type(manifest) is TrialManifest)
-        for client in ("yellow", "babylon", "origintrail"):
+        require(manifest.not_before == start and manifest.deadline == end)
+        for client in ELIGIBLE_CLIENTS:
             entries = [e for e in manifest.payload["entries"] if e["client_id"] == client]
             if not entries: continue
             window(clock, manifest=manifest)

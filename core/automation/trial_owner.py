@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import os
@@ -25,9 +25,11 @@ import sqlite3
 import stat
 from uuid import UUID
 
+from core.content_ops.trial_window import (
+    ELIGIBLE_CLIENTS, KST, TRIAL_ID, trial_window as _trial_window,
+)
+
 CLIENTS = ("yellow", "babylon", "origintrail")
-NOT_BEFORE = "2026-10-14T15:10:51Z"
-LATEST_DEADLINE = "2026-10-14T17:10:51Z"
 POLICY_SHA256 = "000a4243bf92c082db1120b6ccbd6aa8e2ade95ed355aaef124f79a31c6aa0a4"
 LIMIT_MICROS = 10_000_000
 PHASES = ("intake", "generate", "review", "send")
@@ -71,6 +73,18 @@ def _uuid(value):
     return value
 
 
+def trial_window(not_before, deadline):
+    """Pure bounds validation; the operator fixes these once after OFF readiness.
+
+    Runtime never derives a replacement start from its clock or writes the DB
+    anchor. The fixed UUID, exact plan hash, and durable owner reject replans.
+    """
+    try:
+        return _trial_window(not_before, deadline)
+    except (ValueError, TypeError, OverflowError):
+        raise TrialError("trial_plan_scope_invalid") from None
+
+
 def _digest(value):
     if type(value) is not str or not _HEX.fullmatch(value):
         raise TrialError("trial_digest_invalid")
@@ -93,9 +107,10 @@ class TrialPlan:
         if type(payload) is not dict or set(payload) != _KEYS:
             raise TrialError("trial_plan_shape_invalid")
         _uuid(payload["trial_id"])
+        start, _ = trial_window(payload["not_before"], payload["deadline"])
         if (payload["contract"] != "ybo-server-trial@1"
-            or payload["not_before"] != NOT_BEFORE
-            or payload["kst_date"] != "2026-10-15"
+            or payload["trial_id"] != TRIAL_ID
+            or payload["kst_date"] != start.astimezone(KST).date().isoformat()
             or payload["client_ids"] != list(CLIENTS)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))
@@ -103,8 +118,7 @@ class TrialPlan:
             or payload["estimated_daily_limit_micros"] != LIMIT_MICROS
             or payload["estimate_policy_sha256"] != POLICY_SHA256
             or type(payload["release_sha"]) is not str
-            or re.fullmatch(r"[a-f0-9]{40}", payload["release_sha"]) is None
-            or not _iso(NOT_BEFORE) < _iso(payload["deadline"]) <= _iso(LATEST_DEADLINE)):
+            or re.fullmatch(r"[a-f0-9]{40}", payload["release_sha"]) is None):
             raise TrialError("trial_plan_scope_invalid")
         if not secrets.compare_digest(canonical_sha256(payload), expected_sha256):
             raise TrialError("trial_plan_hash_mismatch")
@@ -121,6 +135,14 @@ class TrialPlan:
     @property
     def trial_id(self):
         return self.payload["trial_id"]
+
+    @property
+    def not_before(self):
+        return _iso(self.payload["not_before"])
+
+    @property
+    def kst_date(self):
+        return date.fromisoformat(self.payload["kst_date"])
 
     @property
     def deadline(self):
@@ -208,7 +230,7 @@ class TrialOwner:
             return False
         state = ("clock_rollback" if micros < row["last_seen_us"] else
                  "expired" if current >= self.plan.deadline else
-                 "clock_rollback" if current < _iso(NOT_BEFORE) else "active")
+                 "clock_rollback" if current < self.plan.not_before else "active")
         conn.execute("UPDATE trial_owner SET status=?, last_seen_us=? WHERE singleton=1",
                      (state, max(micros, row["last_seen_us"])))
         return state == "active"
@@ -218,7 +240,7 @@ class TrialOwner:
         if trial_id != self.plan.trial_id:
             raise TrialError("trial_id_mismatch")
         # Absolutely no filesystem operation in this early branch.
-        if current < _iso(NOT_BEFORE):
+        if current < self.plan.not_before:
             return None
         if current >= self.plan.deadline:
             with self._transaction() as conn:
@@ -228,7 +250,7 @@ class TrialOwner:
         admission = None
         with self._transaction(create=True) as conn:
             current, micros = _stamp(self.clock() if self.clock is not None else now)
-            if not _iso(NOT_BEFORE) <= current < self.plan.deadline:
+            if not self.plan.not_before <= current < self.plan.deadline:
                 self._active(conn, self._row(conn), current)
                 return None
             row = self._row(conn)
@@ -256,14 +278,14 @@ class TrialOwner:
         used by the authenticated manifest reader before every gateway effect.
         """
         _stamp(now)
-        if type(entries) is not list or not 1 <= len(entries) <= len(CLIENTS):
+        if type(entries) is not list or not 1 <= len(entries) <= len(ELIGIBLE_CLIENTS):
             return False
         with self._transaction() as conn:
             if conn is None or not self._active(conn, self._row(conn), now):
                 return False
             for entry in entries:
                 client_id = entry.get("client_id")
-                if client_id not in CLIENTS:
+                if client_id not in ELIGIBLE_CLIENTS:
                     return False
                 ids = {k: entry.get(k) for k in ("job_id", "request_id", "source_item_id")}
                 identity_json = json.dumps(ids, sort_keys=True, separators=(",", ":"))
@@ -302,7 +324,7 @@ class TrialOwner:
         """
         _stamp(now)
         _digest(immutable_sha256)
-        if client_id not in CLIENTS or type(identifiers) is not dict or set(identifiers) != {
+        if client_id not in ELIGIBLE_CLIENTS or type(identifiers) is not dict or set(identifiers) != {
                 "job_id", "request_id", "source_item_id"}:
             return False
         try:
@@ -361,7 +383,7 @@ class TrialOwner:
                       identifiers=None, estimated_micros=0):
         _stamp(now)
         _digest(immutable_sha256)
-        if (client_id not in CLIENTS or phase_key not in {f"{client_id}:{p}" for p in PHASES}
+        if (client_id not in ELIGIBLE_CLIENTS or phase_key not in {f"{client_id}:{p}" for p in PHASES}
             or type(estimated_micros) is not int or not 0 <= estimated_micros <= LIMIT_MICROS
             or (estimated_micros and phase_key != f"{client_id}:generate")):
             raise TrialError("trial_phase_invalid")
@@ -444,7 +466,7 @@ class TrialOwner:
     def inspect(self, now):
         """Sanitized local owner state, never the admission nonce or ID bodies."""
         current, _ = _stamp(now)
-        if current < _iso(NOT_BEFORE):
+        if current < self.plan.not_before:
             return {"status": "not_due", "effective_on": False, "phases": 0}
         with self._transaction() as conn:
             if conn is None:

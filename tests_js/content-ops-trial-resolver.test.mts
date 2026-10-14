@@ -7,10 +7,11 @@ import { createTrialStateHandler } from "../netlify/functions/_shared/content-op
 import { admitTrial, trialManifestHash } from "../netlify/functions/_shared/content-ops-trial.mts";
 
 const SHA = "a".repeat(40), PLAN = "b".repeat(64), POLICY = "c".repeat(64);
-const ID = "11111111-1111-4111-8111-111111111111", VERSION = "22222222-1111-4111-8111-111111111111";
+const ID = "1a2bef47-4827-4bc3-9b4d-5baf2714015d", VERSION = "22222222-1111-4111-8111-111111111111";
 const NOW = Date.parse("2026-10-14T15:25:51Z"), API_ORIGIN = "https://fixture-api.up.railway.app";
 const SECRET = "synthetic-only-api-secret-32-characters";
 const env: Record<string,string> = { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true",
+  CONTENT_OPS_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51Z", CONTENT_OPS_TRIAL_DEADLINE: "2026-10-14T17:10:51Z",
   CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
   CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false", CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "false",
   CONTENT_OPS_REVIEW_RELEASE_SHA: SHA, CONTENT_OPS_TRIAL_ID: ID,
@@ -19,7 +20,7 @@ const env: Record<string,string> = { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true",
 const identity = { trial_id: ID, plan_sha256: PLAN };
 const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: ID, plan_sha256: PLAN,
   release_sha: SHA, not_before: "2026-10-14T15:10:51Z", deadline: "2026-10-14T17:10:51Z",
-  destination_policy_sha256: POLICY, entries: [{ client_id: "yellow",
+  destination_policy_sha256: POLICY, entries: [{ client_id: "babylon",
     job_id: "33333333-1111-4111-8111-111111111111", request_id: "44444444-1111-4111-8111-111111111111",
     source_item_id: "55555555-1111-4111-8111-111111111111", source_sha256: "d".repeat(64),
     content_item_id: "44444444-1111-4111-8111-111111111111", content_version_id: VERSION,
@@ -66,7 +67,7 @@ test("resolver integrates with admission freshness/canonical manifest and resolv
   await admitted.assertActive(); assert.equal(h.calls.length, 2);
 });
 
-test("fixed rewindow includes exact start but excludes prior window and exact deadline", async () => {
+test("anchored window includes exact start but excludes early time and exact deadline", async () => {
   const start = Date.parse("2026-10-14T15:10:51Z"), end = Date.parse("2026-10-14T17:10:51Z");
   assert.equal(end - start, 2 * 3600_000);
   const fresh = {...value, observed_at: new Date(start).toISOString()};
@@ -118,6 +119,20 @@ test("immutable configured origin/credential/release/plan cannot drift between r
     const h = setup(); await h.resolver!(identity); h.current[key] = v;
     await assert.rejects(h.resolver!(identity), ERROR); assert.equal(h.calls.length, 1);
   }
+});
+test("resolver rejects malformed or replaced anchor and pins full valid window between requests", async () => {
+  for (const changed of [{ CONTENT_OPS_TRIAL_NOT_BEFORE: undefined }, { CONTENT_OPS_TRIAL_DEADLINE: undefined },
+    { CONTENT_OPS_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51.000Z" },
+    { CONTENT_OPS_TRIAL_DEADLINE: "2026-10-14T17:10:52Z" },
+    { CONTENT_OPS_TRIAL_NOT_BEFORE: "2026-10-14T14:10:51Z", CONTENT_OPS_TRIAL_DEADLINE: "2026-10-14T16:10:51Z" },
+    { CONTENT_OPS_TRIAL_ID: VERSION }]) {
+    const h = setup({ env: changed });
+    await assert.rejects(h.resolver!({ ...identity, ...(changed.CONTENT_OPS_TRIAL_ID ? { trial_id: VERSION } : {}) }), ERROR);
+    assert.equal(h.calls.length, 0);
+  }
+  const h = setup(); await h.resolver!(identity);
+  Object.assign(h.current, { CONTENT_OPS_TRIAL_NOT_BEFORE: "2026-10-14T15:11:51Z", CONTENT_OPS_TRIAL_DEADLINE: "2026-10-14T17:11:51Z" });
+  await assert.rejects(h.resolver!(identity), ERROR); assert.equal(h.calls.length, 1);
 });
 for (const response of [
   () => Response.json(value, { status: 201 }), () => Response.json({ error: SECRET }, { status: 401 }),

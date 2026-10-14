@@ -6,7 +6,7 @@ composition must independently attest image/release and fresh owner admission.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import json
 import re
@@ -14,12 +14,12 @@ from uuid import UUID
 
 import httpx
 
+from core.content_ops.trial_window import ELIGIBLE_CLIENTS, TRIAL_ID, trial_window
+
 
 ORIGIN = "https://coineasy-newscard.netlify.app"
 PATH = "/.netlify/functions/content-ops-review"
-CLIENTS = frozenset({"yellow", "babylon", "origintrail"})
-START = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
-END = datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)
+CLIENTS = frozenset(ELIGIBLE_CLIENTS)
 IDENTITY_HEADERS = {"trial_id": "x-content-ops-trial-id",
                     "plan_sha256": "x-content-ops-trial-plan-sha256",
                     "manifest_sha256": "x-content-ops-trial-manifest-sha256"}
@@ -78,14 +78,11 @@ class TrialManifest:
             _require(type(value) is dict and set(value) == {"contract", "trial_id", "plan_sha256",
                 "release_sha", "not_before", "deadline", "destination_policy_sha256", "entries"})
             _require(value["contract"] == "ybo-trial-courier-manifest@1"
-                and _uuid(value["trial_id"]) and _sha(value["plan_sha256"])
-                and _sha(value["release_sha"], 40) and _sha(value["destination_policy_sha256"])
-                and value["not_before"] == "2026-10-14T15:10:51Z")
-            end = datetime.fromisoformat(value["deadline"].replace("Z", "+00:00"))
-            _require(value["deadline"] == end.isoformat(timespec="seconds").replace("+00:00", "Z")
-                and end.utcoffset() is not None and START < end <= END)
+                and value["trial_id"] == TRIAL_ID and _sha(value["plan_sha256"])
+                and _sha(value["release_sha"], 40) and _sha(value["destination_policy_sha256"]))
+            trial_window(value["not_before"], value["deadline"])
             entries = value["entries"]
-            _require(type(entries) is list and 1 <= len(entries) <= 3)
+            _require(type(entries) is list and 1 <= len(entries) <= len(CLIENTS))
             clients = set()
             identities = set()
             for entry in entries:
@@ -107,6 +104,14 @@ class TrialManifest:
     @property
     def payload(self):
         return json.loads(self._json)
+
+    @property
+    def not_before(self):
+        return trial_window(self.payload["not_before"], self.payload["deadline"])[0]
+
+    @property
+    def deadline(self):
+        return trial_window(self.payload["not_before"], self.payload["deadline"])[1]
 
     def entry(self, version):
         matches = [x for x in self.payload["entries"] if x["content_version_id"] == version]
@@ -130,14 +135,14 @@ class DeadlineTransport(httpx.AsyncBaseTransport):
 
     def gate(self):
         now = self.clock()
-        end = datetime.fromisoformat(self.manifest.payload["deadline"].replace("Z", "+00:00"))
+        start, end = self.manifest.not_before, self.manifest.deadline
         _require(self.enabled and not self._failed and type(now) is datetime
-            and now.utcoffset() is not None and START <= now < end)
+            and now.utcoffset() is not None and start <= now < end)
         # Callback failure means no dispatch; never interpret a false return as
         # permission. The trusted orchestrator gate returns an aware datetime.
         observed = self.before_side_effect()
         _require(type(observed) is datetime and observed.utcoffset() is not None
-            and START <= observed < end)
+            and start <= observed < end)
 
     async def handle_async_request(self, request):
         try:

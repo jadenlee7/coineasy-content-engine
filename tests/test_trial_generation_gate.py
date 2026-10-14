@@ -4,13 +4,14 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from uuid import uuid4
+from trial_test_fixtures import TRIAL_ID, NOT_BEFORE
 
 import pytest
 from fastapi.testclient import TestClient
 
 from core.automation.news_generation_journal import request_digest
 from core.automation.trial_generation_gate import TrialGenerationDenied, TrialGenerationGate
-from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS, NOT_BEFORE,
+from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS,
     POLICY_SHA256, TrialOwner, TrialPlan, canonical_sha256)
 
 NOW = datetime(2026, 10, 14, 15, 40, 51, tzinfo=timezone.utc)
@@ -22,16 +23,16 @@ def _body():
     request_id = str(uuid4())
     return request_id, {
         "source_content": source, "source_type": "tweet",
-        "source_url": "https://x.com/Yellow/status/123456789",
+        "source_url": "https://x.com/babylonlabs_io/status/123456789",
         "source_image_url": "https://pbs.twimg.com/media/fixture.png",
         "template_style": "remix", "mock_mode": False,
         "quality_context": {
             "job_id": str(uuid4()), "request_id": request_id,
-            "workspace_id": str(uuid4()), "client_id": "yellow",
+            "workspace_id": str(uuid4()), "client_id": "babylon",
             "source_item_id": str(uuid4()),
             "source_published_at": "2026-10-13T23:00:00Z",
             "source_sha256": "a" * 64, "source_content": source,
-            "source_url": "https://x.com/Yellow/status/123456789",
+            "source_url": "https://x.com/babylonlabs_io/status/123456789",
             "source_image_url": "https://pbs.twimg.com/media/fixture.png",
         },
     }
@@ -42,7 +43,7 @@ def admitted(tmp_path):
     from api.server import NewsCardRequest
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
-    data = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
+    data = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": NOT_BEFORE, "deadline": "2026-10-14T17:10:51Z",
         "kst_date": "2026-10-15", "client_ids": list(CLIENTS),
         "max_per_client": 1, "max_total": 3,
@@ -54,11 +55,11 @@ def admitted(tmp_path):
     payload = NewsCardRequest(**body).model_dump(mode="json")
     admission = owner.admit(plan.trial_id, NOW)
     assert admission is not None
-    assert owner.reserve_phase(admission, "yellow:intake", "yellow", "1" * 64, NOW)
-    assert owner.finish_phase(admission, "yellow:intake", "2" * 64, NOW)
+    assert owner.reserve_phase(admission, "babylon:intake", "babylon", "1" * 64, NOW)
+    assert owner.finish_phase(admission, "babylon:intake", "2" * 64, NOW)
     ids = {name: body["quality_context"][name] for name in ("job_id", "request_id", "source_item_id")}
-    assert owner.reserve_phase(admission, "yellow:generate", "yellow",
-        request_digest("yellow", payload), NOW, identifiers=ids)
+    assert owner.reserve_phase(admission, "babylon:generate", "babylon",
+        request_digest("babylon", payload), NOW, identifiers=ids)
     gate = TrialGenerationGate(plan=plan, owner=owner, clock=lambda: NOW)
     return SimpleNamespace(private=private, data=data, plan=plan, owner=owner,
         admission=admission, request_id=request_id, body=body, payload=payload, gate=gate)
@@ -66,7 +67,7 @@ def admitted(tmp_path):
 
 def _check(admitted, **overrides):
     return admitted.gate.require_generation(trial_id=overrides.get("trial_id", admitted.plan.trial_id),
-        client_id=overrides.get("client_id", "yellow"),
+        client_id=overrides.get("client_id", "babylon"),
         request_id=overrides.get("request_id", admitted.request_id),
         payload=overrides.get("payload", admitted.payload))
 
@@ -77,9 +78,17 @@ def test_exact_durable_generation_manifest_and_replay_read(admitted):
     assert admitted.owner.admit(admitted.plan.trial_id, NOW) is None
 
 
+def test_yellow_cannot_reach_owner_or_generation_io(admitted, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Yellow reached owner I/O")
+    monkeypatch.setattr(admitted.owner, "generation_authorized", forbidden)
+    with pytest.raises(TrialGenerationDenied):
+        _check(admitted, client_id="yellow")
+
+
 @pytest.mark.parametrize("change", ["trial_id", "client_id", "request_id", "payload"])
 def test_wrong_identity_or_exact_sha_denied(admitted, change):
-    kwargs = {change: ("babylon" if change == "client_id" else str(uuid4()))}
+    kwargs = {change: ("origintrail" if change == "client_id" else str(uuid4()))}
     if change == "payload":
         payload = deepcopy(admitted.payload)
         payload["source_content"] += " changed"
@@ -110,7 +119,7 @@ def test_env_requires_exact_release_and_preexisting_owner(admitted):
         "RAILWAY_GIT_COMMIT_SHA": RELEASE,
         "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(admitted.private)}
     assert TrialGenerationGate.from_env(env, clock=lambda: NOW, stamp_reader=lambda: RELEASE).require_generation(
-        trial_id=admitted.plan.trial_id, client_id="yellow",
+        trial_id=admitted.plan.trial_id, client_id="babylon",
         request_id=admitted.request_id, payload=admitted.payload) is None
     with pytest.raises(TrialGenerationDenied, match="trial_generation_release_mismatch"):
         TrialGenerationGate.from_env({**env, "RAILWAY_GIT_COMMIT_SHA": "b" * 40},
@@ -139,7 +148,7 @@ def test_api_trial_mode_denies_missing_marker_and_exact_mismatch_before_quality(
     monkeypatch.setattr(quality_news_card, "service_from_env", lambda env: called.append("factory"))
     client = TestClient(server.app)
     headers = {"x-api-key": "synthetic-trial-admin-key", "Idempotency-Key": admitted.request_id}
-    path = "/clients/yellow/generate/news-card"
+    path = "/clients/babylon/generate/news-card"
     assert client.post(path, headers=headers, json=admitted.body).status_code == 403
     assert not called
     headers["X-YBO-Trial-ID"] = admitted.plan.trial_id
@@ -166,7 +175,7 @@ def test_api_trial_only_uses_durable_gate_with_global_quality_off(admitted, monk
     async def generate(**kwargs):
         calls.append("generate")
         kwargs["before_effect"]()  # real owner readback, no provider
-        return {"client_id": "yellow", "content_type": "news_card", "spec": {},
+        return {"client_id": "babylon", "content_type": "news_card", "spec": {},
             "png_path": "/synthetic/card.png", "manifest_path": "/synthetic/manifest.json",
             "template_style": "remix", "requested_template_style": "remix",
             "source_image_used": True, "source_image_url": admitted.body["source_image_url"],
@@ -180,7 +189,7 @@ def test_api_trial_only_uses_durable_gate_with_global_quality_off(admitted, monk
     monkeypatch.setattr(quality_news_card, "service_from_env", factory)
     headers = {"x-api-key": "synthetic-trial-admin-key", "Idempotency-Key": admitted.request_id,
         "X-YBO-Trial-ID": admitted.plan.trial_id}
-    path = "/clients/yellow/generate/news-card"
+    path = "/clients/babylon/generate/news-card"
     client = TestClient(server.app)
     assert client.post(path, headers=headers, json=admitted.body).status_code == 200
     assert calls == ["pin", "factory", "generate"]
@@ -206,7 +215,7 @@ def test_collect_only_header_requires_exact_trial_and_reaches_service(admitted, 
     async def generate(**kwargs):
         seen.append(kwargs.get("collect_only"))
         kwargs["before_effect"]()
-        return {"client_id": "yellow", "content_type": "news_card", "spec": {},
+        return {"client_id": "babylon", "content_type": "news_card", "spec": {},
             "png_path": "/synthetic/card.png", "manifest_path": "/synthetic/manifest.json",
             "template_style": "remix", "requested_template_style": "remix",
             "source_image_used": True, "source_image_url": admitted.body["source_image_url"],
@@ -215,7 +224,7 @@ def test_collect_only_header_requires_exact_trial_and_reaches_service(admitted, 
     monkeypatch.setattr(quality_news_card, "service_from_env", lambda env, **kw:
         SimpleNamespace(generate=generate))
     client = TestClient(server.app)
-    path = "/clients/yellow/generate/news-card"
+    path = "/clients/babylon/generate/news-card"
     headers = {"x-api-key": "synthetic-trial-admin-key", "Idempotency-Key": admitted.request_id,
         "X-YBO-Trial-ID": admitted.plan.trial_id, "X-YBO-Trial-Collect-Only": "true"}
     assert client.post(path, headers=headers, json=admitted.body).status_code == 200

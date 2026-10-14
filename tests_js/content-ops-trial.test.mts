@@ -9,16 +9,17 @@ const id = (n: number) => `${String(n).padStart(8,"0")}-1111-4111-8111-111111111
 const RELEASE = "a".repeat(40), NOW = Date.parse("2026-10-14T15:25:51Z");
 const TG = "한국어 직원 검수 공지", X = "한국어 X 초안", SOURCE = "Official source text";
 const PNG = Buffer.from([137,80,78,71,13,10,26,10,0]);
-const entry = { client_id: "yellow", job_id: id(1), request_id: id(2), source_item_id: id(3),
+const entry = { client_id: "babylon", job_id: id(1), request_id: id(2), source_item_id: id(3),
   source_sha256: sha(SOURCE), content_item_id: id(2), content_version_id: id(4), banner_sha256: sha(PNG as any),
   telegram_copy_sha256: sha(TG), x_copy_sha256: sha(X) };
-const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: id(5), plan_sha256: "b".repeat(64),
+const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: "b".repeat(64),
   release_sha: RELEASE, not_before: "2026-10-14T15:10:51Z", deadline: "2026-10-14T17:10:51Z",
   destination_policy_sha256: "c".repeat(64), entries: [entry] };
 const HASH = trialManifestHash(manifest);
 const ENV: Record<string,string> = { CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
   CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false", CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "false",
   CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true", CONTENT_OPS_TRIAL_ID: manifest.trial_id,
+  CONTENT_OPS_TRIAL_NOT_BEFORE: manifest.not_before, CONTENT_OPS_TRIAL_DEADLINE: manifest.deadline,
   CONTENT_OPS_TRIAL_PLAN_SHA256: manifest.plan_sha256,
   CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256: manifest.destination_policy_sha256,
   CONTENT_OPS_REVIEW_RELEASE_SHA: RELEASE, CONTENT_OPS_GATEWAY_TOKEN: "fixture-dedicated-token-at-least-32-chars",
@@ -26,28 +27,28 @@ const ENV: Record<string,string> = { CONTENT_OPS_GATEWAY_ENABLED: "false", CONTE
   CONTENT_STUDIO_WORKSPACE_ID: id(6) };
 const runtime = { deploy: { context: "production", id: "fixture-only", published: true } };
 const rows: Record<string,any> = {
-  jobs: { id: entry.job_id, client_id: "yellow", job_kind: "generate", status: "succeeded", attempts: 1,
+  jobs: { id: entry.job_id, client_id: "babylon", job_kind: "generate", status: "succeeded", attempts: 1,
     max_attempts: 3, created_at: "2026-10-14T15:11:51Z", started_at: "2026-10-14T15:12:51Z",
-    finished_at: "2026-10-14T15:13:51Z", idempotency_key: "official-x-review:v1:2026-10-15:yellow",
+    finished_at: "2026-10-14T15:13:51Z", idempotency_key: "official-x-review:v1:2026-10-15:babylon",
     content_item_id: null, input: { workflow: "official_x_review_draft_v1", content_kind: "daily_news",
       manual_only: false, kst_date: "2026-10-15", request_id: entry.request_id,
       source_item_ids: [entry.source_item_id], source_content: SOURCE },
     output: { content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
       source_item_ids: [entry.source_item_id] } },
-  content_items: { id: entry.content_item_id, client_id: "yellow", status: "needs_review", content_kind: "daily_news",
+  content_items: { id: entry.content_item_id, client_id: "babylon", status: "needs_review", content_kind: "daily_news",
     current_version_id: entry.content_version_id },
   content_versions: { id: entry.content_version_id, content_item_id: entry.content_item_id,
     channel_copy: { telegram: TG, x: X }, generation_meta: { mock_mode: false, request_id: entry.request_id },
     deliverables: { primary_asset_id: id(7) }, created_at: "2026-10-14T15:13:51Z" },
   assets: { id: id(7), content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
     asset_kind: "png", mime_type: "image/png", sha256: entry.banner_sha256, storage_bucket: "content-studio",
-    storage_path: `${id(6)}/yellow/${id(7)}/news-card.png` },
-  source_items: { id: entry.source_item_id, client_id: "yellow", body: SOURCE },
+    storage_path: `${id(6)}/babylon/${id(7)}/news-card.png` },
+  source_items: { id: entry.source_item_id, client_id: "babylon", body: SOURCE },
 };
-const claim = { outbox_id: id(8), claim_token: id(9), client_id: "yellow", kst_date: "2026-10-15",
+const claim = { outbox_id: id(8), claim_token: id(9), client_id: "babylon", kst_date: "2026-10-15",
   content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
   source_item_id: entry.source_item_id, generate_job_id: entry.job_id, banner_sha256: entry.banner_sha256,
-  title: "검수용", telegram_copy: TG, x_copy: X, source_url: "https://x.com/Yellow/status/123",
+  title: "검수용", telegram_copy: TG, x_copy: X, source_url: "https://x.com/babylonlabs_io/status/123",
   source_published_at: "2026-10-13T23:00:00Z" };
 function request(body: any = { action: "reconcile" }) {
   return new Request("https://coineasy-newscard.netlify.app/.netlify/functions/content-ops-review", {
@@ -143,7 +144,7 @@ test("terminal owner after reads prevents next RPC; provider errors never echo",
 test("claim receipt must preserve exact job/source/version/banner and full Korean copy hashes", async () => {
   const body = { action: "claim", claim_token: claim.claim_token };
   const good = harness({ result: claim }); assert.equal((await good.call(request(body))).status, 200);
-  for (const delta of [{ telegram_copy: TG + "!" }, { generate_job_id: id(77) }, { client_id: "babylon" }]) {
+  for (const delta of [{ telegram_copy: TG + "!" }, { generate_job_id: id(77) }, { client_id: "origintrail" }]) {
     const h = harness({ result: { ...claim, ...delta } }); assert.equal((await h.call(request(body))).status, 503);
     assert.equal(h.calls.filter(c => c.method === "POST").length, 1);
   }
@@ -172,7 +173,7 @@ test("delivery-only four-part registration uses the existing bounded owner contr
   assert.deepEqual(h.calls.at(-1).body.target_args, args);
 });
 test("verified PNG response attests trial identity and static packet mode; per-HTTP admission", async () => {
-  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "yellow",
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
     content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
     asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path, sha256: entry.banner_sha256,
     byte_size: PNG.length, execution_authorized: false };
@@ -221,4 +222,49 @@ test("canonical manifest is insertion-order independent and binds source/copy id
   assert.notEqual(trialManifestHash({ ...manifest, entries: [{ ...entry, x_copy_sha256: "d".repeat(64) }] }), HASH);
   // Fixed ASCII manifest means Python canonical ensure_ascii and JS UTF-8 have one representation.
   assert.equal(trialManifestHash({ a: [1, "test"], z: true }), "83ab1506dbc1029b70b47536d47ecf1414fa8fe042c95bb53411cf181f99543d");
+});
+
+test("Yellow manifest and another UUID are rejected even when caller and configured pins agree", async () => {
+  const yellow = { ...manifest, entries: [{ ...entry, client_id: "yellow" }] };
+  const yellowHash = trialManifestHash(yellow), req = request();
+  req.headers.set("x-content-ops-trial-manifest-sha256", yellowHash);
+  const h = harness({ resolve: () => ({ active: true, observed_at: new Date(NOW).toISOString(),
+    manifest: yellow, manifest_sha256: yellowHash }) });
+  assert.equal((await h.call(req)).status, 503); assert.equal(h.calls.length, 0);
+  const another = harness({ env: { CONTENT_OPS_TRIAL_ID: id(99) } }), wrong = request();
+  wrong.headers.set("x-content-ops-trial-id", id(99));
+  assert.equal((await another.call(wrong)).status, 503); assert.equal(another.identities.length, 0);
+});
+test("delivery derives job slot, claim date and generated timestamps from pinned bounds", async () => {
+  const shifted = { ...manifest, not_before: "2026-11-01T23:10:51Z", deadline: "2026-11-02T01:10:51Z" };
+  const now = Date.parse("2026-11-01T23:25:51Z"), shiftedHash = trialManifestHash(shifted);
+  const shiftedRows = structuredClone(rows);
+  shiftedRows.jobs.idempotency_key = "official-x-review:v1:2026-11-02:babylon";
+  shiftedRows.jobs.input.kst_date = "2026-11-02";
+  for (const key of ["created_at", "started_at", "finished_at"]) shiftedRows.jobs[key] = "2026-11-01T23:13:51Z";
+  shiftedRows.content_versions.created_at = "2026-11-01T23:13:51Z";
+  const h = harness({ env: { CONTENT_OPS_TRIAL_NOT_BEFORE: shifted.not_before, CONTENT_OPS_TRIAL_DEADLINE: shifted.deadline },
+    clock: () => now, rows: shiftedRows, result: { ...claim, kst_date: "2026-11-02" },
+    resolve: () => ({ active: true, observed_at: new Date(now).toISOString(), manifest: shifted, manifest_sha256: shiftedHash }) });
+  const req = request({ action: "claim", claim_token: claim.claim_token });
+  req.headers.set("x-content-ops-trial-manifest-sha256", shiftedHash);
+  assert.equal((await h.call(req)).status, 200); assert.equal(h.calls.length, 6);
+});
+test("delivery rejects shortened or extended manifest even with a matching canonical hash", async () => {
+  for (const deadline of ["2026-10-14T16:10:51Z", "2026-10-14T18:10:51Z"]) {
+    const changed = { ...manifest, deadline }, hash = trialManifestHash(changed), req = request();
+    req.headers.set("x-content-ops-trial-manifest-sha256", hash);
+    const h = harness({ resolve: () => ({ active: true, observed_at: new Date(NOW).toISOString(), manifest: changed, manifest_sha256: hash }) });
+    assert.equal((await h.call(req)).status, 503); assert.equal(h.calls.length, 0);
+  }
+});
+test("delivery pins window and identities before and after every resolver call", async () => {
+  for (const delta of [{ CONTENT_OPS_TRIAL_NOT_BEFORE: "2026-10-14T15:11:51Z", CONTENT_OPS_TRIAL_DEADLINE: "2026-10-14T17:11:51Z" },
+    { CONTENT_OPS_TRIAL_PLAN_SHA256: "d".repeat(64) }, { CONTENT_OPS_TRIAL_ID: id(99) },
+    { CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256: "d".repeat(64) }, { CONTENT_OPS_REVIEW_RELEASE_SHA: "d".repeat(40) }]) {
+    const env: Record<string, string> = {};
+    const h = harness({ env, resolve: () => { Object.assign(env, delta); return { active: true,
+      observed_at: new Date(NOW).toISOString(), manifest, manifest_sha256: HASH }; } });
+    assert.equal((await h.call()).status, 503); assert.equal(h.calls.length, 0); assert.equal(h.identities.length, 1);
+  }
 });

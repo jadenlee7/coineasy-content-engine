@@ -2,6 +2,7 @@ import type { ContentOpsReviewRuntime } from "./content-ops-review.mts";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 import { admitTrial, trialFlagsOff, type TrustedTrialResolver } from "./content-ops-trial.mts";
 import { TrialManifestNotReady } from "./content-ops-trial-resolver.mts";
+import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
 type Env = (key: string) => string | undefined;
 const PATH = "/.netlify/functions/content-ops-trial-state", ORIGIN = "https://coineasy-newscard.netlify.app";
 const json = (body: unknown, status: number, release?: string) => Response.json(body, { status,
@@ -28,8 +29,20 @@ export function createTrialStateHandler(deps: { getEnv: Env; releaseSha: () => s
     const token = configuredContentOpsGatewayToken(deps.getEnv);
     if (!token || !hasContentOpsGatewayAccess(req, token)) return json({ error: "invalid_token" }, 401);
     try {
-      const now = (deps.clock ?? Date.now)();
-      if (!(Date.parse("2026-10-14T15:10:51Z") <= now && now < Date.parse("2026-10-14T17:10:51Z"))) throw Error();
+      const bounds = configuredTrialWindow(deps.getEnv, "CONTENT_OPS_TRIAL");
+      const trialId = deps.getEnv("CONTENT_OPS_TRIAL_ID"), plan = deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256");
+      const policy = deps.getEnv("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256");
+      function active() {
+        if (!bounds || !withinTrialWindow(bounds, (deps.clock ?? Date.now)())
+          || !trialWindowUnchanged(deps.getEnv, "CONTENT_OPS_TRIAL", bounds)
+          || trialId !== READY_ANCHORED_TRIAL_ID || !plan || !/^[a-f0-9]{64}$/.test(plan)
+          || !policy || !/^[a-f0-9]{64}$/.test(policy)
+          || deps.getEnv("CONTENT_OPS_TRIAL_ID") !== trialId || deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256") !== plan
+          || deps.getEnv("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256") !== policy
+          || deps.releaseSha() !== release || deps.getEnv("CONTENT_OPS_REVIEW_RELEASE_SHA") !== release
+          || deps.getEnv("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") !== "true" || !trialFlagsOff(deps.getEnv)) throw Error();
+      }
+      active();
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") ?? "") || !req.body) throw Error();
       const reader = req.body.getReader(); let bytes = 0; const chunks: Uint8Array[] = [];
       try { for (;;) { const r = await reader.read(); if (r.done) break;
@@ -37,11 +50,12 @@ export function createTrialStateHandler(deps: { getEnv: Env; releaseSha: () => s
       } } finally { reader.releaseLock(); }
       const body = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
       if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2
-        || body.trial_id !== deps.getEnv("CONTENT_OPS_TRIAL_ID")
-        || body.plan_sha256 !== deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256") || !deps.resolver) throw Error();
+        || body.trial_id !== trialId || body.plan_sha256 !== plan || !deps.resolver) throw Error();
+      active();
       let value: any;
-      try { value = await deps.resolver(body); }
+      try { value = await deps.resolver(body); active(); }
       catch (error) {
+        active();
         if (error instanceof TrialManifestNotReady) return json({ error: "trial_manifest_not_ready" }, 409, release);
         throw error;
       }

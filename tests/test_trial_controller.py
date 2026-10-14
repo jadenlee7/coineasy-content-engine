@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from uuid import uuid4
+from trial_test_fixtures import TRIAL_ID, NOT_BEFORE, LATEST_DEADLINE, START, END
 import hashlib
 import io
 from pathlib import Path
@@ -12,18 +13,18 @@ import httpx
 from PIL import Image
 import pytest
 
-from core.automation.trial_controller import (HostedTrialController, START, run_hosted_trial,
+from core.automation.trial_controller import (HostedTrialController, run_hosted_trial,
     TrialCatalogReadback, TrialControllerBlocked, TrialGenerationPreflight, TrialPreflightFailure,
     EffectTransport)
 from core.automation.trial_generation_gate import TrialGenerationGate
 from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
-    canonical_sha256, POLICY_SHA256, NOT_BEFORE, LATEST_DEADLINE)
+    canonical_sha256, POLICY_SHA256)
 
 
 def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
     tmp_path.chmod(0o700)
     now = [START - timedelta(seconds=10) if before_start else START + timedelta(seconds=1)]
-    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T15:10:51Z",
+    payload = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID, "not_before": "2026-10-14T15:10:51Z",
         "deadline": "2026-10-14T17:10:51Z", "kst_date": "2026-10-15",
         "client_ids": ["yellow", "babylon", "origintrail"], "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": 10_000_000, "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
@@ -111,46 +112,52 @@ def test_server_clock_wait_then_skip_yellow_and_final_receipt_off(tmp_path):
     assert replay["status"] == "not_admitted" and s.calls == previous
 
 
-def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates(tmp_path):
-    from core.automation.trial_producer_adapter import START as producer_start, END as producer_end
-    from core.content_ops.trial_courier_adapter import START as courier_start, END as courier_end
-    start = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
-    end = datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)
-    assert START == producer_start == courier_start == start
-    assert producer_end == courier_end == end
-    assert NOT_BEFORE == "2026-10-14T15:10:51Z"
-    assert LATEST_DEADLINE == "2026-10-14T17:10:51Z"
-    assert end - start == timedelta(hours=2)
-    root = Path(__file__).resolve().parents[1]
-    for filename in ("content-ops-trial.mts", "content-ops-trial-generation.mts",
-                     "content-ops-trial-resolver.mts", "content-ops-trial-state.mts", "ybo-trial-preflight.mts"):
-        source = (root / "netlify/functions/_shared" / filename).read_text()
-        assert NOT_BEFORE in source and LATEST_DEADLINE in source
-        assert "2026-10-14T00:00:00Z" not in source
-        assert "2026-10-14T02:00:00Z" not in source
-        assert "2026-10-14T06:22:17Z" not in source
-        assert "2026-10-14T08:22:17Z" not in source
-    sql = (root / "ops/ybo-server-trial/exact-natural-claim.rollback.sql").read_text()
-    assert f"gate_start constant timestamptz := '{NOT_BEFORE}'" in sql
-    assert f"gate_end constant timestamptz := '{LATEST_DEADLINE}'" in sql
+def test_readiness_anchored_bounds_preserve_scope_and_expire(tmp_path):
+    start, end = START + timedelta(days=2), END + timedelta(days=2)
     s = scenario(tmp_path)
-    payload = s.owner.plan.payload
-    assert payload["kst_date"] == "2026-10-15" and payload["max_total"] == 3
+    payload = {**s.owner.plan.payload, "not_before": "2026-10-16T15:10:51Z",
+               "deadline": "2026-10-16T17:10:51Z", "kst_date": "2026-10-17"}
+    plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
+    owner = TrialOwner(s.owner.path, plan, clock=lambda: s.now[0])
+    assert plan.not_before == start and plan.deadline == end and payload["max_total"] == 3
     assert payload["max_per_client"] == 1 and payload["estimated_daily_limit_micros"] == 10_000_000
-    for changes in ({"not_before": "2026-10-14T00:00:00Z"},
-                    {"not_before": "2026-10-14T06:22:17Z"},
-                    {"deadline": "2026-10-14T17:10:52Z"}):
+    for changes in ({"trial_id": str(uuid4())}, {"not_before": "2026-10-16T15:10:51.000Z"},
+                    {"deadline": "2026-10-16T17:10:52Z"}, {"deadline": "2026-10-16T17:10:50Z"},
+                    {"kst_date": "2026-10-16"},
+                    {"not_before": "2026-10-16T14:00:00Z", "deadline": "2026-10-16T16:00:00Z"}):
         altered = {**payload, **changes}
         with pytest.raises(TrialError):
             TrialPlan.from_mapping(altered, canonical_sha256(altered))
-    assert s.owner.admit(s.owner.plan.trial_id, start - timedelta(seconds=1)) is None
-    assert not s.owner.path.exists()
+    assert owner.admit(plan.trial_id, start - timedelta(seconds=1)) is None
+    assert not owner.path.exists()
     s.now[0] = start
-    admitted = s.owner.admit(s.owner.plan.trial_id, start)
+    admitted = owner.admit(plan.trial_id, start)
     s.now[0] = end - timedelta(microseconds=1)
-    assert admitted is not None and s.owner.is_active(admitted, s.now[0])
+    assert admitted is not None and owner.is_active(admitted, s.now[0])
     s.now[0] = end
-    assert not s.owner.is_active(admitted, end)
+    assert not owner.is_active(admitted, end)
+
+
+def test_same_trial_id_changed_plan_cannot_reopen_existing_owner(tmp_path):
+    s = scenario(tmp_path)
+    assert s.owner.admit(TRIAL_ID, s.now[0]) is not None
+    before = s.owner.path.read_bytes()
+    changed = {**s.owner.plan.payload, "not_before": "2026-10-16T15:10:51Z",
+               "deadline": "2026-10-16T17:10:51Z", "kst_date": "2026-10-17"}
+    plan = TrialPlan.from_mapping(changed, canonical_sha256(changed))
+    owner = TrialOwner(s.owner.path, plan)
+    with pytest.raises(TrialError, match="trial_owner_plan_mismatch"):
+        owner.admit(TRIAL_ID, plan.not_before)
+    assert s.owner.path.read_bytes() == before
+
+
+def test_fixed_trial_owner_rejects_yellow_phase_before_filesystem(tmp_path, monkeypatch):
+    s = scenario(tmp_path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Yellow owner I/O")
+    monkeypatch.setattr(s.owner, "_transaction", forbidden)
+    with pytest.raises(TrialError, match="trial_phase_invalid"):
+        s.owner.reserve_phase(None, "yellow:intake", "yellow", "a" * 64, s.now[0])
 
 
 def test_no_new_sources_are_skipped_and_no_manifest_created(tmp_path):
@@ -235,6 +242,7 @@ def ready_response(s):
         "netlify_release_sha": p.payload["release_sha"], "trial_id": p.trial_id,
         "plan_sha256": p.sha256, "generation_gateway_enabled": True,
         "broad_public_flags_off": True, "upstream_api_auth_verified": True,
+        **{key: p.payload[key] for key in ("not_before", "deadline", "kst_date")},
         "observed_at": s.now[0].isoformat()}
 
 
@@ -249,7 +257,7 @@ def test_startup_route_readiness_precedes_any_owner_io_then_admits_once(tmp_path
     assert s.owner.inspect(s.now[0])["phases"] == 8
 
 
-@pytest.mark.parametrize("failure", ["auth", "config", "malformed", "foreign", "future"])
+@pytest.mark.parametrize("failure", ["auth", "config", "malformed", "foreign", "future", "window_drift"])
 def test_invalid_readiness_never_admits_or_retries(tmp_path, failure):
     s = scenario(tmp_path)
 
@@ -261,6 +269,7 @@ def test_invalid_readiness_never_admits_or_retries(tmp_path, failure):
         body = ready_response(s)
         if failure == "foreign": body["trial_id"] = str(uuid4())
         if failure == "future": body["observed_at"] = (s.now[0] + timedelta(seconds=1)).isoformat()
+        if failure == "window_drift": body["deadline"] = "2026-10-14T17:10:52Z"
         return httpx.Response(200, json=body)
 
     calls = mount_readiness(s, respond)

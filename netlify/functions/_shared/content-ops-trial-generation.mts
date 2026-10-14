@@ -2,15 +2,16 @@
  * the existing API must verify its canonical digest against the active durable
  * owner before EVERY downstream HTTP call. No reserve/claim/enable occurs here. */
 import { currentStudioReleaseSha } from "./studio-release.mts";
+import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
+import { YBO_TRIAL_REQUIRED_OFF_FLAGS } from "./ybo-trial-preflight.mts";
 
 type Json = Record<string, any>;
 type Env = (name: string) => string | undefined;
-const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
 const API = "https://coineasy-content-engine-production.up.railway.app";
 const ORIGIN = "https://coineasy-newscard.netlify.app";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
-const CLIENTS = ["yellow", "babylon", "origintrail"];
+const CLIENTS = ["babylon", "origintrail"];
 const PAYLOAD_KEYS = ["source_content", "source_type", "source_url", "source_image_url", "mock_mode",
   "template_style", "style_references", "style_reference_pack_hash", "brand_review_guidance", "quality_context"];
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
@@ -36,11 +37,12 @@ export async function admitTrialGeneration(options: {
   const release = options.release === undefined ? currentStudioReleaseSha() : options.release;
   const trialId = req.headers.get("x-ybo-trial-id"), plan = req.headers.get("x-ybo-trial-plan-sha256");
   const collectOnly = req.headers.get("x-ybo-trial-collect-only");
-  const secret = env("API_SECRET"), configuredApi = (env("RAILWAY_API_URL") || API).replace(/\/+$/, "");
+  const secret = env("API_SECRET"), rawApi = env("RAILWAY_API_URL"), configuredApi = (rawApi || API).replace(/\/+$/, "");
+  const bounds = configuredTrialWindow(env, "YBO_TRIAL");
   const url = new URL(req.url), deploy = runtime?.deploy;
   requireTrue(automation && CLIENTS.includes(clientId) && UUID.test(requestId)
     && (collectOnly === null || collectOnly === "true")
-    && trialId !== null && UUID.test(trialId) && plan !== null && SHA.test(plan)
+    && trialId === READY_ANCHORED_TRIAL_ID && bounds && plan !== null && SHA.test(plan)
     && typeof release === "string" && /^[a-f0-9]{40}$/.test(release)
     && req.headers.get("x-studio-expected-release-sha") === release
     && env("YBO_TRIAL_PLAN_SHA256") === plan && env("YBO_TRIAL_ID") === trialId
@@ -71,11 +73,11 @@ export async function admitTrialGeneration(options: {
   requireTrue(Buffer.byteLength(authorizationBody, "utf8") <= 128_000);
   function window() {
     const now = clock();
-    requireTrue(Number.isFinite(now) && START <= now && now < END
+    requireTrue(withinTrialWindow(bounds!, now) && trialWindowUnchanged(env, "YBO_TRIAL", bounds!)
       && env("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") === "true"
-      && env("QUALITY_BANNER_ENABLED") === "false" && env("NEWS_CARD_IDEMPOTENCY_ENABLED") === "false"
+      && YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => env(key) === "false")
       && env("YBO_TRIAL_ID") === trialId && env("YBO_TRIAL_PLAN_SHA256") === plan
-      && env("YBO_TRIAL_RELEASE_SHA") === release);
+      && env("YBO_TRIAL_RELEASE_SHA") === release && env("RAILWAY_API_URL") === rawApi && env("API_SECRET") === secret);
     return now;
   }
   async function assertActive() {

@@ -1193,8 +1193,7 @@ async def read_trial_readiness(x_api_key: str = Header(default="")):
         raise HTTPException(503, "trial_generation_global_flag_on")
     gate = _authenticated_trial_gate(x_api_key)
     now = gate.clock()
-    start = datetime.fromisoformat(gate.plan.payload["not_before"].replace("Z", "+00:00"))
-    if not start <= now < gate.plan.deadline:
+    if not gate.plan.not_before <= now < gate.plan.deadline:
         raise HTTPException(503, "trial_generation_disabled")
     required = ["yellow", "babylon", "origintrail"]
     active = [cfg.client_id for cfg in list_active_clients() if cfg.active is True]
@@ -1205,6 +1204,7 @@ async def read_trial_readiness(x_api_key: str = Header(default="")):
     return JSONResponse({"schema_version": "ybo-api-readiness@1", "ready": True,
         "trial_id": gate.plan.trial_id, "plan_sha256": gate.plan.sha256,
         "release_sha": gate.plan.payload["release_sha"], "controller_enabled": True,
+        **{key: gate.plan.payload[key] for key in ("not_before", "deadline", "kst_date")},
         "broad_public_flags_off": True, "client_ids": required,
         "observed_at": now.astimezone(timezone.utc).isoformat()},
         headers={"Cache-Control": "no-store", "Vary": "X-API-Key"})

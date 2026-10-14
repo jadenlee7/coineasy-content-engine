@@ -27,9 +27,6 @@ from core.automation.trial_owner import CLIENTS, canonical_sha256
 from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter
 from core.sources.x_client import XClient
 
-START = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
-
-
 class TrialControllerBlocked(ValueError):
     pass
 
@@ -116,12 +113,13 @@ class TrialGenerationPreflight:
             body = json.loads(raw)
             require(type(body) is dict and set(body) == {"schema_version", "ready", "netlify_release_sha",
                 "trial_id", "plan_sha256", "generation_gateway_enabled", "broad_public_flags_off",
-                "upstream_api_auth_verified", "observed_at"}
+                "upstream_api_auth_verified", "observed_at", "not_before", "deadline", "kst_date"}
                 and body["schema_version"] == "ybo-trial-preflight@1" and body["ready"] is True
                 and body["netlify_release_sha"] == plan.payload["release_sha"]
                 and body["trial_id"] == plan.trial_id and body["plan_sha256"] == plan.sha256
                 and body["generation_gateway_enabled"] is True and body["broad_public_flags_off"] is True
                 and body["upstream_api_auth_verified"] is True
+                and all(body[key] == plan.payload[key] for key in ("not_before", "deadline", "kst_date"))
                 and type(body["observed_at"]) is str
                 and re.search(r"(?:Z|[+-]\d{2}:\d{2})$", body["observed_at"]))
             observed = datetime.fromisoformat(body["observed_at"].replace("Z", "+00:00"))
@@ -215,14 +213,14 @@ class HostedTrialController:
 
     def guard(self):
         now = self.gate.clock()
-        require(START <= now < self.gate.plan.deadline and self.admission is not None
+        require(self.gate.plan.not_before <= now < self.gate.plan.deadline and self.admission is not None
             and self.owner.is_active(self.admission, now))
         return now
 
     def readiness_guard(self):
         """Pure fixed-plan clock check: no owner read, creation or mutation."""
         now = self.gate.clock()
-        if not START <= now < self.gate.plan.deadline:
+        if not self.gate.plan.not_before <= now < self.gate.plan.deadline:
             raise TrialPreflightFailure("window_closed")
         return now
 
@@ -267,8 +265,8 @@ class HostedTrialController:
     async def run(self):
         result = {"status": "blocked", "generated_clients": [], "skipped_clients": [],
             "effective_on": False, "public_send_attempted": False, "visual_qa_performed": False}
-        while self.gate.clock() < START:
-            await self.sleep(min(30, max(0.01, (START - self.gate.clock()).total_seconds())))
+        while self.gate.clock() < self.gate.plan.not_before:
+            await self.sleep(min(30, max(0.01, (self.gate.plan.not_before - self.gate.clock()).total_seconds())))
         failure = await self.wait_readiness()
         if failure is not None:
             return {**result, "status": "readiness_failed", "diagnostic": failure}

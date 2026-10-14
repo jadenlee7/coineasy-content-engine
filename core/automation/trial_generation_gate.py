@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.automation.news_generation_journal import request_digest
-from core.automation.trial_owner import TrialError, TrialOwner, TrialPlan
+from core.automation.trial_owner import ELIGIBLE_CLIENTS, TrialError, TrialOwner, TrialPlan
 
 
 class TrialGenerationDenied(ValueError):
@@ -85,7 +85,7 @@ class TrialGenerationGate:
         request digest and the three DB identifiers must match the durable
         phase that the trusted orchestrator reserved after exact SQL claim.
         """
-        if trial_id != self.plan.trial_id or client_id not in ("yellow", "babylon", "origintrail"):
+        if trial_id != self.plan.trial_id or client_id not in ELIGIBLE_CLIENTS:
             raise TrialGenerationDenied("trial_generation_not_admitted")
         context = payload.get("quality_context") if type(payload) is dict else None
         if type(context) is not dict or context.get("request_id") != request_id or context.get("client_id") != client_id:

@@ -7,9 +7,11 @@ import httpx
 import pytest
 
 from core.automation.trial_controller import TrialControllerBlocked, TrialGenerationPreflight
+from trial_test_fixtures import TRIAL_ID, NOT_BEFORE, LATEST_DEADLINE, DAY
 
 NOW = datetime(2026, 10, 14, 15, 30, 51, tzinfo=timezone.utc)
-RELEASE, PLAN, TRIAL = "a" * 40, "b" * 64, "11111111-1111-4111-8111-111111111111"
+RELEASE, PLAN, TRIAL = "a" * 40, "b" * 64, TRIAL_ID
+BOUNDS = {"not_before": NOT_BEFORE, "deadline": LATEST_DEADLINE, "kst_date": DAY.isoformat()}
 
 
 def fixture(*, mutation=None, status=200, response=None, omit=None):
@@ -17,7 +19,7 @@ def fixture(*, mutation=None, status=200, response=None, omit=None):
     payload = {"schema_version": "ybo-trial-preflight@1", "ready": True,
         "netlify_release_sha": RELEASE, "trial_id": TRIAL, "plan_sha256": PLAN,
         "generation_gateway_enabled": True, "broad_public_flags_off": True,
-        "upstream_api_auth_verified": True,
+        "upstream_api_auth_verified": True, **BOUNDS,
         "observed_at": NOW.isoformat()}
     payload.update(mutation or {})
     if omit is not None:
@@ -38,7 +40,7 @@ def fixture(*, mutation=None, status=200, response=None, omit=None):
 
     studio = SimpleNamespace(base_url="https://coineasy-newscard.netlify.app",
         automation_token="fixture-existing-automation-token", transport=httpx.MockTransport(handle))
-    gate = SimpleNamespace(plan=SimpleNamespace(payload={"release_sha": RELEASE}, trial_id=TRIAL, sha256=PLAN))
+    gate = SimpleNamespace(plan=SimpleNamespace(payload={"release_sha": RELEASE, **BOUNDS}, trial_id=TRIAL, sha256=PLAN))
     return TrialGenerationPreflight(studio, gate, guard), calls, guards
 
 
@@ -48,8 +50,9 @@ def test_exact_preflight_only_get_and_fresh_bounded_response():
     assert len(calls) == 1 and len(guards) == 2
 
 
-def test_older_config_only_receipt_cannot_admit_work():
-    preflight, calls, _ = fixture(omit="upstream_api_auth_verified")
+@pytest.mark.parametrize("field", ["upstream_api_auth_verified", "not_before", "deadline", "kst_date"])
+def test_older_config_only_receipt_cannot_admit_work(field):
+    preflight, calls, _ = fixture(omit=field)
     with pytest.raises(TrialControllerBlocked):
         asyncio.run(preflight.verify())
     assert len(calls) == 1
@@ -64,6 +67,8 @@ def test_older_config_only_receipt_cannot_admit_work():
     {"observed_at": NOW.replace(tzinfo=None).isoformat()},
     {"observed_at": (NOW - timedelta(seconds=6)).isoformat()},
     {"observed_at": (NOW + timedelta(seconds=1)).isoformat()},
+    {"not_before": "2026-10-14T15:10:52Z"}, {"deadline": "2026-10-14T17:10:52Z"},
+    {"kst_date": "2026-10-14"},
 ])
 def test_bad_preflight_receipt_never_retries_or_continues(mutation):
     preflight, calls, _ = fixture(mutation=mutation)

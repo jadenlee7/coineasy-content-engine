@@ -6,6 +6,7 @@ import hashlib
 import json
 from types import SimpleNamespace
 from uuid import uuid4
+from trial_test_fixtures import TRIAL_ID, NOT_BEFORE, DAY, WORKER_ID
 
 import httpx
 import pytest
@@ -14,16 +15,16 @@ from core.automation.generation_client import GeneratedCatalogResult, StudioGene
 from core.automation.models import (AutomationState, ClaimedJob, PendingSource,
     QueueResult, StyleReferencePack)
 from core.automation.news_generation_journal import request_digest
-from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS, NOT_BEFORE,
+from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS,
     POLICY_SHA256, TrialOwner, TrialPlan, canonical_sha256)
-from core.automation.trial_producer_adapter import (DAY, ClaimedTrialGeneration,
+from core.automation.trial_producer_adapter import (ClaimedTrialGeneration,
     NaturalSlot, TrialNaturalProducerAdapter, TrialProducerBlocked, fixed_natural_input_sha256)
 
 NOW = datetime(2026, 10, 14, 15, 40, 51, tzinfo=timezone.utc)
-BODY = "Yellow launches a mainnet upgrade for this exact trial source"
+BODY = "babylonlabs_io launches a mainnet upgrade for this exact trial source"
 IMAGE = "https://pbs.twimg.com/media/fixture.jpg"
 CANONICAL_IMAGE = IMAGE + "?name=orig"
-SOURCE = "https://x.com/Yellow/status/123456789"
+SOURCE = "https://x.com/babylonlabs_io/status/123456789"
 
 
 class FakeRepository:
@@ -41,8 +42,8 @@ class FakeRepository:
 
     def _job(self):
         s = self.slot
-        return ClaimedJob(s.job_id, s.client_id, DAY, "daily_news", s.request_id,
-            s.source_item_id, BODY, SOURCE, IMAGE, False, 1, 3, "trial-worker")
+        return ClaimedJob(s.job_id, s.client_id, s.kst_date, "daily_news", s.request_id,
+            s.source_item_id, BODY, SOURCE, IMAGE, False, 1, 3, WORKER_ID)
 
     async def _rpc(self, name, params):
         self.calls.append((name, params))
@@ -53,7 +54,7 @@ class FakeRepository:
         raise AssertionError(name)
 
     def _claimed_job(self, raw, *, worker_id):
-        assert raw == {"fixture": "claimed"} and worker_id == "trial-worker"
+        assert raw == {"fixture": "claimed"} and worker_id == WORKER_ID
         return self.claim_result
 
     async def bind_execution_plane(self, **kwargs):
@@ -68,7 +69,7 @@ class FakeRepository:
 def trial(tmp_path):
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
-    data = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
+    data = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": NOT_BEFORE, "deadline": "2026-10-14T17:10:51Z",
         "kst_date": "2026-10-15", "client_ids": list(CLIENTS),
         "max_per_client": 1, "max_total": 3,
@@ -76,12 +77,12 @@ def trial(tmp_path):
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(data, canonical_sha256(data))
     owner = TrialOwner(private / f"{plan.trial_id}.trial-owner.sqlite3", plan)
-    slot = NaturalSlot(str(uuid4()), "yellow", str(uuid4()), str(uuid4()),
+    slot = NaturalSlot(str(uuid4()), "babylon", str(uuid4()), str(uuid4()),
         str(uuid4()), BODY, SOURCE, IMAGE,
-        StyleReferencePack("", "", "b" * 32, ()))
+        StyleReferencePack("", "", "b" * 32, ()), DAY)
     slot = NaturalSlot(slot.workspace_id, slot.client_id, slot.job_id, slot.request_id,
         slot.source_item_id, slot.source_content, slot.source_url, slot.source_image_url,
-        StyleReferencePack(slot.request_id, slot.source_item_id, "b" * 32, ()))
+        StyleReferencePack(slot.request_id, slot.source_item_id, "b" * 32, ()), DAY)
     repository = FakeRepository(slot)
     studio = StudioGenerationClient(base_url="https://coineasy-newscard.netlify.app",
         automation_token="synthetic-token-0123456789-0123456789")
@@ -95,10 +96,10 @@ def trial(tmp_path):
 def _reserve(trial, prepared):
     admission = trial.owner.admit(trial.plan.trial_id, NOW)
     assert admission is not None
-    assert trial.owner.reserve_phase(admission, "yellow:intake", "yellow", "1" * 64,
+    assert trial.owner.reserve_phase(admission, "babylon:intake", "babylon", "1" * 64,
         NOW, identifiers=trial.slot.identifiers())
-    assert trial.owner.finish_phase(admission, "yellow:intake", "2" * 64, NOW)
-    assert trial.owner.reserve_phase(admission, "yellow:generate", "yellow",
+    assert trial.owner.finish_phase(admission, "babylon:intake", "2" * 64, NOW)
+    assert trial.owner.reserve_phase(admission, "babylon:generate", "babylon",
         prepared.payload_sha256, NOW, identifiers=trial.slot.identifiers())
     return admission
 
@@ -108,41 +109,76 @@ def test_fixed_natural_input_sha_uses_exact_jsonb_shape(trial):
     text = "{" + ", ".join(json.dumps(k) + ": " + json.dumps(data[k]) for k in (
         "kst_date", "workflow", "request_id", "source_url", "manual_only",
         "content_kind", "source_content", "source_item_ids", "source_image_url")) + "}"
-    assert fixed_natural_input_sha256(data) == hashlib.sha256(text.encode()).hexdigest()
+    assert fixed_natural_input_sha256(data, kst_date=DAY) == hashlib.sha256(text.encode()).hexdigest()
     with pytest.raises(TrialProducerBlocked):
-        fixed_natural_input_sha256({**data, "kst_date": "2026-10-13"})
+        fixed_natural_input_sha256({**data, "kst_date": "2026-10-13"}, kst_date=DAY)
     with pytest.raises(TrialProducerBlocked):
-        fixed_natural_input_sha256({**data, "extra": "untrusted"})
+        fixed_natural_input_sha256({**data, "extra": "untrusted"}, kst_date=DAY)
+
+
+@pytest.mark.asyncio
+async def test_yellow_is_skipped_before_config_owner_or_client_io(trial, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Yellow performed per-client I/O")
+    monkeypatch.setattr("core.automation.trial_producer_adapter.load_client_config", forbidden)
+    monkeypatch.setattr(trial.owner, "_transaction", forbidden)
+    assert await trial.adapter.intake("yellow", before_effect=forbidden) is None
+    assert trial.repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_dynamic_plan_date_reaches_exact_claim_not_fixture_day(trial):
+    payload = {**trial.plan.payload, "not_before": "2026-10-16T15:10:51Z",
+        "deadline": "2026-10-16T17:10:51Z", "kst_date": "2026-10-17"}
+    plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
+    trial.adapter.owner = TrialOwner(trial.owner.path, plan)
+    now = NOW + timedelta(days=2)
+    trial.adapter.clock = lambda: now
+    slot = replace(trial.slot, kst_date=plan.kst_date)
+    trial.repository.slot = slot
+    trial.repository.claim_result = trial.repository._job()
+    trial.repository.context["source_published_at"] = (now - timedelta(hours=1)).isoformat()
+    prepared = await trial.adapter.claim_and_prepare(slot, worker_id=WORKER_ID, before_effect=lambda: None)
+    assert prepared.job.kst_date == date(2026, 10, 17)
+    assert trial.repository.calls[0][1]["target_input_sha256"] == fixed_natural_input_sha256(
+        slot.job_input(), kst_date=plan.kst_date)
+
+
+@pytest.mark.asyncio
+async def test_wrong_worker_cannot_claim_before_rpc(trial):
+    with pytest.raises(TrialProducerBlocked):
+        await trial.adapter.claim_and_prepare(trial.slot, worker_id="other-worker", before_effect=lambda: None)
+    assert trial.repository.calls == []
 
 
 @pytest.mark.asyncio
 async def test_exact_claim_and_full_canonical_payload(trial):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     name, params = trial.repository.calls[0]
     assert name == "claim_exact_natural_review_draft_job"
     assert params == {"target_workspace_id": trial.slot.workspace_id,
-        "target_client_id": "yellow", "target_job_id": trial.slot.job_id,
+        "target_client_id": "babylon", "target_job_id": trial.slot.job_id,
         "target_request_id": trial.slot.request_id,
         "target_source_item_id": trial.slot.source_item_id,
-        "target_input_sha256": fixed_natural_input_sha256(trial.slot.job_input()),
-        "target_style_pack_hash": "b" * 32, "target_worker_id": "trial-worker",
+        "target_input_sha256": fixed_natural_input_sha256(trial.slot.job_input(), kst_date=DAY),
+        "target_style_pack_hash": "b" * 32, "target_worker_id": WORKER_ID,
         "target_lease_seconds": 900}
     assert prepared.payload["source_image_url"] == CANONICAL_IMAGE
     assert prepared.payload["quality_context"]["source_image_url"] == CANONICAL_IMAGE
     assert prepared.payload["brand_review_guidance"] is None
-    assert prepared.payload_sha256 == request_digest("yellow", prepared.payload)
+    assert prepared.payload_sha256 == request_digest("babylon", prepared.payload)
     assert trial.repository.calls[1][0] == "bind"
     assert trial.repository.calls[2][0] == "get_quality_banner_generation_context"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client_id,quote,image", [
-    ("yellow", False, IMAGE), ("yellow", False, ""),
+    ("babylon", False, IMAGE), ("babylon", False, ""),
     ("babylon", True, ""), ("origintrail", True, ""),
 ])
 async def test_intake_uses_latest_natural_source_and_new_daily_slot(trial, client_id, quote, image):
-    handles = {"yellow": "Yellow", "babylon": "babylonlabs_io", "origintrail": "origin_trail"}
+    handles = {"babylon": "babylonlabs_io", "origintrail": "origin_trail"}
     source_url = f"https://x.com/{handles[client_id]}/status/123456789"
     media = [{"type": "photo", "url": image}] if image else []
     post = {"id": "123456789", "text": BODY, "url": source_url,
@@ -193,7 +229,7 @@ async def test_intake_reused_slot_is_not_generation_authority(trial):
     async def state(**kwargs):
         return AutomationState(None, True, ())
     trial.repository.get_state = state
-    assert await trial.adapter.intake("yellow", before_effect=lambda: None) is None
+    assert await trial.adapter.intake("babylon", before_effect=lambda: None) is None
 
 
 @pytest.mark.asyncio
@@ -220,7 +256,7 @@ async def test_intake_never_disguises_invalid_source_media_as_logo_only(trial, i
     trial.repository.record_trial_official_sources = record
     trial.adapter.x_client = X()
     with pytest.raises(TrialProducerBlocked, match="trial_producer_official_image_required"):
-        await trial.adapter.intake("yellow", before_effect=lambda: None)
+        await trial.adapter.intake("babylon", before_effect=lambda: None)
     assert trial.repository.calls == []
 
 
@@ -262,7 +298,7 @@ async def test_claim_rejects_wrong_date_denial_and_untrusted_context(trial, case
     else:
         trial.repository.context["source_sha256"] = "f" * 64
     with pytest.raises(TrialProducerBlocked):
-        await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+        await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
             before_effect=lambda: None)
 
 
@@ -275,7 +311,7 @@ async def test_claim_accepts_exact_empty_source_image_context(trial):
     trial.slot = replace(trial.slot, source_image_url="")
     trial.repository.claim_result = replace(trial.repository.claim_result, source_image_url="")
     trial.repository.context["source_image_url"] = ""
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     assert prepared.payload["source_image_url"] == ""
     assert prepared.payload["quality_context"]["source_image_url"] == ""
@@ -289,7 +325,7 @@ async def test_generation_one_exact_post_then_normal_complete(trial, logo_only):
         trial.slot = replace(trial.slot, source_image_url="")
         trial.repository.claim_result = replace(trial.repository.claim_result, source_image_url="")
         trial.repository.context["source_image_url"] = ""
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     _reserve(trial, prepared)
     calls = []
@@ -329,7 +365,7 @@ async def test_generation_one_exact_post_then_normal_complete(trial, logo_only):
 
 @pytest.mark.asyncio
 async def test_release_mismatch_blocks_before_generation_post(trial):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     _reserve(trial, prepared)
     async def wrong_contract(client, *, expected_release_sha):
@@ -346,7 +382,7 @@ async def test_release_mismatch_blocks_before_generation_post(trial):
 
 @pytest.mark.asyncio
 async def test_exact_pending_ack_allows_only_get_only_continuation(trial):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     _reserve(trial, prepared)
     sent, sleeps = [], []
@@ -378,7 +414,7 @@ async def test_exact_pending_ack_allows_only_get_only_continuation(trial):
     {"error": "quality_banner_pending", "retry": True},
 ])
 async def test_non_exact_pending_response_never_continues(trial, body):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     _reserve(trial, prepared)
     sent = []
@@ -397,7 +433,7 @@ async def test_non_exact_pending_response_never_continues(trial, body):
 
 @pytest.mark.asyncio
 async def test_collect_only_is_bounded_to_thirty_calls(trial):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     _reserve(trial, prepared)
     sent = []
@@ -420,7 +456,7 @@ async def test_collect_only_is_bounded_to_thirty_calls(trial):
 
 @pytest.mark.asyncio
 async def test_terminal_owner_after_pending_stops_collect_post(trial):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     admission = _reserve(trial, prepared)
     sent = []
@@ -443,7 +479,7 @@ async def test_terminal_owner_after_pending_stops_collect_post(trial):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["no_phase", "changed_payload", "terminal", "deadline", "transport_unknown"])
 async def test_generation_fails_closed_without_replay(trial, case):
-    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id=WORKER_ID,
         before_effect=lambda: None)
     admission = _reserve(trial, prepared) if case != "no_phase" else None
     if case == "changed_payload":

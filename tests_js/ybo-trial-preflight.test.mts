@@ -6,11 +6,12 @@ import { createYboTrialPreflightHandler, YBO_TRIAL_PREFLIGHT_PATH,
 import { STUDIO_BUILD_RELEASE_SHA } from "../netlify/functions/_shared/studio-release.generated.mts";
 
 const RELEASE = "a".repeat(40), PLAN = "b".repeat(64), TOKEN = "fixture-automation-" + "c".repeat(32);
-const TRIAL = "11111111-1111-4111-8111-111111111111", NOW = Date.parse("2026-10-14T15:30:51Z");
+const TRIAL = "1a2bef47-4827-4bc3-9b4d-5baf2714015d", NOW = Date.parse("2026-10-14T15:30:51Z");
 const URL = "https://coineasy-newscard.netlify.app" + YBO_TRIAL_PREFLIGHT_PATH;
 const RUNTIME = { deploy: { context: "production", id: "published-fixture", published: true } };
 const ENV: Record<string, string | undefined> = { STUDIO_AUTOMATION_TOKEN: TOKEN,
   YBO_TRIAL_RELEASE_SHA: RELEASE, YBO_TRIAL_ID: TRIAL, YBO_TRIAL_PLAN_SHA256: PLAN,
+  YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T17:10:51Z",
   YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "true", API_SECRET: "fixture-existing-admin",
   RAILWAY_API_URL: "https://coineasy-content-engine-production.up.railway.app",
   ...Object.fromEntries(YBO_TRIAL_REQUIRED_OFF_FLAGS.map(key => [key, "false"])) };
@@ -21,6 +22,7 @@ function request(url = URL, headers: Record<string, string> = {}, method = "GET"
 }
 const clients = () => ({ schema_version: "ybo-api-readiness@1", ready: true,
   trial_id: TRIAL, plan_sha256: PLAN, release_sha: RELEASE,
+  not_before: ENV.YBO_TRIAL_NOT_BEFORE, deadline: ENV.YBO_TRIAL_DEADLINE, kst_date: "2026-10-15",
   controller_enabled: true, broad_public_flags_off: true,
   client_ids: ["yellow", "babylon", "origintrail"], observed_at: new Date(NOW).toISOString() });
 function harness(env = ENV, release: string | null = RELEASE, now = NOW,
@@ -41,6 +43,7 @@ function harness(env = ENV, release: string | null = RELEASE, now = NOW,
 }
 const expected = (release = RELEASE) => ({ schema_version: "ybo-trial-preflight@1", ready: true,
   netlify_release_sha: release, trial_id: TRIAL, plan_sha256: PLAN,
+  not_before: ENV.YBO_TRIAL_NOT_BEFORE, deadline: ENV.YBO_TRIAL_DEADLINE, kst_date: "2026-10-15",
   generation_gateway_enabled: true, broad_public_flags_off: true, upstream_api_auth_verified: true,
   observed_at: new Date(NOW).toISOString() });
 
@@ -158,6 +161,9 @@ test("upstream auth failures, malformed/oversized replies and redirects are not 
     async () => Response.json({ ...clients(), release_sha: "f".repeat(40) }),
     async () => Response.json({ ...clients(), trial_id: "22222222-2222-4222-8222-222222222222" }),
     async () => Response.json({ ...clients(), plan_sha256: "f".repeat(64) }),
+    async () => Response.json({ ...clients(), not_before: "2026-10-14T15:11:51Z" }),
+    async () => Response.json({ ...clients(), deadline: "2026-10-14T17:11:51Z" }),
+    async () => Response.json({ ...clients(), kst_date: "2026-10-14" }),
     async () => Response.json({ ...clients(), broad_public_flags_off: false }),
     async () => Response.json({ ...clients(), observed_at: new Date(NOW - 6000).toISOString() }),
     async () => Response.json({ ...clients(), observed_at: new Date(NOW + 1000).toISOString() }),
@@ -183,7 +189,8 @@ test("configuration or fixed-window drift during auth GET cannot authorize intak
   for (const mutation of [() => ({ API_SECRET: "other-existing-admin" }),
     () => ({ YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "false" }),
     () => ({ NEWS_CARD_IDEMPOTENCY_ENABLED: "true" }),
-    () => ({ YBO_TRIAL_PLAN_SHA256: "d".repeat(64) })]) {
+    () => ({ YBO_TRIAL_PLAN_SHA256: "d".repeat(64) }),
+    () => ({ YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:11:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T17:11:51Z" })]) {
     const env = { ...ENV };
     const h = harness(env, RELEASE, NOW, async () => {
       Object.assign(env, mutation()); return Response.json(clients());
@@ -195,4 +202,23 @@ test("configuration or fixed-window drift during auth GET cannot authorize intak
   const handler = createYboTrialPreflightHandler({ getEnv: key => ENV[key], releaseSha: () => RELEASE,
     clock: () => now, fetcher: async () => { calls++; now = Date.parse("2026-10-14T17:10:51Z"); return Response.json(clients()); } });
   assert.equal((await handler(request(), RUNTIME)).status, 503); assert.equal(calls, 1);
+});
+test("preflight rejects another configured UUID and noncanonical or cross-KST bounds before API", async () => {
+  for (const delta of [{ YBO_TRIAL_NOT_BEFORE: undefined }, { YBO_TRIAL_DEADLINE: undefined },
+    { YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51.000Z" }, { YBO_TRIAL_DEADLINE: "2026-10-14T17:10:51+00:00" },
+    { YBO_TRIAL_DEADLINE: "2026-10-14T17:10:52Z" },
+    { YBO_TRIAL_NOT_BEFORE: "2026-10-14T14:10:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T16:10:51Z" },
+    { YBO_TRIAL_ID: "11111111-1111-4111-8111-111111111111" }]) {
+    const h = harness({ ...ENV, ...delta });
+    const headers = delta.YBO_TRIAL_ID ? { "X-Ybo-Trial-Id": delta.YBO_TRIAL_ID } : {};
+    assert.equal((await h.handler(request(URL, headers), RUNTIME)).status, 503); assert.equal(h.calls.length, 0);
+  }
+});
+test("preflight returns exact newly anchored bounds and derived KST day", async () => {
+  const start = "2026-11-01T23:10:51Z", deadline = "2026-11-02T01:10:51Z", now = Date.parse(start);
+  const h = harness({ ...ENV, YBO_TRIAL_NOT_BEFORE: start, YBO_TRIAL_DEADLINE: deadline }, RELEASE, now,
+    async () => Response.json({ ...clients(), not_before: start, deadline, kst_date: "2026-11-02", observed_at: start }));
+  const response = await h.handler(request(), RUNTIME); assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ...expected(), not_before: start, deadline, kst_date: "2026-11-02",
+    observed_at: new Date(now).toISOString() });
 });

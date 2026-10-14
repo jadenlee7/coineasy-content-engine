@@ -9,6 +9,7 @@ LOCAL-ONLY copy replaces exactly three clock_timestamp() calls with the fixture
 clock to exercise the fixed future window without widening the candidate.
 """
 import concurrent.futures
+from datetime import date
 import hashlib
 import json
 import os
@@ -69,23 +70,33 @@ def invoke(ctx, extra=''):
         + literal(ctx) + ")::text,'null');").splitlines()[-1]
 
 
-def previous_function(candidate, name, expected_sha256):
-    """Local-only reconstruction, pinned to the exact previously hosted body.
-
-    Reversing only the two timestamps and KST day must reproduce its digest.
-    Any non-window body edit fails before disposable installation.
-    """
+def previous_function(fixture, name, expected_sha256):
+    """Exact historical fixture, pinned to the current production body hash."""
     match = re.search(r'create or replace function public\.' + re.escape(name)
-        + r'[\s\S]*? as \$\$([\s\S]*?end )\$\$;', candidate)
+        + r'[\s\S]*? as \$\$([\s\S]*?end )\$\$;', fixture)
     if match is None:
         raise AssertionError('candidate_function_not_found')
-    previous = match.group(0).replace('2026-10-14T15:10:51Z', '2026-10-14T12:44:51Z') \
-        .replace('2026-10-14T17:10:51Z', '2026-10-14T14:44:51Z') \
-        .replace('2026-10-15', '2026-10-14')
+    previous = match.group(0)
     body = previous.split(' as $$', 1)[1].rsplit('$$;', 1)[0]
     if hashlib.sha256(body.encode()).hexdigest() != expected_sha256:
-        raise AssertionError('candidate_not_time_day_only')
+        raise AssertionError('prior_body_fixture_mismatch')
     return previous
+
+
+def proposal_statements(proposal):
+    """Extract only the exact outer rollback envelope; keep all body guards.
+
+    This does not execute or convert a production transaction. Operators must
+    separately hash the input and supply their own atomic transaction/receipt.
+    """
+    start = '\nbegin;\n'
+    finish = '\nrollback; -- LOCAL_ROLLBACK_PROOF; never change to COMMIT here.\n'
+    if proposal.count(start) != 1 or not proposal.endswith(finish):
+        raise AssertionError('rollback_proposal_envelope_invalid')
+    header, payload = proposal.split(start, 1)
+    if any(line.strip() and not line.lstrip().startswith('--') for line in header.splitlines()):
+        raise AssertionError('rollback_proposal_header_invalid')
+    return payload[:-len(finish)]
 
 
 class ExactNaturalClaimLocalTests(unittest.TestCase):
@@ -95,21 +106,79 @@ class ExactNaturalClaimLocalTests(unittest.TestCase):
         cls.original = (HERE / 'exact-natural-claim.rollback.sql').read_text()
         assert 'LOCAL_ROLLBACK_PROOF' in cls.original
         assert cls.original.count('clock_timestamp()') == 3
-        assert "'2026-10-14T15:10:51Z'" in cls.original
-        assert "'2026-10-14T17:10:51Z'" in cls.original
+        assert 'private.ybo_trial_readiness_anchor' in cls.original
+        assert '1a2bef47-4827-4bc3-9b4d-5baf2714015d' in cls.original
         assert re.search(r'rollback;[^\n]*\s*$', cls.original, re.I)
         assert sql("select to_regprocedure('" + SIGNATURE + "') is null") == 't'
         assert sql("select to_regnamespace('exact_claim_fixture') is null") == 't'
         # Only the disposable bootstrap installs the prior exact routine/ACL.
         # The candidate is replacement-only and cannot grant/revoke privileges.
-        previous = previous_function(cls.original, 'claim_exact_natural_review_draft_job',
-            '6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477')
+        previous = previous_function((HERE / 'exact_claim_prior_body.fixture.sql').read_text(),
+            'claim_exact_natural_review_draft_job',
+            '5373553023dbfae5270c631d087811ad40517f693638f71b6c8904b4509b720d')
         sql(previous + ' revoke all on function ' + SIGNATURE
             + ' from public,anon,authenticated,service_role; grant execute on function '
             + SIGNATURE + ' to service_role;')
         query = "select to_jsonb(p)::text from pg_proc p where oid='" + SIGNATURE + "'::regprocedure"
         before = sql(query)
-        # This parses/compiles the ORIGINAL fixed-date body and verifies its ACL
+        schema = (HERE.parent.parent / 'supabase/proposals/ybo_trial_readiness_anchor.rollback.sql').read_text()
+        assert schema.count('clock_timestamp()') == 1
+        assert sql("select to_regclass('private.ybo_trial_readiness_anchor') is null") == 't'
+        # Untouched schema + both guarded bodies are an atomic owner operation.
+        # Prove both explicit rollback and an error after all three candidates
+        # restore the prior catalog and remove every newly created object.
+        root = HERE.parent.parent
+        context_signature = 'public.get_quality_banner_generation_context(uuid,text,uuid)'
+        sql((root / 'supabase/proposals/quality_banner_generation_context.sql').read_text())
+        sql(previous_function((HERE / 'quality_context_prior_body.fixture.sql').read_text(),
+            'get_quality_banner_generation_context',
+            '4ab8c89d807d428e392e2cf63dbf2cfd17125a8e6d3203baf6a4585aba010197'))
+        context_query = "select to_jsonb(p)::text from pg_proc p where oid='" + context_signature + "'::regprocedure"
+        context_before = sql(context_query)
+        context_candidate = (root / 'supabase/proposals/quality_banner_generation_context_ybo_logo.rollback.sql').read_text()
+        operator_catalog = (HERE / 'readiness_anchor_operator_catalog.sql').read_text()
+        operator_before = json.loads(sql(operator_catalog))
+        assert operator_before['anchor_schema']['exists'] is False
+        assert operator_before['anchor_schema']['row_count'] == 0
+        operator_select = operator_catalog.removeprefix("begin read only;\nset local statement_timeout='15s';\n")
+        assert operator_select.endswith('\nrollback;\n')
+        operator_select = operator_select.removesuffix('\nrollback;\n')
+        atomic = 'begin;\n' + '\n'.join(proposal_statements(text)
+            for text in (schema, cls.original, context_candidate))
+        operator_after = json.loads(sql(atomic + '\n' + operator_select + '\nrollback;'))
+        assert operator_after['anchor_schema']['exists'] is True
+        assert operator_after['anchor_schema']['row_count'] == 0
+        for key in ('dependency_sha256','target_dependency_sha256','existing_security_catalog_sha256'):
+            assert operator_after[key] == operator_before[key], key
+        assert all(value['anchored_window_present'] for value in operator_after['target_functions'].values())
+        catalog = json.loads(sql(atomic + '\n'
+            + (HERE / 'readiness_anchor_catalog.sql').read_text() + '\nrollback;'))
+        assert catalog['row_count'] == 0 and catalog['owner_matches_existing_routines']
+        assert catalog['runtime_roles_have_no_access'] and catalog['policy_count'] == 0
+        assert catalog['public_table_acl_count'] == catalog['public_guard_acl_count'] == 0
+        assert catalog['non_owner_table_acl_count'] == catalog['non_owner_guard_acl_count'] == 0
+        assert catalog['rls_enabled'] and not catalog['rls_forced']
+        assert catalog['guard_security_definer'] is False and catalog['guard_volatility'] == 'v'
+        assert catalog['relkind'] == 'r' and catalog['persistence'] == 'p'
+        assert len(catalog['columns']) == 7 and len(catalog['triggers']) == 2
+        assert all(trigger['enabled'] == 'O' for trigger in catalog['triggers'])
+        print('anchor_catalog_proof=' + json.dumps({key: catalog[key] for key in (
+            'owner','guard_owner','constraints_sha256','triggers_sha256','guard_body_sha256','row_count')}))
+        with unittest.TestCase().assertRaisesRegex(AssertionError, 'division by zero'):
+            sql(atomic + '\nselect 1/0;\ncommit;')
+        assert sql(query) == before
+        assert sql(context_query) == context_before
+        assert sql("select to_regclass('private.ybo_trial_readiness_anchor') is null "
+            "and to_regprocedure('private.guard_ybo_trial_readiness_anchor()') is null") == 't'
+        sql('drop function ' + context_signature + ';')
+        sql(schema)
+        assert sql("select to_regclass('private.ybo_trial_readiness_anchor') is null") == 't'
+        fixture = (HERE / 'exact_claim_fixture.sql').read_text()
+        sql(fixture)
+        local_schema = schema.replace('clock_timestamp()', 'exact_claim_fixture.anchor_clock()')
+        sql(re.sub(r'rollback;[^\n]*\s*$', 'commit;\n', local_schema, flags=re.I))
+        sql((HERE / 'readiness_anchor_cases.sql').read_text())
+        # This parses/compiles the ORIGINAL anchored body and verifies its ACL
         # while inside the original transaction, then rolls the entire DDL back.
         proof = """
 do $$begin
@@ -123,11 +192,9 @@ rollback;
         sql(re.sub(r'rollback;[^\n]*\s*$', lambda _: proof, cls.original, flags=re.I))
         assert sql(query) == before
         # The only body modification is clock substitution in the disposable DB.
-        fixture = (HERE / 'exact_claim_fixture.sql').read_text()
         body = cls.original.replace('clock_timestamp()', 'exact_claim_fixture.clock()')
         body = re.sub(r'rollback;[^\n]*\s*$', 'commit;\n', body, flags=re.I)
         # Helpers reference the candidate; PL/pgSQL resolves it at invocation.
-        sql(fixture)
         sql(body)
         after = json.loads(sql(query))
         expected = json.loads(before)
@@ -139,12 +206,31 @@ rollback;
             assert 'exact_claim_previous_body_mismatch' in str(error)
         else:
             raise AssertionError('changed_claim_body_not_rejected')
+        # No row means OFF: even the exact worker cannot claim or mutate jobs.
+        ctx = json.loads(sql('select exact_claim_fixture.seed();'))
+        state = sql('select exact_claim_fixture.snapshot();')
+        assert invoke(ctx) == 'null'
+        assert sql('select exact_claim_fixture.snapshot();') == state
+        insert = "insert into private.ybo_trial_readiness_anchor values (" \
+            "'5cc143cc-b253-4841-8a6c-ab3ac98623a6','1a2bef47-4827-4bc3-9b4d-5baf2714015d'," \
+            "repeat('b',64),repeat('a',40),'2026-10-14T15:10:51Z','2026-10-14T17:10:51Z','2026-10-15');"
+        def concurrent_insert(_):
+            try:
+                sql(insert)
+                return True
+            except AssertionError as error:
+                assert 'ybo_readiness_anchor_already_fixed' in str(error) or 'duplicate key' in str(error)
+                return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            assert sum(pool.map(concurrent_insert, range(2))) == 1
+        assert sql('select count(*) from private.ybo_trial_readiness_anchor') == '1'
 
     @classmethod
     def tearDownClass(cls):
         # Only objects created by this test; fixture data uses distinct workspaces
         # and remains in the disposable DB for operator inspection until teardown.
-        sql('drop function ' + SIGNATURE + '; drop schema exact_claim_fixture cascade;')
+        sql('drop function ' + SIGNATURE + '; drop table private.ybo_trial_readiness_anchor;'
+            'drop function private.guard_ybo_trial_readiness_anchor(); drop schema exact_claim_fixture cascade;')
 
     def test_01_positive_negative_acl_no_other_rows(self):
         sql((HERE / 'exact_claim_cases.sql').read_text(), timeout=90)
@@ -213,7 +299,7 @@ rollback;
         args = [repr(ctx['workspace_id']) + '::uuid', repr(ctx['client_id']),
             repr(ctx['job_id']) + '::uuid', repr(ctx['request_id']) + '::uuid',
             repr(ctx['source_item_id']) + '::uuid', repr(ctx['input_sha256']),
-            repr(ctx['style_pack_hash']), "'fixture-worker'", '900']
+            repr(ctx['style_pack_hash']), "'ybo-trial:1a2bef47-4827-4bc3-9b4d-5baf2714015d'", '900']
         cases = [(index, 'null') for index in range(9)] + [
             (1, "'squid'"), (1, "'unknown'"), (5, "'bad'"),
             (5, "repeat('A',64)"), (6, "'bad'"), (6, "repeat('B',32)"),
@@ -242,7 +328,7 @@ rollback;
             'source_image_url': 'https://pbs.twimg.com/media/fixture.jpg?name=orig',
             'manual_only': False}
         pg_text = sql('select ' + literal(value) + '::text;')
-        self.assertEqual(fixed_natural_input_sha256(value),
+        self.assertEqual(fixed_natural_input_sha256(value, kst_date=date(2026, 10, 15)),
             hashlib.sha256(pg_text.encode('utf8')).hexdigest())
 
     def test_09_python_hash_matches_seeded_natural_job(self):
@@ -250,7 +336,7 @@ rollback;
         ctx = json.loads(sql('select exact_claim_fixture.seed();'))
         actual = json.loads(sql('select input::text from public.jobs where id='
             + repr(ctx['job_id']) + '::uuid;'))
-        self.assertEqual(fixed_natural_input_sha256(actual), ctx['input_sha256'])
+        self.assertEqual(fixed_natural_input_sha256(actual, kst_date=date(2026, 10, 15)), ctx['input_sha256'])
 
     def test_10_quality_logo_proposal_rolls_back_and_preserves_acl_catalog(self):
         root = HERE.parent.parent
@@ -260,12 +346,13 @@ rollback;
         candidate = candidate_path.read_text()
         self.assertIn('LOCAL_ROLLBACK_PROOF', candidate)
         self.assertRegex(candidate, r'rollback;[^\n]*\s*$')
-        self.assertIn("'2026-10-14T15:10:51Z'", candidate)
-        self.assertIn("'2026-10-14T17:10:51Z'", candidate)
+        self.assertIn('private.ybo_trial_readiness_anchor', candidate)
+        self.assertIn('1a2bef47-4827-4bc3-9b4d-5baf2714015d', candidate)
         self.assertEqual(sql("select to_regprocedure('" + signature + "') is null"), 't')
         sql(historical)
-        sql(previous_function(candidate, 'get_quality_banner_generation_context',
-            '52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e'))
+        sql(previous_function((HERE / 'quality_context_prior_body.fixture.sql').read_text(),
+            'get_quality_banner_generation_context',
+            '4ab8c89d807d428e392e2cf63dbf2cfd17125a8e6d3203baf6a4585aba010197'))
         try:
             query = "select to_jsonb(p)::text from pg_proc p where oid='" + signature + "'::regprocedure"
             before = sql(query)
@@ -284,6 +371,16 @@ rollback;
                 self.assertEqual(sql("select has_function_privilege('" + role + "','" + signature
                     + "','EXECUTE')"), allowed)
             sql((HERE / 'quality_logo_context_cases.sql').read_text(), timeout=90)
+            # Full atomic replay cannot replace/reset the immutable table or
+            # any existing row, even when both function proposals accompany it.
+            schema = (root / 'supabase/proposals/ybo_trial_readiness_anchor.rollback.sql').read_text()
+            state = sql('select exact_claim_fixture.snapshot();')
+            context_after = sql(query)
+            with self.assertRaisesRegex(AssertionError, 'already exists'):
+                sql('begin;\n' + '\n'.join(proposal_statements(text)
+                    for text in (schema, self.original, candidate)) + '\ncommit;')
+            self.assertEqual(sql(query), context_after)
+            self.assertEqual(sql('select exact_claim_fixture.snapshot();'), state)
             # Reapplying against any altered body must fail closed.
             with self.assertRaisesRegex(AssertionError, 'quality_context_previous_body_mismatch'):
                 sql(candidate)

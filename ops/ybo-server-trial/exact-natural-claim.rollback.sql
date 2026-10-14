@@ -1,4 +1,4 @@
--- LOCAL_ROLLBACK_PROOF: time/day-only rewindow of installed logo-only admission.
+-- LOCAL_ROLLBACK_PROOF: one immutable readiness anchor; no runtime anchor writes.
 -- Repository-only proof input, not a migration or production apply script.
 -- The transaction always rolls back; executable fixture tests separately
 -- substitute a local clock only inside a disposable PostgreSQL instance.
@@ -7,7 +7,7 @@ begin;
 do $$begin
   if (select encode(extensions.digest(convert_to(prosrc,'UTF8'),'sha256'),'hex')
       from pg_proc where oid='public.claim_exact_natural_review_draft_job(uuid,text,uuid,uuid,uuid,text,text,text,integer)'::regprocedure)
-      is distinct from '6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477' then
+      is distinct from '5373553023dbfae5270c631d087811ad40517f693638f71b6c8904b4509b720d' then
     raise exception 'exact_claim_previous_body_mismatch';
   end if;
 end $$;
@@ -27,9 +27,9 @@ create or replace function public.claim_exact_natural_review_draft_job(
     target_lease_seconds integer default 900
 ) returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-    gate_start constant timestamptz := '2026-10-14T15:10:51Z';
-    gate_end constant timestamptz := '2026-10-14T17:10:51Z';
-    gate_day constant date := '2026-10-15';
+    gate_start timestamptz;
+    gate_end timestamptz;
+    gate_day date;
     job public.jobs%rowtype;
     slot private.official_x_daily_slots%rowtype;
     source public.source_items%rowtype;
@@ -52,6 +52,15 @@ begin
        or target_lease_seconds is null or target_lease_seconds not between 60 and 900 then
         raise exception 'exact_natural_claim_arguments_invalid' using errcode='22023';
     end if;
+    -- This exact trial never retries the prior uncertain Yellow work. A missing
+    -- anchor is default OFF. No caller-selected window or alternate trial ID.
+    if target_client_id='yellow' or target_worker_id is distinct from
+        'ybo-trial:1a2bef47-4827-4bc3-9b4d-5baf2714015d' then return null; end if;
+    select anchor.not_before,anchor.deadline,anchor.kst_date into gate_start,gate_end,gate_day
+      from private.ybo_trial_readiness_anchor as anchor
+      where anchor.trial_id='1a2bef47-4827-4bc3-9b4d-5baf2714015d'::uuid
+        and anchor.workspace_id=target_workspace_id;
+    if not found then return null; end if;
     decision_now := clock_timestamp();
     if decision_now < gate_start or decision_now >= gate_end
        or timezone('Asia/Seoul',decision_now)::date <> gate_day then return null; end if;
