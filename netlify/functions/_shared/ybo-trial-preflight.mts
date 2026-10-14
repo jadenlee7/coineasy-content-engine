@@ -1,5 +1,5 @@
-/** Pure runtime-config proof before a hosted trial can reserve any daily slot.
- * No owner, catalog, database, provider, fetcher or sender dependency exists. */
+/** Config and existing upstream credential proof before daily-slot admission.
+ * One bounded API configuration GET only; no owner, database, provider or send. */
 import type { Context } from "@netlify/functions";
 import { constantTimeAccessCodeMatch } from "./studio-session.mts";
 
@@ -15,7 +15,7 @@ const START = Date.parse("2026-10-14T12:44:51Z"), END = Date.parse("2026-10-14T1
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 type Runtime = Readonly<Pick<Context, "deploy">>;
 type Dependencies = { getEnv: (name: string) => string | undefined; releaseSha: () => string | null;
-  clock?: () => number };
+  clock?: () => number; fetcher?: typeof fetch };
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: {
   "Cache-Control": "no-store", "CDN-Cache-Control": "no-store", "Netlify-CDN-Cache-Control": "no-store",
   "Vary": "X-Studio-Automation-Key", "X-Content-Type-Options": "nosniff",
@@ -49,15 +49,59 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || !plan || !/^[a-f0-9]{64}$/.test(plan) || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
         || !Number.isFinite(now) || !(START <= now && now < END)
         || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"
-        || !YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => deps.getEnv(key) === "false")
-        || !(deps.getEnv("API_SECRET")?.trim())
-        || (deps.getEnv("RAILWAY_API_URL") || API).replace(/\/+$/, "") !== API) {
+        || !YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => deps.getEnv(key) === "false")) {
         return json({ error: "trial_preflight_blocked" }, 503);
       }
+      const apiSecret = deps.getEnv("API_SECRET"), apiOrigin = deps.getEnv("RAILWAY_API_URL");
+      if (typeof apiSecret !== "string" || apiSecret !== apiSecret.trim()
+        || apiSecret.length < 16 || apiSecret.length > 4096 || /[\r\n]/.test(apiSecret)
+        || typeof apiOrigin !== "string" || apiOrigin.replace(/\/+$/, "") !== API) {
+        return json({ error: "trial_preflight_blocked" }, 503);
+      }
+      // /clients authenticates the exact Netlify-configured API credential,
+      // then reads local client configuration. It cannot admit a trial, touch
+      // an owner, reserve a job/budget, generate content, or send a message.
+      const response = await (deps.fetcher ?? fetch)(API + "/clients", {
+        method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(4000),
+        headers: { "X-API-Key": apiSecret, "Accept": "application/json", "Accept-Encoding": "identity" },
+      });
+      if (response.status !== 200 || response.redirected
+        || response.headers.get("content-type")?.split(";", 1)[0] !== "application/json"
+        || (response.headers.get("content-encoding") ?? "identity") !== "identity"
+        || response.headers.has("content-range")) throw Error();
+      const length = response.headers.get("content-length"), limit = 16_384;
+      if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > limit)) throw Error();
+      const reader = response.body?.getReader(); if (!reader) throw Error();
+      const chunks: Uint8Array[] = []; let size = 0;
+      try {
+        for (;;) {
+          const next = await reader.read(); if (next.done) break;
+          size += next.value.length;
+          if (size > limit) { await reader.cancel(); throw Error(); }
+          chunks.push(next.value);
+        }
+      } finally { reader.releaseLock(); }
+      if (!size || (length !== null && Number(length) !== size)) throw Error();
+      const clients = JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
+      if (!Array.isArray(clients) || clients.length < 3 || clients.length > 32
+        || clients.some(row => !row || typeof row !== "object" || Array.isArray(row)
+          || typeof row.client_id !== "string" || !/^[a-z0-9_-]{1,64}$/.test(row.client_id)
+          || typeof row.active !== "boolean")
+        || new Set(clients.map(row => row.client_id)).size !== clients.length
+        || !["yellow", "babylon", "origintrail"].every(id => clients.some(row => row.client_id === id && row.active === true))) {
+        throw Error();
+      }
+      const observed = (deps.clock ?? Date.now)();
+      if (!Number.isFinite(observed) || observed < now || !(START <= observed && observed < END)
+        || deps.releaseSha() !== release || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
+        || deps.getEnv("YBO_TRIAL_ID") !== trialId || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
+        || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"
+        || !YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => deps.getEnv(key) === "false")
+        || deps.getEnv("API_SECRET") !== apiSecret || deps.getEnv("RAILWAY_API_URL") !== apiOrigin) throw Error();
       return json({ schema_version: "ybo-trial-preflight@1", ready: true,
         netlify_release_sha: release, trial_id: trialId, plan_sha256: plan,
         generation_gateway_enabled: true, broad_public_flags_off: true,
-        observed_at: new Date(now).toISOString() });
+        upstream_api_auth_verified: true, observed_at: new Date(observed).toISOString() });
     } catch { return json({ error: "trial_preflight_unavailable" }, 503); }
   };
 }

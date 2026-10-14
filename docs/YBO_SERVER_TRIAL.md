@@ -74,13 +74,19 @@ Before each client intake, the hosted controller makes one authenticated
 `GET /api/ybo-trial-preflight` on the fixed production Studio origin. Existing
 `X-Studio-Automation-Key`, `X-Studio-Expected-Release-Sha`, `X-Ybo-Trial-Id`, and
 `X-Ybo-Trial-Plan-Sha256` headers must match the published build and exact trial
-pins. The endpoint is local-only: it performs no DB, owner, provider or send
-operation. It requires the generation trial flag ON and **literal** `false` for
+pins. The endpoint performs no DB, owner, provider or send operation. It
+requires the generation trial flag ON and **literal** `false` for
 `QUALITY_BANNER_ENABLED`, `NEWS_CARD_IDEMPOTENCY_ENABLED`, all four broad
 gateway/review flags, and `STUDIO_TELEGRAM_PUBLISH_ENABLED`. A missing OFF flag
 is a failure, not a default. It also checks the fixed API address and presence
-of the existing API secret; it does **not** authenticate that secret upstream.
-Pure preflight success is not generation, delivery, budget or API-owner proof.
+and bounded format of the existing API secret.
+After those local checks, it authenticates the existing Netlify `API_SECRET`
+with one bounded `GET /clients` on the fixed API origin. Redirects, errors,
+oversized/malformed responses, missing active YBO clients, and configuration or
+deadline drift fail closed without retries. The API endpoint reads only local
+client configuration. The receipt requires `upstream_api_auth_verified=true`;
+older config-only receipts are rejected before intake. Preflight success is
+not generation, delivery, budget or API-owner proof.
 
 An absent, invalid, redirected, stale or unavailable preflight stops the durable
 trial before any intake phase, slot or job is reserved. The owner may be admitted
