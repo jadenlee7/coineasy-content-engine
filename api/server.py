@@ -1178,6 +1178,38 @@ async def authorize_trial_generation(req: TrialGenerationAuthorizationRequest,
         "observed_at": gate.clock().astimezone(timezone.utc).isoformat()}
 
 
+@app.get("/internal/trial/readiness")
+async def read_trial_readiness(x_api_key: str = Header(default="")):
+    """Pure current ON-runtime proof: no owner/database/provider/send access."""
+    if _check_auth(x_api_key) != "admin":
+        raise HTTPException(403, "trial_admin_required")
+    # A previous OFF deployment must never satisfy replacement readiness.
+    if os.environ.get("YBO_TRIAL_CONTROLLER_ENABLED") != "true":
+        raise HTTPException(503, "trial_generation_disabled")
+    if any(os.environ.get(key, "false") != "false" for key in (
+            "QUALITY_BANNER_ENABLED", "NEWS_CARD_IDEMPOTENCY_ENABLED",
+            "TELEGRAM_PUBLICATION_ENABLED", "CONTENT_OPS_REVIEW_ENABLED",
+            "CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED")):
+        raise HTTPException(503, "trial_generation_global_flag_on")
+    gate = _authenticated_trial_gate(x_api_key)
+    now = gate.clock()
+    start = datetime.fromisoformat(gate.plan.payload["not_before"].replace("Z", "+00:00"))
+    if not start <= now < gate.plan.deadline:
+        raise HTTPException(503, "trial_generation_disabled")
+    required = ["yellow", "babylon", "origintrail"]
+    active = [cfg.client_id for cfg in list_active_clients() if cfg.active is True]
+    if any(active.count(client) != 1 for client in required):
+        raise HTTPException(503, "trial_generation_unavailable")
+    # Constructing the validated gate checks image/plan/local directory only.
+    # Do not call owner.inspect/admit or require a background task here.
+    return JSONResponse({"schema_version": "ybo-api-readiness@1", "ready": True,
+        "trial_id": gate.plan.trial_id, "plan_sha256": gate.plan.sha256,
+        "release_sha": gate.plan.payload["release_sha"], "controller_enabled": True,
+        "broad_public_flags_off": True, "client_ids": required,
+        "observed_at": now.astimezone(timezone.utc).isoformat()},
+        headers={"Cache-Control": "no-store", "Vary": "X-API-Key"})
+
+
 @app.post("/internal/trial/manifest")
 async def read_trial_manifest(req: TrialManifestRequest, x_api_key: str = Header(default="")):
     """Read server-owned immutable manifest; callers cannot publish one."""
