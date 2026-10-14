@@ -6,7 +6,7 @@ import { createYboTrialPreflightHandler, YBO_TRIAL_PREFLIGHT_PATH,
 import { STUDIO_BUILD_RELEASE_SHA } from "../netlify/functions/_shared/studio-release.generated.mts";
 
 const RELEASE = "a".repeat(40), PLAN = "b".repeat(64), TOKEN = "fixture-automation-" + "c".repeat(32);
-const TRIAL = "11111111-1111-4111-8111-111111111111", NOW = Date.parse("2026-10-14T13:04:51Z");
+const TRIAL = "11111111-1111-4111-8111-111111111111", NOW = Date.parse("2026-10-14T15:30:51Z");
 const URL = "https://coineasy-newscard.netlify.app" + YBO_TRIAL_PREFLIGHT_PATH;
 const RUNTIME = { deploy: { context: "production", id: "published-fixture", published: true } };
 const ENV: Record<string, string | undefined> = { STUDIO_AUTOMATION_TOKEN: TOKEN,
@@ -124,10 +124,10 @@ test("no method/body/query can select an operation or bypass the fixed window", 
   }
   const req = request(); Object.defineProperty(req, "body", { value: new ReadableStream() });
   assert.equal((await harness().handler(req, RUNTIME)).status, 400);
-  for (const now of [NaN, Date.parse("2026-10-14T12:44:50.999Z"), Date.parse("2026-10-14T14:44:51Z")]) {
+  for (const now of [NaN, Date.parse("2026-10-14T15:10:50.999Z"), Date.parse("2026-10-14T17:10:51Z")]) {
     assert.equal((await harness(ENV, RELEASE, now).handler(request(), RUNTIME)).status, 503);
   }
-  assert.equal((await harness(ENV, RELEASE, Date.parse("2026-10-14T12:44:51Z")).handler(request(), RUNTIME)).status, 200);
+  assert.equal((await harness(ENV, RELEASE, Date.parse("2026-10-14T15:10:51Z")).handler(request(), RUNTIME)).status, 200);
 });
 test("real wrapper pins native runtime and build stamp; no mutable env release fallback", async () => {
   assert.equal(config.path, YBO_TRIAL_PREFLIGHT_PATH);
@@ -193,6 +193,6 @@ test("configuration or fixed-window drift during auth GET cannot authorize intak
   }
   let now = NOW, calls = 0;
   const handler = createYboTrialPreflightHandler({ getEnv: key => ENV[key], releaseSha: () => RELEASE,
-    clock: () => now, fetcher: async () => { calls++; now = Date.parse("2026-10-14T14:44:51Z"); return Response.json(clients()); } });
+    clock: () => now, fetcher: async () => { calls++; now = Date.parse("2026-10-14T17:10:51Z"); return Response.json(clients()); } });
   assert.equal((await handler(request(), RUNTIME)).status, 503); assert.equal(calls, 1);
 });

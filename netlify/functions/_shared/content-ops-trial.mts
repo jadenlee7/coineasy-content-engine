@@ -8,7 +8,7 @@ export type TrustedTrialResolver = (identity: Readonly<{ trial_id: string; plan_
 export type TrialScope = { mode: "trial"; content_version_id: string;
   packet_mode: "trial_delivery_only_v1"; trial_id: string; plan_sha256: string; manifest_sha256: string };
 export type TrialAdmission = { scope: TrialScope; entry: Json; assertActive: () => Promise<void> };
-const START = Date.parse("2026-10-14T12:44:51Z"), END = Date.parse("2026-10-14T14:44:51Z");
+const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
 const CLIENTS = ["yellow", "babylon", "origintrail"];
 const HEX = /^[a-f0-9]{64}$/;
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
@@ -66,7 +66,7 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
       "destination_policy_sha256", "entries"])
       && m.contract === "ybo-trial-courier-manifest@1" && m.trial_id === trialId && m.plan_sha256 === plan
       && m.release_sha === release && m.destination_policy_sha256 === policy
-      && m.not_before === "2026-10-14T12:44:51Z" && stamp(m.deadline) > START
+      && m.not_before === "2026-10-14T15:10:51Z" && stamp(m.deadline) > START
       && stamp(m.deadline) <= END && now < stamp(m.deadline)
       && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= 3);
     const clients = new Set(), ids = new Set();
@@ -125,12 +125,12 @@ export async function verifyTrialProjection(admission: TrialAdmission, cfg: Conf
     // complete_review_draft_job preserves the natural job's null item column;
     // immutable generated identities are persisted in output, checked below.
     && job.content_item_id === null
-    && job.idempotency_key === `official-x-review:v1:2026-10-14:${e.client_id}`
+    && job.idempotency_key === `official-x-review:v1:2026-10-15:${e.client_id}`
     && [job.created_at, job.started_at, job.finished_at].every(t => START <= stamp(t) && stamp(t) <= clock() && stamp(t) < END)
     && stamp(job.created_at) <= stamp(job.started_at) && stamp(job.started_at) <= stamp(job.finished_at)
     && record(job.input) && record(job.output)
     && job.input.workflow === "official_x_review_draft_v1" && job.input.content_kind === "daily_news"
-    && job.input.manual_only === false && job.input.kst_date === "2026-10-14" && job.input.request_id === e.request_id
+    && job.input.manual_only === false && job.input.kst_date === "2026-10-15" && job.input.request_id === e.request_id
     && canonical(job.input.source_item_ids) === canonical([e.source_item_id])
     && job.output.content_item_id === e.content_item_id && job.output.content_version_id === e.content_version_id
     && canonical(job.output.source_item_ids) === canonical([e.source_item_id]));

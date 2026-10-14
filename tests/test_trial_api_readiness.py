@@ -16,13 +16,13 @@ def ready(tmp_path, monkeypatch):
     from api import server, security
     from core.automation.trial_owner import TrialOwner
     payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
-        "not_before": "2026-10-14T12:44:51Z", "deadline": "2026-10-14T14:44:51Z",
-        "kst_date": "2026-10-14", "client_ids": ["yellow", "babylon", "origintrail"],
+        "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
+        "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
         "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10000000,
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
     tmp_path.chmod(0o700)
-    now = [datetime(2026, 10, 14, 14, 20, tzinfo=timezone.utc)]
+    now = [datetime(2026, 10, 14, 16, 46, 0, tzinfo=timezone.utc)]
     env = {"YBO_TRIAL_CONTROLLER_ENABLED": "true", "YBO_TRIAL_API_MODE": "true",
         "YBO_TRIAL_PLAN_JSON": json.dumps(payload), "YBO_TRIAL_PLAN_SHA256": plan.sha256,
         "RAILWAY_GIT_COMMIT_SHA": "a" * 40, "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(tmp_path),
@@ -78,8 +78,8 @@ def test_plan_release_and_flags_fail_closed(ready, monkeypatch, key, value):
     assert list(ready.root.iterdir()) == []
 
 
-@pytest.mark.parametrize("at", [datetime(2026, 10, 14, 12, 44, 50, tzinfo=timezone.utc),
-    datetime(2026, 10, 14, 14, 44, 51, tzinfo=timezone.utc)])
+@pytest.mark.parametrize("at", [datetime(2026, 10, 14, 15, 10, 50, tzinfo=timezone.utc),
+    datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)])
 def test_readiness_fixed_window(ready, at):
     ready.now[0] = at
     assert ready.client.get("/internal/trial/readiness", headers=ready.headers).status_code == 503

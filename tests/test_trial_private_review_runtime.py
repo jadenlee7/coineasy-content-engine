@@ -48,7 +48,7 @@ def manifest(clients=("yellow",)):
             "x_copy_sha256": hashlib.sha256(X.encode()).hexdigest()})
     p = {"contract": "ybo-trial-courier-manifest@1", "trial_id": uid(1), "plan_sha256": "b"*64,
         "release_sha": SHA, "destination_policy_sha256": env()["CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256"],
-        "not_before": "2026-10-14T12:44:51Z", "deadline": "2026-10-14T14:44:51Z", "entries": entries}
+        "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z", "entries": entries}
     return TrialManifest.from_mapping(p, canonical_sha256(p))
 
 
@@ -223,7 +223,7 @@ def test_real_exact_canary_four_parts_static_controls_mock_http():
             "X-Content-Ops-Trial-Manifest-Sha256": identity["manifest_sha256"]})
         if action == "reconcile": key, value = "queued", 1
         elif action == "claim": key, value = "claim", {"outbox_id": uid(91), "claim_token": b["claim_token"],
-            "client_id": "yellow", "kst_date": "2026-10-14", "content_item_id": e["content_item_id"],
+            "client_id": "yellow", "kst_date": "2026-10-15", "content_item_id": e["content_item_id"],
             "content_version_id": e["content_version_id"], "source_item_id": e["source_item_id"],
             "generate_job_id": e["job_id"], "banner_sha256": e["banner_sha256"], "title": "검수용",
             "telegram_copy": TG, "x_copy": X, "source_url": "https://x.com/Yellow/status/123",
@@ -233,7 +233,7 @@ def test_real_exact_canary_four_parts_static_controls_mock_http():
             key, args, step = "owner", b["args"], b["step"]
             value = {"execution_authorized": False}
             if step == "prepare": value.update(status="review_prepared", review_id=args["review_id"], epoch=0,
-                state="active", version_fingerprint="e"*64, expires_at="2026-10-14T13:29:51Z")
+                state="active", version_fingerprint="e"*64, expires_at="2026-10-14T15:55:51Z")
             elif step == "bind": value.update(status="bound")
             elif step == "reserve": value.update(status="reserved", new_attempt=True)
             elif step == "confirm": value.update(status="confirmed", new_confirmation=True)

@@ -27,7 +27,7 @@ from core.automation.trial_owner import CLIENTS, canonical_sha256
 from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter
 from core.sources.x_client import XClient
 
-START = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
+START = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
 
 
 class TrialControllerBlocked(ValueError):
@@ -279,6 +279,12 @@ class HostedTrialController:
         stage = "preflight"
         try:
             for client in CLIENTS:
+                # This approved rewindow explicitly preserves the earlier
+                # uncertain Yellow job, even across the KST date boundary.
+                # Skip before preflight, owner phase, source read or DB access.
+                if client == "yellow":
+                    result["skipped_clients"].append(client)
+                    continue
                 # Prove the published gateway's exact pins and literal OFF
                 # flags before even reserving an intake phase/daily slot/job.
                 stage = "preflight"

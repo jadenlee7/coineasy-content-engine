@@ -1,4 +1,4 @@
--- LOCAL_ROLLBACK_PROOF / PROPOSAL ONLY: time-bounded YBO logo-only context.
+-- LOCAL_ROLLBACK_PROOF / PROPOSAL ONLY: time/day-only YBO logo-context rewindow.
 -- Requires separate production approval; not a migration or auto-apply script.
 -- Historical quality_banner_generation_context.sql is intentionally unchanged.
 -- Compile/readback in a disposable DB first. No ACL/owner/signature change,
@@ -8,7 +8,7 @@ begin;
 do $$begin
   if (select encode(extensions.digest(convert_to(prosrc,'UTF8'),'sha256'),'hex')
       from pg_proc where oid='public.get_quality_banner_generation_context(uuid,text,uuid)'::regprocedure)
-      is distinct from 'ddf0376b0bda5d253e2a4f3351b0fce2f81c9d459b6881ab2a20de8ae9656ab0' then
+      is distinct from '52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e' then
     raise exception 'quality_context_previous_body_mismatch';
   end if;
 end $$;
@@ -71,14 +71,14 @@ begin
           -- Trial-only official-logo path: genuine empty media and an explicit
           -- empty JSON string, never NULL/missing/non-string/omitted evidence.
           source.media='[]'::jsonb and job.input->'source_image_url'='""'::jsonb
-          and statement_timestamp()>='2026-10-14T12:44:51Z'::timestamptz
-          and statement_timestamp()<'2026-10-14T14:44:51Z'::timestamptz
-          and slot.kst_date='2026-10-14'::date
-          and job.created_at>='2026-10-14T12:44:51Z'::timestamptz
+          and statement_timestamp()>='2026-10-14T15:10:51Z'::timestamptz
+          and statement_timestamp()<'2026-10-14T17:10:51Z'::timestamptz
+          and slot.kst_date='2026-10-15'::date
+          and job.created_at>='2026-10-14T15:10:51Z'::timestamptz
           and job.created_at<=statement_timestamp()
           and job.attempts=1 and job.max_attempts=3
-          and job.lease_expires_at<='2026-10-14T14:44:51Z'::timestamptz
-          and job.idempotency_key='official-x-review:v1:2026-10-14:'||target_client_id
+          and job.lease_expires_at<='2026-10-14T17:10:51Z'::timestamptz
+          and job.idempotency_key='official-x-review:v1:2026-10-15:'||target_client_id
           and job.input=jsonb_build_object(
             'workflow','official_x_review_draft_v1','kst_date',slot.kst_date,
             'source_item_ids',jsonb_build_array(source.id::text),'content_kind','daily_news',

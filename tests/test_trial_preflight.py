@@ -8,7 +8,7 @@ import pytest
 
 from core.automation.trial_controller import TrialControllerBlocked, TrialGenerationPreflight
 
-NOW = datetime(2026, 10, 14, 13, 4, 51, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 14, 15, 30, 51, tzinfo=timezone.utc)
 RELEASE, PLAN, TRIAL = "a" * 40, "b" * 64, "11111111-1111-4111-8111-111111111111"
 
 

@@ -13,7 +13,7 @@ from core.automation.trial_owner import TrialOwner, TrialPlan, canonical_sha256,
 from core.automation.trial_generation_gate import TrialGenerationGate
 from core.automation.news_generation_journal import request_digest
 
-NOW = datetime(2026, 10, 14, 13, 4, 51, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 14, 15, 30, 51, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -21,8 +21,8 @@ def trial(tmp_path):
     from api.server import NewsCardRequest
     tmp_path.chmod(0o700)
     p = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
-        "not_before": "2026-10-14T12:44:51Z", "deadline": "2026-10-14T14:44:51Z",
-        "kst_date": "2026-10-14", "client_ids": ["yellow", "babylon", "origintrail"],
+        "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
+        "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
         "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10_000_000,
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(p, canonical_sha256(p))

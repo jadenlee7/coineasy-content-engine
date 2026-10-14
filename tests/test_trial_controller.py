@@ -23,8 +23,8 @@ from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
 def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
     tmp_path.chmod(0o700)
     now = [START - timedelta(seconds=10) if before_start else START + timedelta(seconds=1)]
-    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T12:44:51Z",
-        "deadline": "2026-10-14T14:44:51Z", "kst_date": "2026-10-14",
+    payload = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()), "not_before": "2026-10-14T15:10:51Z",
+        "deadline": "2026-10-14T17:10:51Z", "kst_date": "2026-10-15",
         "client_ids": ["yellow", "babylon", "origintrail"], "max_per_client": 1, "max_total": 3,
         "estimated_daily_limit_micros": 10_000_000, "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
@@ -95,15 +95,17 @@ def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
         preflight_calls=preflight_calls)
 
 
-def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
+def test_server_clock_wait_then_skip_yellow_and_final_receipt_off(tmp_path):
     s = scenario(tmp_path, before_start=True)
     result = asyncio.run(s.controller.run())
     assert result["status"] == "completed" and result["effective_on"] is False
-    assert result["generated_clients"] == ["yellow", "babylon", "origintrail"]
+    assert result["generated_clients"] == ["babylon", "origintrail"]
+    assert result["skipped_clients"] == ["yellow"]
+    assert not any(client == "yellow" for _, client, _ in s.calls)
     assert result["visual_qa_performed"] is False and result["public_send_attempted"] is False
     assert all(when >= START for _, _, when in s.calls)
-    assert len([c for c in s.calls if c[0] == "generate"]) == 3
-    assert len(s.preflight_calls) == 3
+    assert len([c for c in s.calls if c[0] == "generate"]) == 2
+    assert len(s.preflight_calls) == 2
     previous = list(s.calls)
     replay = asyncio.run(s.controller.run())
     assert replay["status"] == "not_admitted" and s.calls == previous
@@ -112,12 +114,12 @@ def test_server_clock_wait_then_exact_three_and_final_receipt_off(tmp_path):
 def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates(tmp_path):
     from core.automation.trial_producer_adapter import START as producer_start, END as producer_end
     from core.content_ops.trial_courier_adapter import START as courier_start, END as courier_end
-    start = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
-    end = datetime(2026, 10, 14, 14, 44, 51, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)
     assert START == producer_start == courier_start == start
     assert producer_end == courier_end == end
-    assert NOT_BEFORE == "2026-10-14T12:44:51Z"
-    assert LATEST_DEADLINE == "2026-10-14T14:44:51Z"
+    assert NOT_BEFORE == "2026-10-14T15:10:51Z"
+    assert LATEST_DEADLINE == "2026-10-14T17:10:51Z"
     assert end - start == timedelta(hours=2)
     root = Path(__file__).resolve().parents[1]
     for filename in ("content-ops-trial.mts", "content-ops-trial-generation.mts",
@@ -133,11 +135,11 @@ def test_fixed_rewindow_agrees_across_python_sql_and_netlify_and_preserves_gates
     assert f"gate_end constant timestamptz := '{LATEST_DEADLINE}'" in sql
     s = scenario(tmp_path)
     payload = s.owner.plan.payload
-    assert payload["kst_date"] == "2026-10-14" and payload["max_total"] == 3
+    assert payload["kst_date"] == "2026-10-15" and payload["max_total"] == 3
     assert payload["max_per_client"] == 1 and payload["estimated_daily_limit_micros"] == 10_000_000
     for changes in ({"not_before": "2026-10-14T00:00:00Z"},
                     {"not_before": "2026-10-14T06:22:17Z"},
-                    {"deadline": "2026-10-14T14:44:52Z"}):
+                    {"deadline": "2026-10-14T17:10:52Z"}):
         altered = {**payload, **changes}
         with pytest.raises(TrialError):
             TrialPlan.from_mapping(altered, canonical_sha256(altered))
@@ -242,9 +244,9 @@ def test_startup_route_readiness_precedes_any_owner_io_then_admits_once(tmp_path
                            else httpx.Response(200, json=ready_response(s)))
     result = asyncio.run(s.controller.run())
     assert result["status"] == "completed" and len(calls) == 3
-    assert len(s.preflight_calls) == 3  # once per client, after readiness
-    assert len([c for c in s.calls if c[0] == "generate"]) == 3
-    assert s.owner.inspect(s.now[0])["phases"] == 12
+    assert len(s.preflight_calls) == 2  # once per non-excluded client, after readiness
+    assert len([c for c in s.calls if c[0] == "generate"]) == 2
+    assert s.owner.inspect(s.now[0])["phases"] == 8
 
 
 @pytest.mark.parametrize("failure", ["auth", "config", "malformed", "foreign", "future"])

@@ -7,7 +7,7 @@ import { createNewsCardHandler } from "../netlify/functions/news-card.mts";
 import { QUALITY_BANNER_POLICY } from "../netlify/functions/_shared/quality-banner.mts";
 
 const id = (n: number) => `${String(n).padStart(8,"0")}-1111-4111-8111-111111111111`;
-const NOW = Date.parse("2026-10-14T13:04:51Z"), RELEASE = "a".repeat(40), PLAN = "b".repeat(64);
+const NOW = Date.parse("2026-10-14T15:30:51Z"), RELEASE = "a".repeat(40), PLAN = "b".repeat(64);
 const API = "https://coineasy-content-engine-production.up.railway.app";
 const URL = "https://coineasy-newscard.netlify.app/api/news-card/yellow";
 const TEXT = "Yellow explains infrastructure execution with its official source creative.";
@@ -84,7 +84,7 @@ for (const args of [{ automation: false }, { clientId: "squid" }, { runtime: {} 
   { req: request(body, { "X-YBO-Trial-Collect-Only": "true,true" }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "TRUE" }) },
   { req: request(body, {}, URL.replace("coineasy-newscard", "preview")) },
-  { clock: () => Date.parse("2026-10-14T12:44:50Z") }, { clock: () => Date.parse("2026-10-14T14:44:51Z") },
+  { clock: () => Date.parse("2026-10-14T15:10:50Z") }, { clock: () => Date.parse("2026-10-14T17:10:51Z") },
   { body: { ...body, source_content: TEXT + "changed" } },
   { body: { ...body, trial_payload: { ...payload, brand_review_guidance: {} } } },
   { body: { ...body, trial_payload: { ...payload, extra: true } } }]) {
@@ -94,7 +94,7 @@ for (const args of [{ automation: false }, { clientId: "squid" }, { runtime: {} 
 }
 for (const changes of [{ authorized: false }, { request_id: id(9) }, { client_id: "babylon" },
   { plan_sha256: "c".repeat(64) }, { release_sha: "c".repeat(40) }, { extra: true },
-  { observed_at: "2026-10-14T13:04:45Z" }, { observed_at: "2026-10-14T13:04:52Z" }]) {
+  { observed_at: "2026-10-14T15:30:45Z" }, { observed_at: "2026-10-14T15:30:52Z" }]) {
   test(`invalid trusted receipt ${Object.keys(changes)[0]} never reaches downstream`, async () => {
     const h = await gate({ response: () => Response.json(receipt(changes)) });
     await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 1);
@@ -158,7 +158,7 @@ async function integration(options: any = {}) {
       assert.equal(headers.get("X-YBO-Trial-ID"), id(5)); assert.equal(headers.get("Idempotency-Key"), id(2));
       assert.equal(headers.get("X-YBO-Trial-Collect-Only"), options.collectOnly ? "true" : null);
       assert.deepEqual(JSON.parse(String(init?.body)), trialPayload);
-      if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T14:44:51Z");
+      if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T17:10:51Z");
       return Response.json({ client_id: "yellow", content_type: "news_card",
         spec: { headline: "공식 인프라 업데이트", body_lines: ["공식 소식의 핵심 내용을 확인하세요"], source_url: SOURCE,
           render_strategy: options.logoOnly ? "official_logo_announcement" : "reference_first_quality", channel_profile: "x_square", template_version: QUALITY_BANNER_POLICY,

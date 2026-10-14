@@ -11,18 +11,18 @@ begin
   -- the production clock or exposing a clock override in the production RPC.
   if call_count>=3 and final_now is not null then return final_now::timestamptz; end if;
   return coalesce(nullif(current_setting('exact_claim_fixture.now',true),'')::timestamptz,
-    '2026-10-14T13:14:51Z'::timestamptz)
+    '2026-10-14T15:40:51Z'::timestamptz)
     + case when current_setting('exact_claim_fixture.advance',true)='true'
         then clock_timestamp()-statement_timestamp() else interval '0' end;
 end
 $$;
 
 create function exact_claim_fixture.seed(c text default 'yellow',
-    job_created_at timestamptz default '2026-10-14T13:13:51Z') returns jsonb
+    job_created_at timestamptz default '2026-10-14T15:39:51Z') returns jsonb
 language plpgsql as $$
 declare w uuid:=gen_random_uuid(); j uuid:=gen_random_uuid(); s uuid:=gen_random_uuid();
  f uuid:=gen_random_uuid(); r uuid:=gen_random_uuid(); h text; u text;
- t timestamptz:='2026-10-14T13:14:51Z'; image text:='https://pbs.twimg.com/media/fixture.jpg?name=orig';
+ t timestamptz:='2026-10-14T15:40:51Z'; image text:='https://pbs.twimg.com/media/fixture.jpg?name=orig';
  body text:='Synthetic official source for isolated claim tests';
 begin
  h:=case c when 'yellow' then '@Yellow' when 'babylon' then '@babylonlabs_io'
@@ -38,12 +38,12 @@ begin
    jsonb_build_array(jsonb_build_object('type','photo','url',image)));
  insert into public.jobs(id,workspace_id,client_id,job_kind,status,attempts,max_attempts,
    idempotency_key,available_at,created_at,input,output)
- values(j,w,c,'generate','queued',0,3,'official-x-review:v1:2026-10-14:'||c,t-interval '1 minute',
+ values(j,w,c,'generate','queued',0,3,'official-x-review:v1:2026-10-15:'||c,t-interval '1 minute',
    job_created_at,jsonb_build_object('workflow','official_x_review_draft_v1',
-   'kst_date','2026-10-14','source_item_ids',jsonb_build_array(s::text),'content_kind','daily_news',
+   'kst_date','2026-10-15','source_item_ids',jsonb_build_array(s::text),'content_kind','daily_news',
    'request_id',r,'source_content',body,'source_url',u,'source_image_url',image,'manual_only',false),'{}');
  insert into private.official_x_daily_slots(workspace_id,kst_date,client_id,slot,job_id)
- values(w,'2026-10-14',c,1,j);
+ values(w,'2026-10-15',c,1,j);
  insert into private.official_x_source_state(workspace_id,client_id,source_item_id,queued_job_id,queued_at)
  values(w,c,s,j,t-interval '1 minute');
  insert into private.official_x_style_reference_packs(workspace_id,client_id,request_id,

@@ -11,7 +11,7 @@ export const YBO_TRIAL_REQUIRED_OFF_FLAGS = [
 ] as const;
 const ORIGIN = "https://coineasy-newscard.netlify.app";
 const API = "https://coineasy-content-engine-production.up.railway.app";
-const START = Date.parse("2026-10-14T12:44:51Z"), END = Date.parse("2026-10-14T14:44:51Z");
+const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 type Runtime = Readonly<Pick<Context, "deploy">>;
 type Dependencies = { getEnv: (name: string) => string | undefined; releaseSha: () => string | null;

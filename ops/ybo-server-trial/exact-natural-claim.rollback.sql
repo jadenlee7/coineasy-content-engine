@@ -1,10 +1,21 @@
--- LOCAL_ROLLBACK_PROOF: bounded logo-only admission proposal, service-only ACL.
+-- LOCAL_ROLLBACK_PROOF: time/day-only rewindow of installed logo-only admission.
 -- Repository-only proof input, not a migration or production apply script.
 -- The transaction always rolls back; executable fixture tests separately
 -- substitute a local clock only inside a disposable PostgreSQL instance.
 begin;
 
-create function public.claim_exact_natural_review_draft_job(
+do $$begin
+  if (select encode(extensions.digest(convert_to(prosrc,'UTF8'),'sha256'),'hex')
+      from pg_proc where oid='public.claim_exact_natural_review_draft_job(uuid,text,uuid,uuid,uuid,text,text,text,integer)'::regprocedure)
+      is distinct from '6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477' then
+    raise exception 'exact_claim_previous_body_mismatch';
+  end if;
+end $$;
+create temporary table ybo_exact_claim_before on commit drop as
+  select to_jsonb(p)-'prosrc' as catalog from pg_proc p
+  where p.oid='public.claim_exact_natural_review_draft_job(uuid,text,uuid,uuid,uuid,text,text,text,integer)'::regprocedure;
+
+create or replace function public.claim_exact_natural_review_draft_job(
     target_workspace_id uuid,
     target_client_id text,
     target_job_id uuid,
@@ -16,9 +27,9 @@ create function public.claim_exact_natural_review_draft_job(
     target_lease_seconds integer default 900
 ) returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-    gate_start constant timestamptz := '2026-10-14T12:44:51Z';
-    gate_end constant timestamptz := '2026-10-14T14:44:51Z';
-    gate_day constant date := '2026-10-14';
+    gate_start constant timestamptz := '2026-10-14T15:10:51Z';
+    gate_end constant timestamptz := '2026-10-14T17:10:51Z';
+    gate_day constant date := '2026-10-15';
     job public.jobs%rowtype;
     slot private.official_x_daily_slots%rowtype;
     source public.source_items%rowtype;
@@ -178,10 +189,13 @@ begin
         'lease_expires_at',job.lease_expires_at,'input',job.input);
 end $$;
 
--- Only the NEW routine's ACL. Existing roles/grants/routines remain unchanged.
-revoke all on function public.claim_exact_natural_review_draft_job(
-    uuid,text,uuid,uuid,uuid,text,text,text,integer) from public,anon,authenticated,service_role;
-grant execute on function public.claim_exact_natural_review_draft_job(
-    uuid,text,uuid,uuid,uuid,text,text,text,integer) to service_role;
+-- Preserve every non-body catalog field, including owner/OID/ACL. No grants.
+do $$begin
+  if (select to_jsonb(p)-'prosrc' from pg_proc p
+      where p.oid='public.claim_exact_natural_review_draft_job(uuid,text,uuid,uuid,uuid,text,text,text,integer)'::regprocedure)
+      is distinct from (select catalog from pg_temp.ybo_exact_claim_before) then
+    raise exception 'exact_claim_nonbody_catalog_changed';
+  end if;
+end $$;
 
 rollback; -- LOCAL_ROLLBACK_PROOF; never change to COMMIT here.

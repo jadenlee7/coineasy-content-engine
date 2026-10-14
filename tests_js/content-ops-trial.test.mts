@@ -6,14 +6,14 @@ import { trialManifestHash } from "../netlify/functions/_shared/content-ops-tria
 
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const id = (n: number) => `${String(n).padStart(8,"0")}-1111-4111-8111-111111111111`;
-const RELEASE = "a".repeat(40), NOW = Date.parse("2026-10-14T12:59:51Z");
+const RELEASE = "a".repeat(40), NOW = Date.parse("2026-10-14T15:25:51Z");
 const TG = "한국어 직원 검수 공지", X = "한국어 X 초안", SOURCE = "Official source text";
 const PNG = Buffer.from([137,80,78,71,13,10,26,10,0]);
 const entry = { client_id: "yellow", job_id: id(1), request_id: id(2), source_item_id: id(3),
   source_sha256: sha(SOURCE), content_item_id: id(2), content_version_id: id(4), banner_sha256: sha(PNG as any),
   telegram_copy_sha256: sha(TG), x_copy_sha256: sha(X) };
 const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: id(5), plan_sha256: "b".repeat(64),
-  release_sha: RELEASE, not_before: "2026-10-14T12:44:51Z", deadline: "2026-10-14T14:44:51Z",
+  release_sha: RELEASE, not_before: "2026-10-14T15:10:51Z", deadline: "2026-10-14T17:10:51Z",
   destination_policy_sha256: "c".repeat(64), entries: [entry] };
 const HASH = trialManifestHash(manifest);
 const ENV: Record<string,string> = { CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
@@ -27,10 +27,10 @@ const ENV: Record<string,string> = { CONTENT_OPS_GATEWAY_ENABLED: "false", CONTE
 const runtime = { deploy: { context: "production", id: "fixture-only", published: true } };
 const rows: Record<string,any> = {
   jobs: { id: entry.job_id, client_id: "yellow", job_kind: "generate", status: "succeeded", attempts: 1,
-    max_attempts: 3, created_at: "2026-10-14T12:45:51Z", started_at: "2026-10-14T12:46:51Z",
-    finished_at: "2026-10-14T12:47:51Z", idempotency_key: "official-x-review:v1:2026-10-14:yellow",
+    max_attempts: 3, created_at: "2026-10-14T15:11:51Z", started_at: "2026-10-14T15:12:51Z",
+    finished_at: "2026-10-14T15:13:51Z", idempotency_key: "official-x-review:v1:2026-10-15:yellow",
     content_item_id: null, input: { workflow: "official_x_review_draft_v1", content_kind: "daily_news",
-      manual_only: false, kst_date: "2026-10-14", request_id: entry.request_id,
+      manual_only: false, kst_date: "2026-10-15", request_id: entry.request_id,
       source_item_ids: [entry.source_item_id], source_content: SOURCE },
     output: { content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
       source_item_ids: [entry.source_item_id] } },
@@ -38,13 +38,13 @@ const rows: Record<string,any> = {
     current_version_id: entry.content_version_id },
   content_versions: { id: entry.content_version_id, content_item_id: entry.content_item_id,
     channel_copy: { telegram: TG, x: X }, generation_meta: { mock_mode: false, request_id: entry.request_id },
-    deliverables: { primary_asset_id: id(7) }, created_at: "2026-10-14T12:47:51Z" },
+    deliverables: { primary_asset_id: id(7) }, created_at: "2026-10-14T15:13:51Z" },
   assets: { id: id(7), content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
     asset_kind: "png", mime_type: "image/png", sha256: entry.banner_sha256, storage_bucket: "content-studio",
     storage_path: `${id(6)}/yellow/${id(7)}/news-card.png` },
   source_items: { id: entry.source_item_id, client_id: "yellow", body: SOURCE },
 };
-const claim = { outbox_id: id(8), claim_token: id(9), client_id: "yellow", kst_date: "2026-10-14",
+const claim = { outbox_id: id(8), claim_token: id(9), client_id: "yellow", kst_date: "2026-10-15",
   content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
   source_item_id: entry.source_item_id, generate_job_id: entry.job_id, banner_sha256: entry.banner_sha256,
   title: "검수용", telegram_copy: TG, x_copy: X, source_url: "https://x.com/Yellow/status/123",
@@ -93,15 +93,15 @@ for (const key of ["CONTENT_OPS_GATEWAY_ENABLED", "CONTENT_OPS_REVIEW_ENABLED",
     assert.equal(h.calls.length, 0); assert.equal(h.identities.length, 0);
   });
 }
-for (const now of [Date.parse("2026-10-14T12:44:50Z"), Date.parse("2026-10-14T14:44:51Z")]) {
+for (const now of [Date.parse("2026-10-14T15:10:50Z"), Date.parse("2026-10-14T17:10:51Z")]) {
   test(`trial clock boundary ${now} has no resolver/database IO`, async () => {
     const h = harness({ clock: () => now }); assert.equal((await h.call()).status, 503);
     assert.equal(h.calls.length, 0); assert.equal(h.identities.length, 0);
   });
 }
-for (const override of [{ active: false }, { observed_at: "2026-10-14T12:59:45Z" },
-  { observed_at: "2026-10-14T12:59:52Z" }, { manifest_sha256: "d".repeat(64) },
-  { manifest: { ...manifest, deadline: "2026-10-14T12:59:51Z" } }]) {
+for (const override of [{ active: false }, { observed_at: "2026-10-14T15:25:45Z" },
+  { observed_at: "2026-10-14T15:25:52Z" }, { manifest_sha256: "d".repeat(64) },
+  { manifest: { ...manifest, deadline: "2026-10-14T15:25:51Z" } }]) {
   test(`trusted membership rejects ${JSON.stringify(override)}`, async () => {
     const h = harness({ resolve: () => ({ active: true, observed_at: new Date(NOW).toISOString(),
       manifest, manifest_sha256: HASH, ...override }) });
@@ -152,7 +152,7 @@ test("prepare uses existing exact owner argument validator and immutable version
   const body = { action: "owner", step: "prepare", args: { outbox_id: claim.outbox_id,
     claim_token: claim.claim_token, review_id: id(10) } };
   const h = harness({ result: { status: "review_prepared", review_id: id(10), version_fingerprint: "d".repeat(64),
-    epoch: 0, state: "active", expires_at: "2026-10-14T13:29:51Z", execution_authorized: false } });
+    epoch: 0, state: "active", expires_at: "2026-10-14T15:55:51Z", execution_authorized: false } });
   assert.equal((await h.call(request(body))).status, 200);
   assert.equal(h.calls.at(-1).body.target_content_version_id, entry.content_version_id);
   assert.deepEqual(h.calls.at(-1).body.target_args, body.args);
@@ -166,7 +166,7 @@ test("delivery-only four-part registration uses the existing bounded owner contr
       parent_binding: h64, thread_id: null },
     parts: ["image", "telegram", "x"].map(kind => ({ kind, outcome: "sent", message_binding: sha(`${kind}-message`), payload_sha256: h64 })),
     controls_payload_sha256: h64, response_sha256s: [h64,h64,h64,h64],
-    delivered: "2026-10-14T12:59:51Z", expires: "2026-10-14T13:29:51Z" };
+    delivered: "2026-10-14T15:25:51Z", expires: "2026-10-14T15:55:51Z" };
   const h = harness({ result: { status: "card_recorded", card_id: card, reused: false, execution_authorized: false } });
   assert.equal((await h.call(request({ action: "owner", step: "register", args }))).status, 200);
   assert.deepEqual(h.calls.at(-1).body.target_args, args);
