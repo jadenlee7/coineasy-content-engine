@@ -2,6 +2,7 @@
  * One bounded API configuration GET only; no owner, database, provider or send. */
 import type { Context } from "@netlify/functions";
 import { constantTimeAccessCodeMatch } from "./studio-session.mts";
+import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
 
 export const YBO_TRIAL_PREFLIGHT_PATH = "/api/ybo-trial-preflight";
 export const YBO_TRIAL_REQUIRED_OFF_FLAGS = [
@@ -11,8 +12,6 @@ export const YBO_TRIAL_REQUIRED_OFF_FLAGS = [
 ] as const;
 const ORIGIN = "https://coineasy-newscard.netlify.app";
 const API = "https://coineasy-content-engine-production.up.railway.app";
-const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
-const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 type Runtime = Readonly<Pick<Context, "deploy">>;
 type Dependencies = { getEnv: (name: string) => string | undefined; releaseSha: () => string | null;
   clock?: () => number; fetcher?: typeof fetch };
@@ -42,12 +41,13 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
       const release = deps.releaseSha(), trialId = req.headers.get("x-ybo-trial-id");
       const plan = req.headers.get("x-ybo-trial-plan-sha256");
       const now = (deps.clock ?? Date.now)();
+      const bounds = configuredTrialWindow(deps.getEnv, "YBO_TRIAL");
       if (!release || !/^[a-f0-9]{40}$/.test(release)
         || req.headers.get("x-studio-expected-release-sha") !== release
         || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
-        || !trialId || !UUID.test(trialId) || deps.getEnv("YBO_TRIAL_ID") !== trialId
+        || trialId !== READY_ANCHORED_TRIAL_ID || deps.getEnv("YBO_TRIAL_ID") !== trialId
         || !plan || !/^[a-f0-9]{64}$/.test(plan) || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
-        || !Number.isFinite(now) || !(START <= now && now < END)
+        || !bounds || !withinTrialWindow(bounds, now)
         || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"
         || !YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => deps.getEnv(key) === "false")) {
         return json({ error: "trial_preflight_blocked" }, 503);
@@ -84,9 +84,10 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
       const proof = JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
       const observed = (deps.clock ?? Date.now)();
       if (!proof || typeof proof !== "object" || Array.isArray(proof)
-        || Object.keys(proof).sort().join(",") !== "broad_public_flags_off,client_ids,controller_enabled,observed_at,plan_sha256,ready,release_sha,schema_version,trial_id"
+        || Object.keys(proof).sort().join(",") !== "broad_public_flags_off,client_ids,controller_enabled,deadline,kst_date,not_before,observed_at,plan_sha256,ready,release_sha,schema_version,trial_id"
         || proof.schema_version !== "ybo-api-readiness@1" || proof.ready !== true
         || proof.trial_id !== trialId || proof.plan_sha256 !== plan || proof.release_sha !== release
+        || proof.not_before !== bounds.notBefore || proof.deadline !== bounds.deadline || proof.kst_date !== bounds.kstDate
         || proof.controller_enabled !== true || proof.broad_public_flags_off !== true
         || JSON.stringify(proof.client_ids) !== '["yellow","babylon","origintrail"]'
         || typeof proof.observed_at !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/.test(proof.observed_at)
@@ -94,7 +95,7 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || observed - Date.parse(proof.observed_at) < 0 || observed - Date.parse(proof.observed_at) > 5000) {
         throw Error();
       }
-      if (!Number.isFinite(observed) || observed < now || !(START <= observed && observed < END)
+      if (observed < now || !withinTrialWindow(bounds, observed) || !trialWindowUnchanged(deps.getEnv, "YBO_TRIAL", bounds)
         || deps.releaseSha() !== release || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
         || deps.getEnv("YBO_TRIAL_ID") !== trialId || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
         || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"
@@ -102,6 +103,7 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || deps.getEnv("API_SECRET") !== apiSecret || deps.getEnv("RAILWAY_API_URL") !== apiOrigin) throw Error();
       return json({ schema_version: "ybo-trial-preflight@1", ready: true,
         netlify_release_sha: release, trial_id: trialId, plan_sha256: plan,
+        not_before: bounds.notBefore, deadline: bounds.deadline, kst_date: bounds.kstDate,
         generation_gateway_enabled: true, broad_public_flags_off: true,
         upstream_api_auth_verified: true, observed_at: new Date(observed).toISOString() });
     } catch { return json({ error: "trial_preflight_unavailable" }, 503); }

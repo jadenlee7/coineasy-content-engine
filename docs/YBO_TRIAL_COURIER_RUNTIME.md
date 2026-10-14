@@ -1,8 +1,8 @@
-# Fixed-window YBO private courier — local implementation
+# Readiness-anchored YBO private courier
 
 This does not activate a service, install a schedule, or send a message. It is a
-one-time Oct 14, 2026 UTC 12:44:51–14:44:51 (KST 21:44:51–23:44:51)
-private delivery consumer, not the recurring
+single approved trial `1a2bef47-4827-4bc3-9b4d-5baf2714015d`, with its two-hour
+window fixed once after OFF readiness, not the recurring
 daily workflow. The callback bot and official publication remain OFF.
 
 ## Hosted entrypoint
@@ -44,6 +44,9 @@ bot role are unchanged.
   `CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED` stay `false` in the courier.
 - `CONTENT_OPS_TRIAL_ID`, `CONTENT_OPS_TRIAL_PLAN_SHA256` and
   `CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256` pin the approved owner plan.
+- `CONTENT_OPS_TRIAL_NOT_BEFORE` and `CONTENT_OPS_TRIAL_DEADLINE` pin canonical
+  UTC-second bounds exactly two hours apart on one KST date. The fetched
+  manifest must match them exactly; missing/drifting values fail closed.
   Destination policy hash is SHA-256 of sorted compact ASCII JSON for the existing
   `CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON`. It is not the image estimate-policy hash.
 - Netlify uses these same three pins, `CONTENT_OPS_TRIAL_GATEWAY_ENABLED`, its
@@ -66,8 +69,9 @@ fresh active manifest or exact pending-readiness 409. The courier polls only the
 exact pending result. Invalid, stale, inactive, expired or ambiguous responses
 stop execution. There is no retry of an uncertain send or acknowledgment.
 
-The manifest allows one Yellow, Babylon and OriginTrail entry each, at most
-three. Job/request/source/item/version and source/banner/Telegram/X hashes are
+The approved manifest allows at most one Babylon and one OriginTrail entry.
+Yellow is excluded even though the legacy plan's three-client shape is retained.
+Job/request/source/item/version and source/banner/Telegram/X hashes are
 bound. Netlify separately compares the existing DB projection before every
 owner operation; the existing SQL owner repeats its freshness/current-version
 guards. The Python sender additionally resolves fresh owner state immediately

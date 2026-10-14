@@ -8,7 +8,7 @@ declare ctx jsonb; c text; j uuid; s uuid; f uuid; w uuid; r uuid; result jsonb;
   changes jsonb; before_state jsonb; scenario integer; extra_item uuid;
   case_ctx jsonb; case_w uuid; case_r uuid; case_j uuid; case_s uuid;
 begin
-  foreach c in array array['yellow','babylon','origintrail'] loop
+  foreach c in array array['babylon','origintrail'] loop
     ctx:=exact_claim_fixture.seed(c);j:=(ctx->>'job_id')::uuid;s:=(ctx->>'source_item_id')::uuid;
     f:=(ctx->>'feed_id')::uuid;w:=(ctx->>'workspace_id')::uuid;r:=(ctx->>'request_id')::uuid;
     update public.source_items set media='[]' where id=s;
@@ -26,7 +26,7 @@ begin
       and (select count(*) from jsonb_object_keys(result))=10,'logo_context_identity_'||c);
     perform exact_claim_fixture.assert_true(before_state=exact_claim_fixture.snapshot(),'logo_context_readonly');
 
-    for scenario in 1..29 loop
+    for scenario in 1..31 loop
       begin
         case_w:=w;case_r:=r;
         case scenario
@@ -72,6 +72,8 @@ begin
             '"https://x.com/Wrong/status/123456789"') where id=j;
           when 28 then update public.jobs set lease_expires_at='2026-10-14T15:40:50Z' where id=j;
           when 29 then update public.jobs set input=jsonb_set(input,'{manual_only}','true') where id=j;
+          when 30 then update public.jobs set locked_by='synthetic-worker' where id=j;
+          when 31 then update public.jobs set locked_by='ybo-trial:3eceb628-0f6b-4336-aad6-799f907c8157' where id=j;
         end case;
         if scenario in (12,13) then
           -- created_at is immutable: seed a separate synthetic job rather
@@ -80,7 +82,7 @@ begin
           case_j:=(case_ctx->>'job_id')::uuid;case_s:=(case_ctx->>'source_item_id')::uuid;
           update public.source_items set media='[]' where id=case_s;
           update public.jobs set input=jsonb_set(input,'{source_image_url}','""'),status='running',
-            attempts=1,locked_by='synthetic-worker',locked_at='2026-10-14T15:40:51Z',
+            attempts=1,locked_by='ybo-trial:1a2bef47-4827-4bc3-9b4d-5baf2714015d',locked_at='2026-10-14T15:40:51Z',
             lease_expires_at='2026-10-14T15:55:51Z' where id=case_j;
         end if;
         before_state:=exact_claim_fixture.snapshot();
@@ -120,6 +122,19 @@ begin
       and result->>'source_image_url'='https://pbs.twimg.com/media/fixture.jpg','existing_media_context_unchanged_'||c);
     perform set_config('exact_claim_fixture.now','2026-10-14T15:40:51Z',true);
   end loop;
+  -- Even a synthetic otherwise valid Yellow logo job must not enter this
+  -- anchor's new branch. Existing attached-media behavior is not rewritten.
+  ctx:=exact_claim_fixture.seed('yellow');
+  j:=(ctx->>'job_id')::uuid;s:=(ctx->>'source_item_id')::uuid;
+  w:=(ctx->>'workspace_id')::uuid;r:=(ctx->>'request_id')::uuid;
+  update public.source_items set media='[]' where id=s;
+  update public.jobs set input=jsonb_set(input,'{source_image_url}','""'),status='running',
+    attempts=1,locked_by='ybo-trial:1a2bef47-4827-4bc3-9b4d-5baf2714015d',
+    locked_at='2026-10-14T15:40:51Z',lease_expires_at='2026-10-14T15:55:51Z' where id=j;
+  before_state:=exact_claim_fixture.snapshot();
+  perform exact_claim_fixture.assert_true(public.get_quality_banner_generation_context(w,'yellow',r) is null,
+    'logo_context_yellow_excluded');
+  perform exact_claim_fixture.assert_true(before_state=exact_claim_fixture.snapshot(),'yellow_unchanged');
   perform set_config('request.jwt.claim.role','authenticated',true);
   begin perform public.get_quality_banner_generation_context(w,c,r);
     raise exception 'logo_context_role_guard_missing';

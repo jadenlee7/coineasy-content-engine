@@ -14,7 +14,7 @@ import re
 import stat
 from uuid import UUID
 
-from core.automation.trial_owner import TrialOwner, TrialPlan, canonical_sha256
+from core.automation.trial_owner import ELIGIBLE_CLIENTS, TrialOwner, TrialPlan, canonical_sha256
 
 MAX_BYTES = 16384
 ENTRY_KEYS = frozenset({"client_id", "job_id", "request_id", "source_item_id", "source_sha256",
@@ -54,11 +54,11 @@ def validate_manifest(value, *, plan, destination_policy_sha256):
         and value["trial_id"] == plan.trial_id and value["plan_sha256"] == plan.sha256
         and all(value[k] == p[k] for k in ("release_sha", "not_before", "deadline"))
         and value["destination_policy_sha256"] == destination_policy_sha256
-        and type(value["entries"]) is list and 1 <= len(value["entries"]) <= 3)
+        and type(value["entries"]) is list and 1 <= len(value["entries"]) <= len(ELIGIBLE_CLIENTS))
     clients, identities = set(), set()
     for entry in value["entries"]:
         require(type(entry) is dict and set(entry) == ENTRY_KEYS)
-        require(entry["client_id"] in p["client_ids"] and entry["client_id"] not in clients)
+        require(entry["client_id"] in ELIGIBLE_CLIENTS and entry["client_id"] not in clients)
         ids = [entry[k] for k in ("job_id", "request_id", "source_item_id", "content_version_id")]
         require(all(_uuid(v) for v in ids) and len(set(ids)) == 4 and not identities.intersection(ids)
             and entry["content_item_id"] == entry["request_id"]

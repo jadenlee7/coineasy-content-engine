@@ -26,7 +26,7 @@ def run(*, validate_only=False, environ=None, stamp_reader=None, runner=run_tria
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="One Oct14 YBO private trial; default OFF.")
+    parser = argparse.ArgumentParser(description="One readiness-anchored YBO private trial; default OFF.")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
     receipt = run(validate_only=args.validate_only)

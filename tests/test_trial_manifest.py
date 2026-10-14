@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from uuid import uuid4
+from trial_test_fixtures import TRIAL_ID
 
 from fastapi.testclient import TestClient
 import pytest
@@ -20,7 +21,7 @@ NOW = datetime(2026, 10, 14, 15, 30, 51, tzinfo=timezone.utc)
 def trial(tmp_path):
     from api.server import NewsCardRequest
     tmp_path.chmod(0o700)
-    p = {"contract": "ybo-server-trial@1", "trial_id": str(uuid4()),
+    p = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
         "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
         "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10_000_000,
@@ -29,12 +30,12 @@ def trial(tmp_path):
     owner = TrialOwner(tmp_path / f"{plan.trial_id}.trial-owner.sqlite3", plan)
     admission = owner.admit(plan.trial_id, NOW)
     ids = {k: str(uuid4()) for k in ("job_id", "request_id", "source_item_id")}
-    context = {**ids, "client_id": "yellow"}
+    context = {**ids, "client_id": "babylon"}
     payload = NewsCardRequest(source_content="Official test-only fixture.", quality_context=context).model_dump(mode="json")
-    assert owner.reserve_phase(admission, "yellow:intake", "yellow", "1" * 64, NOW)
-    assert owner.finish_phase(admission, "yellow:intake", "2" * 64, NOW)
-    assert owner.reserve_phase(admission, "yellow:generate", "yellow", request_digest("yellow", payload), NOW, identifiers=ids)
-    entry = {"client_id": "yellow", **ids, "source_sha256": "1" * 64,
+    assert owner.reserve_phase(admission, "babylon:intake", "babylon", "1" * 64, NOW)
+    assert owner.finish_phase(admission, "babylon:intake", "2" * 64, NOW)
+    assert owner.reserve_phase(admission, "babylon:generate", "babylon", request_digest("babylon", payload), NOW, identifiers=ids)
+    entry = {"client_id": "babylon", **ids, "source_sha256": "1" * 64,
         "content_item_id": ids["request_id"], "content_version_id": str(uuid4()), "banner_sha256": "2" * 64,
         "telegram_copy_sha256": "3" * 64, "x_copy_sha256": "4" * 64}
     manifest = {"contract": "ybo-trial-courier-manifest@1", "trial_id": plan.trial_id,
@@ -50,10 +51,10 @@ def ready(trial):
     artifact = {k: v for k, v in trial.entry.items() if k != "job_id"}
     artifact["status"] = "needs_review"
     sha = canonical_sha256(artifact)
-    assert trial.owner.finish_phase(trial.admission, "yellow:generate", sha, NOW)
-    assert trial.owner.reserve_phase(trial.admission, "yellow:review", "yellow", sha, NOW)
-    assert trial.owner.finish_phase(trial.admission, "yellow:review", "6" * 64, NOW)
-    assert trial.owner.reserve_phase(trial.admission, "yellow:send", "yellow", sha, NOW)
+    assert trial.owner.finish_phase(trial.admission, "babylon:generate", sha, NOW)
+    assert trial.owner.reserve_phase(trial.admission, "babylon:review", "babylon", sha, NOW)
+    assert trial.owner.finish_phase(trial.admission, "babylon:review", "6" * 64, NOW)
+    assert trial.owner.reserve_phase(trial.admission, "babylon:send", "babylon", sha, NOW)
 
 
 def read(trial):
@@ -86,7 +87,7 @@ def test_exact_completed_review_immutable_manifest_and_terminal_off(trial):
 def test_tampered_manifest_not_owned(trial, field):
     ready(trial)
     changed = deepcopy(trial.manifest)
-    changed["entries"][0][field] = ("babylon" if field == "client_id" else
+    changed["entries"][0][field] = ("origintrail" if field == "client_id" else
         "9" * 64 if field.endswith("sha256") else str(uuid4()))
     with pytest.raises(TrialManifestDenied):
         trial.store.publish(changed, trial.admission)
@@ -107,7 +108,7 @@ def test_expired_and_unbound_policy_fail_closed(trial, tmp_path):
 
 def api_client(trial, monkeypatch):
     from api import security, server
-    monkeypatch.setattr(security, "API_KEYS", {"admin": "fixture-admin-key-long", "yellow": "fixture-client-key-long"})
+    monkeypatch.setattr(security, "API_KEYS", {"admin": "fixture-admin-key-long", "babylon": "fixture-client-key-long"})
     for name in ("QUALITY_BANNER_ENABLED", "NEWS_CARD_IDEMPOTENCY_ENABLED", "TELEGRAM_PUBLICATION_ENABLED"):
         monkeypatch.setenv(name, "false")
     monkeypatch.setenv("YBO_TRIAL_DESTINATION_POLICY_SHA256", "5" * 64)
@@ -118,7 +119,7 @@ def api_client(trial, monkeypatch):
 def test_authenticated_generation_authorizer_has_no_creation_or_provider_work(trial, monkeypatch):
     client = api_client(trial, monkeypatch)
     request = {"trial_id": trial.plan.trial_id, "plan_sha256": trial.plan.sha256,
-        "release_sha": trial.plan.payload["release_sha"], "client_id": "yellow",
+        "release_sha": trial.plan.payload["release_sha"], "client_id": "babylon",
         "request_id": trial.ids["request_id"], "payload": trial.payload}
     path = "/internal/trial/generation-authorize"
     for key in ("", "fixture-client-key-long"):
@@ -181,9 +182,11 @@ def test_trusted_clock_resamples_after_lock_not_stale_request_snapshot(trial):
 
 
 def test_new_admission_waiting_past_deadline_gets_no_authority(trial, tmp_path):
-    plan_data = {**trial.plan.payload, "trial_id": str(uuid4())}
+    plan_data = trial.plan.payload
     plan = TrialPlan.from_mapping(plan_data, canonical_sha256(plan_data))
-    owner = TrialOwner(tmp_path / f"{plan.trial_id}.trial-owner.sqlite3", plan,
+    root = tmp_path / "unadmitted"
+    root.mkdir(mode=0o700)
+    owner = TrialOwner(root / f"{plan.trial_id}.trial-owner.sqlite3", plan,
                        clock=lambda: NOW + timedelta(hours=2))
     assert owner.admit(plan.trial_id, NOW) is None
     assert owner.inspect(NOW + timedelta(hours=2))["effective_on"] is False

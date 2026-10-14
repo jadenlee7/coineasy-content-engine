@@ -1,10 +1,10 @@
 import { isCatalogUuid } from "./content-catalog.mts";
 import { trialFlagsOff, type TrustedTrialResolver } from "./content-ops-trial.mts";
+import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, withinTrialWindow } from "./content-ops-trial-window.mts";
 
 type Env = (key: string) => string | undefined;
 type Dependencies = { getEnv: Env; releaseSha: () => string | null;
   fetcher?: typeof fetch; clock?: () => number };
-const START = Date.parse("2026-10-14T15:10:51Z"), END = Date.parse("2026-10-14T17:10:51Z");
 const MAX_BYTES = 16_384;
 const HASH = /^[a-f0-9]{64}$/, SHA = /^[a-f0-9]{40}$/;
 const PATH = "/internal/trial/manifest";
@@ -28,13 +28,14 @@ function configuredRequest(deps: Dependencies) {
   let pinned: string | undefined;
   function configuration() {
     const now = clock();
-    requireTrue(Number.isFinite(now) && START <= now && now < END
+    const bounds = configuredTrialWindow(deps.getEnv, "CONTENT_OPS_TRIAL");
+    requireTrue(bounds && withinTrialWindow(bounds, now)
       && deps.getEnv("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true" && trialFlagsOff(deps.getEnv));
     const release = deps.releaseSha(), trialId = deps.getEnv("CONTENT_OPS_TRIAL_ID");
     const plan = deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256"), policy = deps.getEnv("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256");
     requireTrue(typeof release === "string" && SHA.test(release)
       && deps.getEnv("CONTENT_OPS_REVIEW_RELEASE_SHA") === release
-      && isCatalogUuid(trialId) && trialId === trialId.toLowerCase()
+      && trialId === READY_ANCHORED_TRIAL_ID
       && typeof plan === "string" && HASH.test(plan) && typeof policy === "string" && HASH.test(policy));
     const raw = deps.getEnv("RAILWAY_API_URL"), secret = deps.getEnv("API_SECRET");
     requireTrue(typeof raw === "string" && raw === raw.trim()
@@ -45,7 +46,7 @@ function configuredRequest(deps: Dependencies) {
       && (url.pathname === "/" || url.pathname === "") && !url.search && !url.hash
       && /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(url.hostname)
       && !/(?:^|\.)(?:localhost|local|internal|invalid)$/.test(url.hostname));
-    const value = { origin: url.origin, secret, release, trialId, plan, policy };
+    const value = { origin: url.origin, secret, release, trialId, plan, policy, notBefore: bounds.notBefore, deadline: bounds.deadline };
     const fingerprint = JSON.stringify(value);
     requireTrue(pinned === undefined || fingerprint === pinned);
     pinned = fingerprint; // Memory only. Never logged, returned or persisted.

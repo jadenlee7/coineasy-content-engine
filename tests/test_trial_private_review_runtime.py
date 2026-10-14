@@ -12,9 +12,10 @@ import pytest
 
 from core.content_ops.trial_private_review_runtime import (
     TrialCourierSettings, TrialStateClient, TrialRuntimeError, FreshStateTransport,
-    ExactTrialRunner, run_trial, START, END,
+    ExactTrialRunner, run_trial,
 )
-from core.content_ops.trial_courier_adapter import TrialManifest, canonical_sha256
+from core.content_ops.trial_courier_adapter import TrialCourierError, TrialManifest, canonical_sha256
+from trial_test_fixtures import TRIAL_ID, NOT_BEFORE, LATEST_DEADLINE, START, END
 from scripts import run_trial_private_review_cards as cli
 from test_content_ops_daily_private_review_runtime import daily_config, POLICY, SHA
 
@@ -29,7 +30,8 @@ def uid(n):
 
 def env(**kwargs):
     return {**daily_config(), "CONTENT_OPS_TRIAL_COURIER_ENABLED": "true",
-        "CONTENT_OPS_TRIAL_ID": uid(1), "CONTENT_OPS_TRIAL_PLAN_SHA256": "b"*64,
+        "CONTENT_OPS_TRIAL_ID": TRIAL_ID, "CONTENT_OPS_TRIAL_PLAN_SHA256": "b"*64,
+        "CONTENT_OPS_TRIAL_NOT_BEFORE": NOT_BEFORE, "CONTENT_OPS_TRIAL_DEADLINE": LATEST_DEADLINE,
         "CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256": canonical_sha256(json.loads(POLICY)), **kwargs}
 
 
@@ -37,7 +39,7 @@ def settings(**kwargs):
     return TrialCourierSettings.from_env(env(**kwargs), stamp_reader=lambda: SHA)
 
 
-def manifest(clients=("yellow",)):
+def manifest(clients=("babylon",)):
     entries = []
     for i, client in enumerate(clients):
         n = 10+i*10
@@ -46,7 +48,7 @@ def manifest(clients=("yellow",)):
             "source_sha256": "c"*64, "banner_sha256": hashlib.sha256(PNG).hexdigest(),
             "telegram_copy_sha256": hashlib.sha256(TG.encode()).hexdigest(),
             "x_copy_sha256": hashlib.sha256(X.encode()).hexdigest()})
-    p = {"contract": "ybo-trial-courier-manifest@1", "trial_id": uid(1), "plan_sha256": "b"*64,
+    p = {"contract": "ybo-trial-courier-manifest@1", "trial_id": TRIAL_ID, "plan_sha256": "b"*64,
         "release_sha": SHA, "destination_policy_sha256": env()["CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256"],
         "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z", "entries": entries}
     return TrialManifest.from_mapping(p, canonical_sha256(p))
@@ -83,9 +85,42 @@ def test_validate_only_no_http_socket_or_sender(monkeypatch):
     {"SUPABASE_SERVICE_ROLE_KEY": "forbidden-db"}, {"OPENAI_API_KEY": "forbidden-provider"},
     {"RAILWAY_GIT_COMMIT_SHA": "f"*40}, {"CONTENT_OPS_TRIAL_PLAN_SHA256": "bad"},
     {"CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256": "f"*64},
+    {"CONTENT_OPS_TRIAL_ID": uid(1)}, {"CONTENT_OPS_TRIAL_NOT_BEFORE": ""},
+    {"CONTENT_OPS_TRIAL_DEADLINE": "2026-10-14T17:10:52Z"},
 ])
 def test_configuration_cannot_widen_authority(delta):
     assert cli.run(validate_only=True, environ=env(**delta), stamp_reader=lambda: SHA)["ok"] is False
+
+
+@pytest.mark.parametrize("delta", [
+    {"trial_id": uid(1)}, {"not_before": "2026-10-14T15:10:51.000Z"},
+    {"deadline": "2026-10-14T17:10:52Z"},
+    {"not_before": "2026-10-14T14:00:00Z", "deadline": "2026-10-14T16:00:00Z"},
+])
+def test_manifest_rejects_wrong_id_or_noncanonical_or_widened_or_cross_day_window(delta):
+    p = {**manifest().payload, **delta}
+    with pytest.raises(TrialCourierError):
+        TrialManifest.from_mapping(p, canonical_sha256(p))
+
+
+def test_yellow_manifest_is_rejected_before_transport():
+    with pytest.raises(TrialCourierError):
+        manifest(("yellow",))
+
+
+def test_state_rejects_changed_valid_manifest_window_without_retry():
+    calls = []
+    p = {**manifest().payload, "not_before": "2026-10-14T15:11:51Z", "deadline": "2026-10-14T17:11:51Z"}
+    shifted = TrialManifest.from_mapping(p, canonical_sha256(p))
+    async def run():
+        state = TrialStateClient(settings(), clock=lambda: NOW,
+            transport=httpx.MockTransport(lambda request: calls.append(request) or state_response(shifted)))
+        try:
+            with pytest.raises(TrialRuntimeError): await state.read()
+        finally:
+            await state.aclose()
+    asyncio.run(run())
+    assert len(calls) == 1
 
 
 def state_response(m, **override):
@@ -101,7 +136,7 @@ def test_state_exact_token_body_manifest_and_no_other_secret():
         assert req.url.path.endswith("content-ops-trial-state")
         assert req.headers["authorization"] == "Bearer " + settings().gateway_token
         assert "x-api-key" not in req.headers
-        assert json.loads(req.content) == {"trial_id": uid(1), "plan_sha256": "b"*64}
+        assert json.loads(req.content) == {"trial_id": TRIAL_ID, "plan_sha256": "b"*64}
         return state_response(manifest())
     async def run():
         s = TrialStateClient(settings(), transport=httpx.MockTransport(handler), clock=lambda: NOW)
@@ -155,9 +190,9 @@ class State:
     async def aclose(self): self.closed = True
 
 
-def test_wait_before_window_does_not_construct_state_then_max_three_once():
+def test_wait_before_window_does_not_construct_state_then_max_two_once():
     clock, calls = Clock(START-timedelta(seconds=31)), []
-    state = State(manifest(("yellow", "babylon", "origintrail")), pending=1)
+    state = State(manifest(("babylon", "origintrail")), pending=1)
     def state_factory(*a, **k):
         assert clock() >= START
         return state
@@ -165,14 +200,14 @@ def test_wait_before_window_does_not_construct_state_then_max_three_once():
         def __init__(self, settings, m, entry, *a): calls.append(entry["client_id"])
         async def run(self): return {"status": "card_recorded", "confirmed_parts": 4, "public_send_attempted": False}
     r = asyncio.run(run_trial(settings(), clock=clock, sleep=clock.sleep, state_factory=state_factory, runner_factory=Runner))
-    assert r["status"] == "completed" and r["cards_recorded"] == 3 and r["confirmed_parts"] == 12
-    assert calls == ["yellow", "babylon", "origintrail"] and state.closed
+    assert r["status"] == "completed" and r["cards_recorded"] == 2 and r["confirmed_parts"] == 8
+    assert calls == ["babylon", "origintrail"] and state.closed
     assert clock.sleeps == [30, 1, 15] and r["invocation_dispatch_enabled"] is False
     assert "effective_enabled" not in r  # Local stop is not a claim about shared owner state.
 
 
 def test_unknown_first_card_stops_remaining_cards_without_retry():
-    state, calls = State(manifest(("yellow", "babylon", "origintrail"))), []
+    state, calls = State(manifest(("babylon", "origintrail"))), []
     class Runner:
         def __init__(self, *a): calls.append(1)
         async def run(self): return {"status": "delivery_unknown", "confirmed_parts": 2, "public_send_attempted": False}
@@ -223,10 +258,10 @@ def test_real_exact_canary_four_parts_static_controls_mock_http():
             "X-Content-Ops-Trial-Manifest-Sha256": identity["manifest_sha256"]})
         if action == "reconcile": key, value = "queued", 1
         elif action == "claim": key, value = "claim", {"outbox_id": uid(91), "claim_token": b["claim_token"],
-            "client_id": "yellow", "kst_date": "2026-10-15", "content_item_id": e["content_item_id"],
+            "client_id": "babylon", "kst_date": "2026-10-15", "content_item_id": e["content_item_id"],
             "content_version_id": e["content_version_id"], "source_item_id": e["source_item_id"],
             "generate_job_id": e["job_id"], "banner_sha256": e["banner_sha256"], "title": "검수용",
-            "telegram_copy": TG, "x_copy": X, "source_url": "https://x.com/Yellow/status/123",
+            "telegram_copy": TG, "x_copy": X, "source_url": "https://x.com/babylonlabs_io/status/123",
             "source_published_at": "2026-10-13T23:00:00Z"}
         elif action == "begin": key, value = "accepted", True
         else:

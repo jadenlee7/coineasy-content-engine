@@ -9,12 +9,12 @@ import { QUALITY_BANNER_POLICY } from "../netlify/functions/_shared/quality-bann
 const id = (n: number) => `${String(n).padStart(8,"0")}-1111-4111-8111-111111111111`;
 const NOW = Date.parse("2026-10-14T15:30:51Z"), RELEASE = "a".repeat(40), PLAN = "b".repeat(64);
 const API = "https://coineasy-content-engine-production.up.railway.app";
-const URL = "https://coineasy-newscard.netlify.app/api/news-card/yellow";
-const TEXT = "Yellow explains infrastructure execution with its official source creative.";
-const SOURCE = "https://x.com/Yellow/status/1234567890";
+const URL = "https://coineasy-newscard.netlify.app/api/news-card/babylon";
+const TEXT = "Babylon explains infrastructure execution with its official source creative.";
+const SOURCE = "https://x.com/babylonlabs_io/status/1234567890";
 const IMAGE = "https://pbs.twimg.com/media/official-source.jpg?format=jpg&name=orig";
 const sha = (v: string | Buffer) => createHash("sha256").update(v).digest("hex");
-const quality = { job_id: id(1), request_id: id(2), workspace_id: id(3), client_id: "yellow",
+const quality = { job_id: id(1), request_id: id(2), workspace_id: id(3), client_id: "babylon",
   source_item_id: id(4), source_published_at: "2026-10-13T23:00:00Z", source_sha256: sha(TEXT),
   source_content: TEXT, source_url: SOURCE, source_image_url: IMAGE };
 const payload = { source_content: TEXT, source_type: "tweet", source_url: SOURCE, source_image_url: IMAGE,
@@ -27,19 +27,23 @@ const ENV: Record<string,string> = {
   STUDIO_AUTOMATION_TOKEN: "fixture-automation-token-at-least-32-chars",
   SUPABASE_URL: "https://fixture.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "fixture-service-key",
   CONTENT_STUDIO_WORKSPACE_ID: id(3), QUALITY_BANNER_ENABLED: "false", NEWS_CARD_IDEMPOTENCY_ENABLED: "false",
-  YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "true", YBO_TRIAL_ID: id(5), YBO_TRIAL_PLAN_SHA256: PLAN,
+  YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "true", YBO_TRIAL_ID: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", YBO_TRIAL_PLAN_SHA256: PLAN,
   YBO_TRIAL_RELEASE_SHA: RELEASE,
+  YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T17:10:51Z",
+  CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
+  CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED: "false", CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED: "false",
+  STUDIO_TELEGRAM_PUBLISH_ENABLED: "false",
 };
-const runtime = { params: { clientId: "yellow" }, deploy: { context: "production", published: true, id: "fixture-deploy" } };
+const runtime = { params: { clientId: "babylon" }, deploy: { context: "production", published: true, id: "fixture-deploy" } };
 function request(b: any = body, headerChanges: Record<string,string> = {}, url = URL) {
   return new Request(url, { method: "POST", headers: { "Content-Type": "application/json",
     "X-Studio-Automation-Key": ENV.STUDIO_AUTOMATION_TOKEN, "Idempotency-Key": id(2),
-    "X-Studio-Expected-Release-Sha": RELEASE, "X-YBO-Trial-ID": id(5),
+    "X-Studio-Expected-Release-Sha": RELEASE, "X-YBO-Trial-ID": "1a2bef47-4827-4bc3-9b4d-5baf2714015d",
     "X-YBO-Trial-Plan-Sha256": PLAN, ...headerChanges }, body: JSON.stringify(b) });
 }
 function receipt(changes: any = {}) {
-  return { authorized: true, trial_id: id(5), plan_sha256: PLAN, release_sha: RELEASE,
-    client_id: "yellow", request_id: id(2), observed_at: new Date(NOW).toISOString(), ...changes };
+  return { authorized: true, trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: PLAN, release_sha: RELEASE,
+    client_id: "babylon", request_id: id(2), observed_at: new Date(NOW).toISOString(), ...changes };
 }
 async function gate(options: any = {}) {
   const calls: any[] = [];
@@ -47,7 +51,7 @@ async function gate(options: any = {}) {
     calls.push([String(input), init]);
     return options.response?.(calls.length) ?? Response.json(receipt());
   };
-  const args = { req: request(), runtime, body, clientId: "yellow", requestId: id(2), automation: true,
+  const args = { req: request(), runtime, body, clientId: "babylon", requestId: id(2), automation: true,
     env: (k: string) => ({ ...ENV, ...options.env })[k], release: RELEASE, clock: () => NOW,
     fetcher, ...options.args };
   return { admit: () => admitTrialGeneration(args), calls };
@@ -59,8 +63,8 @@ test("trial sends only the exact immutable payload to the fixed authenticated AP
   const [url, init] = h.calls[0];
   assert.equal(url, `${API}/internal/trial/generation-authorize`);
   assert.equal(init.redirect, "error"); assert.equal(new Headers(init.headers).get("X-API-Key"), ENV.API_SECRET);
-  assert.deepEqual(JSON.parse(init.body), { trial_id: id(5), plan_sha256: PLAN, release_sha: RELEASE,
-    client_id: "yellow", request_id: id(2), payload });
+  assert.deepEqual(JSON.parse(init.body), { trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: PLAN, release_sha: RELEASE,
+    client_id: "babylon", request_id: id(2), payload });
   assert.deepEqual(admission.payload, payload);
   assert.equal(admission.collectOnly, false);
   await admission.fetcher("https://fixture.supabase.co/rest/v1/rpc/read", { method: "POST" });
@@ -79,7 +83,7 @@ for (const env of [{ YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "false" }, { QUALITY_
 }
 for (const args of [{ automation: false }, { clientId: "squid" }, { runtime: {} },
   { runtime: { deploy: { ...runtime.deploy, published: false } } }, { release: null },
-  { req: request(body, { "X-YBO-Trial-ID": `${id(5)},${id(5)}` }) },
+  { req: request(body, { "X-YBO-Trial-ID": `${"1a2bef47-4827-4bc3-9b4d-5baf2714015d"},${"1a2bef47-4827-4bc3-9b4d-5baf2714015d"}` }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "false" }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "true,true" }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "TRUE" }) },
@@ -92,7 +96,7 @@ for (const args of [{ automation: false }, { clientId: "squid" }, { runtime: {} 
     const h = await gate({ args }); await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 0);
   });
 }
-for (const changes of [{ authorized: false }, { request_id: id(9) }, { client_id: "babylon" },
+for (const changes of [{ authorized: false }, { request_id: id(9) }, { client_id: "origintrail" },
   { plan_sha256: "c".repeat(64) }, { release_sha: "c".repeat(40) }, { extra: true },
   { observed_at: "2026-10-14T15:30:45Z" }, { observed_at: "2026-10-14T15:30:52Z" }]) {
   test(`invalid trusted receipt ${Object.keys(changes)[0]} never reaches downstream`, async () => {
@@ -103,7 +107,7 @@ for (const changes of [{ authorized: false }, { request_id: id(9) }, { client_id
 test("owner closing after initial authorization denies a subsequent write without retry", async () => {
   const h = await gate({ response: (n: number) => Response.json(receipt({ authorized: n === 1 })) });
   const admission = await h.admit();
-  await assert.rejects(() => admission.fetcher(`${API}/clients/yellow/generate/news-card`, { method: "POST" }), TrialGenerationError);
+  await assert.rejects(() => admission.fetcher(`${API}/clients/babylon/generate/news-card`, { method: "POST" }), TrialGenerationError);
   assert.equal(h.calls.length, 2); assert.ok(h.calls.every(([url]) => url.endsWith("/generation-authorize")));
 });
 test("ambiguous/redirect/oversize authorization is not retried and never reflected", async () => {
@@ -138,39 +142,39 @@ async function integration(options: any = {}) {
     // run concurrently, so valid authorization receipts can interleave.
     downstream++; assert.ok(auth > downstream);
     if (url.endsWith("/storage/v1/bucket/content-studio")) return Response.json({ id: "content-studio", public: false });
-    if (url.includes("/rest/v1/workspace_clients")) return Response.json([{ workspace_id: id(3), client_id: "yellow", active: true }]);
+    if (url.includes("/rest/v1/workspace_clients")) return Response.json([{ workspace_id: id(3), client_id: "babylon", active: true }]);
     if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(options.existing ? {
-      content_item_id: id(2), content_version_id: id(7), client_id: "yellow", content_kind: "daily_news",
+      content_item_id: id(2), content_version_id: id(7), client_id: "babylon", content_kind: "daily_news",
       status: "needs_review", title: "기존 직원 검수안", content: { request_hash: "a".repeat(64) }, channel_copy: {},
       generation_meta: { request_hash: "a".repeat(64) }, assets: [{
         asset_id: id(8), asset_kind: "png", filename: "news-card.png", storage_bucket: "content-studio",
-        storage_path: `${id(3)}/yellow/${id(8)}/news-card.png`, mime_type: "image/png", byte_size: png.byteLength,
+        storage_path: `${id(3)}/babylon/${id(8)}/news-card.png`, mime_type: "image/png", byte_size: png.byteLength,
         sha256: sha(png), width: 2880, height: 2880,
       }],
     } : null);
     if (url.endsWith("/rest/v1/rpc/get_quality_banner_generation_context")) return Response.json(
       options.contextDrift ? { ...trialQuality, job_id: id(9) } : trialQuality);
     if (url.includes("cdn.syndication.twimg.com")) return Response.json({ id_str: "1234567890", text: TEXT,
-      user: { screen_name: options.wrongAccount ? "notYellow" : "Yellow", id_str: "2651" },
+      user: { screen_name: options.wrongAccount ? "notBabylon" : "babylonlabs_io", id_str: "1558731723243810816" },
       ...(options.logoOnly && !options.sourceHasImage ? {} : { photos: [{ url: options.badMedia ? "https://invalid.test/photo" : IMAGE }] }) });
-    if (url.endsWith("/clients/yellow/generate/news-card")) {
+    if (url.endsWith("/clients/babylon/generate/news-card")) {
       paid++; const headers = new Headers(init?.headers);
-      assert.equal(headers.get("X-YBO-Trial-ID"), id(5)); assert.equal(headers.get("Idempotency-Key"), id(2));
+      assert.equal(headers.get("X-YBO-Trial-ID"), "1a2bef47-4827-4bc3-9b4d-5baf2714015d"); assert.equal(headers.get("Idempotency-Key"), id(2));
       assert.equal(headers.get("X-YBO-Trial-Collect-Only"), options.collectOnly ? "true" : null);
       assert.deepEqual(JSON.parse(String(init?.body)), trialPayload);
       if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T17:10:51Z");
-      return Response.json({ client_id: "yellow", content_type: "news_card",
+      return Response.json({ client_id: "babylon", content_type: "news_card",
         spec: { headline: "공식 인프라 업데이트", body_lines: ["공식 소식의 핵심 내용을 확인하세요"], source_url: SOURCE,
           render_strategy: options.logoOnly ? "official_logo_announcement" : "reference_first_quality", channel_profile: "x_square", template_version: QUALITY_BANNER_POLICY,
           asset_pack_version: options.logoOnly ? "official-logo-only@1" : "official-reference-source-logo@1", brand_profile_policy_version: "official-reference-quality@1",
           quality_banner: { policy: QUALITY_BANNER_POLICY, request_sha256: "a".repeat(64), png_sha256: sha(png), width: 2880, height: 2880,
             ...(options.logoOnly ? { reference_mode: "official_logo_only", official_logo_sha256: options.badLogoHash ? "invalid" : "d".repeat(64) } : {}) } },
-        png_path: `/app/output/yellow/news_request_${id(2)}/news_card_quality.png`, template_style: "remix",
+        png_path: `/app/output/babylon/news_request_${id(2)}/news_card_quality.png`, template_style: "remix",
         requested_template_style: "remix", source_image_used: options.logoOnly ? !!options.falseSourceProof : true,
         source_image_url: sourceImage, source_image_sha256: options.logoOnly ? "" : "c".repeat(64),
         source_visual_path: null, figma_template: null, manifest_path: "/app/output/manifest.json", duration_ms: 1 });
     }
-    if (url.includes("/files/yellow/")) return new Response(png);
+    if (url.includes("/files/babylon/")) return new Response(png);
     if (url.includes("/storage/v1/object/content-studio/") && init?.method === "POST") { stored++; return Response.json({ Key: "stored" }); }
     if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
       const data = JSON.parse(String(init?.body));
@@ -232,7 +236,7 @@ test("actual route with globals OFF authorizes exact payload and persists one im
 test("collect-only is forwarded once for a trusted trial without changing the pinned payload", async () => {
   const r = await integration({ collectOnly: true, request: request(body, { "X-YBO-Trial-Collect-Only": "true" }) });
   assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.paid, 1);
-  assert.equal(r.calls.filter(url => url.endsWith("/clients/yellow/generate/news-card")).length, 1);
+  assert.equal(r.calls.filter(url => url.endsWith("/clients/babylon/generate/news-card")).length, 1);
 });
 test("collect-only with no full trial authority is denied before downstream HTTP", async () => {
   const req = request(body, { "X-YBO-Trial-Collect-Only": "true" });
@@ -264,4 +268,32 @@ test("untagged YBO cannot fall back to ordinary generation while trial gateway i
   const untagged = new Request(req.url, { method: "POST", headers: req.headers,
     body: JSON.stringify({ ...body, trial_payload: undefined }) });
   const r = await integration({ request: untagged }); assert.equal(r.status, 503); assert.equal(r.calls.length, 0);
+});
+
+test("Yellow is independently denied before authorization or provider HTTP", async () => {
+  const yellowBody = { ...body, trial_payload: { ...payload, quality_context: { ...quality, client_id: "yellow" } } };
+  const h = await gate({ args: { clientId: "yellow", body: yellowBody,
+    req: request(yellowBody, {}, URL.replace("/babylon", "/yellow")) } });
+  await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 0);
+});
+test("another valid UUID cannot authorize even with matching environment/header", async () => {
+  const h = await gate({ env: { YBO_TRIAL_ID: id(99) }, args: { req: request(body, { "X-YBO-Trial-ID": id(99) }) } });
+  await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 0);
+});
+test("generation rejects invalid or missing anchored window before all HTTP", async () => {
+  for (const env of [{ YBO_TRIAL_NOT_BEFORE: undefined }, { YBO_TRIAL_DEADLINE: undefined },
+    { YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51.000Z" }, { YBO_TRIAL_DEADLINE: "2026-10-14T17:10:52Z" },
+    { YBO_TRIAL_NOT_BEFORE: "2026-10-14T14:10:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T16:10:51Z" }]) {
+    const h = await gate({ env }); await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 0);
+  }
+});
+test("generation cannot accept changed window or credential after authorization I/O", async () => {
+  for (const delta of [{ YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:11:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T17:11:51Z" },
+    { API_SECRET: "other-existing-api-key" }, { RAILWAY_API_URL: API + "/" }]) {
+    const env = { ...ENV };
+    const h = await gate({ args: { env: (k: string) => env[k] }, response: () => {
+      Object.assign(env, delta); return Response.json(receipt());
+    } });
+    await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 1);
+  }
 });

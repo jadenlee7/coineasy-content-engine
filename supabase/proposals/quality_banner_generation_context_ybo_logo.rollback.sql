@@ -1,4 +1,4 @@
--- LOCAL_ROLLBACK_PROOF / PROPOSAL ONLY: time/day-only YBO logo-context rewindow.
+-- LOCAL_ROLLBACK_PROOF / PROPOSAL ONLY: one immutable anchored logo context.
 -- Requires separate production approval; not a migration or auto-apply script.
 -- Historical quality_banner_generation_context.sql is intentionally unchanged.
 -- Compile/readback in a disposable DB first. No ACL/owner/signature change,
@@ -8,7 +8,7 @@ begin;
 do $$begin
   if (select encode(extensions.digest(convert_to(prosrc,'UTF8'),'sha256'),'hex')
       from pg_proc where oid='public.get_quality_banner_generation_context(uuid,text,uuid)'::regprocedure)
-      is distinct from '52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e' then
+      is distinct from '4ab8c89d807d428e392e2cf63dbf2cfd17125a8e6d3203baf6a4585aba010197' then
     raise exception 'quality_context_previous_body_mismatch';
   end if;
 end $$;
@@ -71,14 +71,17 @@ begin
           -- Trial-only official-logo path: genuine empty media and an explicit
           -- empty JSON string, never NULL/missing/non-string/omitted evidence.
           source.media='[]'::jsonb and job.input->'source_image_url'='""'::jsonb
-          and statement_timestamp()>='2026-10-14T15:10:51Z'::timestamptz
-          and statement_timestamp()<'2026-10-14T17:10:51Z'::timestamptz
-          and slot.kst_date='2026-10-15'::date
-          and job.created_at>='2026-10-14T15:10:51Z'::timestamptz
+          and target_client_id in ('babylon','origintrail')
+          and job.locked_by='ybo-trial:1a2bef47-4827-4bc3-9b4d-5baf2714015d'
+          and exists(select 1 from private.ybo_trial_readiness_anchor as anchor
+            where anchor.trial_id='1a2bef47-4827-4bc3-9b4d-5baf2714015d'::uuid
+              and anchor.workspace_id=job.workspace_id
+              and statement_timestamp()>=anchor.not_before and statement_timestamp()<anchor.deadline
+              and slot.kst_date=anchor.kst_date and job.created_at>=anchor.not_before
+              and job.lease_expires_at<=anchor.deadline)
           and job.created_at<=statement_timestamp()
           and job.attempts=1 and job.max_attempts=3
-          and job.lease_expires_at<='2026-10-14T17:10:51Z'::timestamptz
-          and job.idempotency_key='official-x-review:v1:2026-10-15:'||target_client_id
+          and job.idempotency_key='official-x-review:v1:'||slot.kst_date::text||':'||target_client_id
           and job.input=jsonb_build_object(
             'workflow','official_x_review_draft_v1','kst_date',slot.kst_date,
             'source_item_ids',jsonb_build_array(source.id::text),'content_kind','daily_news',

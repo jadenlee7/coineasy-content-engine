@@ -15,7 +15,6 @@ import json
 import re
 from typing import Awaitable, Callable
 from uuid import UUID, uuid4, uuid5
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -26,15 +25,11 @@ from core.automation.mode_router import select_daily_review_candidate
 from core.automation.models import ClaimedJob, StyleReferencePack
 from core.automation.news_generation_journal import request_digest
 from core.automation.repository import AutomationRepositoryError, SupabaseAutomationRepository
-from core.automation.trial_owner import CLIENTS, TrialOwner
+from core.automation.trial_owner import CLIENTS, ELIGIBLE_CLIENTS, KST, TrialOwner
 from core.client_config import load_client_config
 from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
 
-KST = ZoneInfo("Asia/Seoul")
-START = datetime(2026, 10, 14, 15, 10, 51, tzinfo=timezone.utc)
-END = datetime(2026, 10, 14, 17, 10, 51, tzinfo=timezone.utc)
-DAY = date(2026, 10, 15)
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
@@ -56,10 +51,10 @@ def _uuid(value):
     return value
 
 
-def _window(now):
+def _window(now, plan):
     _require(type(now) is datetime and now.utcoffset() is not None)
     current = now.astimezone(timezone.utc)
-    _require(START <= current < END and current.astimezone(KST).date() == DAY,
+    _require(plan.not_before <= current < plan.deadline and current.astimezone(KST).date() == plan.kst_date,
              "trial_producer_window_closed")
     return current
 
@@ -68,7 +63,7 @@ def _jsonb_string(value):
     return json.dumps(value, ensure_ascii=False, separators=(", ", ": "), allow_nan=False)
 
 
-def fixed_natural_input_sha256(value):
+def fixed_natural_input_sha256(value, *, kst_date):
     """PostgreSQL jsonb::text for the fixed nine-key natural queue payload.
 
     PostgreSQL jsonb stores these ASCII keys by byte length then byte order;
@@ -79,7 +74,7 @@ def fixed_natural_input_sha256(value):
     keys = ("kst_date", "workflow", "request_id", "source_url", "manual_only",
             "content_kind", "source_content", "source_item_ids", "source_image_url")
     _require(type(value) is dict and set(value) == set(keys))
-    _require(value["kst_date"] == DAY.isoformat()
+    _require(type(kst_date) is date and value["kst_date"] == kst_date.isoformat()
              and value["workflow"] == "official_x_review_draft_v1"
              and value["content_kind"] == "daily_news" and value["manual_only"] is False
              and type(value["source_item_ids"]) is list and len(value["source_item_ids"]) == 1)
@@ -102,9 +97,10 @@ class NaturalSlot:
     source_url: str
     source_image_url: str
     style_pack: StyleReferencePack
+    kst_date: date
 
     def job_input(self):
-        return {"workflow": "official_x_review_draft_v1", "kst_date": DAY.isoformat(),
+        return {"workflow": "official_x_review_draft_v1", "kst_date": self.kst_date.isoformat(),
             "source_item_ids": [self.source_item_id], "content_kind": "daily_news",
             "request_id": self.request_id, "source_content": self.source_content.strip(),
             "source_url": self.source_url, "source_image_url": self.source_image_url.strip(),
@@ -138,20 +134,22 @@ class TrialNaturalProducerAdapter:
         self.sleep = sleep
 
     def _before_effect(self, callback: Callable[[], None]) -> None:
-        _window(self.clock())
+        _window(self.clock(), self.owner.plan)
         callback()
-        _window(self.clock())
+        _window(self.clock(), self.owner.plan)
 
     async def intake(self, client_id: str, *, before_effect: Callable[[], None]) -> NaturalSlot | None:
         """Poll and queue only the latest eligible official YBO source."""
         _require(client_id in CLIENTS and callable(before_effect))
-        now = _window(self.clock())
+        if client_id == "yellow":
+            return None  # Preserve uncertain prior work before any per-client I/O.
+        now = _window(self.clock(), self.owner.plan)
         config = load_client_config(client_id)
         source = config.content_sources.twitter
         _require(config.active and source is not None and source.handle)
         self._before_effect(before_effect)
         state = await self.repository.get_state(workspace_id=self.workspace_id,
-            client_id=client_id, kst_date=DAY)
+            client_id=client_id, kst_date=self.owner.plan.kst_date)
         if state.draft_reserved_today:
             return None
         self._before_effect(before_effect)
@@ -179,11 +177,11 @@ class TrialNaturalProducerAdapter:
             expected_cursor=state.last_cursor, next_cursor=latest_cursor,
             source_items=[OfficialXDailyRunner._source_payload(post,
                 include_standalone_signals=True) for post in eligible],
-            polled_at=_window(self.clock()))
+            polled_at=_window(self.clock(), self.owner.plan))
         if state.draft_reserved_today:
             return None
         selected = select_daily_review_candidate((item.routing_post() for item in state.pending_sources),
-            latest_cursor=state.last_cursor, now=_window(self.clock()),
+            latest_cursor=state.last_cursor, now=_window(self.clock(), self.owner.plan),
             skip_patterns=config.routing.skip_patterns)
         if selected is None:
             return None
@@ -211,21 +209,22 @@ class TrialNaturalProducerAdapter:
         _require(type(pack) is StyleReferencePack and HEX32.fullmatch(pack.reference_pack_hash))
         self._before_effect(before_effect)
         queued = await self.repository.queue_job(workspace_id=self.workspace_id,
-            client_id=client_id, kst_date=DAY, source_item_ids=[source_id],
+            client_id=client_id, kst_date=self.owner.plan.kst_date, source_item_ids=[source_id],
             content_kind="daily_news", request_id=request_id,
             source_content=str(selected["text"]), source_url=str(selected["url"]),
             source_image_url=image, manual_only=False)
         _require(queued.job_id is not None and queued.status == "queued" and not queued.reused,
                  "trial_producer_slot_not_new")
         return NaturalSlot(self.workspace_id, client_id, _uuid(queued.job_id), request_id,
-            source_id, str(selected["text"]).strip(), str(selected["url"]), image, pack)
+            source_id, str(selected["text"]).strip(), str(selected["url"]), image, pack, self.owner.plan.kst_date)
 
     async def claim_and_prepare(self, slot: NaturalSlot, *, worker_id: str,
                                 before_effect: Callable[[], None]) -> ClaimedTrialGeneration:
         """One exact initial claim, then read current DB context and pin API body."""
-        _window(self.clock())
+        _window(self.clock(), self.owner.plan)
         _require(type(slot) is NaturalSlot and slot.workspace_id == self.workspace_id
-                 and slot.client_id in CLIENTS and WORKER.fullmatch(worker_id or "")
+                 and slot.client_id in ELIGIBLE_CLIENTS and slot.kst_date == self.owner.plan.kst_date
+                 and WORKER.fullmatch(worker_id or "") and worker_id == f"ybo-trial:{self.trial_id}"
                  and callable(before_effect))
         for value in slot.identifiers().values(): _uuid(value)
         _require(type(slot.style_pack) is StyleReferencePack
@@ -237,7 +236,7 @@ class TrialNaturalProducerAdapter:
             "target_workspace_id": slot.workspace_id, "target_client_id": slot.client_id,
             "target_job_id": slot.job_id, "target_request_id": slot.request_id,
             "target_source_item_id": slot.source_item_id,
-            "target_input_sha256": fixed_natural_input_sha256(slot.job_input()),
+            "target_input_sha256": fixed_natural_input_sha256(slot.job_input(), kst_date=self.owner.plan.kst_date),
             "target_style_pack_hash": slot.style_pack.reference_pack_hash,
             "target_worker_id": worker_id, "target_lease_seconds": 900})
         _require(raw is not None, "trial_producer_exact_claim_denied")
@@ -245,7 +244,7 @@ class TrialNaturalProducerAdapter:
         _require(job.job_id == slot.job_id and job.client_id == slot.client_id
                  and job.request_id == slot.request_id
                  and job.primary_source_item_id == slot.source_item_id
-                 and job.kst_date == DAY and job.content_kind == "daily_news"
+                 and job.kst_date == self.owner.plan.kst_date and job.content_kind == "daily_news"
                  and job.attempts == 1 and job.max_attempts == 3
                  and not job.manual_only and not job.origintrail_batch_eligible
                  and not job.batch_handoff_recovery_only and not job.failed_draft_recovery_only
@@ -281,7 +280,7 @@ class TrialNaturalProducerAdapter:
             published = datetime.fromisoformat(context["source_published_at"].replace("Z", "+00:00"))
         except ValueError:
             raise TrialProducerBlocked("trial_producer_context_mismatch") from None
-        now = _window(self.clock())
+        now = _window(self.clock(), self.owner.plan)
         _require(published.utcoffset() is not None and 0 < (now - published).total_seconds() < 86_400,
                  "trial_producer_source_stale")
         image = normalize_x_media_url(slot.source_image_url) if slot.source_image_url else ""
@@ -304,7 +303,9 @@ class TrialNaturalProducerAdapter:
         """One generation POST; pending responses permit bounded GET-only continuation."""
         _require(type(prepared) is ClaimedTrialGeneration and callable(before_effect))
         slot = prepared.slot
-        started = _window(self.clock())
+        started = _window(self.clock(), self.owner.plan)
+        _require(slot.client_id in ELIGIBLE_CLIENTS and slot.kst_date == self.owner.plan.kst_date
+                 and prepared.worker_id == f"ybo-trial:{self.trial_id}")
         _require(request_digest(slot.client_id, prepared.payload) == prepared.payload_sha256,
                  "trial_producer_payload_changed")
         _require(self.owner.generation_authorized(slot.client_id, slot.identifiers(),
@@ -334,7 +335,7 @@ class TrialNaturalProducerAdapter:
                 except (KeyError, TypeError, ValueError, AttributeError):
                     raise TrialProducerBlocked("trial_producer_payload_changed") from None
                 _require(published.utcoffset() is not None and 0 < (
-                    _window(self.clock()) - published).total_seconds() < 86_400,
+                    _window(self.clock(), self.owner.plan) - published).total_seconds() < 86_400,
                     "trial_producer_source_stale")
                 headers = {"Content-Type": "application/json",
                     "Idempotency-Key": slot.request_id,
@@ -362,7 +363,7 @@ class TrialNaturalProducerAdapter:
                     pending = False
                 if not pending:
                     break
-                _require(attempts < 30 and _window(self.clock()) < started + timedelta(minutes=8),
+                _require(attempts < 30 and _window(self.clock(), self.owner.plan) < started + timedelta(minutes=8),
                          "trial_producer_collect_deadline")
                 await self.sleep(15)
         try:
