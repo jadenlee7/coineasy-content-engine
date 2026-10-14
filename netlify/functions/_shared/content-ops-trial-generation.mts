@@ -5,7 +5,7 @@ import { currentStudioReleaseSha } from "./studio-release.mts";
 
 type Json = Record<string, any>;
 type Env = (name: string) => string | undefined;
-const START = Date.parse("2026-10-14T06:22:17Z"), END = Date.parse("2026-10-14T08:22:17Z");
+const START = Date.parse("2026-10-14T12:44:51Z"), END = Date.parse("2026-10-14T14:44:51Z");
 const API = "https://coineasy-content-engine-production.up.railway.app";
 const ORIGIN = "https://coineasy-newscard.netlify.app";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;

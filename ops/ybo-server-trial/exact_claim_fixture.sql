@@ -11,18 +11,18 @@ begin
   -- the production clock or exposing a clock override in the production RPC.
   if call_count>=3 and final_now is not null then return final_now::timestamptz; end if;
   return coalesce(nullif(current_setting('exact_claim_fixture.now',true),'')::timestamptz,
-    '2026-10-14T06:52:17Z'::timestamptz)
+    '2026-10-14T13:14:51Z'::timestamptz)
     + case when current_setting('exact_claim_fixture.advance',true)='true'
         then clock_timestamp()-statement_timestamp() else interval '0' end;
 end
 $$;
 
 create function exact_claim_fixture.seed(c text default 'yellow',
-    job_created_at timestamptz default '2026-10-14T06:51:17Z') returns jsonb
+    job_created_at timestamptz default '2026-10-14T13:13:51Z') returns jsonb
 language plpgsql as $$
 declare w uuid:=gen_random_uuid(); j uuid:=gen_random_uuid(); s uuid:=gen_random_uuid();
  f uuid:=gen_random_uuid(); r uuid:=gen_random_uuid(); h text; u text;
- t timestamptz:='2026-10-14T06:52:17Z'; image text:='https://pbs.twimg.com/media/fixture.jpg?name=orig';
+ t timestamptz:='2026-10-14T13:14:51Z'; image text:='https://pbs.twimg.com/media/fixture.jpg?name=orig';
  body text:='Synthetic official source for isolated claim tests';
 begin
  h:=case c when 'yellow' then '@Yellow' when 'babylon' then '@babylonlabs_io'

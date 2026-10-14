@@ -16,8 +16,8 @@ create function public.claim_exact_natural_review_draft_job(
     target_lease_seconds integer default 900
 ) returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-    gate_start constant timestamptz := '2026-10-14T06:22:17Z';
-    gate_end constant timestamptz := '2026-10-14T08:22:17Z';
+    gate_start constant timestamptz := '2026-10-14T12:44:51Z';
+    gate_end constant timestamptz := '2026-10-14T14:44:51Z';
     gate_day constant date := '2026-10-14';
     job public.jobs%rowtype;
     slot private.official_x_daily_slots%rowtype;

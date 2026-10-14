@@ -18,8 +18,8 @@ import httpx
 ORIGIN = "https://coineasy-newscard.netlify.app"
 PATH = "/.netlify/functions/content-ops-review"
 CLIENTS = frozenset({"yellow", "babylon", "origintrail"})
-START = datetime(2026, 10, 14, 6, 22, 17, tzinfo=timezone.utc)
-END = datetime(2026, 10, 14, 8, 22, 17, tzinfo=timezone.utc)
+START = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
+END = datetime(2026, 10, 14, 14, 44, 51, tzinfo=timezone.utc)
 IDENTITY_HEADERS = {"trial_id": "x-content-ops-trial-id",
                     "plan_sha256": "x-content-ops-trial-plan-sha256",
                     "manifest_sha256": "x-content-ops-trial-manifest-sha256"}
@@ -80,7 +80,7 @@ class TrialManifest:
             _require(value["contract"] == "ybo-trial-courier-manifest@1"
                 and _uuid(value["trial_id"]) and _sha(value["plan_sha256"])
                 and _sha(value["release_sha"], 40) and _sha(value["destination_policy_sha256"])
-                and value["not_before"] == "2026-10-14T06:22:17Z")
+                and value["not_before"] == "2026-10-14T12:44:51Z")
             end = datetime.fromisoformat(value["deadline"].replace("Z", "+00:00"))
             _require(value["deadline"] == end.isoformat(timespec="seconds").replace("+00:00", "Z")
                 and end.utcoffset() is not None and START < end <= END)

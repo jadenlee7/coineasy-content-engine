@@ -5,8 +5,8 @@ CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
 
 ## Operator boundary
 
-- Earliest work: **2026-10-14 15:22:17 KST / 06:22:17 UTC**. Hard latest effect:
-  **17:22:17 KST / 08:22:17 UTC**. This operator-approved two-hour rewindow is
+- Earliest work: **2026-10-14 21:44:51 KST / 12:44:51 UTC**. Hard latest effect:
+  **23:44:51 KST / 14:44:51 UTC**. This operator-approved two-hour rewindow is
   fixed in code, not an arbitrary configurable start or deadline extension.
 - Yellow, Babylon and OriginTrail only, at most one new official source each.
 - Existing account-bound persistent image ledger: aggregate **USD 10 estimated**
@@ -15,6 +15,10 @@ CI proof do not imply that the trial is deployed, scheduled, enabled or sent.
   changes, callback bot startup, official Telegram/X posts or Typefully publish.
 - Repeated deployment/start cannot admit the same durable trial again. An
   uncertain generation/send/acknowledgment is held, never automatically repeated.
+- The earlier Yellow trial and its existing daily slot remain preserved. A fresh
+  trial must skip every existing daily slot before polling or reserving work;
+  this time-window change does not resume, clear or replace an unknown job,
+  owner, provider reservation or delivery receipt.
 - The latest source may be skipped if missing, stale, unsupported or already
   reserved. This trial cannot promise three messages regardless of source state.
 
@@ -66,6 +70,25 @@ Netlify generation uses only `YBO_TRIAL_GENERATION_GATEWAY_ENABLED` plus
 settings and the isolated courier entrypoint are documented in
 [the courier contract](YBO_TRIAL_COURIER_RUNTIME.md). All trial flags default OFF.
 
+Before each client intake, the hosted controller makes one authenticated
+`GET /api/ybo-trial-preflight` on the fixed production Studio origin. Existing
+`X-Studio-Automation-Key`, `X-Studio-Expected-Release-Sha`, `X-Ybo-Trial-Id`, and
+`X-Ybo-Trial-Plan-Sha256` headers must match the published build and exact trial
+pins. The endpoint is local-only: it performs no DB, owner, provider or send
+operation. It requires the generation trial flag ON and **literal** `false` for
+`QUALITY_BANNER_ENABLED`, `NEWS_CARD_IDEMPOTENCY_ENABLED`, all four broad
+gateway/review flags, and `STUDIO_TELEGRAM_PUBLISH_ENABLED`. A missing OFF flag
+is a failure, not a default. It also checks the fixed API address and presence
+of the existing API secret; it does **not** authenticate that secret upstream.
+Pure preflight success is not generation, delivery, budget or API-owner proof.
+
+An absent, invalid, redirected, stale or unavailable preflight stops the durable
+trial before any intake phase, slot or job is reserved. The owner may be admitted
+and then closed unknown; that is not zero-I/O or proof of provider activity.
+Never reset it to repeat. The same preflight can be read after Netlify trial
+activation and before API controller activation. No eligible fresh source is
+not a reason to enable or force a trial; leave every trial flag OFF instead.
+
 ## Work and shutdown evidence
 
 1. Before admission, validate the exact release and `controller_task_running`
@@ -98,17 +121,17 @@ key is granted to the content process just to perform that cleanup.
 
 ## SQL and test proof
 
-The October 13 installed exact-claim function uses the **superseded 00:00–02:00 UTC**
-window. Its body SHA-256 is
-`e319cfa49556c7d70837a01693a2a751fd986aea22b81adfdc499ed6784c5005`.
-Existing security/dependency catalog readbacks were unchanged. The function was
-not called during installation. The local operator receipt is not a generation
-or delivery receipt. Do not run a second apply or include this as an automatic
-production migration. The rewindowed rollback-only proof changes only its two
-time constants; it is not evidence that the hosted RPC has been replaced.
+The preceding **06:22:17–08:22:17 UTC** candidate's body SHA-256 is
+`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`.
+Before any separately authorized replacement, read the hosted body and its
+security/dependency catalog; require that exact previous body and unchanged
+catalog. The local operator receipt is not a generation or delivery receipt.
+Do not replay an earlier apply or include this as an automatic production
+migration. The rewindowed rollback-only proof changes only its two time
+constants; it is not evidence that the hosted RPC has been replaced.
 The hosted claim must match the revised fixed window before trial activation.
 The rollback candidate body SHA-256 is
-`04524f35cbb1496dc08282e1548a4acc9b23b32ba288863b001cb7a792fe28c3`.
+`ee0807cfe2c2b37101d171ab421e4ce578f69df09c245a1032dc79a9ce39cefe`.
 
 Local tests use mocks or explicitly disposable PostgreSQL only. The rollback
 SQL proof package is not a production migration. Hosted-version/runtime/image

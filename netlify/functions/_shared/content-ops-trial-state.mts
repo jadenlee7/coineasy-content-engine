@@ -29,7 +29,7 @@ export function createTrialStateHandler(deps: { getEnv: Env; releaseSha: () => s
     if (!token || !hasContentOpsGatewayAccess(req, token)) return json({ error: "invalid_token" }, 401);
     try {
       const now = (deps.clock ?? Date.now)();
-      if (!(Date.parse("2026-10-14T06:22:17Z") <= now && now < Date.parse("2026-10-14T08:22:17Z"))) throw Error();
+      if (!(Date.parse("2026-10-14T12:44:51Z") <= now && now < Date.parse("2026-10-14T14:44:51Z"))) throw Error();
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") ?? "") || !req.body) throw Error();
       const reader = req.body.getReader(); let bytes = 0; const chunks: Uint8Array[] = [];
       try { for (;;) { const r = await reader.read(); if (r.done) break;
