@@ -64,6 +64,23 @@ test("request-stable protected source files retain strict client/run/path bindin
   }
 });
 
+test("empty image context and logo provenance require explicit trial permission", () => {
+  const empty = { ...context, source_image_url: "" };
+  const exp = { ...expected, sourceImageUrl: "" };
+  assert.throws(() => parseQualityGenerationContext(empty, exp));
+  assert.deepEqual(parseQualityGenerationContext(empty, { ...exp, allowLogoOnly: true }), empty);
+  for (const source_image_url of [null, undefined, " ", "https://attacker.invalid/logo.png", IMAGE]) {
+    assert.throws(() => parseQualityGenerationContext({ ...empty, source_image_url }, { ...exp, allowLogoOnly: true }));
+  }
+  const spec = { ...qualitySpec(), render_strategy: "official_logo_announcement", asset_pack_version: "official-logo-only@1",
+    quality_banner: { ...qualitySpec().quality_banner, reference_mode: "official_logo_only", official_logo_sha256: "d".repeat(64) } };
+  assert.equal(validQualityBannerMetadata(spec), false);
+  assert.equal(validQualityBannerMetadata(spec, true), true);
+  assert.equal(validQualityBannerPng(spec, png, { width: 2880, height: 2880 }, true), true);
+  assert.equal(validQualityBannerMetadata({ ...spec, quality_banner: { ...spec.quality_banner, official_logo_sha256: "" } }, true), false);
+  assert.equal(validQualityBannerMetadata({ ...spec, render_strategy: "reference_first_quality" }, true), false);
+});
+
 test("quality policy/context form a separate request identity without changing legacy hashing", () => {
   const base = { clientId: "yellow", sourceContent: TEXT, sourceType: "tweet", sourceUrl: URL,
     mockMode: false, templateStyle: "remix", sourceImageUrl: IMAGE };

@@ -45,6 +45,7 @@ export function qualityUpstreamError(text: string): { error: string; status: num
 export function parseQualityGenerationContext(value: unknown, expected: {
   workspaceId: string; clientId: string; requestId: string;
   sourceContent: string; sourceUrl: string; sourceImageUrl: string;
+  allowLogoOnly?: boolean;
 }): QualityGenerationContext {
   const v = value as Partial<QualityGenerationContext> | null;
   if (!v || typeof v !== "object" || Array.isArray(v)
@@ -61,8 +62,9 @@ export function parseQualityGenerationContext(value: unknown, expected: {
     || v.source_sha256 !== createHash("sha256").update(v.source_content!, "utf8").digest("hex")
     || !/(?:Z|[+-][0-9]{2}:[0-9]{2})$/.test(v.source_published_at!)
     || !Number.isFinite(Date.parse(v.source_published_at!))
-    || !normalizeXImageUrl(v.source_image_url!)
-    || normalizeXImageUrl(v.source_image_url!) !== expected.sourceImageUrl) {
+    || !((expected.allowLogoOnly === true && v.source_image_url === "" && expected.sourceImageUrl === "")
+      || (Boolean(normalizeXImageUrl(v.source_image_url!))
+        && normalizeXImageUrl(v.source_image_url!) === expected.sourceImageUrl))) {
     throw new ContentCatalogError("quality_banner_context_invalid");
   }
   // Stable, canonical field order; DB media spelling is verified above before
@@ -99,18 +101,22 @@ export function qualityContextHash(context: QualityGenerationContext): string {
   return createHash("sha256").update(JSON.stringify(KEYS.map((key) => [key, context[key]])), "utf8").digest("hex");
 }
 
-export function validQualityBannerMetadata(spec: Record<string, unknown>): boolean {
+export function validQualityBannerMetadata(spec: Record<string, unknown>, allowLogoOnly = false): boolean {
   const q = spec.quality_banner as Record<string, unknown> | undefined;
+  const logoOnly = allowLogoOnly === true && q?.reference_mode === "official_logo_only";
+  const keys = ["policy", "request_sha256", "png_sha256", "width", "height"];
+  if (logoOnly) keys.push("reference_mode", "official_logo_sha256");
   return !!q && typeof q === "object" && !Array.isArray(q)
-    && Object.keys(q).sort().join() === ["policy", "request_sha256", "png_sha256", "width", "height"].sort().join()
+    && Object.keys(q).sort().join() === keys.sort().join()
+    && (!logoOnly || (typeof q.official_logo_sha256 === "string" && SHA.test(q.official_logo_sha256)))
     && q.policy === QUALITY_BANNER_POLICY
     && typeof q.request_sha256 === "string" && SHA.test(q.request_sha256)
     && typeof q.png_sha256 === "string" && SHA.test(q.png_sha256)
     && Number.isSafeInteger(q.width) && Number(q.width) >= 2880 && Number(q.width) <= 4096
     && q.height === q.width
-    && spec.render_strategy === "reference_first_quality"
+    && spec.render_strategy === (logoOnly ? "official_logo_announcement" : "reference_first_quality")
     && spec.template_version === QUALITY_BANNER_POLICY
-    && spec.asset_pack_version === "official-reference-source-logo@1"
+    && spec.asset_pack_version === (logoOnly ? "official-logo-only@1" : "official-reference-source-logo@1")
     && spec.brand_profile_policy_version === "official-reference-quality@1"
     && spec.channel_profile === "x_square"
     && !Object.hasOwn(spec, "visual_design_profile_id")
@@ -118,9 +124,9 @@ export function validQualityBannerMetadata(spec: Record<string, unknown>): boole
 }
 
 export function validQualityBannerPng(spec: Record<string, unknown>, bytes: ArrayBuffer,
-  dimensions: { width: number; height: number }): boolean {
+  dimensions: { width: number; height: number }, allowLogoOnly = false): boolean {
   const q = spec.quality_banner as Record<string, unknown>;
-  return validQualityBannerMetadata(spec) && bytes.byteLength <= MAX_QUALITY_BANNER_BYTES
+  return validQualityBannerMetadata(spec, allowLogoOnly) && bytes.byteLength <= MAX_QUALITY_BANNER_BYTES
     && q.width === dimensions.width && q.height === dimensions.height
     && q.png_sha256 === createHash("sha256").update(Buffer.from(bytes)).digest("hex");
 }

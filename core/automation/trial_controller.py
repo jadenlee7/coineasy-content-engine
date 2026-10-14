@@ -55,7 +55,7 @@ class EffectTransport(httpx.AsyncBaseTransport):
 
 
 class TrialGenerationPreflight:
-    """Authenticated local Netlify config proof; no slot, job or provider call."""
+    """Netlify config/upstream auth proof; no slot, job or provider call."""
     def __init__(self, studio, gate, guard):
         self.studio, self.gate, self.guard = studio, gate, guard
 
@@ -78,11 +78,13 @@ class TrialGenerationPreflight:
                         require(len(raw) <= 4096)
             body = json.loads(raw)
             require(type(body) is dict and set(body) == {"schema_version", "ready", "netlify_release_sha",
-                "trial_id", "plan_sha256", "generation_gateway_enabled", "broad_public_flags_off", "observed_at"}
+                "trial_id", "plan_sha256", "generation_gateway_enabled", "broad_public_flags_off",
+                "upstream_api_auth_verified", "observed_at"}
                 and body["schema_version"] == "ybo-trial-preflight@1" and body["ready"] is True
                 and body["netlify_release_sha"] == plan.payload["release_sha"]
                 and body["trial_id"] == plan.trial_id and body["plan_sha256"] == plan.sha256
                 and body["generation_gateway_enabled"] is True and body["broad_public_flags_off"] is True
+                and body["upstream_api_auth_verified"] is True
                 and type(body["observed_at"]) is str
                 and re.search(r"(?:Z|[+-]\d{2}:\d{2})$", body["observed_at"]))
             observed = datetime.fromisoformat(body["observed_at"].replace("Z", "+00:00"))

@@ -61,6 +61,48 @@ def test_designer_feedback_is_client_specific_and_digest_bound(client, positive,
     assert req.digest() != digest
 
 
+@pytest.mark.parametrize("client,handle,direction", [
+    ("yellow", "Yellow", "spacious headline leading"),
+    ("babylon", "babylonlabs_io", "weight 600"),
+    ("origintrail", "origin_trail", "-0.01em"),
+])
+def test_logo_only_contract_and_prompt_are_explicit_and_brand_specific(client, handle, direction):
+    original = request(client_id=client, source_url=f"https://x.com/{handle}/status/1234")
+    req = replace(original, references=(original.references[1],))
+    req.validate(now=NOW, reference_hosts=REF_HOSTS)
+    prompt = quality_prompt(req)
+    assert "exact official logo only" in prompt and "original announcement illustration" in prompt
+    assert "complete current official creative" not in prompt and "image 2" not in prompt
+    assert "Keep the recognizable official main artwork" not in prompt
+    assert direction in prompt and "28px" in prompt and "18px" in prompt
+    assert "Never add metrics, dates, partner logos, guarantees or extra claims" in prompt
+    assert req.digest() != original.digest()
+
+
+@pytest.mark.parametrize("roles", [("official_source",), ("untrusted",),
+    ("official_logo", "official_source"), ("official_logo", "official_logo")])
+def test_logo_only_does_not_relax_reference_roles(roles):
+    refs = tuple(BannerReference(role, f"https://assets.example.com/{i}.png", REFERENCE_SHA)
+                 for i, role in enumerate(roles))
+    with pytest.raises(QualityBannerError):
+        request(references=refs).validate(now=NOW, reference_hosts=REF_HOSTS)
+
+
+def test_logo_only_verified_reference_is_only_provider_input():
+    owner, req, calls = Owner(), request(), []
+    req = replace(req, references=(req.references[1],))
+    def handler(http):
+        import json
+        calls.append(http)
+        assert http.method == "POST"
+        body = json.loads(http.content)
+        assert body["image_urls"] == [req.references[0].url]
+        assert body["quality"] == "max" and body["resolution"] == "4k"
+        return httpx.Response(200, json=SUBMITTED)
+    assert run(adapter(owner, handler).submit_once(req)) == PROVIDER_ID
+    assert len(calls) == 1
+
+
 def image_bytes(fmt="PNG", size=(2880, 2880), mode="RGB"):
     out = io.BytesIO()
     color = (80, 20, 120, 0) if mode == "RGBA" else (80, 20, 120)

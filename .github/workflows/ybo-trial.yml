@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   exact-natural-claim-postgres17:
-    name: Exact YBO claim and JSONB digest on disposable PostgreSQL 17.6
+    name: Exact YBO claim, logo context and JSONB digest on disposable PostgreSQL 17.6
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -63,7 +63,7 @@ jobs:
               psql -X -v ON_ERROR_STOP=1 -f "$migration"
             fi
           done
-      - name: Verify rollback-only exact function, ACL, claim cases, and Python JSONB SHA
+      - name: Verify rollback-only claim and logo context, preserved ACL, and Python JSONB SHA
         run: python ops/ybo-server-trial/exact_claim_local_unittest.py --local-only
       - name: Record proof boundary
         if: always()

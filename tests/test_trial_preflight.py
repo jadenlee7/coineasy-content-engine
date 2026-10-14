@@ -1,4 +1,4 @@
-"""Pure Netlify proof is a single bounded GET, never an intake/generation path."""
+"""Netlify config/upstream auth proof never becomes an intake/generation path."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -12,13 +12,16 @@ NOW = datetime(2026, 10, 14, 13, 4, 51, tzinfo=timezone.utc)
 RELEASE, PLAN, TRIAL = "a" * 40, "b" * 64, "11111111-1111-4111-8111-111111111111"
 
 
-def fixture(*, mutation=None, status=200, response=None):
+def fixture(*, mutation=None, status=200, response=None, omit=None):
     calls, guards = [], []
     payload = {"schema_version": "ybo-trial-preflight@1", "ready": True,
         "netlify_release_sha": RELEASE, "trial_id": TRIAL, "plan_sha256": PLAN,
         "generation_gateway_enabled": True, "broad_public_flags_off": True,
+        "upstream_api_auth_verified": True,
         "observed_at": NOW.isoformat()}
     payload.update(mutation or {})
+    if omit is not None:
+        payload.pop(omit)
 
     def handle(req):
         calls.append(req)
@@ -45,9 +48,17 @@ def test_exact_preflight_only_get_and_fresh_bounded_response():
     assert len(calls) == 1 and len(guards) == 2
 
 
+def test_older_config_only_receipt_cannot_admit_work():
+    preflight, calls, _ = fixture(omit="upstream_api_auth_verified")
+    with pytest.raises(TrialControllerBlocked):
+        asyncio.run(preflight.verify())
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("mutation", [
     {"ready": False}, {"ready": 1}, {"generation_gateway_enabled": False},
     {"broad_public_flags_off": False}, {"broad_public_flags_off": "true"},
+    {"upstream_api_auth_verified": False}, {"upstream_api_auth_verified": "true"},
     {"netlify_release_sha": "c" * 40}, {"trial_id": "22222222-1111-4111-8111-111111111111"},
     {"plan_sha256": "c" * 64}, {"schema_version": "unknown"}, {"extra": "forbidden"},
     {"observed_at": NOW.replace(tzinfo=None).isoformat()},

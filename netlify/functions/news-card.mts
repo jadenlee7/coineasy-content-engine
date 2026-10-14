@@ -1171,7 +1171,11 @@ return async (req: Request, context: Context): Promise<Response> => {
     return json({ error: code }, 422);
   }
   const mockMode = body.mock_mode === true;
-  if (qualityMode && (mockMode || sourceType !== "tweet" || templateStyle !== "remix" || !pinnedSourceImageUrl)) {
+  // Only a fully owner-authorized bounded trial may use a genuinely absent
+  // source image. The DB context AND fresh official import must agree below.
+  const logoOnlyTrial = !!trial && sourceImageCandidate === "";
+  if (qualityMode && (mockMode || sourceType !== "tweet" || templateStyle !== "remix"
+    || (!pinnedSourceImageUrl && !logoOnlyTrial))) {
     return json({ error: "quality_banner_natural_remix_required" }, 422);
   }
   const requiresVerifiedOfficialSource = isOfficialSourceClient(clientId)
@@ -1230,7 +1234,7 @@ return async (req: Request, context: Context): Promise<Response> => {
   }
   if (qualityMode) {
     const expected = { workspaceId: storageConfig.workspaceId, clientId, requestId,
-      sourceContent, sourceUrl, sourceImageUrl: pinnedSourceImageUrl };
+      sourceContent, sourceUrl, sourceImageUrl: pinnedSourceImageUrl, allowLogoOnly: logoOnlyTrial };
     try {
       qualityContext = existingGeneration
         ? parseQualityGenerationContext(existingGeneration.content.quality_context, expected)
@@ -1339,7 +1343,11 @@ return async (req: Request, context: Context): Promise<Response> => {
       mediaStatus: "present",
     };
   }
-  if (requiresVerifiedOfficialSource && !resolvedSource.imageUrl) {
+  if (logoOnlyTrial && (resolvedSource.mediaStatus !== "absent" || resolvedSource.imageUrl !== ""
+    || !resolvedSource.xProvenance || resolvedSource.xProvenance.mediaUrls.length !== 0)) {
+    return json({ error: "quality_banner_source_not_absent" }, 409);
+  }
+  if (requiresVerifiedOfficialSource && !resolvedSource.imageUrl && !logoOnlyTrial) {
     return resolvedSource.mediaStatus === "unavailable"
       ? json({ error: "source_media_unavailable" }, 422)
       : json({ error: "source_image_required" }, 422);
@@ -1447,7 +1455,10 @@ return async (req: Request, context: Context): Promise<Response> => {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const result = rawResult;
-    if (qualityMode ? !validQualityBannerMetadata(result.spec) : Object.hasOwn(result.spec, "quality_banner")) {
+    if (qualityMode ? !validQualityBannerMetadata(result.spec, logoOnlyTrial) : Object.hasOwn(result.spec, "quality_banner")) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    if (logoOnlyTrial && objectValue(result.spec.quality_banner).reference_mode !== "official_logo_only") {
       return json({ error: "invalid_generation_response" }, 502);
     }
     if (qualityMode && (result.figma_template != null || result.source_visual_path != null)) {
@@ -1484,12 +1495,16 @@ return async (req: Request, context: Context): Promise<Response> => {
     if (
       isOfficialSourceClient(clientId)
       && actualTemplateStyle === "remix"
-      && (
+      && !logoOnlyTrial && (
         result.source_image_used !== true
         || result.source_image_url !== resolvedSource.imageUrl
         || !preparedSourceImageSha256
       )
     ) {
+      return json({ error: "invalid_generation_response" }, 502);
+    }
+    if (logoOnlyTrial && (result.source_image_used !== false || result.source_image_url !== ""
+      || result.source_image_sha256 !== "" || preparedSourceImageSha256 !== "")) {
       return json({ error: "invalid_generation_response" }, 502);
     }
     const sourceVisualFile = normalizedSourceVisualFile(result.source_visual_path, clientId);
@@ -1575,7 +1590,7 @@ return async (req: Request, context: Context): Promise<Response> => {
     if (!imageDimensions) {
       return json({ error: "invalid_generated_png" }, 502);
     }
-    if (qualityMode && (!validQualityBannerPng(result.spec, imageBytes, imageDimensions)
+    if (qualityMode && (!validQualityBannerPng(result.spec, imageBytes, imageDimensions, logoOnlyTrial)
       || !await validQualityBannerPixels(imageBytes))) {
       return json({ error: "invalid_generation_response" }, 502);
     }
@@ -1697,6 +1712,8 @@ return async (req: Request, context: Context): Promise<Response> => {
             mode: resolvedSource.mode,
             image_url: resolvedSource.imageUrl,
             media_status: resolvedSource.mediaStatus,
+            ...(trial ? { review_scope: "official_outer_post_only@1",
+              review_note: "공식 계정이 직접 작성한 설명과 공식 원문 링크를 기준으로 한 직원 검수안입니다. 인용 대상의 본문이나 주장은 검증·포함하지 않았습니다." } : {}),
             ...(preparedSourceImageSha256
               ? { prepared_sha256: preparedSourceImageSha256 }
               : {}),

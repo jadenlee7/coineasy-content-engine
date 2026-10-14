@@ -104,6 +104,9 @@ def prepare_private_card(snapshot, signer, room_binding, *, now, delivery_only=F
             "x": {"text": "[X 게시글 전문]\n" + snapshot.x_copy},
             "controls": {"text": (f"{snapshot.client_id.upper()} · 직원방 전달 시험 · needs_review\n"
                 f"버전: {snapshot.content_version_id}\n"
+                "출처 범위: 공식 계정이 직접 작성한 설명과 공식 원문 링크입니다. "
+                "인용 대상의 본문·주장은 검증하거나 포함하지 않았습니다.\n"
+                "원문 이미지가 없으면 공식 로고 기반으로 새로 제작한 배너입니다.\n"
                 "자동 검사는 시각 품질 검수나 공식 채널 게시 승인이 아닙니다.\n"
                 "수정·재제작·승인 버튼은 이번 시험에서 비활성 상태입니다.\n"
                 "수정 의견은 이 메시지에 답글로 남겨주세요. 답글만으로 자동 게시되지 않습니다.\n"

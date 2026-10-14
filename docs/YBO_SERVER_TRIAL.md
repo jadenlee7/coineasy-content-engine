@@ -74,13 +74,19 @@ Before each client intake, the hosted controller makes one authenticated
 `GET /api/ybo-trial-preflight` on the fixed production Studio origin. Existing
 `X-Studio-Automation-Key`, `X-Studio-Expected-Release-Sha`, `X-Ybo-Trial-Id`, and
 `X-Ybo-Trial-Plan-Sha256` headers must match the published build and exact trial
-pins. The endpoint is local-only: it performs no DB, owner, provider or send
-operation. It requires the generation trial flag ON and **literal** `false` for
+pins. The endpoint performs no DB, owner, provider or send operation. It
+requires the generation trial flag ON and **literal** `false` for
 `QUALITY_BANNER_ENABLED`, `NEWS_CARD_IDEMPOTENCY_ENABLED`, all four broad
 gateway/review flags, and `STUDIO_TELEGRAM_PUBLISH_ENABLED`. A missing OFF flag
 is a failure, not a default. It also checks the fixed API address and presence
-of the existing API secret; it does **not** authenticate that secret upstream.
-Pure preflight success is not generation, delivery, budget or API-owner proof.
+and bounded format of the existing API secret.
+After those local checks, it authenticates the existing Netlify `API_SECRET`
+with one bounded `GET /clients` on the fixed API origin. Redirects, errors,
+oversized/malformed responses, missing active YBO clients, and configuration or
+deadline drift fail closed without retries. The API endpoint reads only local
+client configuration. The receipt requires `upstream_api_auth_verified=true`;
+older config-only receipts are rejected before intake. Preflight success is
+not generation, delivery, budget or API-owner proof.
 
 An absent, invalid, redirected, stale or unavailable preflight stops the durable
 trial before any intake phase, slot or job is reserved. The owner may be admitted
@@ -127,11 +133,32 @@ Before any separately authorized replacement, read the hosted body and its
 security/dependency catalog; require that exact previous body and unchanged
 catalog. The local operator receipt is not a generation or delivery receipt.
 Do not replay an earlier apply or include this as an automatic production
-migration. The rewindowed rollback-only proof changes only its two time
-constants; it is not evidence that the hosted RPC has been replaced.
-The hosted claim must match the revised fixed window before trial activation.
-The rollback candidate body SHA-256 is
-`ee0807cfe2c2b37101d171ab421e4ce578f69df09c245a1032dc79a9ce39cefe`.
+migration. The current rollback-only claim candidate is **no longer a time-only
+rewindow**: it also admits an exact empty `source.media=[]` collection paired
+with the explicit JSON string `job.input.source_image_url=""`. Missing, NULL,
+non-string, whitespace or nonempty/malformed media cannot use this logo path.
+All existing identity, lease, latest-source, freshness, dedupe, role and fixed
+window checks remain. The claim candidate body SHA-256 is
+`6c306a539f0476eb7acb0cf4430d96d2a2783919a725de17c181fef5d3f1e477`.
+
+The historical `supabase/proposals/quality_banner_generation_context.sql` is
+unchanged. A separate rollback-only proposal,
+`supabase/proposals/quality_banner_generation_context_ybo_logo.rollback.sql`,
+retains its attached-media path and permits the same explicit empty-media pair
+only inside the fixed trial window, for a naturally bound initial job created
+inside that window, attempts=1/max=3, exact nine-field input and a lease ending
+no later than the trial deadline. It changes no owner, ACL, signature, volatility
+or other non-body catalog field; its guard verifies the historical body SHA
+`ddf0376b0bda5d253e2a4f3351b0fce2f81c9d459b6881ab2a20de8ae9656ab0`.
+The new quality-context candidate body SHA-256 is
+`52bee7b65bf683b958b38a8017cc14faea2246e301ac957de548692c99a5746e`.
+
+**Both behavioral SQL replacements require separate production approval** and
+exact hosted pre/post catalog readbacks. Code/CI/merge authorization is not
+production SQL apply authority. Neither rollback file installs its candidate,
+and no trial may activate until both hosted bodies and runtime release agree.
+An official logo supplies visual identity only; it does not supply source facts
+or authorize publication. Attribution/claim review remains mandatory.
 
 Local tests use mocks or explicitly disposable PostgreSQL only. The rollback
 SQL proof package is not a production migration. Hosted-version/runtime/image

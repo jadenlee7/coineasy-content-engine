@@ -159,7 +159,11 @@ class TrialNaturalProducerAdapter:
             max_results=100, since_id=state.last_cursor, require_complete=True)
         eligible = tuple(post for post in posts if post.get("is_retweet") is False
                          and post.get("is_reply") is False
-                         and (client_id != "origintrail" or post.get("is_quote") is False))
+                         and type(post.get("is_quote")) is bool
+                         and (client_id != "origintrail" or post.get("is_quote") is False
+                              or (post.get("source_image_url") == ""
+                                  and type(post.get("media")) is list and post["media"] == []
+                                  and post.get("is_note_tweet") is False)))
         # An ineligible newest result cannot make an older post the trial's
         # "latest" official source. No backlog fallback is admitted.
         observed_ids = [int(post["id"]) for post in posts if isinstance(post.get("id"), str)
@@ -170,11 +174,11 @@ class TrialNaturalProducerAdapter:
             return None
         latest_cursor = OfficialXDailyRunner._newest_cursor(eligible, state.last_cursor)
         self._before_effect(before_effect)
-        state = await self.repository.record_sources(workspace_id=self.workspace_id,
+        state = await self.repository.record_trial_official_sources(workspace_id=self.workspace_id,
             client_id=client_id, handle=source.handle, poll_request_id=str(uuid4()),
             expected_cursor=state.last_cursor, next_cursor=latest_cursor,
             source_items=[OfficialXDailyRunner._source_payload(post,
-                include_standalone_signals=client_id == "origintrail") for post in eligible],
+                include_standalone_signals=True) for post in eligible],
             polled_at=_window(self.clock()))
         if state.draft_reserved_today:
             return None
@@ -183,8 +187,16 @@ class TrialNaturalProducerAdapter:
             skip_patterns=config.routing.skip_patterns)
         if selected is None:
             return None
-        image = _pinned_source_image_url(selected)
-        _require(image and type(selected.get("source_item_id")) is str,
+        try:
+            image = _pinned_source_image_url(selected)
+        except (TypeError, ValueError):
+            raise TrialProducerBlocked("trial_producer_official_image_required") from None
+        # No image is an explicit input mode, never an alias for a logo or
+        # permission to ignore malformed/unusable source media. The pinned
+        # logo is selected later by the existing account-bound renderer.
+        _require((bool(image) or (selected.get("source_image_url") == ""
+                    and type(selected.get("media")) is list and selected["media"] == []))
+                 and type(selected.get("source_item_id")) is str,
                  "trial_producer_official_image_required")
         source_id = _uuid(selected["source_item_id"])
         namespace = UUID(self.workspace_id)
@@ -272,8 +284,8 @@ class TrialNaturalProducerAdapter:
         now = _window(self.clock())
         _require(published.utcoffset() is not None and 0 < (now - published).total_seconds() < 86_400,
                  "trial_producer_source_stale")
-        image = normalize_x_media_url(slot.source_image_url)
-        _require(image, "trial_producer_context_mismatch")
+        image = normalize_x_media_url(slot.source_image_url) if slot.source_image_url else ""
+        _require(slot.source_image_url == "" or image, "trial_producer_context_mismatch")
         context = {**context, "source_image_url": image}
         # The API request model is the digest authority. Import here so a
         # future API-host controller import does not introduce a module cycle.
@@ -356,7 +368,8 @@ class TrialNaturalProducerAdapter:
         try:
             result = self.studio._validated_generation_result(response,
                 client_id=slot.client_id, content_kind="daily_news", request_id=slot.request_id,
-                source_image_url=prepared.payload["source_image_url"], template_style="remix")
+                source_image_url=prepared.payload["source_image_url"], template_style="remix",
+                allow_logo_only=prepared.payload["source_image_url"] == "")
         except GenerationRequestError:
             # Even a retryable ordinary-client response cannot reopen a
             # one-shot trial whose upstream catalog/provider outcome is opaque.

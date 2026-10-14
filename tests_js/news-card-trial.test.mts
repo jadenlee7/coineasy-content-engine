@@ -117,6 +117,10 @@ test("ambiguous/redirect/oversize authorization is not retried and never reflect
 
 const png = await sharp({ create: { width: 2880, height: 2880, channels: 3, background: "#ffee00" } }).png().toBuffer();
 async function integration(options: any = {}) {
+  const sourceImage = options.logoOnly ? "" : IMAGE;
+  const trialQuality = { ...quality, source_image_url: sourceImage };
+  const trialPayload = { ...payload, source_image_url: sourceImage, quality_context: trialQuality };
+  const trialBody = { ...body, source_image_url: sourceImage, trial_payload: trialPayload };
   const oldFetch = globalThis.fetch, oldNow = Date.now;
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
   const calls: string[] = []; let paid = 0, stored = 0, auth = 0, downstream = 0, clock = NOW;
@@ -126,7 +130,7 @@ async function integration(options: any = {}) {
   globalThis.fetch = async (input, init) => {
     const url = String(input); calls.push(url);
     if (url.endsWith("/generation-authorize")) {
-      auth++; assert.deepEqual(JSON.parse(String(init?.body)).payload, payload);
+      auth++; assert.deepEqual(JSON.parse(String(init?.body)).payload, trialPayload);
       return Response.json(receipt({ authorized: !options.denied && !(options.denyAfterGeneration && paid > 0)
         && !(options.denyAfterUpload && stored > 0) }));
     }
@@ -135,44 +139,90 @@ async function integration(options: any = {}) {
     downstream++; assert.ok(auth > downstream);
     if (url.endsWith("/storage/v1/bucket/content-studio")) return Response.json({ id: "content-studio", public: false });
     if (url.includes("/rest/v1/workspace_clients")) return Response.json([{ workspace_id: id(3), client_id: "yellow", active: true }]);
-    if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(null);
+    if (url.endsWith("/rest/v1/rpc/get_generated_content")) return Response.json(options.existing ? {
+      content_item_id: id(2), content_version_id: id(7), client_id: "yellow", content_kind: "daily_news",
+      status: "needs_review", title: "기존 직원 검수안", content: { request_hash: "a".repeat(64) }, channel_copy: {},
+      generation_meta: { request_hash: "a".repeat(64) }, assets: [{
+        asset_id: id(8), asset_kind: "png", filename: "news-card.png", storage_bucket: "content-studio",
+        storage_path: `${id(3)}/yellow/${id(8)}/news-card.png`, mime_type: "image/png", byte_size: png.byteLength,
+        sha256: sha(png), width: 2880, height: 2880,
+      }],
+    } : null);
     if (url.endsWith("/rest/v1/rpc/get_quality_banner_generation_context")) return Response.json(
-      options.contextDrift ? { ...quality, job_id: id(9) } : quality);
+      options.contextDrift ? { ...trialQuality, job_id: id(9) } : trialQuality);
     if (url.includes("cdn.syndication.twimg.com")) return Response.json({ id_str: "1234567890", text: TEXT,
-      user: { screen_name: "Yellow", id_str: "2651" }, photos: [{ url: IMAGE }] });
+      user: { screen_name: options.wrongAccount ? "notYellow" : "Yellow", id_str: "2651" },
+      ...(options.logoOnly && !options.sourceHasImage ? {} : { photos: [{ url: options.badMedia ? "https://invalid.test/photo" : IMAGE }] }) });
     if (url.endsWith("/clients/yellow/generate/news-card")) {
       paid++; const headers = new Headers(init?.headers);
       assert.equal(headers.get("X-YBO-Trial-ID"), id(5)); assert.equal(headers.get("Idempotency-Key"), id(2));
       assert.equal(headers.get("X-YBO-Trial-Collect-Only"), options.collectOnly ? "true" : null);
-      assert.deepEqual(JSON.parse(String(init?.body)), payload);
+      assert.deepEqual(JSON.parse(String(init?.body)), trialPayload);
       if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T14:44:51Z");
       return Response.json({ client_id: "yellow", content_type: "news_card",
         spec: { headline: "공식 인프라 업데이트", body_lines: ["공식 소식의 핵심 내용을 확인하세요"], source_url: SOURCE,
-          render_strategy: "reference_first_quality", channel_profile: "x_square", template_version: QUALITY_BANNER_POLICY,
-          asset_pack_version: "official-reference-source-logo@1", brand_profile_policy_version: "official-reference-quality@1",
-          quality_banner: { policy: QUALITY_BANNER_POLICY, request_sha256: "a".repeat(64), png_sha256: sha(png), width: 2880, height: 2880 } },
+          render_strategy: options.logoOnly ? "official_logo_announcement" : "reference_first_quality", channel_profile: "x_square", template_version: QUALITY_BANNER_POLICY,
+          asset_pack_version: options.logoOnly ? "official-logo-only@1" : "official-reference-source-logo@1", brand_profile_policy_version: "official-reference-quality@1",
+          quality_banner: { policy: QUALITY_BANNER_POLICY, request_sha256: "a".repeat(64), png_sha256: sha(png), width: 2880, height: 2880,
+            ...(options.logoOnly ? { reference_mode: "official_logo_only", official_logo_sha256: options.badLogoHash ? "invalid" : "d".repeat(64) } : {}) } },
         png_path: `/app/output/yellow/news_request_${id(2)}/news_card_quality.png`, template_style: "remix",
-        requested_template_style: "remix", source_image_used: true, source_image_url: IMAGE, source_image_sha256: "c".repeat(64),
+        requested_template_style: "remix", source_image_used: options.logoOnly ? !!options.falseSourceProof : true,
+        source_image_url: sourceImage, source_image_sha256: options.logoOnly ? "" : "c".repeat(64),
         source_visual_path: null, figma_template: null, manifest_path: "/app/output/manifest.json", duration_ms: 1 });
     }
     if (url.includes("/files/yellow/")) return new Response(png);
     if (url.includes("/storage/v1/object/content-studio/") && init?.method === "POST") { stored++; return Response.json({ Key: "stored" }); }
     if (url.endsWith("/rest/v1/rpc/record_generated_content")) {
       const data = JSON.parse(String(init?.body));
-      assert.deepEqual(data.target_content.quality_context, quality);
+      assert.deepEqual(data.target_content.quality_context, trialQuality);
+      assert.equal(data.target_content.source.review_scope, "official_outer_post_only@1");
+      if (options.logoOnly) {
+        assert.equal(data.target_content.source.media_status, "absent");
+        assert.equal(data.target_content.render.source_image_used, false);
+        assert.equal(data.target_content.source.prepared_sha256, undefined);
+      }
       assert.equal(data.target_generation_meta.brand_review_guidance_available, false);
       return Response.json({ content_item_id: id(2), content_version_id: id(7), asset_ids: [data.target_asset.asset_id] });
     }
     throw Error("unexpected fixture HTTP");
   };
   try {
-    const response = await createNewsCardHandler(() => RELEASE)(options.request ?? request(), runtime as never);
+    const response = await createNewsCardHandler(() => RELEASE)(options.request ?? request(trialBody), runtime as never);
     return { status: response.status, body: await response.json(), paid, stored, auth, calls };
   } finally {
     globalThis.fetch = oldFetch; Date.now = oldNow;
     if (descriptor) Object.defineProperty(globalThis, "Netlify", descriptor); else Reflect.deleteProperty(globalThis, "Netlify");
   }
 }
+test("bounded trial persists a truthful official-logo-only banner without claiming source artwork", async () => {
+  const r = await integration({ logoOnly: true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.paid, 1); assert.equal(r.stored, 1);
+  assert.equal(r.body.source_image_used, false); assert.equal(r.body.source_image_url, "");
+  assert.equal(r.body.source_image_sha256, ""); assert.equal(r.body.source_media_status, "absent");
+  assert.equal(r.body.spec.quality_banner.reference_mode, "official_logo_only");
+  assert.equal(r.body.fact_check.human_review_required, true);
+  assert.ok(["pass", "review"].includes(r.body.fact_check.status));
+  assert.ok(!r.calls.some(url => /telegram|typefully/.test(url)));
+});
+test("logo-only cannot hide present/invalid media or a different official account", async () => {
+  for (const option of [{ sourceHasImage: true }, { sourceHasImage: true, badMedia: true }, { wrongAccount: true }]) {
+    const r = await integration({ logoOnly: true, ...option });
+    assert.ok(r.status >= 400); assert.equal(r.paid, 0); assert.equal(r.stored, 0);
+  }
+});
+test("logo-only invalid provenance and falsely claimed source use never reach catalog", async () => {
+  for (const option of [{ badLogoHash: true }, { falseSourceProof: true }]) {
+    const r = await integration({ logoOnly: true, ...option });
+    assert.equal(r.status, 502); assert.equal(r.paid, 1); assert.equal(r.stored, 0);
+  }
+});
+test("a preexisting logo-only catalog stays held and cannot trigger a paid retry", async () => {
+  const r = await integration({ logoOnly: true, existing: true });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.error, "trial_generation_already_exists");
+  assert.equal(r.paid, 0); assert.equal(r.stored, 0);
+});
 test("actual route with globals OFF authorizes exact payload and persists one immutable quality result", async () => {
   const r = await integration(); assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.paid, 1); assert.equal(r.stored, 1); assert.equal(r.body.content_item_id, id(2));

@@ -49,9 +49,28 @@ begin
    end loop;
  end loop;
 
+ -- Genuine no-media sources use an explicit empty string, not a missing URL.
+ foreach c in array array['yellow','babylon','origintrail'] loop
+   ctx:=exact_claim_fixture.seed(c);j:=(ctx->>'job_id')::uuid;s:=(ctx->>'source_item_id')::uuid;
+   update public.source_items set media='[]' where id=s;
+   update public.jobs set input=jsonb_set(input,'{source_image_url}','""') where id=j;
+   changes:=jsonb_build_object('input_sha256',(select encode(extensions.digest(
+     convert_to(input::text,'UTF8'),'sha256'),'hex') from public.jobs where id=j));
+   before_state:=exact_claim_fixture.snapshot(j);
+   result:=exact_claim_fixture.call_claim(ctx,changes);
+   perform exact_claim_fixture.assert_true(result is not null and result->>'job_id'=j::text
+     and result->'input'->'source_image_url'='""'::jsonb and result->>'attempts'='1',
+     'empty_media_exact_initial_claim_'||c);
+   perform exact_claim_fixture.assert_true(before_state=exact_claim_fixture.snapshot(j),'logo_other_rows_unchanged');
+   before_state:=exact_claim_fixture.snapshot();
+   perform exact_claim_fixture.assert_true(exact_claim_fixture.call_claim(ctx,changes) is null,'logo_no_repeat');
+   perform exact_claim_fixture.assert_true(before_state=exact_claim_fixture.snapshot(),'logo_no_repeat_mutation');
+   case_total:=case_total+1;
+ end loop;
+
  ctx:=exact_claim_fixture.seed();j:=(ctx->>'job_id')::uuid;s:=(ctx->>'source_item_id')::uuid;
  f:=(ctx->>'feed_id')::uuid;w:=(ctx->>'workspace_id')::uuid;r:=(ctx->>'request_id')::uuid;
- for scenario in 1..60 loop
+ for scenario in 1..70 loop
    declare case_ctx jsonb:=ctx;
    begin
      changes:='{}';
@@ -133,9 +152,29 @@ begin
          to_jsonb('https://pbs.twimg.com/media/'||repeat('a',2050))) where id=j;
          update public.source_items set media=jsonb_set(media,'{0,url}',
            to_jsonb('https://pbs.twimg.com/media/'||repeat('a',2050))) where id=s;
+       when 61 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','null') where id=j;
+       when 62 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=input-'source_image_url' where id=j;
+       when 63 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','0') where id=j;
+       when 64 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','false') where id=j;
+       when 65 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','" "') where id=j;
+       when 66 then update public.source_items set media='[null]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','""') where id=j;
+       when 67 then update public.source_items set media='[{}]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','""') where id=j;
+       when 68 then update public.source_items set media='[{"type":"photo"}]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','""') where id=j;
+       when 69 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','[]') where id=j;
+       when 70 then update public.source_items set media='[]' where id=s;
+         update public.jobs set input=jsonb_set(input,'{source_image_url}','{}') where id=j;
      end case;
      -- Cases altering input must prove full identity checks, not merely digest rejection.
-     if scenario between 20 and 28 or scenario in (52,60) then
+     if scenario between 20 and 28 or scenario=52 or scenario between 60 and 70 then
        changes:=changes||jsonb_build_object('input_sha256',(select encode(extensions.digest(
          convert_to(input::text,'UTF8'),'sha256'),'hex') from public.jobs where id=j)); end if;
      before_state:=exact_claim_fixture.snapshot();
