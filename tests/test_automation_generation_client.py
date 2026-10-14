@@ -86,6 +86,60 @@ def article_result(*, reused: bool = True) -> dict:
     }
 
 
+def logo_only_result() -> dict:
+    return {"content_item_id": REQUEST_ID, "content_version_id": VERSION_ID,
+        "asset_ids": [ASSET_ID], "storage_backend": "supabase", "reused": False,
+        "requested_template_style": "remix", "template_style": "remix",
+        "source_image_used": False, "source_image_url": "", "source_image_sha256": "",
+        "source_media_status": "absent", "fact_check": fact_check("daily_news"),
+        "spec": {"render_strategy": "official_logo_announcement",
+            "asset_pack_version": "official-logo-only@1", "quality_banner": {
+                "policy": "official-reference-sunburst-max@2", "request_sha256": "a" * 64,
+                "png_sha256": "b" * 64, "width": 2880, "height": 2880,
+                "reference_mode": "official_logo_only", "official_logo_sha256": "c" * 64}}}
+
+
+@pytest.mark.parametrize("client_id", ["yellow", "babylon", "origintrail"])
+def test_logo_only_result_requires_explicit_trial_opt_in(client_id):
+    client = StudioGenerationClient(base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN)
+    response = httpx.Response(200, json=logo_only_result())
+    args = {"client_id": client_id, "content_kind": "daily_news", "request_id": REQUEST_ID,
+        "source_image_url": "", "template_style": "remix"}
+    with pytest.raises(GenerationRequestError):
+        client._validated_generation_result(response, **args)
+    assert client._validated_generation_result(response, **args,
+        allow_logo_only=True).content_version_id == VERSION_ID
+
+
+@pytest.mark.parametrize("mutation", ["used", "url", "image_hash", "media_status",
+    "no_media_status", "strategy", "pack", "mode", "logo_hash", "width", "extra",
+    "no_spec", "no_fact_check", "wrong_client", "source_image"])
+def test_logo_only_result_rejects_missing_or_misleading_proof(mutation):
+    body = logo_only_result()
+    args = {"client_id": "origintrail", "content_kind": "daily_news", "request_id": REQUEST_ID,
+        "source_image_url": "", "template_style": "remix", "allow_logo_only": True}
+    if mutation == "used": body["source_image_used"] = True
+    elif mutation == "url": body["source_image_url"] = SOURCE_IMAGE_URL
+    elif mutation == "image_hash": body["source_image_sha256"] = "a" * 64
+    elif mutation == "media_status": body["source_media_status"] = "present"
+    elif mutation == "no_media_status": del body["source_media_status"]
+    elif mutation == "strategy": body["spec"]["render_strategy"] = "reference_first_quality"
+    elif mutation == "pack": body["spec"]["asset_pack_version"] = "official-reference-source-logo@1"
+    elif mutation == "mode": body["spec"]["quality_banner"]["reference_mode"] = "source"
+    elif mutation == "logo_hash": body["spec"]["quality_banner"]["official_logo_sha256"] = "invalid"
+    elif mutation == "width": body["spec"]["quality_banner"]["width"] = 1024
+    elif mutation == "extra": body["spec"]["quality_banner"]["extra"] = True
+    elif mutation == "no_spec": del body["spec"]
+    elif mutation == "no_fact_check": del body["fact_check"]
+    elif mutation == "wrong_client": args["client_id"] = "squid"
+    elif mutation == "source_image": args["source_image_url"] = SOURCE_IMAGE_URL
+    client = StudioGenerationClient(base_url="https://coineasy-newscard.netlify.app",
+        automation_token=AUTOMATION_TOKEN)
+    with pytest.raises(GenerationRequestError):
+        client._validated_generation_result(httpx.Response(200, json=body), **args)
+
+
 @pytest.mark.asyncio
 async def test_daily_news_uses_review_generation_route_and_classic_by_default():
     captured: dict = {}

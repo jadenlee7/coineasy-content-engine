@@ -657,6 +657,55 @@ class SupabaseAutomationRepository:
         })
         return _state(raw)
 
+    async def record_trial_official_sources(
+        self,
+        *,
+        workspace_id: str,
+        client_id: str,
+        handle: str,
+        poll_request_id: str,
+        expected_cursor: str | None,
+        next_cursor: str | None,
+        source_items: Sequence[Mapping[str, object]],
+        polled_at: datetime,
+    ) -> AutomationState:
+        """Record bounded YBO trial sources without asserting standalone status.
+
+        Quotes retain only the official account's own outer text supplied by
+        XClient. This path deliberately does not use OriginTrail's nonquote
+        intake wrapper or create standalone/Batch eligibility evidence. The
+        ordinary recorder and its narrower routing policy are unchanged.
+        OriginTrail quotes are additionally limited to explicit empty-media,
+        non-note posts: ordinary consumers must not later see them as an
+        image-backed news item or long-note article after quote flags are lost.
+        """
+        normalized_client = self._client(client_id)
+        if normalized_client not in {"yellow", "babylon", "origintrail"}:
+            raise ValueError("trial source client is invalid")
+        if len(source_items) > 100 or any(
+            not isinstance(item, Mapping)
+            or item.get("is_retweet") is not False
+            or item.get("is_reply") is not False
+            or type(item.get("is_quote")) is not bool
+            or (normalized_client == "origintrail" and item.get("is_quote") is True
+                and (item.get("source_image_url") != ""
+                     or type(item.get("media")) is not list or item["media"] != []
+                     or item.get("is_note_tweet") is not False))
+            for item in source_items
+        ):
+            raise ValueError("trial source evidence is invalid")
+        raw = await self._rpc("record_official_x_sources", {
+            "target_workspace_id": _uuid(workspace_id, "workspace_id"),
+            "target_client_id": normalized_client,
+            "target_handle": XClient._normalize_username(handle),
+            "target_poll_request_id": _uuid(poll_request_id, "poll_request_id"),
+            "target_expected_cursor": _cursor(expected_cursor),
+            "target_next_cursor": _cursor(next_cursor),
+            "target_items": [dict(item) for item in source_items],
+            "target_polled_at": polled_at.isoformat(),
+        })
+        return _state(raw)
+
     async def queue_job(
         self,
         *,

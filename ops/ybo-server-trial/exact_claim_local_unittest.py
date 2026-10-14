@@ -214,6 +214,44 @@ rollback;
             + repr(ctx['job_id']) + '::uuid;'))
         self.assertEqual(fixed_natural_input_sha256(actual), ctx['input_sha256'])
 
+    def test_10_quality_logo_proposal_rolls_back_and_preserves_acl_catalog(self):
+        root = HERE.parent.parent
+        signature = 'public.get_quality_banner_generation_context(uuid,text,uuid)'
+        historical = (root / 'supabase/proposals/quality_banner_generation_context.sql').read_text()
+        candidate_path = root / 'supabase/proposals/quality_banner_generation_context_ybo_logo.rollback.sql'
+        candidate = candidate_path.read_text()
+        self.assertIn('LOCAL_ROLLBACK_PROOF', candidate)
+        self.assertRegex(candidate, r'rollback;[^\n]*\s*$')
+        self.assertIn("'2026-10-14T12:44:51Z'", candidate)
+        self.assertIn("'2026-10-14T14:44:51Z'", candidate)
+        self.assertEqual(sql("select to_regprocedure('" + signature + "') is null"), 't')
+        sql(historical)
+        try:
+            query = "select to_jsonb(p)::text from pg_proc p where oid='" + signature + "'::regprocedure"
+            before = sql(query)
+            # Untouched proposal must compile and roll back, preserving its
+            # exact historical prosrc and all non-body catalog fields/ACL.
+            sql(candidate)
+            self.assertEqual(before, sql(query))
+            local = candidate.replace('statement_timestamp()', 'exact_claim_fixture.clock()')
+            local = re.sub(r'rollback;[^\n]*\s*$', 'commit;\n', local, flags=re.I)
+            sql(local)
+            after = json.loads(sql(query))
+            expected = json.loads(before)
+            self.assertNotEqual(after.pop('prosrc'), expected.pop('prosrc'))
+            self.assertEqual(after, expected)
+            for role, allowed in [('anon', 'f'), ('authenticated', 'f'), ('service_role', 't')]:
+                self.assertEqual(sql("select has_function_privilege('" + role + "','" + signature
+                    + "','EXECUTE')"), allowed)
+            sql((HERE / 'quality_logo_context_cases.sql').read_text(), timeout=90)
+            # Reapplying against any altered body must fail closed.
+            with self.assertRaisesRegex(AssertionError, 'quality_context_previous_body_mismatch'):
+                sql(candidate)
+            self.assertEqual(candidate_path.read_text(), candidate)
+            print('quality_logo_candidate_sha256=' + hashlib.sha256(candidate.encode()).hexdigest())
+        finally:
+            sql('drop function ' + signature + ';')
+
 
 if __name__ == '__main__':
     if sys.argv[1:] != ['--local-only']:

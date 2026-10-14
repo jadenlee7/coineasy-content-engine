@@ -40,6 +40,9 @@ def test_static_packet_mints_no_callback_and_changes_exact_packet_hash(monkeypat
     assert len(packet) == 4 and all("callback_data" not in json.dumps(p) for p in packet)
     assert "needs_review" in packet[3]["text"] and "검수 봇 OFF" in packet[3]["text"]
     assert "공식 채널 게시 승인이 아닙니다." in packet[3]["text"]
+    assert "공식 계정이 직접 작성한 설명" in packet[3]["text"]
+    assert "인용 대상의 본문·주장은 검증하거나 포함하지 않았습니다." in packet[3]["text"]
+    assert "원문 이미지가 없으면 공식 로고 기반" in packet[3]["text"]
     assert "버튼은 이번 시험에서 비활성" in packet[3]["text"]
     assert packet[3]["reply_markup"] == {"inline_keyboard": [[{
         "text": "공식 원문 보기", "url": prepared.snapshot.source_url}]]}

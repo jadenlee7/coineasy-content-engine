@@ -75,6 +75,36 @@ def _has_valid_fact_check(value: object, content_kind: str) -> bool:
     )
 
 
+def _has_valid_logo_only_proof(body: Mapping[str, object]) -> bool:
+    """Narrow proof for the explicit private trial's image-less source mode."""
+    spec = body.get("spec")
+    if not isinstance(spec, Mapping):
+        return False
+    quality = spec.get("quality_banner")
+    return (
+        body.get("requested_template_style") == "remix"
+        and body.get("template_style") == "remix"
+        and body.get("source_image_used") is False
+        and body.get("source_image_url") == ""
+        and body.get("source_image_sha256") == ""
+        and body.get("source_media_status") == "absent"
+        and spec.get("render_strategy") == "official_logo_announcement"
+        and spec.get("asset_pack_version") == "official-logo-only@1"
+        and isinstance(quality, Mapping)
+        and set(quality) == {"policy", "request_sha256", "png_sha256", "width", "height",
+                            "reference_mode", "official_logo_sha256"}
+        and quality.get("policy") == "official-reference-sunburst-max@2"
+        and quality.get("reference_mode") == "official_logo_only"
+        and all(isinstance(quality.get(key), str)
+                and _SHA256_PATTERN.fullmatch(quality[key]) is not None
+                for key in ("request_sha256", "png_sha256", "official_logo_sha256"))
+        and type(quality.get("width")) is int
+        and 2880 <= quality["width"] <= 4096
+        and type(quality.get("height")) is int
+        and quality["height"] == quality["width"]
+    )
+
+
 class GenerationRequestError(RuntimeError):
     def __init__(
         self,
@@ -222,7 +252,10 @@ class StudioGenerationClient:
         request_id: str,
         source_image_url: str,
         template_style: str,
+        allow_logo_only: bool = False,
     ) -> GeneratedCatalogResult:
+        if type(allow_logo_only) is not bool:
+            raise GenerationRequestError("studio_generation_invalid_response", retryable=False)
         try:
             body = response.json()
         except ValueError as exc:
@@ -299,6 +332,11 @@ class StudioGenerationClient:
             content_kind == "daily_news"
             and client_id in _PINNED_SOURCE_PROOF_CLIENTS
             and template_style == "remix"
+            and not (
+                allow_logo_only and source_image_url == ""
+                and client_id in {"yellow", "babylon", "origintrail"}
+                and _has_valid_logo_only_proof(body)
+            )
             and (
                 not source_image_url
                 or body.get("requested_template_style") != "remix"

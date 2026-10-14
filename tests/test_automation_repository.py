@@ -588,6 +588,55 @@ async def test_origintrail_intake_uses_the_nonquote_wrapper_rpc():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_id", ["yellow", "babylon", "origintrail"])
+async def test_trial_quote_intake_does_not_assert_origintrail_standalone(client_id):
+    captured = {}
+    def handler(request):
+        assert request.url.path == "/rest/v1/rpc/record_official_x_sources"
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"last_cursor": "456",
+            "draft_reserved_today": False, "pending_sources": []})
+    await _repo(handler).record_trial_official_sources(workspace_id=WORKSPACE_ID,
+        client_id=client_id, handle="@origin_trail", poll_request_id=REQUEST_ID,
+        expected_cursor=None, next_cursor="456", source_items=[{
+            "external_id": "456", "source_content": "Official account outer commentary only.",
+            "is_quote": True, "is_retweet": False, "is_reply": False,
+            "source_image_url": "", "media": [], "is_note_tweet": False}],
+        polled_at=datetime(2026, 10, 14, tzinfo=timezone.utc))
+    assert captured["target_client_id"] == client_id
+    assert captured["target_items"][0]["is_quote"] is True
+    assert captured["target_items"][0]["source_content"] == "Official account outer commentary only."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_id,signals", [
+    ("squid", {"is_quote": True, "is_retweet": False, "is_reply": False}),
+    ("origintrail", {"is_quote": True, "is_retweet": True, "is_reply": False}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": True}),
+    ("origintrail", {"is_quote": "false", "is_retweet": False, "is_reply": False}),
+    ("origintrail", {"is_quote": True, "is_reply": False}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": False,
+                     "source_image_url": "https://pbs.twimg.com/media/source.jpg", "media": []}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": False,
+                     "source_image_url": "", "media": [{"type": "photo", "url": "https://pbs.twimg.com/media/source.jpg"}]}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": False,
+                     "source_image_url": ""}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": False,
+                     "source_image_url": "", "media": [], "is_note_tweet": True}),
+    ("origintrail", {"is_quote": True, "is_retweet": False, "is_reply": False,
+                     "source_image_url": "", "media": []}),
+])
+async def test_trial_source_recorder_rejects_unsupported_or_unproven_source(client_id, signals):
+    def forbidden(_request):
+        raise AssertionError("invalid trial intake must have no network effects")
+    with pytest.raises(ValueError):
+        await _repo(forbidden).record_trial_official_sources(workspace_id=WORKSPACE_ID,
+            client_id=client_id, handle="@origin_trail", poll_request_id=REQUEST_ID,
+            expected_cursor=None, next_cursor="456", source_items=[signals],
+            polled_at=datetime(2026, 10, 14, tzinfo=timezone.utc))
+
+
+@pytest.mark.asyncio
 async def test_execution_plane_binding_returns_the_existing_plane():
     def handler(_request):
         return httpx.Response(200, json={

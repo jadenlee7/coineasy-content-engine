@@ -75,6 +75,7 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
             provision_image_budget(db, workspace_id=WORKSPACE,
                 provider_account_sha256=ACCOUNT, capability_evidence_sha256=CAPABILITY)
     state = {"posts": 0, "copies": 0, "gets": 0, "pending": pending, "offline": False,
+             "reference_urls": [],
              "estimates": 0, "estimate_usd": "0.728219", "estimate_body": None}
     def http(request):
         if state["offline"]:
@@ -82,6 +83,7 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
         if request.url.host in {"pbs.twimg.com", "assets.example.com"}:
             assert request.method == "GET" and "authorization" not in request.headers
             state["gets"] += 1
+            state["reference_urls"].append(str(request.url))
             return httpx.Response(200, content=REFERENCE)
         if request.method == "POST":
             import json
@@ -106,7 +108,9 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
         return httpx.Response(200, json={"request_id": PROVIDER,
             "status": "in_progress" if state["pending"] else "completed",
             "images": [{"url": "https://output.example.com/final.png"}]})
-    async def copy(_payload, _client):
+    async def copy(_payload, _client, *, before_effect=None):
+        if before_effect is not None:
+            before_effect()
         state["copies"] += 1
         if fail_copy:
             raise RuntimeError("unknown LLM response")
@@ -129,6 +133,113 @@ def invoke(kwargs, output, value=None, client="yellow"):
     return asyncio.run(QualityNewsService(**kwargs).generate(
         client_id=client, request_id=value["quality_context"]["request_id"],
         payload=value, output_root=output))
+
+
+def logo_payload(client="yellow"):
+    value = payload(client)
+    value["source_image_url"] = value["quality_context"]["source_image_url"] = ""
+    return value
+
+
+def invoke_logo_trial(kwargs, output, monkeypatch, *, client="yellow", value=None,
+                      collect_only=False, guard=lambda: None):
+    from core.automation import quality_news_card
+    monkeypatch.setattr(quality_news_card, "_copy", kwargs["copy_factory"])
+    value = value or logo_payload(client)
+    return asyncio.run(QualityNewsService(**kwargs).generate(
+        client_id=client, request_id=value["quality_context"]["request_id"],
+        payload=value, output_root=output, before_effect=guard, collect_only=collect_only))
+
+
+@pytest.mark.parametrize("client", ["yellow", "babylon", "origintrail"])
+def test_logo_only_trial_has_honest_provenance_and_replays_without_effects(tmp_path, monkeypatch, client):
+    kwargs, output, state = setup(tmp_path, client=client, estimated=True)
+    result = invoke_logo_trial(kwargs, output, monkeypatch, client=client)
+    assert state["copies"] == state["posts"] == state["estimates"] == 1
+    assert state["reference_urls"] == ["https://assets.example.com/logo.png"] * 2
+    assert state["estimate_body"]["image_urls"] == ["https://assets.example.com/logo.png"]
+    assert result["source_image_used"] is False
+    assert result["source_image_url"] == result["source_image_sha256"] == ""
+    assert result["spec"]["render_strategy"] == "official_logo_announcement"
+    assert result["spec"]["asset_pack_version"] == "official-logo-only@1"
+    metadata = result["spec"]["quality_banner"]
+    assert set(metadata) == {"policy", "request_sha256", "png_sha256", "width", "height",
+                             "reference_mode", "official_logo_sha256"}
+    assert metadata["reference_mode"] == "official_logo_only"
+    assert metadata["official_logo_sha256"] == hashlib.sha256(REFERENCE).hexdigest()
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        snapshot = budget_snapshot(db, workspace_id=WORKSPACE, provider_account_sha256=ACCOUNT, now=NOW)
+        assert snapshot.provisional_usd_micros == 728_219
+        assert snapshot.remaining_usd_micros == 9_271_781
+    state["offline"] = True
+    assert invoke_logo_trial(kwargs, output, monkeypatch, client=client) == result
+    assert state["copies"] == state["posts"] == state["estimates"] == 1
+
+
+def test_logo_only_ordinary_mode_rejected_before_any_effect(tmp_path):
+    kwargs, output, state = setup(tmp_path)
+    with pytest.raises(QualityBannerError, match="^quality_news_invalid$"):
+        invoke(kwargs, output, logo_payload())
+    assert state["copies"] == state["posts"] == state["gets"] == 0
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        assert db.execute("SELECT count(*) FROM quality_news_copy").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("invalid", ["missing", "hash", "unallowlisted"])
+def test_logo_only_references_verified_before_paid_copy(tmp_path, monkeypatch, invalid):
+    kwargs, output, state = setup(tmp_path)
+    if invalid == "missing":
+        kwargs["logo_references"] = {}
+    else:
+        kwargs["logo_references"]["yellow"] = BannerReference("official_logo",
+            "https://untrusted.example/logo.png" if invalid == "unallowlisted" else "https://assets.example.com/logo.png",
+            "a" * 64)
+    with pytest.raises(QualityBannerError):
+        invoke_logo_trial(kwargs, output, monkeypatch)
+    assert state["copies"] == state["posts"] == state["estimates"] == 0
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        assert db.execute("SELECT count(*) FROM quality_news_copy WHERE checkpoint IS NOT NULL").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM image_budget_reservations").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("block", ["guard", "stale", "private"])
+def test_logo_only_guard_freshness_and_private_text_fail_before_network(tmp_path, monkeypatch, block):
+    kwargs, output, state = setup(tmp_path)
+    value = logo_payload()
+    def guard():
+        if block == "guard":
+            raise QualityBannerError("trial_generation_not_admitted")
+    if block == "stale":
+        kwargs["clock"] = lambda: NOW + timedelta(days=1)
+    elif block == "private":
+        value["brand_review_guidance"] = {"api_key": "private-fixture"}
+    with pytest.raises(QualityBannerError):
+        invoke_logo_trial(kwargs, output, monkeypatch, value=value, guard=guard)
+    assert state["copies"] == state["posts"] == state["gets"] == 0
+
+
+def test_logo_only_collect_only_cannot_create_or_repeat_paid_work(tmp_path, monkeypatch):
+    kwargs, output, state = setup(tmp_path, pending=True)
+    with pytest.raises(QualityBannerError, match="quality_banner_submit_unknown"):
+        invoke_logo_trial(kwargs, output, monkeypatch, collect_only=True)
+    assert state["copies"] == state["posts"] == state["gets"] == 0
+    with pytest.raises(QualityBannerError, match="quality_banner_pending"):
+        invoke_logo_trial(kwargs, output, monkeypatch)
+    assert state["copies"] == state["posts"] == 1
+    state["pending"] = False
+    result = invoke_logo_trial(kwargs, output, monkeypatch, collect_only=True)
+    assert result["source_image_used"] is False
+    assert state["copies"] == state["posts"] == 1
+
+
+def test_logo_only_unknown_submit_cannot_retry_or_switch_mode(tmp_path, monkeypatch):
+    kwargs, output, state = setup(tmp_path, fail_submit=True)
+    for _ in range(2):
+        with pytest.raises(QualityBannerError, match="quality_banner_submit_unknown"):
+            invoke_logo_trial(kwargs, output, monkeypatch)
+    with pytest.raises(QualityBannerError, match="quality_news_binding_conflict"):
+        invoke(kwargs, output)
+    assert state["copies"] == state["posts"] == 1
 
 
 @pytest.mark.parametrize("client", ["yellow", "babylon", "origintrail"])

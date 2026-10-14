@@ -336,7 +336,8 @@ def _request(context, spec, source_sha, logo):
         source_item_id=context["source_item_id"], source_url=context["source_url"],
         source_sha256=context["source_sha256"], source_published_at=context["source_published_at"],
         headline=spec["headline"], subtitle=spec["body_lines"][0], design_feedback="",
-        references=(BannerReference("official_source", context["source_image_url"], source_sha), logo))
+        references=((BannerReference("official_source", context["source_image_url"], source_sha), logo)
+                    if context["source_image_url"] else (logo,)))
 
 
 def _restore_request(data):
@@ -393,6 +394,11 @@ class QualityNewsService:
                  "quality_news_configuration_invalid")
         guard()
         context = validate_context(client_id, request_id, payload)
+        logo_only = context["source_image_url"] == ""
+        # Only the bounded hosted trial supplies a durable effect guard.
+        # Ordinary quality/legacy generation must retain its original-image
+        # requirement; empty media is never inferred from a failed download.
+        _require(not logo_only or before_effect is not None, "quality_news_invalid")
         _validate_prompt_input(payload)
         logo = self.logos.get(client_id)
         _require(type(logo) is BannerReference and logo.role == "official_logo",
@@ -434,14 +440,22 @@ class QualityNewsService:
             # An uncertain copy response is terminal; never rerun the LLM on
             # retry. Persist the exact accepted copy before the image POST.
             guard()
-            source_bytes = await self._source_bytes(context["source_image_url"], before_effect=guard)
+            if logo_only:
+                # Verify the fixed public logo before paid copy/checkpoint.
+                # The adapter verifies it again immediately before submit.
+                logo_bytes = await self._source_bytes(logo.url, before_effect=guard)
+                _reference_bytes(logo_bytes, logo.sha256)
+                source_sha = ""
+            else:
+                source_bytes = await self._source_bytes(context["source_image_url"], before_effect=guard)
+                source_sha = _sha(source_bytes)
             probe.validate(now=self.clock(), reference_hosts=self.references)
             guard()
             if before_effect is not None:
                 spec = _safe_spec(await self.copy_factory(payload, client_id, before_effect=guard))
             else:
                 spec = _safe_spec(await self.copy_factory(payload, client_id))
-            request = _request(context, spec, _sha(source_bytes), logo)
+            request = _request(context, spec, source_sha, logo)
             request.validate(now=self.clock(), reference_hosts=self.references)
             checkpoint = {"spec": spec, "request": asdict(request)}
             owner.save_checkpoint(context, input_sha, checkpoint)
@@ -479,10 +493,13 @@ class QualityNewsService:
         with Image.open(io.BytesIO(png)) as image:
             width, height = image.size
         spec = {**checkpoint["spec"], "brand_profile_policy_version": "official-reference-quality@1",
-                "render_strategy": "reference_first_quality", "channel_profile": "x_square",
-                "template_version": POLICY, "asset_pack_version": "official-reference-source-logo@1",
+                "render_strategy": "official_logo_announcement" if logo_only else "reference_first_quality",
+                "channel_profile": "x_square", "template_version": POLICY,
+                "asset_pack_version": "official-logo-only@1" if logo_only else "official-reference-source-logo@1",
                 "quality_banner": {"policy": POLICY, "request_sha256": request.digest(),
-                                   "png_sha256": _sha(png), "width": width, "height": height}}
+                                   "png_sha256": _sha(png), "width": width, "height": height,
+                                   **({"reference_mode": "official_logo_only",
+                                       "official_logo_sha256": logo.sha256} if logo_only else {})}}
         directory = output_root / client_id / ("news_request_" + request_id)
         guard()
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -490,8 +507,10 @@ class QualityNewsService:
         image_path, manifest_path = directory / "news_card_quality.png", directory / "manifest.json"
         result = {"client_id": client_id, "content_type": "news_card", "spec": spec,
             "png_path": str(image_path), "template_style": "remix", "requested_template_style": "remix",
-            "source_image_used": True, "source_image_url": request.references[0].url,
-            "source_image_sha256": request.references[0].sha256, "source_visual_path": None,
+            "source_image_used": not logo_only,
+            "source_image_url": "" if logo_only else request.references[0].url,
+            "source_image_sha256": "" if logo_only else request.references[0].sha256,
+            "source_visual_path": None,
             "figma_template": None, "manifest_path": str(manifest_path), "duration_ms": 0}
         # Recreating lost local files from the same durable PNG is not another
         # generation. Atomic replaces prevent gateway reads of partial bytes.

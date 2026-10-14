@@ -1,5 +1,6 @@
 """Local-only exact natural producer contract; no hosted/provider traffic."""
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -136,12 +137,20 @@ async def test_exact_claim_and_full_canonical_payload(trial):
 
 
 @pytest.mark.asyncio
-async def test_intake_uses_latest_natural_source_and_new_daily_slot(trial):
-    post = {"id": "123456789", "text": BODY, "url": SOURCE,
+@pytest.mark.parametrize("client_id,quote,image", [
+    ("yellow", False, IMAGE), ("yellow", False, ""),
+    ("babylon", True, ""), ("origintrail", True, ""),
+])
+async def test_intake_uses_latest_natural_source_and_new_daily_slot(trial, client_id, quote, image):
+    handles = {"yellow": "Yellow", "babylon": "babylonlabs_io", "origintrail": "origin_trail"}
+    source_url = f"https://x.com/{handles[client_id]}/status/123456789"
+    media = [{"type": "photo", "url": image}] if image else []
+    post = {"id": "123456789", "text": BODY, "url": source_url,
         "created_at": (NOW - timedelta(hours=1)).isoformat(),
-        "source_image_url": IMAGE,
-        "media": [{"type": "photo", "url": IMAGE}],
-        "is_retweet": False, "is_reply": False, "is_quote": False,
+        "source_image_url": image,
+        "media": media,
+        "is_retweet": False, "is_reply": False, "is_quote": quote,
+        "is_note_tweet": False,
         "metrics": {"like_count": 0}}
     source_id = trial.slot.source_item_id
     observed = []
@@ -154,8 +163,8 @@ async def test_intake_uses_latest_natural_source_and_new_daily_slot(trial):
     async def record(**kwargs):
         observed.append(("record", kwargs))
         return AutomationState("123456789", False, (PendingSource(source_id,
-            post["id"], BODY, SOURCE, IMAGE, post["created_at"],
-            ({"type": "photo", "url": IMAGE},), post["metrics"]),))
+            post["id"], BODY, source_url, image, post["created_at"],
+            tuple(media), post["metrics"]),))
     async def pack(**kwargs):
         observed.append(("pack", kwargs))
         return StyleReferencePack(kwargs["request_id"], source_id, "b" * 32, ())
@@ -163,16 +172,20 @@ async def test_intake_uses_latest_natural_source_and_new_daily_slot(trial):
         observed.append(("queue", kwargs))
         return QueueResult(trial.slot.job_id, "queued", False)
     trial.repository.get_state = state
-    trial.repository.record_sources = record
+    trial.repository.record_trial_official_sources = record
     trial.repository.get_or_create_style_reference_pack = pack
     trial.repository.queue_job = queue
     trial.adapter.x_client = X()
-    result = await trial.adapter.intake("yellow", before_effect=lambda: None)
+    result = await trial.adapter.intake(client_id, before_effect=lambda: None)
     assert result is not None and result.source_item_id == source_id
     assert [item[0] for item in observed] == ["x", "record", "pack", "queue"]
     assert observed[0][2]["require_complete"] is True
     assert observed[-1][1]["manual_only"] is False
     assert observed[-1][1]["source_item_ids"] == [source_id]
+    assert observed[1][1]["source_items"][0]["is_quote"] is quote
+    assert observed[1][1]["source_items"][0]["is_retweet"] is False
+    assert observed[-1][1]["source_content"] == BODY
+    assert observed[-1][1]["source_image_url"] == image
 
 
 @pytest.mark.asyncio
@@ -184,7 +197,42 @@ async def test_intake_reused_slot_is_not_generation_authority(trial):
 
 
 @pytest.mark.asyncio
-async def test_intake_never_falls_back_below_newest_ineligible_post(trial):
+@pytest.mark.parametrize("image,media", [
+    (" ", []),
+    ("", [{"type": "photo", "url": ""}]),
+    ("", [{"type": "photo", "url": "https://example.com/not-official.png"}]),
+    ("", [{"type": "unknown", "url": IMAGE}]),
+])
+async def test_intake_never_disguises_invalid_source_media_as_logo_only(trial, image, media):
+    post = {"id": "123456789", "text": BODY, "url": SOURCE,
+        "created_at": (NOW - timedelta(hours=1)).isoformat(),
+        "source_image_url": image, "media": media, "is_retweet": False,
+        "is_reply": False, "is_quote": True}
+    class X:
+        async def get_recent_tweets(self, *_args, **_kwargs):
+            return [post]
+    async def state(**_kwargs):
+        return AutomationState(None, False, ())
+    async def record(**_kwargs):
+        return AutomationState(post["id"], False, (PendingSource(trial.slot.source_item_id,
+            post["id"], BODY, SOURCE, image, post["created_at"], tuple(media)),))
+    trial.repository.get_state = state
+    trial.repository.record_trial_official_sources = record
+    trial.adapter.x_client = X()
+    with pytest.raises(TrialProducerBlocked, match="trial_producer_official_image_required"):
+        await trial.adapter.intake("yellow", before_effect=lambda: None)
+    assert trial.repository.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newest_flags", [
+    {"is_quote": False, "is_reply": True},
+    {"is_quote": True},
+    {"is_quote": True, "source_image_url": ""},
+    {"is_quote": True, "source_image_url": "", "media": [], "is_note_tweet": True},
+    {"is_quote": True, "source_image_url": "", "media": [], "is_note_tweet": None},
+])
+async def test_intake_never_falls_back_below_newest_ineligible_post(trial, newest_flags):
     async def state(**kwargs):
         return AutomationState(None, False, ())
     async def forbidden_record(**kwargs):
@@ -193,11 +241,11 @@ async def test_intake_never_falls_back_below_newest_ineligible_post(trial):
         async def get_recent_tweets(self, handle, **kwargs):
             base = {"text": BODY, "created_at": (NOW - timedelta(hours=1)).isoformat(),
                 "is_retweet": False, "is_reply": False, "source_image_url": IMAGE,
-                "media": [{"type": "photo", "url": IMAGE}]}
-            return [{**base, "id": "123456790", "is_quote": True},
+                "media": [{"type": "photo", "url": IMAGE}], "is_note_tweet": False}
+            return [{**base, "id": "123456790", **newest_flags},
                 {**base, "id": "123456789", "is_quote": False}]
     trial.repository.get_state = state
-    trial.repository.record_sources = forbidden_record
+    trial.repository.record_trial_official_sources = forbidden_record
     trial.adapter.x_client = X()
     assert await trial.adapter.intake("origintrail", before_effect=lambda: None) is None
 
@@ -223,7 +271,24 @@ async def _return_none():
 
 
 @pytest.mark.asyncio
-async def test_generation_one_exact_post_then_normal_complete(trial):
+async def test_claim_accepts_exact_empty_source_image_context(trial):
+    trial.slot = replace(trial.slot, source_image_url="")
+    trial.repository.claim_result = replace(trial.repository.claim_result, source_image_url="")
+    trial.repository.context["source_image_url"] = ""
+    prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
+        before_effect=lambda: None)
+    assert prepared.payload["source_image_url"] == ""
+    assert prepared.payload["quality_context"]["source_image_url"] == ""
+    assert prepared.payload["template_style"] == "remix"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("logo_only", [False, True])
+async def test_generation_one_exact_post_then_normal_complete(trial, logo_only):
+    if logo_only:
+        trial.slot = replace(trial.slot, source_image_url="")
+        trial.repository.claim_result = replace(trial.repository.claim_result, source_image_url="")
+        trial.repository.context["source_image_url"] = ""
     prepared = await trial.adapter.claim_and_prepare(trial.slot, worker_id="trial-worker",
         before_effect=lambda: None)
     _reserve(trial, prepared)
@@ -234,7 +299,8 @@ async def test_generation_one_exact_post_then_normal_complete(trial):
         return "a" * 40
     def fake_validate(response, **kwargs):
         assert response.status_code == 200
-        assert kwargs["source_image_url"] == CANONICAL_IMAGE
+        assert kwargs["source_image_url"] == ("" if logo_only else CANONICAL_IMAGE)
+        assert kwargs["allow_logo_only"] is logo_only
         calls.append("validated")
         return GeneratedCatalogResult(trial.slot.request_id, str(uuid4()),
             (str(uuid4()),), False)

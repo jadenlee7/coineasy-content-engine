@@ -1,4 +1,4 @@
--- LOCAL_ROLLBACK_PROOF: time-only rewindow candidate and existing service-only ACL.
+-- LOCAL_ROLLBACK_PROOF: bounded logo-only admission proposal, service-only ACL.
 -- Repository-only proof input, not a migration or production apply script.
 -- The transaction always rolls back; executable fixture tests separately
 -- substitute a local clock only inside a disposable PostgreSQL instance.
@@ -120,13 +120,20 @@ begin
        or feed.active is distinct from true or feed.poll_interval_minutes is distinct from 15
        or feed.last_polled_at is null or feed.last_polled_at>decision_now
        or feed.last_polled_at<=decision_now-interval '30 minutes'
-       or job.input->>'source_image_url' is null
-       or char_length(job.input->>'source_image_url')>2048
-       or (job.input->>'source_image_url') !~ '^https://pbs\.twimg\.com/[A-Za-z0-9_./?=&%:+-]+$'
        or jsonb_typeof(source.media) is distinct from 'array' then return null; end if;
-    if not exists(select 1 from jsonb_array_elements(source.media) as media(value)
-        where media.value->>'type' in ('photo','video','animated_gif')
-          and media.value->>'url'=job.input->>'source_image_url') then return null; end if;
+    -- Only a genuinely media-less official source may use the already pinned
+    -- client logo. Empty strings cannot hide existing/malformed source media;
+    -- NULL, missing, whitespace and non-string job fields stay rejected.
+    if source.media = '[]'::jsonb then
+        if job.input->'source_image_url' is distinct from '""'::jsonb then return null; end if;
+    else
+        if job.input->>'source_image_url' is null
+           or char_length(job.input->>'source_image_url')>2048
+           or (job.input->>'source_image_url') !~ '^https://pbs\.twimg\.com/[A-Za-z0-9_./?=&%:+-]+$'
+           or not exists(select 1 from jsonb_array_elements(source.media) as media(value)
+               where media.value->>'type' in ('photo','video','animated_gif')
+                 and media.value->>'url'=job.input->>'source_image_url') then return null; end if;
+    end if;
     if source.id is distinct from (select newest.id from public.source_items as newest
         where newest.workspace_id=target_workspace_id and newest.client_id=target_client_id
           and newest.source_feed_id=feed_id and newest.source_type='tweet'
