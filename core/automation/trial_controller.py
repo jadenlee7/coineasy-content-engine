@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import re
+import time
 from uuid import UUID
 
 import httpx
@@ -31,6 +32,27 @@ START = datetime(2026, 10, 14, 12, 44, 51, tzinfo=timezone.utc)
 
 class TrialControllerBlocked(ValueError):
     pass
+
+
+class TrialPreflightFailure(TrialControllerBlocked):
+    """Fixed diagnostic labels only; never retain response/error text."""
+    CODES = frozenset({"transport", "upstream_unavailable", "http_rejected",
+        "invalid_receipt", "window_closed", "readiness_exhausted"})
+
+    def __init__(self, code, *, status=None, retryable=False):
+        super().__init__("trial_generation_preflight_blocked")
+        self.code = code if code in self.CODES else "invalid_receipt"
+        self.http_status = status if type(status) is int and 100 <= status <= 599 else None
+        self.retryable = retryable is True and self.code in {"transport", "upstream_unavailable"}
+
+
+def _diagnostic(stage, error):
+    value = {"stage": stage, "code": "operation_failed"}
+    if type(error) is TrialPreflightFailure:
+        value["code"] = error.code
+        if error.http_status is not None:
+            value["http_status"] = error.http_status
+    return value
 
 
 def require(value):
@@ -70,6 +92,21 @@ class TrialGenerationPreflight:
                     "X-Studio-Expected-Release-Sha": plan.payload["release_sha"],
                     "X-Ybo-Trial-Id": plan.trial_id, "X-Ybo-Trial-Plan-Sha256": plan.sha256,
                 }) as response:
+                    if response.status_code in {502, 504}:
+                        raise TrialPreflightFailure("upstream_unavailable", status=response.status_code, retryable=True)
+                    if response.status_code == 503:
+                        # Retry only the endpoint's fixed unavailable envelope;
+                        # literal OFF/config/window blocks remain terminal.
+                        error_raw = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            error_raw.extend(chunk)
+                            require(len(error_raw) <= 4096)
+                        unavailable = (response.headers.get("content-type", "").split(";", 1)[0] == "application/json"
+                            and json.loads(error_raw) == {"error": "trial_preflight_unavailable"})
+                        raise TrialPreflightFailure("upstream_unavailable" if unavailable else "http_rejected",
+                            status=503, retryable=unavailable)
+                    if response.status_code != 200:
+                        raise TrialPreflightFailure("http_rejected", status=response.status_code)
                     require(response.status_code == 200 and not response.history
                         and response.headers.get("content-type", "").split(";", 1)[0] == "application/json")
                     raw = bytearray()
@@ -89,9 +126,13 @@ class TrialGenerationPreflight:
                 and re.search(r"(?:Z|[+-]\d{2}:\d{2})$", body["observed_at"]))
             observed = datetime.fromisoformat(body["observed_at"].replace("Z", "+00:00"))
             require(0 <= (self.guard() - observed).total_seconds() <= 5)
+        except TrialPreflightFailure:
+            raise
+        except httpx.TransportError:
+            raise TrialPreflightFailure("transport", retryable=True) from None
         except Exception:
             # Never log response bodies, upstream error text or credentials.
-            raise TrialControllerBlocked("trial_generation_preflight_blocked") from None
+            raise TrialPreflightFailure("invalid_receipt") from None
 
 
 class TrialCatalogReadback:
@@ -164,9 +205,11 @@ class TrialCatalogReadback:
 
 
 class HostedTrialController:
-    def __init__(self, *, gate, producer, catalog, preflight, destination_policy_sha256, sleep=asyncio.sleep):
+    def __init__(self, *, gate, producer, catalog, preflight, readiness, destination_policy_sha256,
+                 sleep=asyncio.sleep, monotonic=time.monotonic):
         self.gate, self.owner, self.producer, self.catalog = gate, gate.owner, producer, catalog
         self.preflight = preflight
+        self.readiness, self.monotonic = readiness, monotonic
         self.sleep, self.admission = sleep, None
         self.store = TrialManifestStore(owner=self.owner, destination_policy_sha256=destination_policy_sha256, clock=gate.clock)
 
@@ -176,20 +219,71 @@ class HostedTrialController:
             and self.owner.is_active(self.admission, now))
         return now
 
+    def readiness_guard(self):
+        """Pure fixed-plan clock check: no owner read, creation or mutation."""
+        now = self.gate.clock()
+        if not START <= now < self.gate.plan.deadline:
+            raise TrialPreflightFailure("window_closed")
+        return now
+
+    async def wait_readiness(self):
+        started = self.monotonic()
+        attempts = 0
+        failure = TrialPreflightFailure("readiness_exhausted")
+        # Only the no-business preflight GET can be retried, before admission.
+        # Per-client preflight/intake/generation/send keep their once-only path.
+        while attempts < 6:
+            try:
+                now = self.readiness_guard()
+                remaining = min(60 - (self.monotonic() - started),
+                    (self.gate.plan.deadline - now).total_seconds())
+                if remaining <= 0:
+                    raise TrialPreflightFailure("readiness_exhausted")
+                attempts += 1
+                try:
+                    async with asyncio.timeout(min(10, remaining)):
+                        require(await self.readiness() is None)
+                except TimeoutError:
+                    raise TrialPreflightFailure("transport", retryable=True) from None
+                self.readiness_guard()
+                return None
+            except TrialPreflightFailure as error:
+                failure = error
+                if not error.retryable or attempts >= 6:
+                    break
+                remaining = min(60 - (self.monotonic() - started),
+                    (self.gate.plan.deadline - self.gate.clock()).total_seconds())
+                if remaining <= 2:
+                    break
+                await self.sleep(2)
+            except Exception:
+                failure = TrialPreflightFailure("invalid_receipt")
+                break
+        diagnostic = _diagnostic("readiness", failure)
+        diagnostic.update(attempts=attempts,
+            elapsed_ms=max(0, min(60000, int((self.monotonic() - started) * 1000))))
+        return diagnostic
+
     async def run(self):
         result = {"status": "blocked", "generated_clients": [], "skipped_clients": [],
             "effective_on": False, "public_send_attempted": False, "visual_qa_performed": False}
         while self.gate.clock() < START:
             await self.sleep(min(30, max(0.01, (START - self.gate.clock()).total_seconds())))
+        failure = await self.wait_readiness()
+        if failure is not None:
+            return {**result, "status": "readiness_failed", "diagnostic": failure}
         self.admission = self.owner.admit(self.gate.plan.trial_id, self.gate.clock())
         if self.admission is None:
             return {**result, "status": "not_admitted", "effective_on": self.owner.inspect(self.gate.clock())["effective_on"]}
         entries = []
+        stage = "preflight"
         try:
             for client in CLIENTS:
                 # Prove the published gateway's exact pins and literal OFF
                 # flags before even reserving an intake phase/daily slot/job.
+                stage = "preflight"
                 require(await self.preflight() is None)
+                stage = "intake"
                 require(self.owner.reserve_phase(self.admission, f"{client}:intake", client,
                     canonical_sha256({"trial_id": self.gate.plan.trial_id, "client_id": client}), self.guard()))
                 slot = await self.producer.intake(client, before_effect=self.guard)
@@ -198,13 +292,16 @@ class HostedTrialController:
                 if slot is None:
                     result["skipped_clients"].append(client)
                     continue
+                stage = "claim"
                 prepared = await self.producer.claim_and_prepare(slot,
                     worker_id=f"ybo-trial:{self.gate.plan.trial_id}", before_effect=self.guard)
                 require(self.owner.reserve_phase(self.admission, f"{client}:generate", client,
                     prepared.payload_sha256, self.guard(), identifiers=slot.identifiers()))
                 # The existing account-bound durable image ledger admits and
                 # meters this exact request; no second budget is initialized.
+                stage = "generation"
                 generated = await self.producer.generate_and_complete(prepared, before_effect=self.guard)
+                stage = "catalog"
                 entry = await self.catalog.verify(prepared, generated)
                 artifact = {k: v for k, v in entry.items() if k != "job_id"}
                 artifact["status"] = "needs_review"
@@ -220,6 +317,7 @@ class HostedTrialController:
             if not entries:
                 require(self.owner.terminate(self.admission, "completed", self.guard()))
                 return {**result, "status": "completed_no_new_source"}
+            stage = "manifest"
             for entry in entries:
                 artifact = {k: v for k, v in entry.items() if k != "job_id"}
                 artifact["status"] = "needs_review"
@@ -237,10 +335,11 @@ class HostedTrialController:
         except asyncio.CancelledError:
             self.owner.terminate(self.admission, "aborted", self.gate.clock())
             raise
-        except Exception:
+        except Exception as error:
             self.owner.terminate(self.admission, "unknown", self.gate.clock())
             state = self.owner.inspect(self.gate.clock())
-            return {**result, "status": state["status"], "effective_on": state["effective_on"]}
+            return {**result, "status": state["status"], "effective_on": state["effective_on"],
+                "diagnostic": _diagnostic(stage, error)}
 
 
 async def run_hosted_trial(env, *, clock=None, sleep=asyncio.sleep):
@@ -265,12 +364,17 @@ async def run_hosted_trial(env, *, clock=None, sleep=asyncio.sleep):
             service_role_key=env["SUPABASE_SERVICE_ROLE_KEY"], transport=transport)
         studio = StudioGenerationClient(base_url="https://coineasy-newscard.netlify.app",
             automation_token=env["STUDIO_AUTOMATION_TOKEN"], transport=transport)
+        readiness_studio = StudioGenerationClient(base_url="https://coineasy-newscard.netlify.app",
+            automation_token=env["STUDIO_AUTOMATION_TOKEN"], transport=EffectTransport(backend,
+                lambda: holder["controller"].readiness_guard()))
         producer = TrialNaturalProducerAdapter(repository=repository,
             x_client=XClient(env["X_BEARER_TOKEN"], before_effect=guard), studio=studio,
             owner=gate.owner, workspace_id=workspace, trial_id=gate.plan.trial_id, clock=gate.clock)
         controller = HostedTrialController(gate=gate, producer=producer,
             catalog=TrialCatalogReadback(repository, workspace, guard),
             preflight=TrialGenerationPreflight(studio, gate, guard).verify,
+            readiness=TrialGenerationPreflight(readiness_studio, gate,
+                lambda: holder["controller"].readiness_guard()).verify,
             destination_policy_sha256=env["YBO_TRIAL_DESTINATION_POLICY_SHA256"], sleep=sleep)
         holder["controller"] = controller
         return await controller.run()

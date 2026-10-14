@@ -19,15 +19,18 @@ function request(url = URL, headers: Record<string, string> = {}, method = "GET"
     "X-Studio-Expected-Release-Sha": RELEASE, "X-Ybo-Trial-Id": TRIAL,
     "X-Ybo-Trial-Plan-Sha256": PLAN, ...headers } });
 }
-const clients = () => ["yellow", "babylon", "origintrail"].map(client_id => ({ client_id, active: true }));
+const clients = () => ({ schema_version: "ybo-api-readiness@1", ready: true,
+  trial_id: TRIAL, plan_sha256: PLAN, release_sha: RELEASE,
+  controller_enabled: true, broad_public_flags_off: true,
+  client_ids: ["yellow", "babylon", "origintrail"], observed_at: new Date(NOW).toISOString() });
 function harness(env = ENV, release: string | null = RELEASE, now = NOW,
-  upstream: () => Promise<Response> = async () => Response.json(clients())) {
+  upstream: () => Promise<Response> = async () => Response.json({ ...clients(), observed_at: new Date(now).toISOString() })) {
   const reads: string[] = [];
   const calls: unknown[] = [];
   const handler = createYboTrialPreflightHandler({ getEnv: key => { reads.push(key); return env[key]; },
     releaseSha: () => release, clock: () => now, fetcher: async (url, init) => {
       calls.push([url, init]);
-      assert.equal(url, ENV.RAILWAY_API_URL + "/clients");
+      assert.equal(url, ENV.RAILWAY_API_URL + "/internal/trial/readiness");
       assert.equal(init?.method, "GET"); assert.equal(init?.body, undefined);
       assert.equal(init?.redirect, "error"); assert.equal(init?.cache, "no-store");
       assert.ok(init?.signal instanceof AbortSignal);
@@ -133,9 +136,9 @@ test("real wrapper pins native runtime and build stamp; no mutable env release f
     globalThis.Netlify = { env: { get: (key: string) => ({ ...ENV, YBO_TRIAL_RELEASE_SHA: STUDIO_BUILD_RELEASE_SHA })[key] } } as any;
     Date.now = () => NOW;
     globalThis.fetch = async (url, init) => {
-      assert.equal(url, ENV.RAILWAY_API_URL + "/clients");
+      assert.equal(url, ENV.RAILWAY_API_URL + "/internal/trial/readiness");
       assert.equal(init?.method, "GET");
-      return Response.json(clients());
+      return Response.json({ ...clients(), release_sha: STUDIO_BUILD_RELEASE_SHA });
     };
     const response = await endpoint(request(URL, { "X-Studio-Expected-Release-Sha": STUDIO_BUILD_RELEASE_SHA ?? "" }), RUNTIME as any);
     assert.equal(response.status, STUDIO_BUILD_RELEASE_SHA ? 200 : 503);
@@ -149,9 +152,16 @@ test("upstream auth failures, malformed/oversized replies and redirects are not 
     async () => Response.json({ detail: "private upstream error" }, { status: 503 }),
     async () => new Response(null, { status: 302, headers: { location: "https://unsafe.invalid" } }),
     async () => { throw Error("private timeout detail"); },
-    async () => Response.json([clients()[0]]),
-    async () => Response.json([...clients(), clients()[0]]),
-    async () => Response.json(clients().map(row => ({ ...row, active: false }))),
+    async () => Response.json([{ client_id: "yellow", active: true }]),
+    async () => Response.json({ ...clients(), client_ids: ["yellow", "yellow", "origintrail"] }),
+    async () => Response.json({ ...clients(), controller_enabled: false }),
+    async () => Response.json({ ...clients(), release_sha: "f".repeat(40) }),
+    async () => Response.json({ ...clients(), trial_id: "22222222-2222-4222-8222-222222222222" }),
+    async () => Response.json({ ...clients(), plan_sha256: "f".repeat(64) }),
+    async () => Response.json({ ...clients(), broad_public_flags_off: false }),
+    async () => Response.json({ ...clients(), observed_at: new Date(NOW - 6000).toISOString() }),
+    async () => Response.json({ ...clients(), observed_at: new Date(NOW + 1000).toISOString() }),
+    async () => Response.json({ ...clients(), extra: true }),
     async () => new Response("private non-JSON data", { headers: { "content-type": "application/json" } }),
     async () => new Response("x".repeat(16_385), { headers: { "content-type": "application/json" } }),
     async () => Response.json(clients(), { headers: { "content-length": "16385" } }),

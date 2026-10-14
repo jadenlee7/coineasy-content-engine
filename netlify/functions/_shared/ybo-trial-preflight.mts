@@ -58,10 +58,9 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || typeof apiOrigin !== "string" || apiOrigin.replace(/\/+$/, "") !== API) {
         return json({ error: "trial_preflight_blocked" }, 503);
       }
-      // /clients authenticates the exact Netlify-configured API credential,
-      // then reads local client configuration. It cannot admit a trial, touch
-      // an owner, reserve a job/budget, generate content, or send a message.
-      const response = await (deps.fetcher ?? fetch)(API + "/clients", {
+      // Exact ON runtime proof prevents an old OFF container from satisfying
+      // startup readiness. This endpoint never opens an owner or reserves work.
+      const response = await (deps.fetcher ?? fetch)(API + "/internal/trial/readiness", {
         method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(4000),
         headers: { "X-API-Key": apiSecret, "Accept": "application/json", "Accept-Encoding": "identity" },
       });
@@ -82,16 +81,19 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         }
       } finally { reader.releaseLock(); }
       if (!size || (length !== null && Number(length) !== size)) throw Error();
-      const clients = JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
-      if (!Array.isArray(clients) || clients.length < 3 || clients.length > 32
-        || clients.some(row => !row || typeof row !== "object" || Array.isArray(row)
-          || typeof row.client_id !== "string" || !/^[a-z0-9_-]{1,64}$/.test(row.client_id)
-          || typeof row.active !== "boolean")
-        || new Set(clients.map(row => row.client_id)).size !== clients.length
-        || !["yellow", "babylon", "origintrail"].every(id => clients.some(row => row.client_id === id && row.active === true))) {
+      const proof = JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
+      const observed = (deps.clock ?? Date.now)();
+      if (!proof || typeof proof !== "object" || Array.isArray(proof)
+        || Object.keys(proof).sort().join(",") !== "broad_public_flags_off,client_ids,controller_enabled,observed_at,plan_sha256,ready,release_sha,schema_version,trial_id"
+        || proof.schema_version !== "ybo-api-readiness@1" || proof.ready !== true
+        || proof.trial_id !== trialId || proof.plan_sha256 !== plan || proof.release_sha !== release
+        || proof.controller_enabled !== true || proof.broad_public_flags_off !== true
+        || JSON.stringify(proof.client_ids) !== '["yellow","babylon","origintrail"]'
+        || typeof proof.observed_at !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/.test(proof.observed_at)
+        || !Number.isFinite(Date.parse(proof.observed_at))
+        || observed - Date.parse(proof.observed_at) < 0 || observed - Date.parse(proof.observed_at) > 5000) {
         throw Error();
       }
-      const observed = (deps.clock ?? Date.now)();
       if (!Number.isFinite(observed) || observed < now || !(START <= observed && observed < END)
         || deps.releaseSha() !== release || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
         || deps.getEnv("YBO_TRIAL_ID") !== trialId || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan

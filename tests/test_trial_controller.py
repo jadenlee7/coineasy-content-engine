@@ -13,7 +13,8 @@ from PIL import Image
 import pytest
 
 from core.automation.trial_controller import (HostedTrialController, START, run_hosted_trial,
-    TrialCatalogReadback, TrialControllerBlocked, TrialGenerationPreflight)
+    TrialCatalogReadback, TrialControllerBlocked, TrialGenerationPreflight, TrialPreflightFailure,
+    EffectTransport)
 from core.automation.trial_generation_gate import TrialGenerationGate
 from core.automation.trial_owner import (TrialPlan, TrialOwner, TrialError,
     canonical_sha256, POLICY_SHA256, NOT_BEFORE, LATEST_DEADLINE)
@@ -35,6 +36,9 @@ def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
         preflight_calls.append(now[0])
         if fail == "preflight":
             raise TrialControllerBlocked("trial_generation_preflight_blocked")
+
+    async def readiness():
+        return None
 
     class Producer:
         async def intake(self, client, *, before_effect):
@@ -85,7 +89,8 @@ def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
                 canonical_sha256({"version": entry["content_version_id"], "confirmed_parts": 4}), now[0])
 
     controller = HostedTrialController(gate=gate, producer=Producer(), catalog=Catalog(),
-        preflight=preflight, destination_policy_sha256="5" * 64, sleep=sleep)
+        preflight=preflight, readiness=readiness, destination_policy_sha256="5" * 64, sleep=sleep,
+        monotonic=lambda: now[0].timestamp())
     return SimpleNamespace(controller=controller, owner=owner, now=now, calls=calls, entries=entries,
         preflight_calls=preflight_calls)
 
@@ -203,6 +208,159 @@ def test_factory_off_does_not_read_credentials_or_construct_clients():
             raise AssertionError("OFF accessed credentials")
     assert asyncio.run(run_hosted_trial(OffEnv())) == {
         "status": "disabled", "effective_on": False, "public_send_attempted": False}
+
+
+def mount_readiness(s, response):
+    calls = []
+
+    def handle(req):
+        assert not s.owner.path.exists()
+        assert s.calls == [] and req.method == "GET" and not req.content
+        assert str(req.url) == "https://coineasy-newscard.netlify.app/api/ybo-trial-preflight"
+        calls.append(req)
+        return response(req, len(calls))
+
+    studio = SimpleNamespace(base_url="https://coineasy-newscard.netlify.app",
+        automation_token="fixture-existing-automation-token", transport=httpx.MockTransport(handle))
+    s.controller.readiness = TrialGenerationPreflight(studio, s.controller.gate,
+        s.controller.readiness_guard).verify
+    return calls
+
+
+def ready_response(s):
+    p = s.owner.plan
+    return {"schema_version": "ybo-trial-preflight@1", "ready": True,
+        "netlify_release_sha": p.payload["release_sha"], "trial_id": p.trial_id,
+        "plan_sha256": p.sha256, "generation_gateway_enabled": True,
+        "broad_public_flags_off": True, "upstream_api_auth_verified": True,
+        "observed_at": s.now[0].isoformat()}
+
+
+def test_startup_route_readiness_precedes_any_owner_io_then_admits_once(tmp_path):
+    s = scenario(tmp_path)
+    calls = mount_readiness(s, lambda req, n: httpx.Response(502) if n < 3
+                           else httpx.Response(200, json=ready_response(s)))
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "completed" and len(calls) == 3
+    assert len(s.preflight_calls) == 3  # once per client, after readiness
+    assert len([c for c in s.calls if c[0] == "generate"]) == 3
+    assert s.owner.inspect(s.now[0])["phases"] == 12
+
+
+@pytest.mark.parametrize("failure", ["auth", "config", "malformed", "foreign", "future"])
+def test_invalid_readiness_never_admits_or_retries(tmp_path, failure):
+    s = scenario(tmp_path)
+
+    def respond(req, n):
+        if failure == "auth": return httpx.Response(401, json={"error": "private upstream text"})
+        if failure == "config": return httpx.Response(503, json={"error": "trial_preflight_blocked"})
+        if failure == "malformed": return httpx.Response(200, content=b"private upstream text",
+            headers={"content-type": "application/json"})
+        body = ready_response(s)
+        if failure == "foreign": body["trial_id"] = str(uuid4())
+        if failure == "future": body["observed_at"] = (s.now[0] + timedelta(seconds=1)).isoformat()
+        return httpx.Response(200, json=body)
+
+    calls = mount_readiness(s, respond)
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "readiness_failed" and result["effective_on"] is False
+    assert not s.owner.path.exists() and not s.controller.store.path.exists()
+    assert len(calls) == 1 and s.calls == [] and s.preflight_calls == []
+    assert result["diagnostic"]["stage"] == "readiness"
+    assert "private upstream text" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable", "gateway"])
+def test_transient_readiness_is_bounded_six_gets_and_zero_owner_io(tmp_path, failure):
+    s = scenario(tmp_path)
+
+    def respond(req, n):
+        if failure == "timeout": raise httpx.ReadTimeout("never emit secret", request=req)
+        return httpx.Response(504) if failure == "gateway" else httpx.Response(503,
+            json={"error": "trial_preflight_unavailable"})
+
+    calls = mount_readiness(s, respond)
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "readiness_failed" and len(calls) == 6
+    assert result["diagnostic"]["attempts"] == 6
+    assert result["diagnostic"]["elapsed_ms"] == 10000
+    assert not s.owner.path.exists() and not s.calls
+    assert "never emit secret" not in json.dumps(result)
+
+
+def test_readiness_total_deadline_and_expiry_never_create_owner(tmp_path):
+    s = scenario(tmp_path)
+    calls = []
+
+    async def slow():
+        calls.append(True)
+        assert not s.owner.path.exists()
+        s.now[0] += timedelta(seconds=30)
+        raise TrialPreflightFailure("transport", retryable=True)
+
+    s.controller.readiness = slow
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "readiness_failed" and len(calls) == 2
+    assert result["diagnostic"]["elapsed_ms"] == 60000
+    assert not s.owner.path.exists()
+
+    s.now[0] = s.owner.plan.deadline
+    calls.clear()
+    result = asyncio.run(s.controller.run())
+    assert result["status"] == "readiness_failed" and calls == []
+    assert result["diagnostic"]["code"] == "window_closed"
+    assert not s.owner.path.exists()
+
+
+def test_readiness_success_after_expiry_is_rejected_without_admission(tmp_path):
+    s = scenario(tmp_path)
+
+    async def expired():
+        s.now[0] = s.owner.plan.deadline
+
+    s.controller.readiness = expired
+    assert asyncio.run(s.controller.run())["status"] == "readiness_failed"
+    assert not s.owner.path.exists() and not s.calls
+
+
+def test_readiness_cancellation_never_creates_owner(tmp_path):
+    s = scenario(tmp_path)
+
+    async def cancelled():
+        raise asyncio.CancelledError()
+
+    s.controller.readiness = cancelled
+    with pytest.raises(asyncio.CancelledError): asyncio.run(s.controller.run())
+    assert not s.owner.path.exists() and not s.calls
+
+
+def test_failed_existing_owner_cannot_replay_and_bytes_preserved(tmp_path):
+    s = scenario(tmp_path, fail="preflight")
+    assert asyncio.run(s.controller.run())["status"] == "unknown"
+    before = s.owner.path.read_bytes()
+    assert asyncio.run(s.controller.run())["status"] == "not_admitted"
+    assert s.owner.path.read_bytes() == before and not s.calls
+    assert len(s.preflight_calls) == 1
+
+
+def test_shared_readiness_transport_does_not_close_backend_early():
+    closes, requests = [], []
+
+    class Backend(httpx.MockTransport):
+        async def aclose(self): closes.append(True)
+
+    backend = Backend(lambda req: (requests.append(req) or httpx.Response(200)))
+    transport = EffectTransport(backend, lambda: None)
+
+    async def verify():
+        for _ in range(2):
+            async with httpx.AsyncClient(transport=transport) as client:
+                assert (await client.get("https://fixture.invalid/preflight")).status_code == 200
+            assert closes == []
+        await backend.aclose()
+
+    asyncio.run(verify())
+    assert len(requests) == 2 and closes == [True]
 
 
 @pytest.mark.parametrize("mutation", [None, "current_version", "source_link", "source_body",

@@ -81,17 +81,33 @@ gateway/review flags, and `STUDIO_TELEGRAM_PUBLISH_ENABLED`. A missing OFF flag
 is a failure, not a default. It also checks the fixed API address and presence
 and bounded format of the existing API secret.
 After those local checks, it authenticates the existing Netlify `API_SECRET`
-with one bounded `GET /clients` on the fixed API origin. Redirects, errors,
+with one bounded `GET /internal/trial/readiness` on the fixed API origin. The
+receipt requires the exact trial UUID, plan hash, immutable/runtime release SHA,
+controller ON, broad/public flags OFF, all three active local clients, and a
+fresh observation. An old OFF container cannot satisfy it. This reads local
+configuration and the build stamp but never opens or mutates an owner. Redirects, errors,
 oversized/malformed responses, missing active YBO clients, and configuration or
-deadline drift fail closed without retries. The API endpoint reads only local
-client configuration. The receipt requires `upstream_api_auth_verified=true`;
+deadline drift fail closed without retries in that individual request.
+The receipt requires `upstream_api_auth_verified=true`;
 older config-only receipts are rejected before intake. Preflight success is
 not generation, delivery, budget or API-owner proof.
 
-An absent, invalid, redirected, stale or unavailable preflight stops the durable
-trial before any intake phase, slot or job is reserved. The owner may be admitted
-and then closed unknown; that is not zero-I/O or proof of provider activity.
-Never reset it to repeat. The same preflight can be read after Netlify trial
+Before durable owner admission, startup now waits for the same authenticated
+read-only preflight to succeed. This avoids depending on the new API public
+route before Railway has made it reachable. Only transient transport failures,
+502/504, or the exact 503 `trial_preflight_unavailable` envelope may repeat this
+no-business GET: at most six attempts, two-second backoff, at most 60 seconds,
+and never beyond the fixed deadline. OFF/configuration/authentication failures
+and invalid, redirected or stale receipts are terminal. No owner row, slot,
+job, budget reservation, provider call or send is created by this readiness
+step. Default OFF does not perform readiness I/O.
+
+After readiness, the owner admits exactly once and the existing one-shot
+preflight still precedes each client intake. Any failure after admission closes
+the owner unknown without retrying intake, generation or delivery. Fixed
+allowlisted stage/code/status diagnostics omit response bodies and credentials.
+Neither readiness success nor these diagnostics prove generation or delivery.
+Never reset an existing owner to repeat. The same preflight can be read after Netlify trial
 activation and before API controller activation. No eligible fresh source is
 not a reason to enable or force a trial; leave every trial flag OFF instead.
 
