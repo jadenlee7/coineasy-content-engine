@@ -1195,7 +1195,7 @@ async def read_trial_readiness(x_api_key: str = Header(default="")):
     now = gate.clock()
     if not gate.plan.not_before <= now < gate.plan.deadline:
         raise HTTPException(503, "trial_generation_disabled")
-    required = ["babylon", "origintrail"]
+    required = list(gate.plan.eligible_clients)
     active = [cfg.client_id for cfg in list_active_clients() if cfg.active is True]
     if any(active.count(client) != 1 for client in required):
         raise HTTPException(503, "trial_generation_unavailable")
