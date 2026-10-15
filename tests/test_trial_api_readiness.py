@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from core.automation.trial_generation_gate import TrialGenerationGate, TrialGenerationDenied
 from core.automation.trial_owner import TrialPlan, POLICY_SHA256, canonical_sha256
+from core.content_ops.trial_window import FRESH_TRIAL_ID
 
 
 @pytest.fixture
@@ -58,6 +59,32 @@ def test_exact_on_readiness_has_no_owner_or_task_dependency(ready):
         "release_sha": "a" * 40, "controller_enabled": True, "broad_public_flags_off": True,
         **{key: ready.plan.payload[key] for key in ("not_before", "deadline", "kst_date")},
         "client_ids": ["babylon", "origintrail"], "observed_at": ready.now[0].isoformat()}
+    assert list(ready.root.iterdir()) == []
+
+
+def test_fresh_babylon_only_readiness_uses_validated_plan(ready, monkeypatch):
+    payload = {**ready.plan.payload, "trial_id": FRESH_TRIAL_ID,
+        "not_before": "2026-10-15T15:10:51Z", "deadline": "2026-10-15T17:10:51Z",
+        "kst_date": "2026-10-16", "client_ids": ["babylon"], "max_total": 1}
+    plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
+    monkeypatch.setenv("YBO_TRIAL_PLAN_JSON", json.dumps(payload))
+    monkeypatch.setenv("YBO_TRIAL_PLAN_SHA256", plan.sha256)
+    monkeypatch.delenv("YBO_PRESERVED_BABYLON_RECEIPT_ID")
+    ready.now[0] = datetime(2026, 10, 15, 16, 46, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(ready.server, "list_active_clients", lambda: [
+        SimpleNamespace(client_id="babylon", active=True),
+        SimpleNamespace(client_id="origintrail", active=False)])
+    r = ready.client.get("/internal/trial/readiness", headers=ready.headers)
+    assert r.status_code == 200
+    assert r.json() == {"schema_version": "ybo-api-readiness@1", "ready": True,
+        "trial_id": FRESH_TRIAL_ID, "plan_sha256": plan.sha256,
+        "release_sha": "a" * 40, "controller_enabled": True, "broad_public_flags_off": True,
+        **{key: payload[key] for key in ("not_before", "deadline", "kst_date")},
+        "client_ids": ["babylon"], "observed_at": ready.now[0].isoformat()}
+    monkeypatch.setattr(ready.server, "list_active_clients", lambda: [
+        SimpleNamespace(client_id="babylon", active=False),
+        SimpleNamespace(client_id="origintrail", active=True)])
+    assert ready.client.get("/internal/trial/readiness", headers=ready.headers).status_code == 503
     assert list(ready.root.iterdir()) == []
 
 

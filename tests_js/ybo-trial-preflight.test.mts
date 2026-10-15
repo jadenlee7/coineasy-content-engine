@@ -65,6 +65,31 @@ test("authenticated preflight makes one fixed config-only API auth GET, no busin
   } finally { globalThis.fetch = previous; }
 });
 
+test("fresh Babylon-only readiness must match the exact trial identity", async () => {
+  const freshTrial = "9d7865c1-c13b-4b1b-aba1-83124aa8d2cd";
+  const start = "2026-10-15T15:10:51Z", deadline = "2026-10-15T17:10:51Z";
+  const now = Date.parse("2026-10-15T16:30:51Z");
+  const env = { ...ENV, YBO_TRIAL_ID: freshTrial,
+    YBO_TRIAL_NOT_BEFORE: start, YBO_TRIAL_DEADLINE: deadline };
+  const req = request(URL, { "X-Ybo-Trial-Id": freshTrial });
+  const proof = { ...clients(), trial_id: freshTrial, not_before: start,
+    deadline, kst_date: "2026-10-16", client_ids: ["babylon"],
+    observed_at: new Date(now).toISOString() };
+  const accepted = harness(env, RELEASE, now, async () => Response.json(proof));
+  const response = await accepted.handler(req, RUNTIME);
+  assert.equal(response.status, 200);
+  assert.equal(accepted.calls.length, 1);
+  assert.deepEqual(await response.json(), { ...expected(), trial_id: freshTrial,
+    not_before: start, deadline, kst_date: "2026-10-16",
+    observed_at: new Date(now).toISOString() });
+  const rejected = harness(env, RELEASE, now, async () => Response.json({
+    ...proof, client_ids: ["babylon", "origintrail"] }));
+  const mismatch = await rejected.handler(req, RUNTIME);
+  assert.equal(mismatch.status, 503);
+  assert.deepEqual(await mismatch.json(), { error: "trial_preflight_unavailable" });
+  assert.equal(rejected.calls.length, 1);
+});
+
 for (const key of YBO_TRIAL_REQUIRED_OFF_FLAGS) {
   test(`literal OFF required for ${key}, especially absent idempotency flag`, async () => {
     for (const value of [undefined, "", "true", "FALSE", "0", " false"]) {
