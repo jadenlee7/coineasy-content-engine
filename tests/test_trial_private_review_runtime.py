@@ -79,6 +79,46 @@ def test_validate_only_no_http_socket_or_sender(monkeypatch):
     assert env()["TELEGRAM_REVIEW_BOT_TOKEN"] not in json.dumps(r)
 
 
+def test_off_validate_only_accepts_existing_expired_trial_without_new_plan_or_io(monkeypatch):
+    def forbidden(*a, **k): raise AssertionError("no client, runner or external I/O")
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", forbidden)
+    old = env(CONTENT_OPS_TRIAL_COURIER_ENABLED="false",
+        CONTENT_OPS_TRIAL_ID="1a2bef47-4827-4bc3-9b4d-5baf2714015d",
+        CONTENT_OPS_TRIAL_PLAN_SHA256="not-a-new-plan",
+        CONTENT_OPS_TRIAL_NOT_BEFORE="2026-10-15T07:40:59Z",
+        CONTENT_OPS_TRIAL_DEADLINE="2026-10-15T09:40:59Z")
+    old.pop("RAILWAY_GIT_COMMIT_SHA", None)  # May be absent in pre-deploy.
+    receipt = cli.run(validate_only=True, environ=old, stamp_reader=lambda: SHA,
+        runner=forbidden)
+    assert receipt == {"ok": True, "mode": "validate_only", "enabled": False,
+        "network_calls": False, "database_calls": False, "telegram_calls": False,
+        "public_send_attempted": False,
+        "provenance": {"schema_version": "private-card-runtime-provenance@1",
+            "build_release_verified": True, "runtime_git_sha_state": "missing",
+            "runtime_release_verified": False}}
+    assert cli.run(environ=old, runner=forbidden)["status"] == "disabled"
+
+
+@pytest.mark.parametrize("delta", [
+    {"CONTENT_OPS_REVIEW_ENABLED": "true"},
+    {"CONTENT_OPS_BUTTON_CARD_ENABLED": "true"},
+    {"CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED": "true"},
+    {"CONTENT_OPS_GATEWAY_URL": "https://wrong.example"},
+    {"CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256": "f"*64},
+    {"CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON": "{}"},
+    {"TELEGRAM_REVIEW_BOT_TOKEN": ""},
+    {"API_SECRET": "forbidden-admin"},
+    {"RAILWAY_GIT_COMMIT_SHA": "f"*40},
+])
+def test_off_validate_only_still_rejects_scope_identity_policy_and_provenance_drift(delta):
+    old = env(CONTENT_OPS_TRIAL_COURIER_ENABLED="false",
+        CONTENT_OPS_TRIAL_ID="1a2bef47-4827-4bc3-9b4d-5baf2714015d",
+        CONTENT_OPS_TRIAL_NOT_BEFORE="2026-10-15T07:40:59Z",
+        CONTENT_OPS_TRIAL_DEADLINE="2026-10-15T09:40:59Z", **delta)
+    assert cli.run(validate_only=True, environ=old, stamp_reader=lambda: SHA)["ok"] is False
+
+
 @pytest.mark.parametrize("delta", [
     {"CONTENT_OPS_REVIEW_ENABLED": "true"}, {"CONTENT_OPS_BUTTON_CARD_ENABLED": "true"},
     {"CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED": "true"}, {"API_SECRET": "forbidden-admin"},
