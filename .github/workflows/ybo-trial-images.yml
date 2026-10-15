@@ -178,6 +178,21 @@ jobs:
                       'schema_version': 'private-card-runtime-provenance@1',
                       'build_release_verified': True, 'runtime_git_sha_state': 'match',
                       'runtime_release_verified': True}}
+          # Release-only OFF deployment must not require a fabricated new
+          # trial window. The old completed configuration remains preserved.
+          old = {**env, 'CONTENT_OPS_TRIAL_COURIER_ENABLED': 'false',
+              'CONTENT_OPS_TRIAL_ID': '1a2bef47-4827-4bc3-9b4d-5baf2714015d',
+              'CONTENT_OPS_TRIAL_NOT_BEFORE': '2026-10-15T07:40:59Z',
+              'CONTENT_OPS_TRIAL_DEADLINE': '2026-10-15T09:40:59Z',
+              'CONTENT_OPS_TRIAL_PLAN_SHA256': 'not-a-new-plan'}
+          old.pop('RAILWAY_GIT_COMMIT_SHA', None)
+          off = run(validate_only=True, environ=old, runner=forbidden)
+          assert off['ok'] and off['enabled'] is False
+          assert off['provenance']['build_release_verified'] is True
+          assert off['provenance']['runtime_git_sha_state'] == 'missing'
+          assert not any(off[k] for k in ('network_calls', 'database_calls', 'telegram_calls'))
+          old['CONTENT_OPS_TRIAL_COURIER_ENABLED'] = 'true'
+          assert run(validate_only=True, environ=old, runner=forbidden)['ok'] is False
           env['RAILWAY_GIT_COMMIT_SHA'] = 'f' * 40
           assert run(validate_only=True, environ=env, runner=forbidden)['ok'] is False
           print(json.dumps({'actual_image_trial_imports': True, 'synthetic_validate_only': True,
