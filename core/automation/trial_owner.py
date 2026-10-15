@@ -26,7 +26,7 @@ import stat
 from uuid import UUID
 
 from core.content_ops.trial_window import (
-    ELIGIBLE_CLIENTS, FRESH_TRIAL_ID, KST, TRIAL_ID, trial_clients,
+    ELIGIBLE_CLIENTS, KST, trial_clients, trial_identity_policy, trial_anchor_allowed,
     trial_window as _trial_window,
 )
 
@@ -110,18 +110,17 @@ class TrialPlan:
         _uuid(payload["trial_id"])
         start, _ = trial_window(payload["not_before"], payload["deadline"])
         try:
-            clients = trial_clients(payload["trial_id"])
+            policy = trial_identity_policy(payload["trial_id"])
         except ValueError:
             raise TrialError("trial_plan_scope_invalid") from None
         if (payload["contract"] != "ybo-server-trial@1"
             or payload["kst_date"] != start.astimezone(KST).date().isoformat()
-            or (payload["trial_id"] == FRESH_TRIAL_ID
-                and (start < datetime(2026, 10, 15, 15, tzinfo=timezone.utc)
-                     or start.astimezone(KST).date() != date(2026, 10, 16)))
-            or payload["client_ids"] != list(clients)
+            or not trial_anchor_allowed(payload["trial_id"], start)
+            or payload["client_ids"] != list(policy.client_ids)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))
-            or payload["max_per_client"] != 1 or payload["max_total"] != len(clients)
+            or payload["max_per_client"] != policy.max_per_client
+            or payload["max_total"] != policy.max_total
             or payload["estimated_daily_limit_micros"] != LIMIT_MICROS
             or payload["estimate_policy_sha256"] != POLICY_SHA256
             or type(payload["release_sha"]) is not str

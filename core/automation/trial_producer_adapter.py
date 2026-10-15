@@ -32,7 +32,7 @@ from core.automation.trial_owner import CLIENTS, KST, TrialOwner
 from core.client_config import load_client_config
 from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
-from core.content_ops.trial_window import FRESH_TRIAL_ID, TRIAL_ID
+from core.content_ops.trial_window import TRIAL_ID, trial_identity_policy
 
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -138,8 +138,9 @@ class TrialNaturalProducerAdapter:
         _uuid(workspace_id); _uuid(trial_id)
         _require(type(owner) is TrialOwner and owner.plan.trial_id == trial_id
                  and callable(sleep))
+        policy = trial_identity_policy(trial_id)
         _require((trial_id == TRIAL_ID and recovery_receipt_id is not None)
-                 or (trial_id == FRESH_TRIAL_ID and recovery_receipt_id is None),
+                 or (policy.natural and recovery_receipt_id is None),
                  "trial_producer_recovery_configuration_invalid")
         if recovery_receipt_id is not None:
             _uuid(recovery_receipt_id)
@@ -195,7 +196,7 @@ class TrialNaturalProducerAdapter:
                         and post["id"].isdigit()]
         eligible_ids = [int(post["id"]) for post in eligible if isinstance(post.get("id"), str)
                         and post["id"].isdigit()]
-        if self.trial_id == FRESH_TRIAL_ID and not observed_ids:
+        if trial_identity_policy(self.trial_id).natural and not observed_ids:
             return None  # An empty timeline cannot prove the pending source is latest.
         if observed_ids and (not eligible_ids or max(observed_ids) != max(eligible_ids)):
             return None

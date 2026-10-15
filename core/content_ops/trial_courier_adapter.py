@@ -14,7 +14,7 @@ from uuid import UUID
 
 import httpx
 
-from core.content_ops.trial_window import FRESH_TRIAL_ID, KST, trial_clients, trial_window
+from core.content_ops.trial_window import trial_clients, trial_window, trial_anchor_allowed
 
 
 ORIGIN = "https://coineasy-newscard.netlify.app"
@@ -81,9 +81,7 @@ class TrialManifest:
                 and _sha(value["plan_sha256"])
                 and _sha(value["release_sha"], 40) and _sha(value["destination_policy_sha256"]))
             start, _ = trial_window(value["not_before"], value["deadline"])
-            if value["trial_id"] == FRESH_TRIAL_ID:
-                _require(start >= datetime(2026, 10, 15, 15, tzinfo=start.tzinfo)
-                    and start.astimezone(KST).date().isoformat() == "2026-10-16")
+            _require(trial_anchor_allowed(value["trial_id"], start))
             entries = value["entries"]
             _require(type(entries) is list and 1 <= len(entries) <= len(clients_allowed))
             clients = set()

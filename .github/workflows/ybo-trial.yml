@@ -69,6 +69,8 @@ jobs:
         run: python ops/ybo-preserved-recovery/recovery_local_unittest.py --local-only
       - name: Verify fresh Babylon natural slot and preserved historical rows
         run: python ops/ybo-fresh-babylon/fresh_local_unittest.py --local-only
+      - name: Verify new readiness Babylon slot, immutable anchor and previous fresh row
+        run: python ops/ybo-readiness-babylon/readiness_local_unittest.py --local-only
       - name: Record proof boundary
         if: always()
         run: |
