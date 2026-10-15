@@ -26,7 +26,8 @@ import stat
 from uuid import UUID
 
 from core.content_ops.trial_window import (
-    ELIGIBLE_CLIENTS, KST, TRIAL_ID, trial_window as _trial_window,
+    ELIGIBLE_CLIENTS, FRESH_TRIAL_ID, KST, TRIAL_ID, trial_clients,
+    trial_window as _trial_window,
 )
 
 CLIENTS = ("yellow", "babylon", "origintrail")
@@ -108,13 +109,19 @@ class TrialPlan:
             raise TrialError("trial_plan_shape_invalid")
         _uuid(payload["trial_id"])
         start, _ = trial_window(payload["not_before"], payload["deadline"])
+        try:
+            clients = trial_clients(payload["trial_id"])
+        except ValueError:
+            raise TrialError("trial_plan_scope_invalid") from None
         if (payload["contract"] != "ybo-server-trial@1"
-            or payload["trial_id"] != TRIAL_ID
             or payload["kst_date"] != start.astimezone(KST).date().isoformat()
-            or payload["client_ids"] != list(ELIGIBLE_CLIENTS)
+            or (payload["trial_id"] == FRESH_TRIAL_ID
+                and (start < datetime(2026, 10, 15, 15, tzinfo=timezone.utc)
+                     or start.astimezone(KST).date() != date(2026, 10, 16)))
+            or payload["client_ids"] != list(clients)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))
-            or payload["max_per_client"] != 1 or payload["max_total"] != 2
+            or payload["max_per_client"] != 1 or payload["max_total"] != len(clients)
             or payload["estimated_daily_limit_micros"] != LIMIT_MICROS
             or payload["estimate_policy_sha256"] != POLICY_SHA256
             or type(payload["release_sha"]) is not str
@@ -135,6 +142,10 @@ class TrialPlan:
     @property
     def trial_id(self):
         return self.payload["trial_id"]
+
+    @property
+    def eligible_clients(self):
+        return trial_clients(self.trial_id)
 
     @property
     def not_before(self):
@@ -278,14 +289,14 @@ class TrialOwner:
         used by the authenticated manifest reader before every gateway effect.
         """
         _stamp(now)
-        if type(entries) is not list or not 1 <= len(entries) <= len(ELIGIBLE_CLIENTS):
+        if type(entries) is not list or not 1 <= len(entries) <= len(self.plan.eligible_clients):
             return False
         with self._transaction() as conn:
             if conn is None or not self._active(conn, self._row(conn), now):
                 return False
             for entry in entries:
                 client_id = entry.get("client_id")
-                if client_id not in ELIGIBLE_CLIENTS:
+                if client_id not in self.plan.eligible_clients:
                     return False
                 ids = {k: entry.get(k) for k in ("job_id", "request_id", "source_item_id")}
                 identity_json = json.dumps(ids, sort_keys=True, separators=(",", ":"))
@@ -324,7 +335,7 @@ class TrialOwner:
         """
         _stamp(now)
         _digest(immutable_sha256)
-        if client_id not in ELIGIBLE_CLIENTS or type(identifiers) is not dict or set(identifiers) != {
+        if client_id not in self.plan.eligible_clients or type(identifiers) is not dict or set(identifiers) != {
                 "job_id", "request_id", "source_item_id"}:
             return False
         try:
@@ -383,7 +394,7 @@ class TrialOwner:
                       identifiers=None, estimated_micros=0):
         _stamp(now)
         _digest(immutable_sha256)
-        if (client_id not in ELIGIBLE_CLIENTS or phase_key not in {f"{client_id}:{p}" for p in PHASES}
+        if (client_id not in self.plan.eligible_clients or phase_key not in {f"{client_id}:{p}" for p in PHASES}
             or type(estimated_micros) is not int or not 0 <= estimated_micros <= LIMIT_MICROS
             or (estimated_micros and phase_key != f"{client_id}:generate")):
             raise TrialError("trial_phase_invalid")

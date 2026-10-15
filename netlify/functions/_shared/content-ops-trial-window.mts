@@ -1,6 +1,17 @@
 /** Operator-installed readiness anchor only. No runtime clock can create or
  * extend these bounds; durable owner/manifest checks remain separate authority. */
 export const READY_ANCHORED_TRIAL_ID = "d346ceea-4ea9-479f-a5cf-05097b50ce48";
+export const FRESH_BABYLON_TRIAL_ID = "9d7865c1-c13b-4b1b-aba1-83124aa8d2cd";
+export const FRESH_BABYLON_EARLIEST = "2026-10-15T15:00:00Z";
+export const FRESH_BABYLON_KST_DATE = "2026-10-16";
+type TrialIdentityPolicy = Readonly<{ clientIds: readonly string[]; maxTotal: number; earliest: number; kstDate?: string }>;
+const LEGACY_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon", "origintrail"]), maxTotal: 2, earliest: 0 });
+const FRESH_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon"]), maxTotal: 1,
+  earliest: Date.parse(FRESH_BABYLON_EARLIEST), kstDate: FRESH_BABYLON_KST_DATE });
+/** Code-owned identities, never a caller-selected client list or mode. */
+export function trialIdentityPolicy(trialId: unknown): TrialIdentityPolicy | null {
+  return trialId === READY_ANCHORED_TRIAL_ID ? LEGACY_POLICY : trialId === FRESH_BABYLON_TRIAL_ID ? FRESH_POLICY : null;
+}
 export type TrialWindow = Readonly<{ notBefore: string; deadline: string; start: number; end: number; kstDate: string }>;
 type Env = (name: string) => string | undefined;
 export function trialWindow(notBefore: unknown, deadline: unknown): TrialWindow | null {
@@ -14,7 +25,10 @@ export function trialWindow(notBefore: unknown, deadline: unknown): TrialWindow 
   return Object.freeze({ notBefore, deadline, start, end, kstDate });
 }
 export function configuredTrialWindow(env: Env, prefix: "YBO_TRIAL" | "CONTENT_OPS_TRIAL"): TrialWindow | null {
-  return trialWindow(env(`${prefix}_NOT_BEFORE`), env(`${prefix}_DEADLINE`));
+  const policy = trialIdentityPolicy(env(`${prefix}_ID`));
+  const bounds = trialWindow(env(`${prefix}_NOT_BEFORE`), env(`${prefix}_DEADLINE`));
+  return policy && bounds && bounds.start >= policy.earliest
+    && (!policy.kstDate || bounds.kstDate === policy.kstDate) ? bounds : null;
 }
 export function trialWindowUnchanged(env: Env, prefix: "YBO_TRIAL" | "CONTENT_OPS_TRIAL", window: TrialWindow): boolean {
   return env(`${prefix}_NOT_BEFORE`) === window.notBefore && env(`${prefix}_DEADLINE`) === window.deadline;

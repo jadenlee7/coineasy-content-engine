@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isCatalogUuid, type contentCatalogConfig } from "./content-catalog.mts";
-import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow,
+import { trialIdentityPolicy, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow,
   type TrialWindow } from "./content-ops-trial-window.mts";
 
 type Json = Record<string, any>;
@@ -10,7 +10,6 @@ export type TrustedTrialResolver = (identity: Readonly<{ trial_id: string; plan_
 export type TrialScope = { mode: "trial"; content_version_id: string;
   packet_mode: "trial_delivery_only_v1"; trial_id: string; plan_sha256: string; manifest_sha256: string };
 export type TrialAdmission = { scope: TrialScope; entry: Json; window: TrialWindow; assertActive: () => Promise<void> };
-const CLIENTS = ["babylon", "origintrail"];
 const HEX = /^[a-f0-9]{64}$/;
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Json, keys: string[]) => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -39,9 +38,10 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
   resolver?: TrustedTrialResolver): Promise<TrialAdmission> {
   requireTrue(env("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true" && trialFlagsOff(env));
   const trialId = env("CONTENT_OPS_TRIAL_ID"), plan = env("CONTENT_OPS_TRIAL_PLAN_SHA256");
+  const identityPolicy = trialIdentityPolicy(trialId);
   const policy = env("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256");
   const bounds = configuredTrialWindow(env, "CONTENT_OPS_TRIAL");
-  requireTrue(trialId === READY_ANCHORED_TRIAL_ID && hash(plan) && hash(policy) && bounds && typeof resolver === "function"
+  requireTrue(identityPolicy && hash(plan) && hash(policy) && bounds && typeof resolver === "function"
     && /^[a-f0-9]{40}$/.test(release) && env("CONTENT_OPS_REVIEW_RELEASE_SHA") === release);
   const version = req.headers.get("x-content-ops-version-id"), manifestHash = req.headers.get("x-content-ops-trial-manifest-sha256");
   requireTrue(uuid(version) && hash(manifestHash)
@@ -72,12 +72,12 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
       && m.contract === "ybo-trial-courier-manifest@1" && m.trial_id === trialId && m.plan_sha256 === plan
       && m.release_sha === release && m.destination_policy_sha256 === policy
       && m.not_before === bounds!.notBefore && m.deadline === bounds!.deadline
-      && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= 2);
+      && Array.isArray(m.entries) && m.entries.length >= 1 && m.entries.length <= identityPolicy.maxTotal);
     const clients = new Set(), ids = new Set();
     for (const e of m.entries) {
       requireTrue(record(e) && exact(e, ["client_id", "job_id", "request_id", "source_item_id", "source_sha256",
         "content_item_id", "content_version_id", "banner_sha256", "telegram_copy_sha256", "x_copy_sha256"])
-        && CLIENTS.includes(e.client_id) && !clients.has(e.client_id)
+        && identityPolicy.clientIds.includes(e.client_id) && !clients.has(e.client_id)
         && [e.job_id, e.request_id, e.source_item_id, e.content_item_id, e.content_version_id].every(uuid)
         && e.request_id === e.content_item_id
         && [e.source_sha256, e.banner_sha256, e.telegram_copy_sha256, e.x_copy_sha256].every(hash));

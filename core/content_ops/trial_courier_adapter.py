@@ -14,12 +14,11 @@ from uuid import UUID
 
 import httpx
 
-from core.content_ops.trial_window import ELIGIBLE_CLIENTS, TRIAL_ID, trial_window
+from core.content_ops.trial_window import FRESH_TRIAL_ID, KST, trial_clients, trial_window
 
 
 ORIGIN = "https://coineasy-newscard.netlify.app"
 PATH = "/.netlify/functions/content-ops-review"
-CLIENTS = frozenset(ELIGIBLE_CLIENTS)
 IDENTITY_HEADERS = {"trial_id": "x-content-ops-trial-id",
                     "plan_sha256": "x-content-ops-trial-plan-sha256",
                     "manifest_sha256": "x-content-ops-trial-manifest-sha256"}
@@ -77,17 +76,21 @@ class TrialManifest:
         try:
             _require(type(value) is dict and set(value) == {"contract", "trial_id", "plan_sha256",
                 "release_sha", "not_before", "deadline", "destination_policy_sha256", "entries"})
+            clients_allowed = frozenset(trial_clients(value["trial_id"]))
             _require(value["contract"] == "ybo-trial-courier-manifest@1"
-                and value["trial_id"] == TRIAL_ID and _sha(value["plan_sha256"])
+                and _sha(value["plan_sha256"])
                 and _sha(value["release_sha"], 40) and _sha(value["destination_policy_sha256"]))
-            trial_window(value["not_before"], value["deadline"])
+            start, _ = trial_window(value["not_before"], value["deadline"])
+            if value["trial_id"] == FRESH_TRIAL_ID:
+                _require(start >= datetime(2026, 10, 15, 15, tzinfo=start.tzinfo)
+                    and start.astimezone(KST).date().isoformat() == "2026-10-16")
             entries = value["entries"]
-            _require(type(entries) is list and 1 <= len(entries) <= len(CLIENTS))
+            _require(type(entries) is list and 1 <= len(entries) <= len(clients_allowed))
             clients = set()
             identities = set()
             for entry in entries:
                 _require(type(entry) is dict and set(entry) == ENTRY_KEYS
-                    and entry["client_id"] in CLIENTS and entry["client_id"] not in clients)
+                    and entry["client_id"] in clients_allowed and entry["client_id"] not in clients)
                 clients.add(entry["client_id"])
                 ids = [entry[k] for k in ("job_id", "request_id", "source_item_id", "content_version_id")]
                 _require(entry["request_id"] == entry["content_item_id"]

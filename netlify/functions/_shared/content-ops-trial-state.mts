@@ -2,7 +2,7 @@ import type { ContentOpsReviewRuntime } from "./content-ops-review.mts";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 import { admitTrial, trialFlagsOff, type TrustedTrialResolver } from "./content-ops-trial.mts";
 import { TrialManifestNotReady } from "./content-ops-trial-resolver.mts";
-import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
+import { trialIdentityPolicy, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
 type Env = (key: string) => string | undefined;
 const PATH = "/.netlify/functions/content-ops-trial-state", ORIGIN = "https://coineasy-newscard.netlify.app";
 const json = (body: unknown, status: number, release?: string) => Response.json(body, { status,
@@ -35,7 +35,7 @@ export function createTrialStateHandler(deps: { getEnv: Env; releaseSha: () => s
       function active() {
         if (!bounds || !withinTrialWindow(bounds, (deps.clock ?? Date.now)())
           || !trialWindowUnchanged(deps.getEnv, "CONTENT_OPS_TRIAL", bounds)
-          || trialId !== READY_ANCHORED_TRIAL_ID || !plan || !/^[a-f0-9]{64}$/.test(plan)
+          || !trialIdentityPolicy(trialId) || !plan || !/^[a-f0-9]{64}$/.test(plan)
           || !policy || !/^[a-f0-9]{64}$/.test(policy)
           || deps.getEnv("CONTENT_OPS_TRIAL_ID") !== trialId || deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256") !== plan
           || deps.getEnv("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256") !== policy
