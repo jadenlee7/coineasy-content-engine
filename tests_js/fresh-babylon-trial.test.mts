@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { FRESH_BABYLON_TRIAL_ID, READY_ANCHORED_TRIAL_ID, configuredTrialWindow,
+import { FRESH_BABYLON_TRIAL_ID, NEW_BABYLON_TRIAL_ID, NEW_BABYLON_EARLIEST, READY_ANCHORED_TRIAL_ID, configuredTrialWindow,
   trialIdentityPolicy } from "../netlify/functions/_shared/content-ops-trial-window.mts";
 import { admitTrialGeneration } from "../netlify/functions/_shared/content-ops-trial-generation.mts";
 import { admitTrial, trialManifestHash, verifyTrialProjection } from "../netlify/functions/_shared/content-ops-trial.mts";
@@ -60,6 +60,47 @@ test("fresh fixed identity narrows clients/count/date without changing legacy po
       const e={...env,[`${prefix}_NOT_BEFORE`]:start,[`${prefix}_DEADLINE`]:end};
       assert.equal(configuredTrialWindow(k=>e[k],prefix),null);
     }
+  }
+});
+
+test("new Babylon identity is separate, bounded and allowed across both gateways", async () => {
+  const start="2026-10-15T15:48:00Z", end="2026-10-15T17:48:00Z", now=Date.parse("2026-10-15T16:00:00Z");
+  assert.equal(NEW_BABYLON_EARLIEST,"2026-10-15T15:47:35Z");
+  const policy=trialIdentityPolicy(NEW_BABYLON_TRIAL_ID);
+  assert.deepEqual(policy?.clientIds,["babylon"]);assert.equal(policy?.maxPerClient,1);assert.equal(policy?.maxTotal,1);
+  assert(Object.isFrozen(policy));assert(Object.isFrozen(policy?.clientIds));
+  assert.equal(trialIdentityPolicy(FRESH_BABYLON_TRIAL_ID)?.earliest,Date.parse("2026-10-15T15:00:00Z"));
+  const e={...env,YBO_TRIAL_ID:NEW_BABYLON_TRIAL_ID,CONTENT_OPS_TRIAL_ID:NEW_BABYLON_TRIAL_ID,
+    YBO_TRIAL_NOT_BEFORE:start,YBO_TRIAL_DEADLINE:end,CONTENT_OPS_TRIAL_NOT_BEFORE:start,CONTENT_OPS_TRIAL_DEADLINE:end};
+  for(const prefix of ["YBO_TRIAL","CONTENT_OPS_TRIAL"] as const){
+    assert.equal(configuredTrialWindow(k=>e[k],prefix)?.kstDate,"2026-10-16");
+    for(const [s,d] of [["2026-10-15T15:47:34Z","2026-10-15T17:47:34Z"],
+      ["2026-10-16T15:48:00Z","2026-10-16T17:48:00Z"]]){
+      const invalid={...e,[`${prefix}_NOT_BEFORE`]:s,[`${prefix}_DEADLINE`]:d};
+      assert.equal(configuredTrialWindow(k=>invalid[k],prefix),null);
+    }
+  }
+  let calls=0;
+  const freshPayload={...payload,trial_payload:payload};
+  const generated=await admitTrialGeneration({req:generationReq("babylon",NEW_BABYLON_TRIAL_ID),runtime:native,
+    body:freshPayload,clientId:"babylon",requestId:id(2),automation:true,env:k=>e[k],clock:()=>now,release:RELEASE,
+    fetcher:async()=>{calls++;return Response.json({authorized:true,trial_id:NEW_BABYLON_TRIAL_ID,
+      plan_sha256:PLAN,release_sha:RELEASE,client_id:"babylon",request_id:id(2),observed_at:new Date(now).toISOString()});}});
+  assert.equal(generated.trialId,NEW_BABYLON_TRIAL_ID);assert.equal(calls,1);
+  const m={...manifest,trial_id:NEW_BABYLON_TRIAL_ID,not_before:start,deadline:end};
+  const admitted=await admitTrial(courierReq(m),k=>e[k],RELEASE,()=>now,
+    async()=>({active:true,observed_at:new Date(now).toISOString(),manifest:m,manifest_sha256:trialManifestHash(m)}));
+  assert.equal(admitted.entry.client_id,"babylon");
+  for(const client of ["origintrail","yellow"]){
+    await assert.rejects(()=>admitTrialGeneration({req:generationReq(client,NEW_BABYLON_TRIAL_ID),runtime:native,
+      body:freshPayload,clientId:client,requestId:id(2),automation:true,env:k=>e[k],clock:()=>now,release:RELEASE,
+      fetcher:async()=>{calls++;throw Error("unexpected HTTP");}}));
+  }
+  assert.equal(calls,1);
+  for(const trialId of [id(99),FRESH_BABYLON_TRIAL_ID,READY_ANCHORED_TRIAL_ID]){
+    const wrong={...m,trial_id:trialId};
+    await assert.rejects(()=>admitTrial(courierReq(wrong),k=>e[k],RELEASE,()=>now,
+      async()=>({active:true,observed_at:new Date(now).toISOString(),manifest:wrong,manifest_sha256:trialManifestHash(wrong)})));
   }
 });
 
