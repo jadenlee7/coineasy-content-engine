@@ -3,7 +3,7 @@ import type { Context } from "@netlify/functions";
 import { contentCatalogConfig, isCatalogUuid } from "./content-catalog.mts";
 import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./content-ops-gateway-auth.mts";
 import { admitTrial, trialFlagsOff, verifyTrialProjection, type TrialAdmission,
-  type TrustedTrialResolver } from "./content-ops-trial.mts";
+  type TrustedTrialResolver, type TrialDiagnostic, type TrialDiagnosticReporter } from "./content-ops-trial.mts";
 import type { TrialDeliveryConfirmation } from "./content-ops-trial-resolver.mts";
 
 // This gateway holds the existing database authority. The courier never does.
@@ -30,7 +30,14 @@ type ReviewScope = { mode: "canary" | "daily" | "trial"; content_version_id: str
   packet_mode?: "button_card_v1" | "daily_button_card_v1" | "trial_delivery_only_v1"; daily_scope?: "ybo_v1";
   trial_id?: string; plan_sha256?: string; manifest_sha256?: string };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch;
-  clock?: () => number; trialResolver?: TrustedTrialResolver; trialDeliveryConfirm?: TrialDeliveryConfirmation };
+  clock?: () => number; trialResolver?: TrustedTrialResolver; trialDeliveryConfirm?: TrialDeliveryConfirmation;
+  diagnosticReporter?: TrialDiagnosticReporter };
+
+function safeTrialDiagnostic(reporter: TrialDiagnosticReporter | undefined, receipt: TrialDiagnostic): void {
+  try { (reporter ?? ((value: TrialDiagnostic) => console.warn(JSON.stringify(value))))(receipt); }
+  catch { /* A diagnostic sink must never change a fail-closed result. */ }
+}
+class TrialAdmissionRejection extends Error {}
 
 const json = (value: Json, status = 200) => Response.json(value, {
   status,
@@ -174,15 +181,23 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
 }
 
 async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
-                           release: string, fetcher: typeof fetch, trial?: TrialAdmission): Promise<Response> {
+                           release: string, fetcher: typeof fetch, trial?: TrialAdmission,
+                           report?: TrialDiagnosticReporter): Promise<Response> {
   if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1"].includes(scope.packet_mode ?? "")
     || !isCatalogUuid(scope.content_version_id)
     || !exact(body, ["action", "outbox_id", "claim_token"])
     || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
     return json({ error: "invalid_request" }, 400);
   }
+  const unavailable = (stage: "image_locator" | "image_storage", reason: TrialDiagnostic["reason"],
+    status?: number) => {
+    if (trial) safeTrialDiagnostic(report, { schema_version: "content-ops-trial-diagnostic@1",
+      stage, reason, ...(status === undefined ? {} : { status }) });
+    return json({ error: "content_ops_image_unavailable" }, 503);
+  };
+  let located: Response;
   try {
-    const located = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_image_locator`, {
+    located = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_image_locator`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
         "Content-Type": "application/json" },
@@ -190,13 +205,18 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
         target_outbox_id: body.outbox_id, target_claim_token: body.claim_token,
         target_content_version_id: scope.content_version_id }),
     });
-    if (!located.ok || located.redirected
-      || (located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
-      return json({ error: "content_ops_image_unavailable" }, 503);
-    }
+  } catch (error) { return unavailable("image_locator", error instanceof TrialAdmissionRejection ? "admission" : "request"); }
+  if (!located.ok || located.redirected) return unavailable("image_locator", "http", located.status);
+  if ((located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
+    return unavailable("image_locator", "contract");
+  }
+  let value: unknown;
+  try {
     const locatorBytes = await boundedBytes(located, 4096);
-    if (!locatorBytes) return json({ error: "content_ops_image_unavailable" }, 503);
-    const value: unknown = JSON.parse(Buffer.from(locatorBytes).toString("utf8"));
+    if (!locatorBytes) return unavailable("image_locator", "body");
+    value = JSON.parse(Buffer.from(locatorBytes).toString("utf8"));
+  } catch { return unavailable("image_locator", "body"); }
+  try {
     const keys = ["status", "outbox_id", "client_id", "content_item_id",
       "content_version_id", "asset_id", "bucket", "path", "sha256",
       "byte_size", "execution_authorized"];
@@ -211,26 +231,29 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
       || typeof value.sha256 !== "string" || !HASH.test(value.sha256)
       || !Number.isSafeInteger(value.byte_size) || Number(value.byte_size) < 9
       || Number(value.byte_size) > MAX_IMAGE_BYTES) {
-      return json({ error: "content_ops_image_unavailable" }, 503);
+      return unavailable("image_locator", "contract");
     }
     if (trial && (value.client_id !== trial.entry.client_id || value.content_item_id !== trial.entry.content_item_id
-      || value.sha256 !== trial.entry.banner_sha256)) return json({ error: "content_ops_image_unavailable" }, 503);
-    const image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
+      || value.sha256 !== trial.entry.banner_sha256)) return unavailable("image_locator", "identity");
+    let image: Response;
+    try { image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
         "Accept-Encoding": "identity" },
-    });
-    if (image.status !== 200 || image.redirected
-      || (image.headers.get("content-type") || "").split(";", 1)[0] !== "image/png"
+    }); } catch (error) { return unavailable("image_storage", error instanceof TrialAdmissionRejection ? "admission" : "request"); }
+    if (image.status !== 200 || image.redirected) return unavailable("image_storage", "http", image.status);
+    if ((image.headers.get("content-type") || "").split(";", 1)[0] !== "image/png"
       || (image.headers.get("content-encoding") || "identity") !== "identity"
       || image.headers.has("content-range")) {
-      return json({ error: "content_ops_image_unavailable" }, 503);
+      return unavailable("image_storage", "http", image.status);
     }
-    const imageBytes = await boundedBytes(image, MAX_IMAGE_BYTES);
+    let imageBytes: Uint8Array | null;
+    try { imageBytes = await boundedBytes(image, MAX_IMAGE_BYTES); }
+    catch { return unavailable("image_storage", "body"); }
     if (!imageBytes || imageBytes.byteLength !== value.byte_size
       || !Buffer.from(imageBytes.subarray(0, 8)).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
       || createHash("sha256").update(imageBytes).digest("hex") !== value.sha256) {
-      return json({ error: "content_ops_image_unavailable" }, 503);
+      return unavailable("image_storage", "body");
     }
     return new Response(imageBytes, { status: 200, headers: {
       "Content-Type": "image/png", "Content-Length": String(imageBytes.byteLength),
@@ -244,7 +267,7 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
         "X-Content-Ops-Trial-Id": trial.scope.trial_id, "X-Content-Ops-Trial-Plan-Sha256": trial.scope.plan_sha256,
         "X-Content-Ops-Trial-Manifest-Sha256": trial.scope.manifest_sha256 } : {}),
     } });
-  } catch { return json({ error: "content_ops_image_unavailable" }, 503); }
+  } catch { return unavailable("image_storage", "body"); }
 }
 
 const OWNER_ARGS: Record<string, string[]> = {
@@ -400,10 +423,11 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!hasContentOpsGatewayAccess(req, token)) {
       return json({ error: "invalid_token" }, 401);
     }
+    const report: TrialDiagnosticReporter = receipt => safeTrialDiagnostic(deps.diagnosticReporter, receipt);
     let trial: TrialAdmission | undefined;
     let scope: ReviewScope | null;
     if (trialRequested) {
-      try { trial = await admitTrial(req, deps.getEnv, release, deps.clock ?? Date.now, deps.trialResolver); }
+      try { trial = await admitTrial(req, deps.getEnv, release, deps.clock ?? Date.now, deps.trialResolver, report); }
       catch { return json({ error: "content_ops_trial_blocked" }, 503); }
       scope = trial.scope;
     } else scope = configuredScope(deps.getEnv);
@@ -447,9 +471,14 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       catch { return json({ error: "content_ops_trial_blocked" }, 503); }
       // Every separate HTTP effect (including storage) needs fresh owner admission.
       const admitted = trial;
-      fetcher = async (url, init) => { await admitted.assertActive(); return baseFetcher(url, init); };
+      fetcher = async (url, init) => {
+        try { await admitted.assertActive(); }
+        catch { throw new TrialAdmissionRejection(); }
+        return baseFetcher(url, init);
+      };
     }
-    if (body.action === "image") return buttonImage(body, scope, cfg, release, fetcher, trial);
+    if (body.action === "image") return buttonImage(body, scope, cfg, release, fetcher, trial,
+      trial ? report : undefined);
     if (body.action === "owner") return buttonOwner(body, scope, cfg, release, fetcher, trial && deps.trialDeliveryConfirm
       ? async value => { await deps.trialDeliveryConfirm!({ trial_id: trial!.scope.trial_id,
           plan_sha256: trial!.scope.plan_sha256, manifest_sha256: trial!.scope.manifest_sha256,
