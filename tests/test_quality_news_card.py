@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import io
+import json
 import sqlite3
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -14,11 +15,13 @@ from PIL import Image
 
 from core.automation.higgsfield_banner import BannerReference, QualityBannerError, MODEL
 from core.automation.quality_news_card import (QualityNewsService, service_from_env, provision_quality_news_store,
-    AuthenticatedEstimateAuthority, ESTIMATE_SPEND_POLICY_SHA256)
-from core.content_ops.image_budget import ESTIMATE_POLICY, budget_snapshot
+    AuthenticatedEstimateAuthority, ESTIMATE_SPEND_POLICY_SHA256, TokenRateForecastAuthority)
+from core.automation.higgsfield_token_forecast import FORECAST_POLICY_SHA256
+from core.content_ops.image_budget import ESTIMATE_POLICY, TOKEN_RATE_FORECAST_POLICY, budget_snapshot
 from core.content_ops.image_budget import EnforcedCeilingProof, provision_image_budget
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+FORECAST_NOW = datetime(2026, 10, 15, 12, tzinfo=timezone.utc)
 WORKSPACE = "296bfec3-7975-4f64-8acb-8f9333e94555"
 REQUEST = "173379ea-36aa-4466-87c9-e716b59f59e3"
 JOB = "283379ea-36aa-4466-87c9-e716b59f59e3"
@@ -63,7 +66,9 @@ def payload(client="yellow"):
     return value
 
 
-def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client="yellow", estimated=False):
+def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client="yellow",
+          estimated=False, forecasted=False):
+    assert not (estimated and forecasted)
     root, output = tmp_path / "private", tmp_path / "output"
     root.mkdir(mode=0o700)
     output.mkdir()
@@ -73,7 +78,9 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
         with sqlite3.connect(root / "quality-news.sqlite3") as db:
             db.execute("BEGIN IMMEDIATE")
             provision_image_budget(db, workspace_id=WORKSPACE,
-                provider_account_sha256=ACCOUNT, capability_evidence_sha256=CAPABILITY)
+                provider_account_sha256=ACCOUNT,
+                capability_evidence_sha256=None if forecasted else CAPABILITY,
+                policy_mode=TOKEN_RATE_FORECAST_POLICY if forecasted else "provider_enforced_usd_ceiling@1")
     state = {"posts": 0, "copies": 0, "gets": 0, "pending": pending, "offline": False,
              "reference_urls": [],
              "estimates": 0, "estimate_usd": "0.728219", "estimate_body": None}
@@ -92,7 +99,8 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
                 assert "idempotency-key" not in request.headers
                 state["estimates"] += 1
                 state["estimate_body"] = json.loads(request.content)
-                return httpx.Response(200, json={"usd": state["estimate_usd"], "credits": "1.2"})
+                return httpx.Response(200, json=state.get("estimate_response",
+                    {"usd": state["estimate_usd"], "credits": "1.2"}))
             if estimated:
                 assert json.loads(request.content) == state["estimate_body"]
                 assert request.url.path == "/" + MODEL
@@ -122,9 +130,11 @@ def setup(tmp_path, *, fail_submit=False, pending=False, fail_copy=False, client
                                                 hashlib.sha256(REFERENCE).hexdigest())},
         reference_hosts=frozenset({"pbs.twimg.com", "assets.example.com"}),
         output_hosts=frozenset({"output.example.com"}), daily_limit=3,
-        release_sha="a" * 40, spend_policy_sha256="b" * 64, store_id=STORE,
-        budget_authority=AuthenticatedEstimateAuthority(ACCOUNT) if estimated else SyntheticBudgetAuthority(),
-        transport=httpx.MockTransport(http), clock=lambda: NOW, copy_factory=copy)
+        release_sha="a" * 40,
+        spend_policy_sha256=FORECAST_POLICY_SHA256 if forecasted else "b" * 64, store_id=STORE,
+        budget_authority=(TokenRateForecastAuthority(ACCOUNT) if forecasted else
+            AuthenticatedEstimateAuthority(ACCOUNT) if estimated else SyntheticBudgetAuthority()),
+        transport=httpx.MockTransport(http), clock=lambda: FORECAST_NOW if forecasted else NOW, copy_factory=copy)
     return kwargs, output, state
 
 
@@ -511,6 +521,100 @@ def test_malformed_provider_estimate_is_never_paid_authority(tmp_path, usd):
     assert state["estimates"] == 1 and state["posts"] == 0
 
 
+def test_token_pricing_shape_does_not_silently_change_existing_quote_policy(tmp_path):
+    kwargs, output, state = setup(tmp_path, estimated=True)
+    # Synthetic values, observed field names/types only; not a raw API receipt.
+    state["estimate_response"] = {"type": "synthetic-token-pricing", "pricing_description": "token rates"}
+    with pytest.raises(QualityBannerError, match="quality_banner_estimate_invalid"):
+        invoke(kwargs, output)
+    assert state["posts"] == 0 and state["estimates"] == 1
+
+
+def forecast_payload(client="yellow"):
+    value = payload(client)
+    value["quality_context"]["source_published_at"] = "2026-10-15T09:00:00Z"
+    return value
+
+
+@pytest.mark.parametrize("client", ["yellow", "babylon", "origintrail"])
+def test_explicit_forecast_preserves_quality_without_quote_or_replay_effects(tmp_path, client):
+    kwargs, output, state = setup(tmp_path, forecasted=True, client=client)
+    value = forecast_payload(client)
+    result = invoke(kwargs, output, value, client=client)
+    assert state["estimates"] == 0 and state["posts"] == state["copies"] == 1
+    assert result["spec"]["quality_banner"]["width"] == 2880
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        snap = budget_snapshot(db, workspace_id=WORKSPACE, provider_account_sha256=ACCOUNT, now=FORECAST_NOW)
+        assert snap.policy_mode == TOKEN_RATE_FORECAST_POLICY
+        assert snap.actual_usd_micros == snap.reserved_usd_micros == 0
+        assert snap.provisional_usd_micros == 3_588_096
+        assert db.execute("SELECT count(*) FROM image_budget_forecast_evidence").fetchone()[0] == 1
+    kwargs["budget_authority"] = TokenRateForecastAuthority(ACCOUNT)
+    state["offline"] = True
+    assert invoke(kwargs, output, value, client=client) == result
+    assert state["estimates"] == 0 and state["posts"] == state["copies"] == 1
+
+
+def test_forecast_unknown_never_recalculates_or_repeats_paid_calls(tmp_path, monkeypatch):
+    kwargs, output, state = setup(tmp_path, forecasted=True, fail_submit=True)
+    value = forecast_payload()
+    with pytest.raises(QualityBannerError, match="submit_unknown"):
+        invoke(kwargs, output, value)
+    def no_forecast(*_args, **_kwargs):
+        raise AssertionError("Unknown paid intent must not get fresh forecast")
+    monkeypatch.setattr(TokenRateForecastAuthority, "forecast", no_forecast)
+    kwargs["budget_authority"] = TokenRateForecastAuthority(ACCOUNT)
+    state["offline"] = True
+    with pytest.raises(QualityBannerError, match="submit_unknown"):
+        invoke(kwargs, output, value)
+    assert state["posts"] == state["copies"] == 1 and state["estimates"] == 0
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        snap = budget_snapshot(db, workspace_id=WORKSPACE, provider_account_sha256=ACCOUNT,
+                               now=FORECAST_NOW + timedelta(days=1))
+        assert snap.reserved_usd_micros == 3_588_096
+
+
+def test_forecast_underfunded_day_rejects_before_copy_or_network(tmp_path):
+    from core.automation.quality_news_card import _request
+    from core.content_ops.image_budget import reserve_image_budget
+    kwargs, output, state = setup(tmp_path, forecasted=True)
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        db.execute("BEGIN IMMEDIATE")
+        for client in ("babylon", "origintrail"):
+            context = forecast_payload(client)["quality_context"]
+            context.update(request_id=str(uuid4()), source_item_id=str(uuid4()))
+            req = _request(context, {"headline": "공식 소식", "body_lines": ["새로운 소식"]},
+                           hashlib.sha256(REFERENCE).hexdigest(), kwargs["logo_references"]["yellow"])
+            proof = kwargs["budget_authority"].forecast(req, now=FORECAST_NOW)
+            reserve_image_budget(db, operation_id=req.operation_id, request_sha256=req.digest(),
+                workspace_id=WORKSPACE, client_id=client, source_item_id=req.source_item_id,
+                provider_account_sha256=ACCOUNT, now=FORECAST_NOW, forecast_proof=proof)
+    state["offline"] = True
+    with pytest.raises(QualityBannerError, match="quality_news_daily_budget_limit"):
+        invoke(kwargs, output, forecast_payload())
+    assert state["posts"] == state["copies"] == state["gets"] == state["estimates"] == 0
+    with sqlite3.connect(kwargs["journal_root"] / "quality-news.sqlite3") as db:
+        assert db.execute("SELECT count(*) FROM quality_news_copy").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("estimated", [False, True])
+def test_forecast_authority_cannot_mount_existing_different_policy(tmp_path, estimated):
+    kwargs, output, state = setup(tmp_path, estimated=estimated)
+    kwargs.update(budget_authority=TokenRateForecastAuthority(ACCOUNT),
+                  spend_policy_sha256=FORECAST_POLICY_SHA256, clock=lambda: FORECAST_NOW)
+    with pytest.raises(QualityBannerError, match="quality_news_budget_evidence_required"):
+        invoke(kwargs, output, forecast_payload())
+    assert state["estimates"] == state["copies"] == state["gets"] == state["posts"] == 0
+
+
+def test_forecast_requires_its_own_spend_policy_digest(tmp_path):
+    kwargs, output, state = setup(tmp_path, forecasted=True)
+    kwargs["spend_policy_sha256"] = ESTIMATE_SPEND_POLICY_SHA256
+    with pytest.raises(QualityBannerError, match="quality_news_budget_evidence_required"):
+        invoke(kwargs, output, forecast_payload())
+    assert state["estimates"] == state["copies"] == state["gets"] == state["posts"] == 0
+
+
 def test_estimated_unknown_submit_keeps_liability_and_never_reestimates(tmp_path):
     kwargs, output, state = setup(tmp_path, estimated=True, fail_submit=True)
     with pytest.raises(QualityBannerError, match="submit_unknown"):
@@ -534,19 +638,23 @@ def test_old_strict_store_cannot_be_silently_used_as_an_estimated_store(tmp_path
     assert state["estimates"] == state["copies"] == state["gets"] == state["posts"] == 0
 
 
-def test_environment_mounts_only_explicit_approved_estimate_policy(tmp_path):
-    import json
-    env = {"QUALITY_BANNER_ENABLED": "true", "NEWS_CARD_IDEMPOTENCY_ENABLED": "true",
+def factory_env(root, *, mode=ESTIMATE_POLICY, digest=ESTIMATE_SPEND_POLICY_SHA256,
+                account=ACCOUNT):
+    return {"QUALITY_BANNER_ENABLED": "true", "NEWS_CARD_IDEMPOTENCY_ENABLED": "true",
         "RAILWAY_GIT_COMMIT_SHA": "a" * 40, "QUALITY_BANNER_RELEASE_SHA": "a" * 40,
-        "QUALITY_BANNER_BUDGET_MODE": ESTIMATE_POLICY,
-        "QUALITY_BANNER_SPEND_POLICY_SHA256": ESTIMATE_SPEND_POLICY_SHA256,
-        "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(tmp_path), "QUALITY_BANNER_STORE_ID": STORE,
+        "QUALITY_BANNER_BUDGET_MODE": mode,
+        "QUALITY_BANNER_SPEND_POLICY_SHA256": digest,
+        "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(root), "QUALITY_BANNER_STORE_ID": STORE,
         "HIGGSFIELD_API_KEY_ID": "test-key-id", "HIGGSFIELD_API_KEY_SECRET": "test-key-secret",
-        "QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256": ACCOUNT,
+        "QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256": account,
         "QUALITY_BANNER_DAILY_REQUEST_LIMIT": "3", "QUALITY_BANNER_REFERENCE_HOSTS": "assets.example.com",
         "QUALITY_BANNER_OUTPUT_HOSTS": "output.example.com",
         "QUALITY_BANNER_LOGO_REFERENCES": json.dumps({client: {"url": "https://assets.example.com/logo.png",
             "sha256": "d" * 64} for client in ("yellow", "babylon", "origintrail")})}
+
+
+def test_environment_mounts_only_explicit_approved_estimate_policy(tmp_path):
+    env = factory_env(tmp_path)
     service = service_from_env(env)
     assert type(service) is QualityNewsService
     assert type(service.budget_authority) is AuthenticatedEstimateAuthority
@@ -556,6 +664,77 @@ def test_environment_mounts_only_explicit_approved_estimate_policy(tmp_path):
                    {"QUALITY_BANNER_SPEND_POLICY_SHA256": "b" * 64}):
         with pytest.raises(QualityBannerError, match="quality_news_budget_evidence_required"):
             service_from_env({**env, **change})
+
+
+def test_forecast_factory_requires_existing_matching_store_and_never_writes(tmp_path):
+    kwargs, _, _ = setup(tmp_path, forecasted=True)
+    root = kwargs["journal_root"]
+    path = root / "quality-news.sqlite3"
+    env = factory_env(root, mode=TOKEN_RATE_FORECAST_POLICY, digest=FORECAST_POLICY_SHA256)
+    old_bytes = path.read_bytes()
+    old_names = tuple(sorted(item.name for item in root.iterdir()))
+    service = service_from_env(env)
+    assert type(service) is QualityNewsService
+    assert type(service.budget_authority) is TokenRateForecastAuthority
+    assert service.spend_policy == FORECAST_POLICY_SHA256
+    assert path.read_bytes() == old_bytes
+    assert tuple(sorted(item.name for item in root.iterdir())) == old_names
+
+
+def test_forecast_factory_missing_store_fails_without_creating_one(tmp_path):
+    env = factory_env(tmp_path, mode=TOKEN_RATE_FORECAST_POLICY, digest=FORECAST_POLICY_SHA256)
+    with pytest.raises(QualityBannerError, match="quality_news_store_unavailable"):
+        service_from_env(env)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("stored,selected", [
+    ("estimated", TOKEN_RATE_FORECAST_POLICY),
+    ("strict", TOKEN_RATE_FORECAST_POLICY),
+    ("forecasted", ESTIMATE_POLICY),
+])
+def test_factory_refuses_selected_policy_that_differs_from_existing_store(tmp_path, stored, selected):
+    kwargs, _, _ = setup(tmp_path, estimated=stored == "estimated", forecasted=stored == "forecasted")
+    digest = FORECAST_POLICY_SHA256 if selected == TOKEN_RATE_FORECAST_POLICY else ESTIMATE_SPEND_POLICY_SHA256
+    path = kwargs["journal_root"] / "quality-news.sqlite3"
+    old_bytes = path.read_bytes()
+    with pytest.raises(QualityBannerError, match="quality_news_budget_evidence_required"):
+        service_from_env(factory_env(kwargs["journal_root"], mode=selected, digest=digest))
+    assert path.read_bytes() == old_bytes
+
+
+def test_forecast_factory_rejects_wrong_digest_and_account_before_store_mutation(tmp_path):
+    kwargs, _, _ = setup(tmp_path, forecasted=True)
+    root = kwargs["journal_root"]
+    path = root / "quality-news.sqlite3"
+    old_bytes = path.read_bytes()
+    for changes, expected in (({"digest": ESTIMATE_SPEND_POLICY_SHA256}, "quality_news_budget_evidence_required"),
+                              ({"account": "f" * 64}, "quality_news_binding_conflict")):
+        with pytest.raises(QualityBannerError, match=expected):
+            service_from_env(factory_env(root, mode=TOKEN_RATE_FORECAST_POLICY,
+                                         digest=changes.get("digest", FORECAST_POLICY_SHA256),
+                                         account=changes.get("account", ACCOUNT)))
+    assert path.read_bytes() == old_bytes
+
+
+def test_forecast_factory_preserves_pending_liability_and_off_does_not_read_store(tmp_path):
+    kwargs, output, state = setup(tmp_path, forecasted=True, fail_submit=True)
+    with pytest.raises(QualityBannerError, match="submit_unknown"):
+        invoke(kwargs, output, forecast_payload())
+    assert state["posts"] == 1 and state["estimates"] == 0
+    root = kwargs["journal_root"]
+    path = root / "quality-news.sqlite3"
+    before = path.read_bytes()
+    env = factory_env(root, mode=TOKEN_RATE_FORECAST_POLICY, digest=FORECAST_POLICY_SHA256)
+    assert type(service_from_env(env).budget_authority) is TokenRateForecastAuthority
+    with sqlite3.connect(path) as db:
+        snapshot = budget_snapshot(db, workspace_id=WORKSPACE,
+            provider_account_sha256=ACCOUNT, now=FORECAST_NOW + timedelta(days=1))
+        assert snapshot.reserved_usd_micros == 3_588_096
+        assert db.execute("SELECT count(*) FROM image_budget_reservations").fetchone()[0] == 1
+    assert path.read_bytes() == before
+    assert service_from_env({**env, "QUALITY_BANNER_ENABLED": "false"}) is None
+    assert path.read_bytes() == before
 
 
 def test_context_mismatch_no_io(tmp_path):

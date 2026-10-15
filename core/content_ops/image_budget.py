@@ -8,6 +8,9 @@ workspace/account policy covers Yellow, Babylon and OriginTrail together.
 Strict ceiling evidence is a TRUSTED VERIFIER output, not an estimate. The
 separately provisioned estimate policy accepts authenticated provider estimates
 and explicitly permits final charges to differ. It is NOT an actual-cost cap.
+The separately provisioned local-token-forecast policy uses pinned public
+rates and operator assumptions, never calls them an authenticated USD quote,
+and persists its sanitized calculation evidence in the same reservation commit.
 Pending/unknown estimates carry across days. Completed estimates provisionally
 count on completion day until a final billing receipt replaces them with actual.
 All proofs are trusted adapter outputs, never request JSON or enable flags.
@@ -27,6 +30,7 @@ DAILY_LIMIT_USD_MICROS = 10_000_000
 _CONTRACT = "image-budget-usd-kst@2"
 STRICT_POLICY = "provider_enforced_usd_ceiling@1"
 ESTIMATE_POLICY = "authenticated_provider_estimate@1"
+TOKEN_RATE_FORECAST_POLICY = "local_token_rate_forecast@1"
 ESTIMATE_MAX_AGE = timedelta(minutes=5)
 _CLIENTS = frozenset({"yellow", "babylon", "origintrail"})
 _KST = ZoneInfo("Asia/Seoul")
@@ -58,6 +62,19 @@ class ProviderEstimateProof:
     expires_at: datetime
     evidence_sha256: str
     kind: str = "authenticated_provider_estimate"
+
+
+@dataclass(frozen=True)
+class TokenRateForecastProof:
+    request_sha256: str
+    provider_account_sha256: str
+    estimated_usd: str
+    estimated_at: datetime
+    expires_at: datetime
+    evidence_sha256: str
+    policy_sha256: str
+    forecast_json: str
+    kind: str = "local_token_rate_forecast"
 
 
 @dataclass(frozen=True)
@@ -144,8 +161,8 @@ def provision_image_budget(db, *, workspace_id, provider_account_sha256,
                            capability_evidence_sha256=None, policy_mode=STRICT_POLICY):
     """Explicit offline provisioning; no reset/migration/capability toggle.
 
-    Default strict mode without capability evidence is closed. Estimate mode
-    must be selected explicitly and cannot carry ceiling-capability evidence.
+    Default strict mode without capability evidence is closed. Quote/forecast
+    modes must be selected explicitly and cannot carry ceiling evidence.
     Synthetic proofs belong only in disposable tests. Existing tables reject.
     Any prior image attempt requires separate liability reconciliation; never
     initialize a zero ledger over paid, completed, or unknown historical work.
@@ -153,8 +170,8 @@ def provision_image_budget(db, *, workspace_id, provider_account_sha256,
     _transaction(db)
     _require(_uuid(workspace_id) and _hash(provider_account_sha256)
              and (capability_evidence_sha256 is None or _hash(capability_evidence_sha256)))
-    _require(policy_mode in (STRICT_POLICY, ESTIMATE_POLICY)
-             and (policy_mode != ESTIMATE_POLICY or capability_evidence_sha256 is None),
+    _require(policy_mode in (STRICT_POLICY, ESTIMATE_POLICY, TOKEN_RATE_FORECAST_POLICY)
+             and (policy_mode == STRICT_POLICY or capability_evidence_sha256 is None),
              "image_budget_policy_invalid")
     _require(db.execute("SELECT 1 FROM sqlite_master WHERE name IN "
                         "('image_budget_policy','image_budget_reservations')").fetchone() is None,
@@ -184,6 +201,10 @@ def provision_image_budget(db, *, workspace_id, provider_account_sha256,
         completed_at TEXT, completed_kst_day TEXT, completed_png_sha256 TEXT,
         CHECK ((ceiling_usd_micros IS NULL) != (estimated_usd_micros IS NULL)),
         UNIQUE(workspace_id,client_id,source_item_id))""")
+    if policy_mode == TOKEN_RATE_FORECAST_POLICY:
+        db.execute("""CREATE TABLE image_budget_forecast_evidence (
+            operation_id TEXT PRIMARY KEY, policy_sha256 TEXT NOT NULL,
+            evidence_sha256 TEXT NOT NULL, forecast_json TEXT NOT NULL)""")
 
 
 def _policy(db, workspace_id, provider_account_sha256, *, lock=False):
@@ -196,7 +217,7 @@ def _policy(db, workspace_id, provider_account_sha256, *, lock=False):
         row = _row(db, "SELECT * FROM image_budget_policy WHERE singleton=1")
         _require(row is not None and row["contract"] == _CONTRACT,
                  "image_budget_store_unavailable")
-        _require(row.get("policy_mode") in (STRICT_POLICY, ESTIMATE_POLICY),
+        _require(row.get("policy_mode") in (STRICT_POLICY, ESTIMATE_POLICY, TOKEN_RATE_FORECAST_POLICY),
                  "image_budget_store_unavailable")
         _require(row["workspace_id"] == workspace_id
                  and row["provider_account_sha256"] == provider_account_sha256,
@@ -253,7 +274,7 @@ def _reservation(db, operation_id, request_sha256, workspace_id, client_id,
 
 def reserve_image_budget(db, *, operation_id, request_sha256, workspace_id,
                          client_id, source_item_id, provider_account_sha256,
-                         now, ceiling_proof=None, estimate_proof=None):
+                         now, ceiling_proof=None, estimate_proof=None, forecast_proof=None):
     """True only for a new reservation, never permission before caller COMMIT."""
     _identity(operation_id, request_sha256, client_id, source_item_id)
     policy = _policy(db, workspace_id, provider_account_sha256, lock=True)
@@ -265,11 +286,22 @@ def reserve_image_budget(db, *, operation_id, request_sha256, workspace_id,
     _require(db.execute("SELECT 1 FROM image_budget_reservations WHERE workspace_id=? "
         "AND client_id=? AND source_item_id=?", (workspace_id, client_id, source_item_id)).fetchone() is None,
         "image_budget_already_reserved")
-    estimate_mode = policy["policy_mode"] == ESTIMATE_POLICY
-    proof = estimate_proof if estimate_mode else ceiling_proof
+    forecast_mode = policy["policy_mode"] == TOKEN_RATE_FORECAST_POLICY
+    estimate_mode = policy["policy_mode"] in (ESTIMATE_POLICY, TOKEN_RATE_FORECAST_POLICY)
+    proof = forecast_proof if forecast_mode else (estimate_proof if estimate_mode else ceiling_proof)
     if estimate_mode:
-        _require(ceiling_proof is None and type(proof) is ProviderEstimateProof
-                 and proof.kind == "authenticated_provider_estimate", "image_budget_evidence_required")
+        if forecast_mode:
+            _require(ceiling_proof is None and estimate_proof is None
+                     and type(proof) is TokenRateForecastProof, "image_budget_evidence_required")
+            from core.automation.higgsfield_token_forecast import validate_forecast_proof
+            try:
+                validate_forecast_proof(proof)
+            except ValueError:
+                raise ImageBudgetError("image_budget_evidence_required") from None
+        else:
+            _require(ceiling_proof is None and forecast_proof is None
+                     and type(proof) is ProviderEstimateProof
+                     and proof.kind == "authenticated_provider_estimate", "image_budget_evidence_required")
         issued, expiry = _time(proof.estimated_at), _time(proof.expires_at)
         _require(issued <= instant < expiry
                  and proof.expires_at.astimezone(timezone.utc)
@@ -277,7 +309,7 @@ def reserve_image_budget(db, *, operation_id, request_sha256, workspace_id,
                  "image_budget_evidence_expired")
         amount = usd_to_micros(proof.estimated_usd)
     else:
-        _require(estimate_proof is None and _hash(policy["capability_evidence_sha256"])
+        _require(estimate_proof is None and forecast_proof is None and _hash(policy["capability_evidence_sha256"])
                  and type(proof) is EnforcedCeilingProof and proof.kind == _CEILING_KIND,
                  "image_budget_evidence_required")
         _require(proof.capability_evidence_sha256 == policy["capability_evidence_sha256"],
@@ -302,6 +334,9 @@ def reserve_image_budget(db, *, operation_id, request_sha256, workspace_id,
          None if estimate_mode else proof.evidence_sha256, amount if estimate_mode else None,
          proof.evidence_sha256 if estimate_mode else None,
          issued if estimate_mode else None, expiry if estimate_mode else None))
+    if forecast_mode:
+        db.execute("INSERT INTO image_budget_forecast_evidence VALUES (?,?,?,?)",
+            (operation_id, proof.policy_sha256, proof.evidence_sha256, proof.forecast_json))
     return True
 
 

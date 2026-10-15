@@ -31,8 +31,9 @@ from core.automation.higgsfield_banner import (
     _reference_bytes, _copy as _validate_copy, _PRIVATE,
 )
 from core.content_ops.higgsfield_banner_journal import HiggsfieldBannerJournal
-from core.content_ops.image_budget import (ESTIMATE_POLICY, STRICT_POLICY, ImageBudgetError,
-    ProviderEstimateProof, budget_snapshot, provision_image_budget)
+from core.content_ops.image_budget import (ESTIMATE_POLICY, STRICT_POLICY, TOKEN_RATE_FORECAST_POLICY,
+    ImageBudgetError, ProviderEstimateProof, TokenRateForecastProof,
+    budget_snapshot, provision_image_budget, usd_to_micros)
 
 CONTEXT_KEYS = frozenset({"job_id", "request_id", "workspace_id", "client_id",
     "source_item_id", "source_published_at", "source_sha256", "source_content",
@@ -86,6 +87,37 @@ class AuthenticatedEstimateAuthority:
     def proof_for(self, operation_id, request_sha256):
         proof = self._proofs.get(operation_id)
         _require(type(proof) is ProviderEstimateProof and proof.request_sha256 == request_sha256,
+                 "quality_news_budget_evidence_required")
+        return proof
+
+
+class TokenRateForecastAuthority:
+    """Explicit local forecast policy; selected only by exact factory mode/hash.
+
+    No automatic fallback from malformed provider USD quotes. The factory
+    requires an already transitioned same-store ledger; it never migrates one.
+    """
+    policy_mode = TOKEN_RATE_FORECAST_POLICY
+
+    def __init__(self, account_sha256):
+        _require(type(account_sha256) is str and re.fullmatch(r"[a-f0-9]{64}", account_sha256),
+                 "quality_news_configuration_invalid")
+        self.account_sha256, self._proofs = account_sha256, {}
+
+    def forecast(self, request, *, now):
+        from core.automation.higgsfield_token_forecast import forecast_proof
+        return forecast_proof(request, provider_account_sha256=self.account_sha256, now=now)
+
+    def remember(self, operation_id, proof):
+        from core.automation.higgsfield_token_forecast import validate_forecast_proof
+        validate_forecast_proof(proof)
+        _require(proof.provider_account_sha256 == self.account_sha256,
+                 "quality_news_budget_evidence_required")
+        self._proofs[operation_id] = proof
+
+    def proof_for(self, operation_id, request_sha256):
+        proof = self._proofs.get(operation_id)
+        _require(type(proof) is TokenRateForecastProof and proof.request_sha256 == request_sha256,
                  "quality_news_budget_evidence_required")
         return proof
 
@@ -174,13 +206,17 @@ class QualityNewsJournal(HiggsfieldBannerJournal):
                 UNIQUE(workspace_id,client_id,source_item_id))""")
 
     def _reserve_image_budget(self, db, operation_id, request_sha256, now):
-        # Only the authenticated adapter can populate runtime estimate evidence.
-        # The explicit estimate policy does not assert an actual-price ceiling.
+        # Exact trusted authorities remain distinct: quote, local forecast, cap.
         _require(self.budget_authority is not None,
                  "quality_news_budget_evidence_required")
         from core.content_ops.image_budget import reserve_image_budget
         proof = self.budget_authority.proof_for(operation_id, request_sha256)
-        evidence = {"estimate_proof": proof} if type(proof) is ProviderEstimateProof else {"ceiling_proof": proof}
+        if type(proof) is TokenRateForecastProof:
+            evidence = {"forecast_proof": proof}
+        elif type(proof) is ProviderEstimateProof:
+            evidence = {"estimate_proof": proof}
+        else:
+            evidence = {"ceiling_proof": proof}
         return _budget_call(reserve_image_budget, db=db, operation_id=operation_id,
             request_sha256=request_sha256, workspace_id=self.workspace_id,
             client_id=self.client_id, source_item_id=self.source_item_id,
@@ -366,6 +402,10 @@ class QualityNewsService:
         self.transport, self.clock = transport, clock or (lambda: datetime.now(timezone.utc))
         self.copy_factory = copy_factory
         self.budget_authority = budget_authority
+        if type(budget_authority) is TokenRateForecastAuthority:
+            from core.automation.higgsfield_token_forecast import FORECAST_POLICY_SHA256
+            _require(spend_policy_sha256 == FORECAST_POLICY_SHA256,
+                     "quality_news_budget_evidence_required")
 
     async def _source_bytes(self, url, *, before_effect=None):
         _public_url(url, self.references)
@@ -435,6 +475,12 @@ class QualityNewsService:
         def admit_new():
             _require(not collect_only, "quality_banner_submit_unknown")
             probe.validate(now=self.clock(), reference_hosts=self.references)
+            if type(self.budget_authority) is TokenRateForecastAuthority:
+                # Read-only early rejection before paid copy. Atomic admission
+                # is still repeated against the actual request before image POST.
+                forecast = self.budget_authority.forecast(probe, now=self.clock())
+                _require(usd_to_micros(forecast.estimated_usd) <= summary.remaining_usd_micros,
+                         "quality_news_daily_budget_limit")
         checkpoint = owner.start_or_read(context, input_sha, admit_new=admit_new)
         if checkpoint is None:
             # An uncertain copy response is terminal; never rerun the LLM on
@@ -473,6 +519,11 @@ class QualityNewsService:
                 guard()
                 proof = await adapter.estimate(request,
                     provider_account_sha256=self.budget_authority.account_sha256)
+                self.budget_authority.remember(request_id, proof)
+            elif type(self.budget_authority) is TokenRateForecastAuthority:
+                # Pure calculation under a separately provisioned policy.
+                # Never run this as a fallback from failed quote/generation.
+                proof = self.budget_authority.forecast(request, now=self.clock())
                 self.budget_authority.remember(request_id, proof)
             guard()
             await adapter.submit_once(request)
@@ -550,21 +601,49 @@ def service_from_env(env, *, trial_authority=None):
     _require(release == env.get("QUALITY_BANNER_RELEASE_SHA")
              and re.fullmatch(r"[a-f0-9]{40}", release) is not None,
              "quality_news_release_mismatch")
-    # 2026-10-12 operator approval explicitly permits settlement variance.
-    # Only this exact estimate policy is mounted; strict-cap mode stays closed.
-    _require(env.get("QUALITY_BANNER_BUDGET_MODE") == ESTIMATE_POLICY
-             and env.get("QUALITY_BANNER_SPEND_POLICY_SHA256") == ESTIMATE_SPEND_POLICY_SHA256,
-             "quality_news_budget_evidence_required")
+    # The mode and digest are an exact pair. Neither is inferred from a failed
+    # quote, request JSON, or the persisted ledger. Strict-cap mode stays closed.
+    mode, digest = env.get("QUALITY_BANNER_BUDGET_MODE"), env.get("QUALITY_BANNER_SPEND_POLICY_SHA256")
+    if mode == ESTIMATE_POLICY:
+        _require(digest == ESTIMATE_SPEND_POLICY_SHA256, "quality_news_budget_evidence_required")
+        authority_type = AuthenticatedEstimateAuthority
+    elif mode == TOKEN_RATE_FORECAST_POLICY:
+        from core.automation.higgsfield_token_forecast import FORECAST_POLICY_SHA256
+        _require(digest == FORECAST_POLICY_SHA256, "quality_news_budget_evidence_required")
+        authority_type = TokenRateForecastAuthority
+    else:
+        raise QualityBannerError("quality_news_budget_evidence_required")
     try:
         logos = json.loads(env["QUALITY_BANNER_LOGO_REFERENCES"])
         _require(type(logos) is dict and set(logos) == set(CLIENT_HANDLES))
-        return QualityNewsService(journal_root=env["NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT"],
+        service = QualityNewsService(journal_root=env["NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT"],
             key_id=env["HIGGSFIELD_API_KEY_ID"], key_secret=env["HIGGSFIELD_API_KEY_SECRET"],
             logo_references={client: BannerReference("official_logo", **value) for client, value in logos.items()},
             reference_hosts=frozenset(env["QUALITY_BANNER_REFERENCE_HOSTS"].split(",")),
             output_hosts=frozenset(env["QUALITY_BANNER_OUTPUT_HOSTS"].split(",")),
             daily_limit=int(env["QUALITY_BANNER_DAILY_REQUEST_LIMIT"]), release_sha=release,
-            spend_policy_sha256=ESTIMATE_SPEND_POLICY_SHA256, store_id=env["QUALITY_BANNER_STORE_ID"],
-            budget_authority=AuthenticatedEstimateAuthority(env["QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256"]))
+            spend_policy_sha256=digest, store_id=env["QUALITY_BANNER_STORE_ID"],
+            budget_authority=authority_type(env["QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256"]))
     except (KeyError, ValueError, TypeError):
         raise QualityBannerError("quality_news_configuration_invalid") from None
+    path = service.root / "quality-news.sqlite3"
+    if mode == TOKEN_RATE_FORECAST_POLICY or path.exists():
+        # Read-only startup verification for every existing store. The legacy
+        # quote mode may still be constructed before offline provisioning; the
+        # new forecast mode requires the transitioned store to exist already.
+        # No path creation, journal constructor, migration or paid client.
+        try:
+            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+                row = db.execute("SELECT workspace_id FROM quality_news_store WHERE singleton=1").fetchone()
+                _require(row is not None, "quality_news_store_unavailable")
+                _existing_store(service.root, row[0], service.store_id)
+                summary = _budget_call(budget_snapshot, db=db, workspace_id=row[0],
+                    provider_account_sha256=service.budget_authority.account_sha256,
+                    now=datetime.now(timezone.utc))
+                _require(summary.policy_mode == mode,
+                         "quality_news_budget_evidence_required")
+        except (OSError, sqlite3.Error, ValueError) as error:
+            if isinstance(error, QualityBannerError):
+                raise
+            raise QualityBannerError("quality_news_store_unavailable") from None
+    return service
