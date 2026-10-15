@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
 import { trialManifestHash } from "../netlify/functions/_shared/content-ops-trial.mts";
@@ -59,7 +60,7 @@ function request(body: any = { action: "reconcile" }) {
       "x-content-ops-trial-plan-sha256": manifest.plan_sha256, "x-content-ops-trial-manifest-sha256": HASH } });
 }
 function harness(options: any = {}) {
-  const calls: any[] = [], identities: any[] = []; let resolutions = 0;
+  const calls: any[] = [], identities: any[] = [], diagnostics: any[] = []; let resolutions = 0;
   const fetcher = async (url: any, init: any) => {
     const u = new URL(String(url)); calls.push({ url: u, body: init?.body && JSON.parse(init.body), method: init?.method });
     const supplied = options.respond?.(u, init); if (supplied) return supplied;
@@ -67,7 +68,8 @@ function harness(options: any = {}) {
     return Response.json([ (options.rows ?? rows)[u.pathname.split("/").pop()!] ]);
   };
   const deps: any = { getEnv: (k: string) => ({ ...ENV, ...options.env })[k], releaseSha: () => RELEASE,
-    clock: options.clock ?? (() => NOW), fetcher, trialDeliveryConfirm: options.confirm };
+    clock: options.clock ?? (() => NOW), fetcher, trialDeliveryConfirm: options.confirm,
+    diagnosticReporter: options.reporter ?? ((receipt: any) => diagnostics.push(receipt)) };
   if (!options.missing) deps.trialResolver = async (identity: any) => {
     identities.push(identity); resolutions++;
     if (options.throwResolver) throw Error("SECRET-provider-text");
@@ -75,7 +77,7 @@ function harness(options: any = {}) {
       manifest: options.manifest ?? manifest, manifest_sha256: HASH };
   };
   const handler = createContentOpsReviewHandler(deps);
-  return { call: (r = request()) => handler(r, runtime), calls, identities };
+  return { call: (r = request()) => handler(r, runtime), calls, identities, diagnostics };
 }
 
 test("trial has no installed resolver: headers and date alone give zero database calls", async () => {
@@ -86,6 +88,7 @@ test("trial has no installed resolver: headers and date alone give zero database
 test("ordinary OFF and trial OFF never read resolver/database", async () => {
   const h = harness({ env: { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "false" } });
   assert.equal((await h.call()).status, 503); assert.equal(h.identities.length, 0); assert.equal(h.calls.length, 0);
+  assert.deepEqual(h.diagnostics, []);
 });
 for (const key of ["CONTENT_OPS_GATEWAY_ENABLED", "CONTENT_OPS_REVIEW_ENABLED",
   "CONTENT_OPS_BUTTON_CARD_GATEWAY_ENABLED", "CONTENT_OPS_DAILY_BUTTON_CARD_GATEWAY_ENABLED"]) {
@@ -149,6 +152,155 @@ test("claim receipt must preserve exact job/source/version/banner and full Korea
     assert.equal(h.calls.filter(c => c.method === "POST").length, 1);
   }
 });
+test("a later slightly future owner timestamp blocks image after a successful claim", async () => {
+  let phase: "claim" | "image" = "claim";
+  const h = harness({ result: claim, resolve: () => ({ active: true,
+    observed_at: new Date(NOW + (phase === "image" ? 197 : 0)).toISOString(),
+    manifest, manifest_sha256: HASH }) });
+  const claimed = await h.call(request({ action: "claim", claim_token: claim.claim_token }));
+  assert.equal(claimed.status, 200);
+  assert.deepEqual((await claimed.json()).claim, claim);
+  const effectsAfterClaim = h.calls.length;
+  phase = "image";
+  const image = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(image.status, 503);
+  assert.deepEqual(await image.json(), { error: "content_ops_trial_blocked" });
+  assert.equal(h.calls.length, effectsAfterClaim);
+  assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+    stage: "owner_freshness", reason: "future" }]);
+
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+    content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+    asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+    sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+  const exact = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+    ? Response.json(locator) : u.pathname.includes("/storage/")
+      ? new Response(PNG, { headers: { "Content-Type": "image/png",
+          "Content-Length": String(PNG.length) } }) : null });
+  const accepted = await exact.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(accepted.status, 200);
+  assert.equal(exact.calls.filter(c => c.url.pathname.includes("/storage/")).length, 1);
+  assert.deepEqual(exact.diagnostics, []);
+});
+test("decompressed locator JSON with compressed Content-Length blocks before Storage GET", async () => {
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+    content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+    asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+    sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+  const decoded = JSON.stringify(locator), compressedLength = gzipSync(decoded).byteLength;
+  assert.notEqual(compressedLength, Buffer.byteLength(decoded));
+  const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+    ? new Response(decoded, { headers: { "Content-Type": "application/json",
+        "Content-Length": String(compressedLength) } }) : null });
+  const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "content_ops_image_unavailable" });
+  assert.equal(h.identities.length, 8);
+  assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+  assert.equal(h.calls.some(c => c.url.pathname.includes("/storage/")), false);
+  assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+    stage: "image_locator", reason: "body" }]);
+});
+test("owner freshness diagnostics are bounded and reporter failure cannot change denial", async () => {
+  for (const [observed_at, reason] of [
+    [new Date(NOW - 5001).toISOString(), "stale"], ["invalid-timestamp", "invalid"],
+  ]) {
+    const h = harness({ resolve: () => ({ active: true, observed_at, manifest,
+      manifest_sha256: HASH }) });
+    assert.equal((await h.call()).status, 503);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: "owner_freshness", reason }]);
+    assert.equal(h.calls.length, 0);
+  }
+  const denied = harness({ reporter: () => { throw Error("private-diagnostic-sink"); },
+    resolve: () => ({ active: true, observed_at: new Date(NOW + 197).toISOString(),
+      manifest, manifest_sha256: HASH }) });
+  const response = await denied.call();
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "content_ops_trial_blocked" });
+  assert.equal(denied.calls.length, 0);
+  const unauthenticated = harness(); const req = request();
+  req.headers.set("Authorization", "Bearer invalid");
+  assert.equal((await unauthenticated.call(req)).status, 401);
+  assert.deepEqual(unauthenticated.diagnostics, []);
+  assert.equal(unauthenticated.identities.length, 0);
+});
+test("future owner timestamp at eighth image resolution emits only bounded owner and locator stages", async () => {
+  const h = harness({ resolve: (n: number) => ({ active: true,
+    observed_at: new Date(NOW + (n === 8 ? 197 : 0)).toISOString(),
+    manifest, manifest_sha256: HASH }) });
+  const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(response.status, 503);
+  assert.equal(h.identities.length, 8);
+  assert.equal(h.calls.some(c => c.url.pathname.includes("image_locator")
+    || c.url.pathname.includes("/storage/")), false);
+  assert.deepEqual(h.diagnostics, [
+    { schema_version: "content-ops-trial-diagnostic@1", stage: "owner_freshness", reason: "future" },
+    { schema_version: "content-ops-trial-diagnostic@1", stage: "image_locator", reason: "admission" },
+  ]);
+});
+test("inactive owner at eighth image resolution is admission, not a network request", async () => {
+  const h = harness({ resolve: (n: number) => ({ active: n < 8,
+    observed_at: new Date(NOW).toISOString(), manifest, manifest_sha256: HASH }) });
+  const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "content_ops_image_unavailable" });
+  assert.equal(h.identities.length, 8);
+  assert.equal(h.calls.some(c => c.url.pathname.includes("image_locator")
+    || c.url.pathname.includes("/storage/")), false);
+  assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+    stage: "image_locator", reason: "admission" }]);
+});
+test("actual image HTTP transport throws are request, not admission", async () => {
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+    content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+    asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+    sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+  for (const stage of ["image_locator", "image_storage"]) {
+    const h = harness({ respond: (u: URL) => {
+      if (u.pathname.includes(stage === "image_locator" ? "image_locator" : "/storage/"))
+        throw Error("SECRET-network-failure");
+      return u.pathname.includes("image_locator") ? Response.json(locator) : null;
+    } });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "content_ops_image_unavailable" });
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage, reason: "request" }]);
+  }
+});
+test("image diagnostics distinguish locator HTTP, contract and identity from Storage HTTP", async () => {
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+    content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+    asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+    sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+  const cases = [
+    { reason: "http", status: 404, respond: (u: URL) => u.pathname.includes("image_locator")
+      ? new Response(null, { status: 404 }) : null },
+    { reason: "contract", respond: (u: URL) => u.pathname.includes("image_locator")
+      ? Response.json({ ...locator, status: "not-ready" }) : null },
+    { reason: "identity", respond: (u: URL) => u.pathname.includes("image_locator")
+      ? Response.json({ ...locator, sha256: "f".repeat(64) }) : null },
+    { reason: "http", status: 403, stage: "image_storage", respond: (u: URL) =>
+      u.pathname.includes("image_locator") ? Response.json(locator)
+        : u.pathname.includes("/storage/") ? new Response(null, { status: 403 }) : null },
+  ];
+  for (const item of cases) {
+    const h = harness({ respond: item.respond });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 503);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: item.stage ?? "image_locator", reason: item.reason,
+      ...(item.status === undefined ? {} : { status: item.status }) }]);
+  }
+});
 test("prepare uses existing exact owner argument validator and immutable version", async () => {
   const body = { action: "owner", step: "prepare", args: { outbox_id: claim.outbox_id,
     claim_token: claim.claim_token, review_id: id(10) } };
@@ -189,6 +341,8 @@ test("verified PNG response attests trial identity and static packet mode; per-H
     observed_at: new Date(NOW).toISOString(), manifest, manifest_sha256: HASH }) });
   assert.equal((await closed.call(request(body))).status, 503);
   assert.equal(closed.calls.some(c => c.url.pathname.includes("/storage/")), false);
+  assert.deepEqual(closed.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+    stage: "image_storage", reason: "admission" }]);
 });
 test("trial never exposes finish/public/Typefully routes", async () => {
   for (const action of ["finish", "publish", "approve", "typefully"]) {

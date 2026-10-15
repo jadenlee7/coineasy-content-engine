@@ -54,6 +54,16 @@ test("disabled gate reads no secrets, release, request body or network", async (
   assert.equal((await handler(request())).status, 503);
   assert.deepEqual(reads, ["CONTENT_OPS_GATEWAY_ENABLED"]);
 });
+test("ordinary authenticated review success emits no trial diagnostic", async () => {
+  const diagnostics: unknown[] = [];
+  const handler = createContentOpsReviewHandler({
+    getEnv: name => ENV[name], releaseSha: () => SHA,
+    fetcher: async () => Response.json(0),
+    diagnosticReporter: receipt => diagnostics.push(receipt),
+  });
+  assert.equal((await handler(request(), RUNTIME)).status, 200);
+  assert.deepEqual(diagnostics, []);
+});
 
 test("published production native context works with missing or conflicting CONTEXT", async () => {
   for (const context of [undefined, "production", "deploy-preview", "branch-deploy"]) {

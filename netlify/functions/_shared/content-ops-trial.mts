@@ -10,6 +10,11 @@ export type TrustedTrialResolver = (identity: Readonly<{ trial_id: string; plan_
 export type TrialScope = { mode: "trial"; content_version_id: string;
   packet_mode: "trial_delivery_only_v1"; trial_id: string; plan_sha256: string; manifest_sha256: string };
 export type TrialAdmission = { scope: TrialScope; entry: Json; window: TrialWindow; assertActive: () => Promise<void> };
+export type TrialDiagnostic = Readonly<{ schema_version: "content-ops-trial-diagnostic@1";
+  stage: "owner_freshness" | "image_locator" | "image_storage";
+  reason: "future" | "stale" | "invalid" | "admission" | "request" | "http" | "body" | "contract" | "identity";
+  status?: number }>;
+export type TrialDiagnosticReporter = (receipt: TrialDiagnostic) => void;
 const HEX = /^[a-f0-9]{64}$/;
 const record = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Json, keys: string[]) => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -35,7 +40,7 @@ export function trialFlagsOff(env: Env): boolean {
  * The resolver must read the same durable trial owner's CURRENT active
  * admission and immutable generated manifest, never caller-provided fields. */
 export async function admitTrial(req: Request, env: Env, release: string, clock: () => number,
-  resolver?: TrustedTrialResolver): Promise<TrialAdmission> {
+  resolver?: TrustedTrialResolver, report?: TrialDiagnosticReporter): Promise<TrialAdmission> {
   requireTrue(env("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") === "true" && trialFlagsOff(env));
   const trialId = env("CONTENT_OPS_TRIAL_ID"), plan = env("CONTENT_OPS_TRIAL_PLAN_SHA256");
   const identityPolicy = trialIdentityPolicy(trialId);
@@ -64,8 +69,15 @@ export async function admitTrial(req: Request, env: Env, release: string, clock:
     const value = await resolver!({ trial_id: trialId!, plan_sha256: plan! });
     const now = window();
     requireTrue(record(value) && exact(value, ["active", "observed_at", "manifest", "manifest_sha256"])
-      && value.active === true && now - stamp(value.observed_at) >= 0 && now - stamp(value.observed_at) <= 5000
-      && value.manifest_sha256 === manifestHash && record(value.manifest));
+      && value.active === true);
+    const age = now - stamp(value.observed_at);
+    if (!Number.isFinite(age) || age < 0 || age > 5000) {
+      try { report?.({ schema_version: "content-ops-trial-diagnostic@1", stage: "owner_freshness",
+        reason: !Number.isFinite(age) ? "invalid" : age < 0 ? "future" : "stale" }); }
+      catch { /* Diagnostics cannot affect admission. */ }
+      requireTrue(false);
+    }
+    requireTrue(value.manifest_sha256 === manifestHash && record(value.manifest));
     const m = value.manifest;
     requireTrue(exact(m, ["contract", "trial_id", "plan_sha256", "release_sha", "not_before", "deadline",
       "destination_policy_sha256", "entries"])
