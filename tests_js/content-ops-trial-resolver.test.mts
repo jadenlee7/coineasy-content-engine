@@ -7,7 +7,7 @@ import { createTrialStateHandler } from "../netlify/functions/_shared/content-op
 import { admitTrial, trialManifestHash } from "../netlify/functions/_shared/content-ops-trial.mts";
 
 const SHA = "a".repeat(40), PLAN = "b".repeat(64), POLICY = "c".repeat(64);
-const ID = "1a2bef47-4827-4bc3-9b4d-5baf2714015d", VERSION = "22222222-1111-4111-8111-111111111111";
+const ID = "d346ceea-4ea9-479f-a5cf-05097b50ce48", VERSION = "22222222-1111-4111-8111-111111111111";
 const NOW = Date.parse("2026-10-14T15:25:51Z"), API_ORIGIN = "https://fixture-api.up.railway.app";
 const SECRET = "synthetic-only-api-secret-32-characters";
 const env: Record<string,string> = { CONTENT_OPS_TRIAL_GATEWAY_ENABLED: "true",

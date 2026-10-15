@@ -3,7 +3,7 @@ import test from "node:test";
 import { READY_ANCHORED_TRIAL_ID, trialWindow, withinTrialWindow } from "../netlify/functions/_shared/content-ops-trial-window.mts";
 
 test("readiness anchor is a fixed identity but accepts operator-pinned dates without clock-derived restart", () => {
-  assert.equal(READY_ANCHORED_TRIAL_ID, "1a2bef47-4827-4bc3-9b4d-5baf2714015d");
+  assert.equal(READY_ANCHORED_TRIAL_ID, "d346ceea-4ea9-479f-a5cf-05097b50ce48");
   for (const [start, end, day] of [
     ["2026-10-14T15:10:51Z", "2026-10-14T17:10:51Z", "2026-10-15"],
     ["2026-11-01T23:10:51Z", "2026-11-02T01:10:51Z", "2026-11-02"],

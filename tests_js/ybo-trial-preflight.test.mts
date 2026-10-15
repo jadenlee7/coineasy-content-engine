@@ -6,7 +6,7 @@ import { createYboTrialPreflightHandler, YBO_TRIAL_PREFLIGHT_PATH,
 import { STUDIO_BUILD_RELEASE_SHA } from "../netlify/functions/_shared/studio-release.generated.mts";
 
 const RELEASE = "a".repeat(40), PLAN = "b".repeat(64), TOKEN = "fixture-automation-" + "c".repeat(32);
-const TRIAL = "1a2bef47-4827-4bc3-9b4d-5baf2714015d", NOW = Date.parse("2026-10-14T15:30:51Z");
+const TRIAL = "d346ceea-4ea9-479f-a5cf-05097b50ce48", NOW = Date.parse("2026-10-14T15:30:51Z");
 const URL = "https://coineasy-newscard.netlify.app" + YBO_TRIAL_PREFLIGHT_PATH;
 const RUNTIME = { deploy: { context: "production", id: "published-fixture", published: true } };
 const ENV: Record<string, string | undefined> = { STUDIO_AUTOMATION_TOKEN: TOKEN,
@@ -24,7 +24,7 @@ const clients = () => ({ schema_version: "ybo-api-readiness@1", ready: true,
   trial_id: TRIAL, plan_sha256: PLAN, release_sha: RELEASE,
   not_before: ENV.YBO_TRIAL_NOT_BEFORE, deadline: ENV.YBO_TRIAL_DEADLINE, kst_date: "2026-10-15",
   controller_enabled: true, broad_public_flags_off: true,
-  client_ids: ["yellow", "babylon", "origintrail"], observed_at: new Date(NOW).toISOString() });
+  client_ids: ["babylon", "origintrail"], observed_at: new Date(NOW).toISOString() });
 function harness(env = ENV, release: string | null = RELEASE, now = NOW,
   upstream: () => Promise<Response> = async () => Response.json({ ...clients(), observed_at: new Date(now).toISOString() })) {
   const reads: string[] = [];

@@ -1,7 +1,7 @@
 """Credential-free one-shot identity and canonical readiness-anchored bounds."""
 from datetime import datetime, timedelta, timezone
 
-TRIAL_ID = "1a2bef47-4827-4bc3-9b4d-5baf2714015d"
+TRIAL_ID = "d346ceea-4ea9-479f-a5cf-05097b50ce48"
 ELIGIBLE_CLIENTS = ("babylon", "origintrail")
 WINDOW_SECONDS = 7200
 KST = timezone(timedelta(hours=9))

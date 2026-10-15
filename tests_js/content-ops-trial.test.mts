@@ -12,7 +12,7 @@ const PNG = Buffer.from([137,80,78,71,13,10,26,10,0]);
 const entry = { client_id: "babylon", job_id: id(1), request_id: id(2), source_item_id: id(3),
   source_sha256: sha(SOURCE), content_item_id: id(2), content_version_id: id(4), banner_sha256: sha(PNG as any),
   telegram_copy_sha256: sha(TG), x_copy_sha256: sha(X) };
-const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: "b".repeat(64),
+const manifest = { contract: "ybo-trial-courier-manifest@1", trial_id: "d346ceea-4ea9-479f-a5cf-05097b50ce48", plan_sha256: "b".repeat(64),
   release_sha: RELEASE, not_before: "2026-10-14T15:10:51Z", deadline: "2026-10-14T17:10:51Z",
   destination_policy_sha256: "c".repeat(64), entries: [entry] };
 const HASH = trialManifestHash(manifest);

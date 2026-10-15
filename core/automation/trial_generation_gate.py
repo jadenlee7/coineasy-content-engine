@@ -13,6 +13,7 @@ import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 from core.automation.news_generation_journal import request_digest
 from core.automation.trial_owner import ELIGIBLE_CLIENTS, TrialError, TrialOwner, TrialPlan
@@ -59,6 +60,10 @@ class TrialGenerationGate:
                 raise TrialGenerationDenied("trial_generation_disabled")
             payload = json.loads(env["YBO_TRIAL_PLAN_JSON"])
             plan = TrialPlan.from_mapping(payload, env["YBO_TRIAL_PLAN_SHA256"])
+            receipt_id = env["YBO_PRESERVED_BABYLON_RECEIPT_ID"]
+            if (not isinstance(receipt_id, str) or str(UUID(receipt_id)) != receipt_id
+                    or UUID(receipt_id).int == 0):
+                raise TrialGenerationDenied("trial_generation_owner_unavailable")
             release = env.get("RAILWAY_GIT_COMMIT_SHA", "")
             if (not re.fullmatch(r"[a-f0-9]{40}", release)
                     or release != plan.payload["release_sha"]

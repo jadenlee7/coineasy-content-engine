@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from core.automation.news_generation_journal import request_digest
 from core.automation.trial_generation_gate import TrialGenerationDenied, TrialGenerationGate
-from core.automation.trial_owner import (CLIENTS, LIMIT_MICROS,
+from core.automation.trial_owner import (ELIGIBLE_CLIENTS, LIMIT_MICROS,
     POLICY_SHA256, TrialOwner, TrialPlan, canonical_sha256)
 
 NOW = datetime(2026, 10, 14, 15, 40, 51, tzinfo=timezone.utc)
@@ -45,8 +45,8 @@ def admitted(tmp_path):
     private.mkdir(mode=0o700)
     data = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": NOT_BEFORE, "deadline": "2026-10-14T17:10:51Z",
-        "kst_date": "2026-10-15", "client_ids": list(CLIENTS),
-        "max_per_client": 1, "max_total": 3,
+        "kst_date": "2026-10-15", "client_ids": list(ELIGIBLE_CLIENTS),
+        "max_per_client": 1, "max_total": 2,
         "estimated_daily_limit_micros": LIMIT_MICROS,
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": RELEASE}
     plan = TrialPlan.from_mapping(data, canonical_sha256(data))
@@ -116,6 +116,7 @@ def test_deadline_and_missing_owner_fail_closed(admitted):
 def test_env_requires_exact_release_and_preexisting_owner(admitted):
     env = {"YBO_TRIAL_API_MODE": "true", "YBO_TRIAL_PLAN_JSON": json.dumps(admitted.data),
         "YBO_TRIAL_PLAN_SHA256": admitted.plan.sha256,
+        "YBO_PRESERVED_BABYLON_RECEIPT_ID": "55000000-0000-4000-8000-000000000001",
         "RAILWAY_GIT_COMMIT_SHA": RELEASE,
         "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(admitted.private)}
     assert TrialGenerationGate.from_env(env, clock=lambda: NOW, stamp_reader=lambda: RELEASE).require_generation(
@@ -126,6 +127,9 @@ def test_env_requires_exact_release_and_preexisting_owner(admitted):
             stamp_reader=lambda: RELEASE)
     with pytest.raises(TrialGenerationDenied, match="trial_generation_owner_unavailable"):
         TrialGenerationGate.from_env({**env, "YBO_TRIAL_PLAN_SHA256": "0" * 64},
+            stamp_reader=lambda: RELEASE)
+    with pytest.raises(TrialGenerationDenied, match="trial_generation_owner_unavailable"):
+        TrialGenerationGate.from_env({**env, "YBO_PRESERVED_BABYLON_RECEIPT_ID": ""},
             stamp_reader=lambda: RELEASE)
     with pytest.raises(TrialGenerationDenied, match="trial_generation_release_mismatch"):
         TrialGenerationGate.from_env(env, stamp_reader=lambda: "b" * 40)

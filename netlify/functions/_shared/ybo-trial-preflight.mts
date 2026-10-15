@@ -89,7 +89,7 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || proof.trial_id !== trialId || proof.plan_sha256 !== plan || proof.release_sha !== release
         || proof.not_before !== bounds.notBefore || proof.deadline !== bounds.deadline || proof.kst_date !== bounds.kstDate
         || proof.controller_enabled !== true || proof.broad_public_flags_off !== true
-        || JSON.stringify(proof.client_ids) !== '["yellow","babylon","origintrail"]'
+        || JSON.stringify(proof.client_ids) !== '["babylon","origintrail"]'
         || typeof proof.observed_at !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/.test(proof.observed_at)
         || !Number.isFinite(Date.parse(proof.observed_at))
         || observed - Date.parse(proof.observed_at) < 0 || observed - Date.parse(proof.observed_at) > 5000) {
