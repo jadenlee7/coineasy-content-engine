@@ -1,9 +1,9 @@
 """Exact natural YBO one-shot producer; no scheduler, FIFO or retry path.
 
 The trusted host controller owns the TrialOwner admission and phase lifecycle.
-The successor uses the installed, one-job Babylon handoff RPC. OriginTrail is
-held before intake: its existing claim/logo context still belongs to the old
-trial and requires separate bounded successor support before new queue writes.
+The preserved-job successor uses its one-job Babylon handoff RPC. The distinct
+fresh-day trial uses the exact natural initial-claim RPC for one new Babylon
+slot. OriginTrail is held before intake in both modes.
 Every ambiguous write is terminal for this invocation; callers must not retry
 or mark_failed/requeue the job. Netlify is the sole catalog/generation owner.
 """
@@ -28,11 +28,11 @@ from core.automation.models import ClaimedJob, StyleReferencePack
 from core.automation.news_generation_journal import request_digest
 from core.automation.repository import (AutomationRepositoryError, SupabaseAutomationRepository,
     _style_reference_pack)
-from core.automation.trial_owner import CLIENTS, ELIGIBLE_CLIENTS, KST, TrialOwner
+from core.automation.trial_owner import CLIENTS, KST, TrialOwner
 from core.client_config import load_client_config
 from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
-from core.content_ops.trial_window import TRIAL_ID
+from core.content_ops.trial_window import FRESH_TRIAL_ID, TRIAL_ID
 
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -138,9 +138,11 @@ class TrialNaturalProducerAdapter:
         _uuid(workspace_id); _uuid(trial_id)
         _require(type(owner) is TrialOwner and owner.plan.trial_id == trial_id
                  and callable(sleep))
-        _require(trial_id == TRIAL_ID and recovery_receipt_id is not None,
+        _require((trial_id == TRIAL_ID and recovery_receipt_id is not None)
+                 or (trial_id == FRESH_TRIAL_ID and recovery_receipt_id is None),
                  "trial_producer_recovery_configuration_invalid")
-        _uuid(recovery_receipt_id)
+        if recovery_receipt_id is not None:
+            _uuid(recovery_receipt_id)
         self.repository, self.x_client, self.studio = repository, x_client, studio
         self.owner, self.workspace_id, self.trial_id = owner, workspace_id, trial_id
         self.recovery_receipt_id = recovery_receipt_id
@@ -153,9 +155,9 @@ class TrialNaturalProducerAdapter:
         _window(self.clock(), self.owner.plan)
 
     async def intake(self, client_id: str, *, before_effect: Callable[[], None]) -> NaturalSlot | None:
-        """Poll the latest official source, preserving Babylon's original job."""
+        """Poll latest official evidence; only the legacy trial reuses a job."""
         _require(client_id in CLIENTS and callable(before_effect))
-        if client_id == "yellow":
+        if client_id not in self.owner.plan.eligible_clients:
             return None  # Preserve uncertain prior work before any per-client I/O.
         if client_id == "origintrail" and self.trial_id == TRIAL_ID:
             # The old initial-claim RPC pins the old worker and expired anchor.
@@ -163,7 +165,7 @@ class TrialNaturalProducerAdapter:
             # A future OriginTrail path needs its own bounded claim/context;
             # this release only recovers the one preserved Babylon job.
             return None
-        if client_id == "babylon":
+        if client_id == "babylon" and self.trial_id == TRIAL_ID:
             return await self._intake_preserved_babylon(before_effect=before_effect)
         now = _window(self.clock(), self.owner.plan)
         config = load_client_config(client_id)
@@ -175,8 +177,11 @@ class TrialNaturalProducerAdapter:
         if state.draft_reserved_today:
             return None
         self._before_effect(before_effect)
+        # The new-day trial must prove the latest live 24-hour feed, even when
+        # the persisted cursor already equals the newest post. A since-cursor
+        # query alone would not establish that an older pending item is latest.
         posts = await self.x_client.get_recent_tweets(source.handle, hours=24,
-            max_results=100, since_id=state.last_cursor, require_complete=True)
+            max_results=100, since_id=None, require_complete=True)
         eligible = tuple(post for post in posts if post.get("is_retweet") is False
                          and post.get("is_reply") is False
                          and type(post.get("is_quote")) is bool
@@ -190,6 +195,8 @@ class TrialNaturalProducerAdapter:
                         and post["id"].isdigit()]
         eligible_ids = [int(post["id"]) for post in eligible if isinstance(post.get("id"), str)
                         and post["id"].isdigit()]
+        if self.trial_id == FRESH_TRIAL_ID and not observed_ids:
+            return None  # An empty timeline cannot prove the pending source is latest.
         if observed_ids and (not eligible_ids or max(observed_ids) != max(eligible_ids)):
             return None
         latest_cursor = OfficialXDailyRunner._newest_cursor(eligible, state.last_cursor)
@@ -334,7 +341,8 @@ class TrialNaturalProducerAdapter:
         """One exact claim or handoff, then read DB context and pin API body."""
         _window(self.clock(), self.owner.plan)
         _require(type(slot) is NaturalSlot and slot.workspace_id == self.workspace_id
-                 and slot.client_id in ELIGIBLE_CLIENTS and slot.kst_date == self.owner.plan.kst_date
+                 and slot.client_id in self.owner.plan.eligible_clients
+                 and slot.kst_date == self.owner.plan.kst_date
                  and WORKER.fullmatch(worker_id or "") and worker_id == f"ybo-trial:{self.trial_id}"
                  and callable(before_effect))
         _require(slot.client_id == "babylon", "trial_producer_successor_client_unsupported")
@@ -344,7 +352,7 @@ class TrialNaturalProducerAdapter:
                  and slot.style_pack.primary_source_item_id == slot.source_item_id
                  and HEX32.fullmatch(slot.style_pack.reference_pack_hash))
         self._before_effect(before_effect)
-        recovery = slot.client_id == "babylon"
+        recovery = self.trial_id == TRIAL_ID
         _require((recovery and slot.job_id == PRESERVED_BABYLON_JOB_ID
                   and slot.request_id == PRESERVED_BABYLON_REQUEST_ID
                   and slot.source_item_id == PRESERVED_BABYLON_SOURCE_ID

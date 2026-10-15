@@ -67,6 +67,8 @@ jobs:
         run: python ops/ybo-server-trial/exact_claim_local_unittest.py --local-only
       - name: Verify exact preserved Babylon handoff and immutable successor anchor
         run: python ops/ybo-preserved-recovery/recovery_local_unittest.py --local-only
+      - name: Verify fresh Babylon natural slot and preserved historical rows
+        run: python ops/ybo-fresh-babylon/fresh_local_unittest.py --local-only
       - name: Record proof boundary
         if: always()
         run: |

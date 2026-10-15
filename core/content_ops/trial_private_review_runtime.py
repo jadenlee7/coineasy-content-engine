@@ -23,7 +23,7 @@ from core.content_ops.review_edit_ingress import EditBindings
 from core.content_ops.trial_courier_adapter import (
     ORIGIN, TrialManifest, build_exact_session, canonical_sha256,
 )
-from core.content_ops.trial_window import ELIGIBLE_CLIENTS, TRIAL_ID, trial_window
+from core.content_ops.trial_window import FRESH_TRIAL_ID, KST, trial_clients, trial_window
 from scripts.run_private_review_card_canary import _private_card_identity, _validated_scope_and_provenance
 
 STATE_PATH = "/.netlify/functions/content-ops-trial-state"
@@ -74,8 +74,15 @@ class TrialCourierSettings:
         require(type(policy) is ExistingReviewBotPolicy)
         trial, plan, policy_sha = (env.get(k, "") for k in (
             "CONTENT_OPS_TRIAL_ID", "CONTENT_OPS_TRIAL_PLAN_SHA256", "CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256"))
-        require(trial == TRIAL_ID and all(type(v) is str and re.fullmatch(r"[a-f0-9]{64}", v) for v in (plan, policy_sha)))
+        try:
+            trial_clients(trial)
+        except ValueError:
+            raise TrialRuntimeError("trial_private_configuration_invalid") from None
+        require(all(type(v) is str and re.fullmatch(r"[a-f0-9]{64}", v) for v in (plan, policy_sha)))
         start, end = trial_window(env.get("CONTENT_OPS_TRIAL_NOT_BEFORE"), env.get("CONTENT_OPS_TRIAL_DEADLINE"))
+        if trial == FRESH_TRIAL_ID:
+            require(start >= datetime(2026, 10, 15, 15, tzinfo=timezone.utc)
+                    and start.astimezone(KST).date().isoformat() == "2026-10-16")
         # Hash the existing validated policy projection, never a newly inferred role.
         require(canonical_sha256(json.loads(env["CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON"])) == policy_sha)
         return cls(workspace, gateway, bot, bid, room, signing, binding, policy,
@@ -235,7 +242,7 @@ async def run_trial(settings, *, clock=None, sleep=asyncio.sleep, state_factory=
             await sleep(min(15, max(0, (end-clock()).total_seconds())))
         require(type(manifest) is TrialManifest)
         require(manifest.not_before == start and manifest.deadline == end)
-        for client in ELIGIBLE_CLIENTS:
+        for client in trial_clients(settings.trial_id):
             entries = [e for e in manifest.payload["entries"] if e["client_id"] == client]
             if not entries: continue
             window(clock, manifest=manifest)

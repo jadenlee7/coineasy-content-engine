@@ -1,6 +1,6 @@
 import { isCatalogUuid } from "./content-catalog.mts";
 import { trialFlagsOff, type TrustedTrialResolver } from "./content-ops-trial.mts";
-import { READY_ANCHORED_TRIAL_ID, configuredTrialWindow, withinTrialWindow } from "./content-ops-trial-window.mts";
+import { trialIdentityPolicy, configuredTrialWindow, withinTrialWindow } from "./content-ops-trial-window.mts";
 
 type Env = (key: string) => string | undefined;
 type Dependencies = { getEnv: Env; releaseSha: () => string | null;
@@ -35,7 +35,7 @@ function configuredRequest(deps: Dependencies) {
     const plan = deps.getEnv("CONTENT_OPS_TRIAL_PLAN_SHA256"), policy = deps.getEnv("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256");
     requireTrue(typeof release === "string" && SHA.test(release)
       && deps.getEnv("CONTENT_OPS_REVIEW_RELEASE_SHA") === release
-      && trialId === READY_ANCHORED_TRIAL_ID
+      && trialIdentityPolicy(trialId)
       && typeof plan === "string" && HASH.test(plan) && typeof policy === "string" && HASH.test(policy));
     const raw = deps.getEnv("RAILWAY_API_URL"), secret = deps.getEnv("API_SECRET");
     requireTrue(typeof raw === "string" && raw === raw.trim()

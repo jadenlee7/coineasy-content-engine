@@ -277,10 +277,10 @@ class HostedTrialController:
         stage = "preflight"
         try:
             for client in CLIENTS:
-                # This approved rewindow explicitly preserves the earlier
-                # uncertain Yellow job, even across the KST date boundary.
-                # Skip before preflight, owner phase, source read or DB access.
-                if client == "yellow":
+                # Both plans preserve uncertain Yellow work. The fresh plan
+                # also excludes OriginTrail; skip before preflight, owner
+                # phase, source read or any per-client DB access.
+                if client not in self.gate.plan.eligible_clients:
                     result["skipped_clients"].append(client)
                     continue
                 # Prove the published gateway's exact pins and literal OFF
@@ -374,7 +374,8 @@ async def run_hosted_trial(env, *, clock=None, sleep=asyncio.sleep):
         producer = TrialNaturalProducerAdapter(repository=repository,
             x_client=XClient(env["X_BEARER_TOKEN"], before_effect=guard), studio=studio,
             owner=gate.owner, workspace_id=workspace, trial_id=gate.plan.trial_id,
-            recovery_receipt_id=env["YBO_PRESERVED_BABYLON_RECEIPT_ID"], clock=gate.clock)
+            recovery_receipt_id=env.get("YBO_PRESERVED_BABYLON_RECEIPT_ID") or None,
+            clock=gate.clock)
         controller = HostedTrialController(gate=gate, producer=producer,
             catalog=TrialCatalogReadback(repository, workspace, guard),
             preflight=TrialGenerationPreflight(studio, gate, guard).verify,
