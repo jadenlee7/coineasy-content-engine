@@ -27,7 +27,7 @@ const ENV: Record<string,string> = {
   STUDIO_AUTOMATION_TOKEN: "fixture-automation-token-at-least-32-chars",
   SUPABASE_URL: "https://fixture.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "fixture-service-key",
   CONTENT_STUDIO_WORKSPACE_ID: id(3), QUALITY_BANNER_ENABLED: "false", NEWS_CARD_IDEMPOTENCY_ENABLED: "false",
-  YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "true", YBO_TRIAL_ID: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", YBO_TRIAL_PLAN_SHA256: PLAN,
+  YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "true", YBO_TRIAL_ID: "d346ceea-4ea9-479f-a5cf-05097b50ce48", YBO_TRIAL_PLAN_SHA256: PLAN,
   YBO_TRIAL_RELEASE_SHA: RELEASE,
   YBO_TRIAL_NOT_BEFORE: "2026-10-14T15:10:51Z", YBO_TRIAL_DEADLINE: "2026-10-14T17:10:51Z",
   CONTENT_OPS_GATEWAY_ENABLED: "false", CONTENT_OPS_REVIEW_ENABLED: "false",
@@ -38,11 +38,11 @@ const runtime = { params: { clientId: "babylon" }, deploy: { context: "productio
 function request(b: any = body, headerChanges: Record<string,string> = {}, url = URL) {
   return new Request(url, { method: "POST", headers: { "Content-Type": "application/json",
     "X-Studio-Automation-Key": ENV.STUDIO_AUTOMATION_TOKEN, "Idempotency-Key": id(2),
-    "X-Studio-Expected-Release-Sha": RELEASE, "X-YBO-Trial-ID": "1a2bef47-4827-4bc3-9b4d-5baf2714015d",
+    "X-Studio-Expected-Release-Sha": RELEASE, "X-YBO-Trial-ID": "d346ceea-4ea9-479f-a5cf-05097b50ce48",
     "X-YBO-Trial-Plan-Sha256": PLAN, ...headerChanges }, body: JSON.stringify(b) });
 }
 function receipt(changes: any = {}) {
-  return { authorized: true, trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: PLAN, release_sha: RELEASE,
+  return { authorized: true, trial_id: "d346ceea-4ea9-479f-a5cf-05097b50ce48", plan_sha256: PLAN, release_sha: RELEASE,
     client_id: "babylon", request_id: id(2), observed_at: new Date(NOW).toISOString(), ...changes };
 }
 async function gate(options: any = {}) {
@@ -63,7 +63,7 @@ test("trial sends only the exact immutable payload to the fixed authenticated AP
   const [url, init] = h.calls[0];
   assert.equal(url, `${API}/internal/trial/generation-authorize`);
   assert.equal(init.redirect, "error"); assert.equal(new Headers(init.headers).get("X-API-Key"), ENV.API_SECRET);
-  assert.deepEqual(JSON.parse(init.body), { trial_id: "1a2bef47-4827-4bc3-9b4d-5baf2714015d", plan_sha256: PLAN, release_sha: RELEASE,
+  assert.deepEqual(JSON.parse(init.body), { trial_id: "d346ceea-4ea9-479f-a5cf-05097b50ce48", plan_sha256: PLAN, release_sha: RELEASE,
     client_id: "babylon", request_id: id(2), payload });
   assert.deepEqual(admission.payload, payload);
   assert.equal(admission.collectOnly, false);
@@ -83,7 +83,7 @@ for (const env of [{ YBO_TRIAL_GENERATION_GATEWAY_ENABLED: "false" }, { QUALITY_
 }
 for (const args of [{ automation: false }, { clientId: "squid" }, { runtime: {} },
   { runtime: { deploy: { ...runtime.deploy, published: false } } }, { release: null },
-  { req: request(body, { "X-YBO-Trial-ID": `${"1a2bef47-4827-4bc3-9b4d-5baf2714015d"},${"1a2bef47-4827-4bc3-9b4d-5baf2714015d"}` }) },
+  { req: request(body, { "X-YBO-Trial-ID": `${"d346ceea-4ea9-479f-a5cf-05097b50ce48"},${"d346ceea-4ea9-479f-a5cf-05097b50ce48"}` }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "false" }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "true,true" }) },
   { req: request(body, { "X-YBO-Trial-Collect-Only": "TRUE" }) },
@@ -159,7 +159,7 @@ async function integration(options: any = {}) {
       ...(options.logoOnly && !options.sourceHasImage ? {} : { photos: [{ url: options.badMedia ? "https://invalid.test/photo" : IMAGE }] }) });
     if (url.endsWith("/clients/babylon/generate/news-card")) {
       paid++; const headers = new Headers(init?.headers);
-      assert.equal(headers.get("X-YBO-Trial-ID"), "1a2bef47-4827-4bc3-9b4d-5baf2714015d"); assert.equal(headers.get("Idempotency-Key"), id(2));
+      assert.equal(headers.get("X-YBO-Trial-ID"), "d346ceea-4ea9-479f-a5cf-05097b50ce48"); assert.equal(headers.get("Idempotency-Key"), id(2));
       assert.equal(headers.get("X-YBO-Trial-Collect-Only"), options.collectOnly ? "true" : null);
       assert.deepEqual(JSON.parse(String(init?.body)), trialPayload);
       if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T17:10:51Z");

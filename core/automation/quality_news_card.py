@@ -243,7 +243,7 @@ class QualityNewsJournal(HiggsfieldBannerJournal):
             provider_request_id=request_id, png_sha256=png_sha256,
             now=datetime.fromtimestamp(self._clock(), timezone.utc))
 
-    def start_or_read(self, context, input_sha, *, admit_new):
+    def start_or_read(self, context, input_sha, *, admit_new, recover_checkpoint=None):
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM quality_news_copy WHERE operation_id=? OR job_id=? "
@@ -255,7 +255,6 @@ class QualityNewsJournal(HiggsfieldBannerJournal):
                 row = row[0]
                 _require(row["operation_id"] == context["request_id"]
                          and row["job_id"] == context["job_id"]
-                         and row["input_sha256"] == input_sha
                          and row["workspace_id"] == self.workspace_id
                          and row["client_id"] == self.client_id
                          and row["source_item_id"] == self.source_item_id,
@@ -263,6 +262,9 @@ class QualityNewsJournal(HiggsfieldBannerJournal):
                 _require(row["checkpoint"] is not None, "quality_news_copy_unknown")
                 _require(_sha(row["checkpoint"].encode()) == row["checkpoint_sha256"],
                          "quality_news_binding_conflict")
+                if row["input_sha256"] != input_sha:
+                    _require(callable(recover_checkpoint), "quality_news_binding_conflict")
+                    _require(recover_checkpoint(db) == input_sha, "quality_news_binding_conflict")
                 return json.loads(row["checkpoint"])
             # Existing checkpoints may be reconciled after source expiry; a
             # new paid-copy intent still requires fresh source admission.
@@ -386,7 +388,7 @@ class QualityNewsService:
     def __init__(self, *, journal_root, key_id, key_secret, logo_references,
                  reference_hosts, output_hosts, daily_limit, release_sha,
                  spend_policy_sha256, store_id, transport=None, clock=None, copy_factory=_copy,
-                 budget_authority=None):
+                 budget_authority=None, trial_authority=None):
         _require(re.fullmatch(r"[a-f0-9]{40}", release_sha or "") is not None
                  and re.fullmatch(r"[a-f0-9]{64}", spend_policy_sha256 or "") is not None
                  and type(daily_limit) is int and 1 <= daily_limit <= 3
@@ -402,6 +404,9 @@ class QualityNewsService:
         self.transport, self.clock = transport, clock or (lambda: datetime.now(timezone.utc))
         self.copy_factory = copy_factory
         self.budget_authority = budget_authority
+        # This capability is injected by the authenticated API, never inferred
+        # from a source, payload marker, environment flag or unknown outcome.
+        self.trial_authority = trial_authority
         if type(budget_authority) is TokenRateForecastAuthority:
             from core.automation.higgsfield_token_forecast import FORECAST_POLICY_SHA256
             _require(spend_policy_sha256 == FORECAST_POLICY_SHA256,
@@ -481,7 +486,21 @@ class QualityNewsService:
                 forecast = self.budget_authority.forecast(probe, now=self.clock())
                 _require(usd_to_micros(forecast.estimated_usd) <= summary.remaining_usd_micros,
                          "quality_news_daily_budget_limit")
-        checkpoint = owner.start_or_read(context, input_sha, admit_new=admit_new)
+        recover_checkpoint = None
+        if self.trial_authority is not None:
+            def recover_checkpoint(db):
+                from core.automation.exact_copy_recovery import authorize_checkpoint, ExactCopyRecoveryError
+                _require(before_effect is not None, "quality_news_binding_conflict")
+                guard()
+                try:
+                    return authorize_checkpoint(db, payload=payload, logo=logo,
+                        release_sha=self.release, spend_policy_sha256=self.spend_policy,
+                        provider_account_sha256=self.budget_authority.account_sha256,
+                        trial_authority=self.trial_authority, output_root=output_root, now=self.clock())
+                except ExactCopyRecoveryError:
+                    raise QualityBannerError("quality_news_binding_conflict") from None
+        checkpoint = owner.start_or_read(context, input_sha, admit_new=admit_new,
+                                         recover_checkpoint=recover_checkpoint)
         if checkpoint is None:
             # An uncertain copy response is terminal; never rerun the LLM on
             # retry. Persist the exact accepted copy before the image POST.
@@ -623,7 +642,8 @@ def service_from_env(env, *, trial_authority=None):
             output_hosts=frozenset(env["QUALITY_BANNER_OUTPUT_HOSTS"].split(",")),
             daily_limit=int(env["QUALITY_BANNER_DAILY_REQUEST_LIMIT"]), release_sha=release,
             spend_policy_sha256=digest, store_id=env["QUALITY_BANNER_STORE_ID"],
-            budget_authority=authority_type(env["QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256"]))
+            budget_authority=authority_type(env["QUALITY_BANNER_PROVIDER_ACCOUNT_SHA256"]),
+            trial_authority=trial_authority)
     except (KeyError, ValueError, TypeError):
         raise QualityBannerError("quality_news_configuration_invalid") from None
     path = service.root / "quality-news.sqlite3"

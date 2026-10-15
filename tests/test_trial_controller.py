@@ -26,7 +26,7 @@ def scenario(tmp_path, *, skipped=(), fail=None, before_start=False):
     now = [START - timedelta(seconds=10) if before_start else START + timedelta(seconds=1)]
     payload = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID, "not_before": "2026-10-14T15:10:51Z",
         "deadline": "2026-10-14T17:10:51Z", "kst_date": "2026-10-15",
-        "client_ids": ["yellow", "babylon", "origintrail"], "max_per_client": 1, "max_total": 3,
+        "client_ids": ["babylon", "origintrail"], "max_per_client": 1, "max_total": 2,
         "estimated_daily_limit_micros": 10_000_000, "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
     owner = TrialOwner(tmp_path / f"{plan.trial_id}.trial-owner.sqlite3", plan, clock=lambda: now[0])
@@ -119,9 +119,11 @@ def test_readiness_anchored_bounds_preserve_scope_and_expire(tmp_path):
                "deadline": "2026-10-16T17:10:51Z", "kst_date": "2026-10-17"}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
     owner = TrialOwner(s.owner.path, plan, clock=lambda: s.now[0])
-    assert plan.not_before == start and plan.deadline == end and payload["max_total"] == 3
+    assert plan.not_before == start and plan.deadline == end and payload["max_total"] == 2
     assert payload["max_per_client"] == 1 and payload["estimated_daily_limit_micros"] == 10_000_000
-    for changes in ({"trial_id": str(uuid4())}, {"not_before": "2026-10-16T15:10:51.000Z"},
+    for changes in ({"trial_id": str(uuid4())},
+                    {"trial_id": "1a2bef47-4827-4bc3-9b4d-5baf2714015d"},
+                    {"not_before": "2026-10-16T15:10:51.000Z"},
                     {"deadline": "2026-10-16T17:10:52Z"}, {"deadline": "2026-10-16T17:10:50Z"},
                     {"kst_date": "2026-10-16"},
                     {"not_before": "2026-10-16T14:00:00Z", "deadline": "2026-10-16T16:00:00Z"}):

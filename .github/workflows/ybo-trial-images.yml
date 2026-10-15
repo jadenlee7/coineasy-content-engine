@@ -85,13 +85,14 @@ jobs:
           from core.automation.trial_owner import POLICY_SHA256, canonical_sha256
           assert not pathlib.Path('/app/coineasy-api-build-sha').exists()
           plan = {'contract': 'ybo-server-trial@1',
-              'trial_id': '1a2bef47-4827-4bc3-9b4d-5baf2714015d',
+              'trial_id': 'd346ceea-4ea9-479f-a5cf-05097b50ce48',
               'not_before': '2026-10-14T15:10:51Z', 'deadline': '2026-10-14T17:10:51Z',
-              'kst_date': '2026-10-15', 'client_ids': ['yellow', 'babylon', 'origintrail'],
-              'max_per_client': 1, 'max_total': 3, 'estimated_daily_limit_micros': 10_000_000,
+              'kst_date': '2026-10-15', 'client_ids': ['babylon', 'origintrail'],
+              'max_per_client': 1, 'max_total': 2, 'estimated_daily_limit_micros': 10_000_000,
               'estimate_policy_sha256': POLICY_SHA256, 'release_sha': 'a' * 40}
           env = {'YBO_TRIAL_API_MODE': 'true', 'YBO_TRIAL_PLAN_JSON': json.dumps(plan),
               'YBO_TRIAL_PLAN_SHA256': canonical_sha256(plan), 'RAILWAY_GIT_COMMIT_SHA': 'a' * 40,
+              'YBO_PRESERVED_BABYLON_RECEIPT_ID': '11111111-1111-4111-8111-111111111111',
               'NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT': '/not-provisioned'}
           try:
               TrialGenerationGate.from_env(env)
@@ -163,7 +164,7 @@ jobs:
               'TELEGRAM_REVIEW_CHAT_ID': '-1001234567890',
               'CONTENT_OPS_BUTTON_SIGNING_KEY': '1' * 64, 'CONTENT_OPS_EDIT_BINDING_KEY': '2' * 64,
               'CONTENT_OPS_EXISTING_REVIEW_BOT_POLICY_JSON': json.dumps(policy),
-              'CONTENT_OPS_TRIAL_ID': '1a2bef47-4827-4bc3-9b4d-5baf2714015d',
+              'CONTENT_OPS_TRIAL_ID': 'd346ceea-4ea9-479f-a5cf-05097b50ce48',
               'CONTENT_OPS_TRIAL_NOT_BEFORE': '2026-10-14T15:10:51Z',
               'CONTENT_OPS_TRIAL_DEADLINE': '2026-10-14T17:10:51Z',
               'CONTENT_OPS_TRIAL_PLAN_SHA256': 'b' * 64,

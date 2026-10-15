@@ -1,7 +1,9 @@
 """Exact natural YBO one-shot producer; no scheduler, FIFO or retry path.
 
 The trusted host controller owns the TrialOwner admission and phase lifecycle.
-This adapter uses only existing service-role RPCs and the installed exact claim.
+The successor uses the installed, one-job Babylon handoff RPC. OriginTrail is
+held before intake: its existing claim/logo context still belongs to the old
+trial and requires separate bounded successor support before new queue writes.
 Every ambiguous write is terminal for this invocation; callers must not retry
 or mark_failed/requeue the job. Netlify is the sole catalog/generation owner.
 """
@@ -24,14 +26,20 @@ from core.automation.generation_client import (GeneratedCatalogResult, Generatio
 from core.automation.mode_router import select_daily_review_candidate
 from core.automation.models import ClaimedJob, StyleReferencePack
 from core.automation.news_generation_journal import request_digest
-from core.automation.repository import AutomationRepositoryError, SupabaseAutomationRepository
+from core.automation.repository import (AutomationRepositoryError, SupabaseAutomationRepository,
+    _style_reference_pack)
 from core.automation.trial_owner import CLIENTS, ELIGIBLE_CLIENTS, KST, TrialOwner
 from core.client_config import load_client_config
 from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
+from core.content_ops.trial_window import TRIAL_ID
 
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+PRESERVED_BABYLON_JOB_ID = "e8ff3bbf-9fd1-42f0-ba24-b054d3b3d0af"
+PRESERVED_BABYLON_REQUEST_ID = "52f95e4e-1f66-549a-baa4-32b0fdf82b30"
+PRESERVED_BABYLON_SOURCE_ID = "35ae7c96-993a-4453-9946-3263f4f2842a"
+PRESERVED_BABYLON_POST_ID = "2110380535927427174"
 
 
 class TrialProducerBlocked(ValueError):
@@ -98,6 +106,7 @@ class NaturalSlot:
     source_image_url: str
     style_pack: StyleReferencePack
     kst_date: date
+    recovery_receipt_id: str | None = None
 
     def job_input(self):
         return {"workflow": "official_x_review_draft_v1", "kst_date": self.kst_date.isoformat(),
@@ -124,12 +133,17 @@ class TrialNaturalProducerAdapter:
     def __init__(self, *, repository: SupabaseAutomationRepository, x_client: XClient,
                  studio: StudioGenerationClient, owner: TrialOwner, workspace_id: str,
                  trial_id: str, clock: Callable[[], datetime] | None = None,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 recovery_receipt_id: str | None = None):
         _uuid(workspace_id); _uuid(trial_id)
         _require(type(owner) is TrialOwner and owner.plan.trial_id == trial_id
                  and callable(sleep))
+        _require(trial_id == TRIAL_ID and recovery_receipt_id is not None,
+                 "trial_producer_recovery_configuration_invalid")
+        _uuid(recovery_receipt_id)
         self.repository, self.x_client, self.studio = repository, x_client, studio
         self.owner, self.workspace_id, self.trial_id = owner, workspace_id, trial_id
+        self.recovery_receipt_id = recovery_receipt_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.sleep = sleep
 
@@ -139,10 +153,18 @@ class TrialNaturalProducerAdapter:
         _window(self.clock(), self.owner.plan)
 
     async def intake(self, client_id: str, *, before_effect: Callable[[], None]) -> NaturalSlot | None:
-        """Poll and queue only the latest eligible official YBO source."""
+        """Poll the latest official source, preserving Babylon's original job."""
         _require(client_id in CLIENTS and callable(before_effect))
         if client_id == "yellow":
             return None  # Preserve uncertain prior work before any per-client I/O.
+        if client_id == "origintrail" and self.trial_id == TRIAL_ID:
+            # The old initial-claim RPC pins the old worker and expired anchor.
+            # Do not queue fresh work that this successor cannot safely claim.
+            # A future OriginTrail path needs its own bounded claim/context;
+            # this release only recovers the one preserved Babylon job.
+            return None
+        if client_id == "babylon":
+            return await self._intake_preserved_babylon(before_effect=before_effect)
         now = _window(self.clock(), self.owner.plan)
         config = load_client_config(client_id)
         source = config.content_sources.twitter
@@ -218,27 +240,131 @@ class TrialNaturalProducerAdapter:
         return NaturalSlot(self.workspace_id, client_id, _uuid(queued.job_id), request_id,
             source_id, str(selected["text"]).strip(), str(selected["url"]), image, pack, self.owner.plan.kst_date)
 
+    async def _intake_preserved_babylon(self, *, before_effect: Callable[[], None]) -> NaturalSlot:
+        """Refresh official evidence, then read only the original reserved job."""
+        _window(self.clock(), self.owner.plan)
+        config = load_client_config("babylon")
+        source = config.content_sources.twitter
+        _require(config.active and source is not None and source.handle)
+        self._before_effect(before_effect)
+        state = await self.repository.get_state(workspace_id=self.workspace_id,
+            client_id="babylon", kst_date=self.owner.plan.kst_date)
+        # `draft_reserved_today` is expected for this exact original job; it
+        # never authorizes another queue or a different source.
+        _require(state.draft_reserved_today, "trial_producer_recovery_slot_missing")
+        self._before_effect(before_effect)
+        posts = await self.x_client.get_recent_tweets(source.handle, hours=24,
+            max_results=100, since_id=None, require_complete=True)
+        observed_ids = [int(post["id"]) for post in posts if type(post.get("id")) is str
+                        and post["id"].isdigit()]
+        expected_post_id = int(PRESERVED_BABYLON_POST_ID)
+        _require(observed_ids and max(observed_ids) == expected_post_id,
+                 "trial_producer_recovery_not_latest")
+        eligible = tuple(post for post in posts if post.get("is_retweet") is False
+                         and post.get("is_reply") is False and type(post.get("is_quote")) is bool)
+        _require(any(post.get("id") == PRESERVED_BABYLON_POST_ID for post in eligible),
+                 "trial_producer_recovery_source_ineligible")
+        self._before_effect(before_effect)
+        state = await self.repository.record_trial_official_sources(
+            workspace_id=self.workspace_id, client_id="babylon", handle=source.handle,
+            poll_request_id=str(uuid4()), expected_cursor=state.last_cursor,
+            next_cursor=OfficialXDailyRunner._newest_cursor(eligible, state.last_cursor),
+            source_items=[OfficialXDailyRunner._source_payload(post,
+                include_standalone_signals=True) for post in eligible],
+            polled_at=_window(self.clock(), self.owner.plan))
+        _require(state.draft_reserved_today, "trial_producer_recovery_slot_missing")
+        self._before_effect(before_effect)
+        value = await self.repository._rpc("get_exact_preserved_babylon_context", {
+            "target_workspace_id": self.workspace_id,
+            "target_job_id": PRESERVED_BABYLON_JOB_ID,
+            "target_receipt_id": self.recovery_receipt_id,
+        })
+        _require(type(value) is dict and set(value) == {
+            "job_id", "request_id", "source_item_id", "source_content", "source_url",
+            "source_image_url", "kst_date", "input_sha256", "style_pack_hash",
+            "style_reference_pack", "source_published_at", "source_sha256",
+            "receipt_id", "input", "new_release_sha", "workspace_id", "client_id"},
+            "trial_producer_recovery_context_mismatch")
+        _require(value["job_id"] == PRESERVED_BABYLON_JOB_ID
+                 and value["workspace_id"] == self.workspace_id
+                 and value["client_id"] == "babylon"
+                 and value["request_id"] == PRESERVED_BABYLON_REQUEST_ID
+                 and value["source_item_id"] == PRESERVED_BABYLON_SOURCE_ID
+                 and value["receipt_id"] == self.recovery_receipt_id
+                 and value["new_release_sha"] == self.owner.plan.payload["release_sha"]
+                 and type(value["source_content"]) is str and value["source_content"].strip()
+                 and value["source_sha256"] == hashlib.sha256(
+                     value["source_content"].encode("utf8")).hexdigest()
+                 and type(value["source_url"]) is str
+                 and value["source_url"] ==
+                     "https://x.com/babylonlabs_io/status/" + PRESERVED_BABYLON_POST_ID
+                 and type(value["source_image_url"]) is str and value["source_image_url"]
+                 and bool(normalize_x_media_url(value["source_image_url"]))
+                 and type(value["kst_date"]) is str
+                 and value["kst_date"] == self.owner.plan.kst_date.isoformat()
+                 and type(value["input_sha256"]) is str and re.fullmatch(r"[a-f0-9]{64}", value["input_sha256"])
+                 and type(value["style_pack_hash"]) is str and HEX32.fullmatch(value["style_pack_hash"]),
+                 "trial_producer_recovery_context_mismatch")
+        try:
+            published = datetime.fromisoformat(value["source_published_at"].replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            raise TrialProducerBlocked("trial_producer_recovery_context_mismatch") from None
+        _require(published.utcoffset() is not None and 0 < (
+            _window(self.clock(), self.owner.plan) - published).total_seconds() < 86_400,
+            "trial_producer_recovery_source_stale")
+        try:
+            pack = _style_reference_pack(value["style_reference_pack"], client_id="babylon",
+                request_id=PRESERVED_BABYLON_REQUEST_ID,
+                primary_source_item_id=PRESERVED_BABYLON_SOURCE_ID)
+        except (AutomationRepositoryError, TypeError, ValueError):
+            raise TrialProducerBlocked("trial_producer_recovery_context_mismatch") from None
+        _require(pack.reference_pack_hash == value["style_pack_hash"],
+                 "trial_producer_recovery_context_mismatch")
+        slot = NaturalSlot(self.workspace_id, "babylon", PRESERVED_BABYLON_JOB_ID,
+            PRESERVED_BABYLON_REQUEST_ID, PRESERVED_BABYLON_SOURCE_ID,
+            value["source_content"], value["source_url"], value["source_image_url"],
+            pack, self.owner.plan.kst_date, self.recovery_receipt_id)
+        _require(fixed_natural_input_sha256(slot.job_input(), kst_date=slot.kst_date)
+                 == value["input_sha256"] and value["input"] == slot.job_input(),
+                 "trial_producer_recovery_context_mismatch")
+        return slot
+
     async def claim_and_prepare(self, slot: NaturalSlot, *, worker_id: str,
                                 before_effect: Callable[[], None]) -> ClaimedTrialGeneration:
-        """One exact initial claim, then read current DB context and pin API body."""
+        """One exact claim or handoff, then read DB context and pin API body."""
         _window(self.clock(), self.owner.plan)
         _require(type(slot) is NaturalSlot and slot.workspace_id == self.workspace_id
                  and slot.client_id in ELIGIBLE_CLIENTS and slot.kst_date == self.owner.plan.kst_date
                  and WORKER.fullmatch(worker_id or "") and worker_id == f"ybo-trial:{self.trial_id}"
                  and callable(before_effect))
+        _require(slot.client_id == "babylon", "trial_producer_successor_client_unsupported")
         for value in slot.identifiers().values(): _uuid(value)
         _require(type(slot.style_pack) is StyleReferencePack
                  and slot.style_pack.request_id == slot.request_id
                  and slot.style_pack.primary_source_item_id == slot.source_item_id
                  and HEX32.fullmatch(slot.style_pack.reference_pack_hash))
         self._before_effect(before_effect)
-        raw = await self.repository._rpc("claim_exact_natural_review_draft_job", {
+        recovery = slot.client_id == "babylon"
+        _require((recovery and slot.job_id == PRESERVED_BABYLON_JOB_ID
+                  and slot.request_id == PRESERVED_BABYLON_REQUEST_ID
+                  and slot.source_item_id == PRESERVED_BABYLON_SOURCE_ID
+                  and slot.recovery_receipt_id == self.recovery_receipt_id)
+                 or (not recovery and slot.recovery_receipt_id is None),
+                 "trial_producer_recovery_identity_mismatch")
+        claim_args = {
             "target_workspace_id": slot.workspace_id, "target_client_id": slot.client_id,
             "target_job_id": slot.job_id, "target_request_id": slot.request_id,
             "target_source_item_id": slot.source_item_id,
             "target_input_sha256": fixed_natural_input_sha256(slot.job_input(), kst_date=self.owner.plan.kst_date),
             "target_style_pack_hash": slot.style_pack.reference_pack_hash,
-            "target_worker_id": worker_id, "target_lease_seconds": 900})
+            "target_worker_id": worker_id, "target_lease_seconds": 900}
+        if recovery:
+            _require(bool(slot.source_image_url), "trial_producer_recovery_image_required")
+            claim_args.pop("target_client_id")
+            claim_args["target_receipt_id"] = slot.recovery_receipt_id
+        raw = await self.repository._rpc(
+            "claim_exact_preserved_babylon_job" if recovery else "claim_exact_natural_review_draft_job",
+            claim_args)
         _require(raw is not None, "trial_producer_exact_claim_denied")
         job = self.repository._claimed_job(raw, worker_id=worker_id)
         _require(job.job_id == slot.job_id and job.client_id == slot.client_id
@@ -304,7 +430,7 @@ class TrialNaturalProducerAdapter:
         _require(type(prepared) is ClaimedTrialGeneration and callable(before_effect))
         slot = prepared.slot
         started = _window(self.clock(), self.owner.plan)
-        _require(slot.client_id in ELIGIBLE_CLIENTS and slot.kst_date == self.owner.plan.kst_date
+        _require(slot.client_id == "babylon" and slot.kst_date == self.owner.plan.kst_date
                  and prepared.worker_id == f"ybo-trial:{self.trial_id}")
         _require(request_digest(slot.client_id, prepared.payload) == prepared.payload_sha256,
                  "trial_producer_payload_changed")

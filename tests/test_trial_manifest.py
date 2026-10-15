@@ -23,8 +23,8 @@ def trial(tmp_path):
     tmp_path.chmod(0o700)
     p = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
-        "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
-        "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10_000_000,
+        "kst_date": "2026-10-15", "client_ids": ["babylon", "origintrail"],
+        "max_per_client": 1, "max_total": 2, "estimated_daily_limit_micros": 10_000_000,
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(p, canonical_sha256(p))
     owner = TrialOwner(tmp_path / f"{plan.trial_id}.trial-owner.sqlite3", plan)

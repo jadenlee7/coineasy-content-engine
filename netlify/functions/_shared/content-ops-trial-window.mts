@@ -1,6 +1,6 @@
 /** Operator-installed readiness anchor only. No runtime clock can create or
  * extend these bounds; durable owner/manifest checks remain separate authority. */
-export const READY_ANCHORED_TRIAL_ID = "1a2bef47-4827-4bc3-9b4d-5baf2714015d";
+export const READY_ANCHORED_TRIAL_ID = "d346ceea-4ea9-479f-a5cf-05097b50ce48";
 export type TrialWindow = Readonly<{ notBefore: string; deadline: string; start: number; end: number; kstDate: string }>;
 type Env = (name: string) => string | undefined;
 export function trialWindow(notBefore: unknown, deadline: unknown): TrialWindow | null {

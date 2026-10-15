@@ -18,14 +18,15 @@ def ready(tmp_path, monkeypatch):
     from core.automation.trial_owner import TrialOwner
     payload = {"contract": "ybo-server-trial@1", "trial_id": TRIAL_ID,
         "not_before": "2026-10-14T15:10:51Z", "deadline": "2026-10-14T17:10:51Z",
-        "kst_date": "2026-10-15", "client_ids": ["yellow", "babylon", "origintrail"],
-        "max_per_client": 1, "max_total": 3, "estimated_daily_limit_micros": 10000000,
+        "kst_date": "2026-10-15", "client_ids": ["babylon", "origintrail"],
+        "max_per_client": 1, "max_total": 2, "estimated_daily_limit_micros": 10000000,
         "estimate_policy_sha256": POLICY_SHA256, "release_sha": "a" * 40}
     plan = TrialPlan.from_mapping(payload, canonical_sha256(payload))
     tmp_path.chmod(0o700)
     now = [datetime(2026, 10, 14, 16, 46, 0, tzinfo=timezone.utc)]
     env = {"YBO_TRIAL_CONTROLLER_ENABLED": "true", "YBO_TRIAL_API_MODE": "true",
         "YBO_TRIAL_PLAN_JSON": json.dumps(payload), "YBO_TRIAL_PLAN_SHA256": plan.sha256,
+        "YBO_PRESERVED_BABYLON_RECEIPT_ID": "55000000-0000-4000-8000-000000000001",
         "RAILWAY_GIT_COMMIT_SHA": "a" * 40, "NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT": str(tmp_path),
         **{key: "false" for key in ("QUALITY_BANNER_ENABLED", "NEWS_CARD_IDEMPOTENCY_ENABLED",
             "TELEGRAM_PUBLICATION_ENABLED", "CONTENT_OPS_REVIEW_ENABLED", "CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED")}}
@@ -56,7 +57,7 @@ def test_exact_on_readiness_has_no_owner_or_task_dependency(ready):
         "trial_id": ready.plan.trial_id, "plan_sha256": ready.plan.sha256,
         "release_sha": "a" * 40, "controller_enabled": True, "broad_public_flags_off": True,
         **{key: ready.plan.payload[key] for key in ("not_before", "deadline", "kst_date")},
-        "client_ids": ["yellow", "babylon", "origintrail"], "observed_at": ready.now[0].isoformat()}
+        "client_ids": ["babylon", "origintrail"], "observed_at": ready.now[0].isoformat()}
     assert list(ready.root.iterdir()) == []
 
 

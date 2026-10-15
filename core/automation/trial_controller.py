@@ -373,7 +373,8 @@ async def run_hosted_trial(env, *, clock=None, sleep=asyncio.sleep):
                 lambda: holder["controller"].readiness_guard()))
         producer = TrialNaturalProducerAdapter(repository=repository,
             x_client=XClient(env["X_BEARER_TOKEN"], before_effect=guard), studio=studio,
-            owner=gate.owner, workspace_id=workspace, trial_id=gate.plan.trial_id, clock=gate.clock)
+            owner=gate.owner, workspace_id=workspace, trial_id=gate.plan.trial_id,
+            recovery_receipt_id=env["YBO_PRESERVED_BABYLON_RECEIPT_ID"], clock=gate.clock)
         controller = HostedTrialController(gate=gate, producer=producer,
             catalog=TrialCatalogReadback(repository, workspace, guard),
             preflight=TrialGenerationPreflight(studio, gate, guard).verify,

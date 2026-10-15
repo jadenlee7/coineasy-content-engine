@@ -65,6 +65,8 @@ jobs:
           done
       - name: Verify rollback-only claim and logo context, preserved ACL, and Python JSONB SHA
         run: python ops/ybo-server-trial/exact_claim_local_unittest.py --local-only
+      - name: Verify exact preserved Babylon handoff and immutable successor anchor
+        run: python ops/ybo-preserved-recovery/recovery_local_unittest.py --local-only
       - name: Record proof boundary
         if: always()
         run: |

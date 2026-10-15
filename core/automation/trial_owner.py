@@ -30,7 +30,7 @@ from core.content_ops.trial_window import (
 )
 
 CLIENTS = ("yellow", "babylon", "origintrail")
-POLICY_SHA256 = "000a4243bf92c082db1120b6ccbd6aa8e2ade95ed355aaef124f79a31c6aa0a4"
+POLICY_SHA256 = "2f71160c21ebb2b40d000ccf6cf6d36553c0039766416d52e89d3ab0af653982"
 LIMIT_MICROS = 10_000_000
 PHASES = ("intake", "generate", "review", "send")
 TERMINAL = frozenset({"completed", "blocked", "unknown", "aborted", "expired", "clock_rollback"})
@@ -111,10 +111,10 @@ class TrialPlan:
         if (payload["contract"] != "ybo-server-trial@1"
             or payload["trial_id"] != TRIAL_ID
             or payload["kst_date"] != start.astimezone(KST).date().isoformat()
-            or payload["client_ids"] != list(CLIENTS)
+            or payload["client_ids"] != list(ELIGIBLE_CLIENTS)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))
-            or payload["max_per_client"] != 1 or payload["max_total"] != 3
+            or payload["max_per_client"] != 1 or payload["max_total"] != 2
             or payload["estimated_daily_limit_micros"] != LIMIT_MICROS
             or payload["estimate_policy_sha256"] != POLICY_SHA256
             or type(payload["release_sha"]) is not str
