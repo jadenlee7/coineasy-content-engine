@@ -200,14 +200,18 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
     located = await fetcher(`${cfg.supabaseUrl}/rest/v1/rpc/content_ops_button_card_image_locator`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: { apikey: cfg.serviceRoleKey, Authorization: `Bearer ${cfg.serviceRoleKey}`,
-        "Content-Type": "application/json" },
+        // fetch decodes compressed bodies but can retain the compressed wire
+        // Content-Length. Negotiate identity so boundedBytes compares like units.
+        "Content-Type": "application/json", "Accept": "application/json", "Accept-Encoding": "identity" },
       body: JSON.stringify({ target_workspace_id: cfg.workspaceId,
         target_outbox_id: body.outbox_id, target_claim_token: body.claim_token,
         target_content_version_id: scope.content_version_id }),
     });
   } catch (error) { return unavailable("image_locator", error instanceof TrialAdmissionRejection ? "admission" : "request"); }
-  if (!located.ok || located.redirected) return unavailable("image_locator", "http", located.status);
-  if ((located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json") {
+  if (located.status !== 200 || located.redirected) return unavailable("image_locator", "http", located.status);
+  if ((located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json"
+    || (located.headers.get("content-encoding") || "identity") !== "identity"
+    || located.headers.has("content-range")) {
     return unavailable("image_locator", "contract");
   }
   let value: unknown;
