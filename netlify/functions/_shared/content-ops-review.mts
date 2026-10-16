@@ -5,6 +5,8 @@ import { configuredContentOpsGatewayToken, hasContentOpsGatewayAccess } from "./
 import { admitTrial, trialFlagsOff, verifyTrialProjection, type TrialAdmission,
   type TrustedTrialResolver, type TrialDiagnostic, type TrialDiagnosticReporter } from "./content-ops-trial.mts";
 import type { TrialDeliveryConfirmation } from "./content-ops-trial-resolver.mts";
+import { configuredRecovery, recoveryFlagsOff, recoveryFetcher, recoveryStatus, recoveryTerminal,
+  type RecoveryContext } from "./content-ops-recovery.mts";
 
 // This gateway holds the existing database authority. The courier never does.
 // It exposes no arbitrary RPC, workspace, destination, approval, or publisher.
@@ -26,9 +28,9 @@ const CLAIM_KEYS = [
 ];
 type Env = (name: string) => string | undefined;
 type Json = Record<string, unknown>;
-type ReviewScope = { mode: "canary" | "daily" | "trial"; content_version_id: string | null;
-  packet_mode?: "button_card_v1" | "daily_button_card_v1" | "trial_delivery_only_v1"; daily_scope?: "ybo_v1";
-  trial_id?: string; plan_sha256?: string; manifest_sha256?: string };
+type ReviewScope = { mode: "canary" | "daily" | "trial" | "recovery"; content_version_id: string | null;
+  packet_mode?: "button_card_v1" | "daily_button_card_v1" | "trial_delivery_only_v1" | "recovery_delivery_only_v1"; daily_scope?: "ybo_v1";
+  trial_id?: string; plan_sha256?: string; manifest_sha256?: string; recovery_id?: string };
 type Dependencies = { getEnv: Env; releaseSha: () => string | null; fetcher?: typeof fetch;
   clock?: () => number; trialResolver?: TrustedTrialResolver; trialDeliveryConfirm?: TrialDeliveryConfirmation;
   diagnosticReporter?: TrialDiagnosticReporter };
@@ -182,8 +184,8 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
 
 async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
                            release: string, fetcher: typeof fetch, trial?: TrialAdmission,
-                           report?: TrialDiagnosticReporter): Promise<Response> {
-  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1"].includes(scope.packet_mode ?? "")
+                           report?: TrialDiagnosticReporter, recovery?: RecoveryContext): Promise<Response> {
+  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1", "recovery_delivery_only_v1"].includes(scope.packet_mode ?? "")
     || !isCatalogUuid(scope.content_version_id)
     || !exact(body, ["action", "outbox_id", "claim_token"])
     || !isCatalogUuid(body.outbox_id) || !isCatalogUuid(body.claim_token)) {
@@ -239,6 +241,9 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
     }
     if (trial && (value.client_id !== trial.entry.client_id || value.content_item_id !== trial.entry.content_item_id
       || value.sha256 !== trial.entry.banner_sha256)) return unavailable("image_locator", "identity");
+    if (recovery && (value.client_id !== recovery.plan.client_id || value.content_item_id !== recovery.plan.content_item_id
+      || value.asset_id !== recovery.plan.banner_asset_id || value.sha256 !== recovery.plan.banner_sha256
+      || value.outbox_id !== recovery.plan.outbox_id)) return unavailable("image_locator", "identity");
     let image: Response;
     try { image = await fetcher(`${cfg.supabaseUrl}/storage/v1/object/content-studio/${value.path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
@@ -259,6 +264,7 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
       || createHash("sha256").update(imageBytes).digest("hex") !== value.sha256) {
       return unavailable("image_storage", "body");
     }
+    recovery?.check();
     return new Response(imageBytes, { status: 200, headers: {
       "Content-Type": "image/png", "Content-Length": String(imageBytes.byteLength),
       "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
@@ -270,6 +276,9 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
       ...(trial ? { "X-Content-Ops-Mode": "trial", "X-Content-Ops-Packet-Mode": "trial_delivery_only_v1",
         "X-Content-Ops-Trial-Id": trial.scope.trial_id, "X-Content-Ops-Trial-Plan-Sha256": trial.scope.plan_sha256,
         "X-Content-Ops-Trial-Manifest-Sha256": trial.scope.manifest_sha256 } : {}),
+      ...(recovery ? { "X-Content-Ops-Mode": "recovery", "X-Content-Ops-Packet-Mode": "recovery_delivery_only_v1",
+        "X-Content-Ops-Recovery-Id": recovery.scope.recovery_id,
+        "X-Content-Ops-Recovery-Plan-Sha256": recovery.sha } : {}),
     } });
   } catch { return unavailable("image_storage", "body"); }
 }
@@ -357,8 +366,8 @@ function ownerReceipt(step: string, value: unknown, args: Json): value is Json {
 
 async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<ReturnType<typeof contentCatalogConfig>>,
                            release: string, fetcher: typeof fetch,
-                           confirmedTerminal?: (value: Json) => Promise<void>): Promise<Response> {
-  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1"].includes(scope.packet_mode ?? "")
+                           confirmedTerminal?: (value: Json) => Promise<void>, recovery?: RecoveryContext): Promise<Response> {
+  if (!["button_card_v1", "daily_button_card_v1", "trial_delivery_only_v1", "recovery_delivery_only_v1"].includes(scope.packet_mode ?? "")
     || !isCatalogUuid(scope.content_version_id) || !exact(body, ["action", "step", "args"])
     || typeof body.step !== "string" || !ownerArgs(body.step, body.args)) {
     return json({ error: "invalid_request" }, 400);
@@ -379,7 +388,9 @@ async function buttonOwner(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
     const bytes = await boundedBytes(result, 4096);
     if (!bytes) return json({ error: "content_ops_owner_unavailable" }, 503);
     const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
-    if (!ownerReceipt(body.step as string, value, body.args as Json)) {
+    if (!(recovery && body.step === "terminal"
+      ? recoveryTerminal(value, body.args as Json, recovery)
+      : ownerReceipt(body.step as string, value, body.args as Json))) {
       return json({ error: "content_ops_owner_unavailable" }, 503);
     }
     if (scope.mode === "trial" && body.step === "terminal" && value.status === "sent") {
@@ -396,7 +407,9 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
   return async (req: Request, runtime?: ContentOpsReviewRuntime): Promise<Response> => {
     if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
     const trialRequested = req.headers.get("x-content-ops-mode") === "trial";
-    if (trialRequested ? (deps.getEnv("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") !== "true" || !trialFlagsOff(deps.getEnv))
+    const recoveryRequested = req.headers.get("x-content-ops-mode") === "recovery";
+    if (recoveryRequested ? (deps.getEnv("CONTENT_OPS_RECOVERY_GATEWAY_ENABLED") !== "true" || !recoveryFlagsOff(deps.getEnv))
+      : trialRequested ? (deps.getEnv("CONTENT_OPS_TRIAL_GATEWAY_ENABLED") !== "true" || !trialFlagsOff(deps.getEnv))
       : deps.getEnv("CONTENT_OPS_GATEWAY_ENABLED") !== "true") {
       return json({ error: "content_ops_disabled" }, 503);
     }
@@ -427,10 +440,17 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!hasContentOpsGatewayAccess(req, token)) {
       return json({ error: "invalid_token" }, 401);
     }
+    if (!recoveryRequested && (req.headers.has("x-content-ops-recovery-id")
+      || req.headers.has("x-content-ops-recovery-plan-sha256"))) return json({ error: "content_ops_scope_mismatch" }, 409);
     const report: TrialDiagnosticReporter = receipt => safeTrialDiagnostic(deps.diagnosticReporter, receipt);
     let trial: TrialAdmission | undefined;
+    let recovery: RecoveryContext | undefined;
     let scope: ReviewScope | null;
-    if (trialRequested) {
+    if (recoveryRequested) {
+      try { recovery = configuredRecovery(req, deps.getEnv, release, deps.clock ?? Date.now); }
+      catch { return json({ error: "content_ops_recovery_blocked" }, 503); }
+      scope = recovery.scope;
+    } else if (trialRequested) {
       try { trial = await admitTrial(req, deps.getEnv, release, deps.clock ?? Date.now, deps.trialResolver, report); }
       catch { return json({ error: "content_ops_trial_blocked" }, 503); }
       scope = trial.scope;
@@ -453,6 +473,16 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     const body = await readBody(req,
       scope.packet_mode ? MAX_BUTTON_BODY_BYTES : MAX_BODY_BYTES);
     if (!body) return json({ error: "invalid_request" }, 400);
+    if (recovery) {
+      const valid = body.action === "status" ? exact(body, ["action"])
+        : body.action === "owner" ? exact(body, ["action", "step", "args"])
+          && typeof body.step === "string" && ownerArgs(body.step, body.args)
+        : body.action === "image" ? exact(body, ["action", "outbox_id", "claim_token"])
+          && ownerUuid(body.outbox_id) && ownerUuid(body.claim_token)
+        : !!rpcRequest(body, recovery.plan.workspace_id, scope);
+      if (!valid) return json({ error: "invalid_request" }, 400);
+      if (Object.hasOwn(body, "outbox_id") && body.outbox_id !== recovery.plan.outbox_id) return json({ error: "invalid_request" }, 400);
+    }
     if (scope.packet_mode === "daily_button_card_v1") {
       const discovery = body.action === "reconcile" || body.action === "claim";
       // Never issue a wildcard image/owner/begin call, or a version-selected
@@ -466,6 +496,15 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
     if (!cfg) return json({ error: "content_ops_database_not_configured" }, 503);
     const baseFetcher = deps.fetcher || fetch;
     let fetcher = baseFetcher;
+    if (recovery) {
+      if (cfg.workspaceId !== recovery.plan.workspace_id) return json({error: "content_ops_recovery_blocked"}, 503);
+      if (body.action === "status") {
+        try { return json({ok: true, release_sha: release, scope,
+          status: await recoveryStatus(recovery, cfg, baseFetcher, deps.clock ?? Date.now)}); }
+        catch { return json({error: "content_ops_recovery_blocked"}, 503); }
+      }
+      fetcher = recoveryFetcher(recovery, cfg, baseFetcher, deps.clock ?? Date.now);
+    }
     if (trial) {
       // Validate action before any database read. No broad discovery or public route.
       if (!["image", "owner", "reconcile", "claim", "begin"].includes(String(body.action))) {
@@ -482,13 +521,13 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       };
     }
     if (body.action === "image") return buttonImage(body, scope, cfg, release, fetcher, trial,
-      trial ? report : undefined);
+      trial ? report : undefined, recovery);
     if (body.action === "owner") return buttonOwner(body, scope, cfg, release, fetcher, trial && deps.trialDeliveryConfirm
       ? async value => { await deps.trialDeliveryConfirm!({ trial_id: trial!.scope.trial_id,
           plan_sha256: trial!.scope.plan_sha256, manifest_sha256: trial!.scope.manifest_sha256,
           content_version_id: trial!.scope.content_version_id, card_id: String(value.card_id),
           outbox_id: String(value.outbox_id), confirmed_parts: 4, status: "sent" }); }
-      : undefined);
+      : undefined, recovery);
     const rpc = rpcRequest(body, cfg.workspaceId, scope);
     if (!rpc) return json({ error: "invalid_request" }, 400);
     try {
@@ -508,6 +547,11 @@ export function createContentOpsReviewHandler(deps: Dependencies) {
       if (body.action === "claim") {
         if (value === null) return json({ ...receipt, claim: null });
         const claim = claimProjection(value, body.claim_token);
+        if (recovery && claim && (["client_id", "outbox_id", "content_item_id", "content_version_id", "source_item_id", "generate_job_id", "banner_sha256"]
+          .some(k => claim[k] !== recovery!.plan[k])
+          || ["telegram_copy", "x_copy"].some(k => createHash("sha256").update(String(claim[k]), "utf8").digest("hex") !== recovery!.plan[k + "_sha256"]))) {
+          return json({error: "content_ops_invalid_receipt"}, 503);
+        }
         if (trial && claim && (claim.client_id !== trial.entry.client_id || claim.kst_date !== trial.window.kstDate
           || claim.generate_job_id !== trial.entry.job_id || claim.source_item_id !== trial.entry.source_item_id
           || claim.content_item_id !== trial.entry.content_item_id || claim.banner_sha256 !== trial.entry.banner_sha256
