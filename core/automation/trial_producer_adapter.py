@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import re
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Mapping
 from uuid import UUID, uuid4, uuid5
 
 import httpx
@@ -183,6 +183,26 @@ class TrialNaturalProducerAdapter:
         # query alone would not establish that an older pending item is latest.
         posts = await self.x_client.get_recent_tweets(source.handle, hours=24,
             max_results=100, since_id=None, require_complete=True)
+        if trial_identity_policy(self.trial_id).latest_standalone:
+            # X may return a reply despite exclude=replies. Only this new
+            # identity defines latest as the newest non-reply/non-retweet.
+            # Reject ambiguous evidence before filtering; never relabel it.
+            _require(isinstance(posts, (list, tuple)) and len(posts) <= 100
+                and all(isinstance(post, Mapping)
+                    and type(post.get("id")) is str
+                    and re.fullmatch(r"[0-9]{1,19}", post["id"]) is not None
+                    and int(post["id"]) > 0
+                    and all(type(post.get(flag)) is bool for flag in
+                        ("is_retweet", "is_reply", "is_quote", "is_note_tweet"))
+                    for post in posts), "trial_producer_source_evidence_invalid")
+            _require(len({post["id"] for post in posts}) == len(posts),
+                "trial_producer_source_evidence_invalid")
+            posts = tuple(post for post in posts
+                if post["is_retweet"] is False and post["is_reply"] is False)
+            if posts and max(posts, key=lambda post: int(post["id"]))["is_quote"]:
+                # The newest standalone quote is not an approved factual
+                # source. Do not persist it or promote an older original.
+                return None
         eligible = tuple(post for post in posts if post.get("is_retweet") is False
                          and post.get("is_reply") is False
                          and type(post.get("is_quote")) is bool
@@ -191,7 +211,9 @@ class TrialNaturalProducerAdapter:
                                   and type(post.get("media")) is list and post["media"] == []
                                   and post.get("is_note_tweet") is False)))
         # An ineligible newest result cannot make an older post the trial's
-        # "latest" official source. No backlog fallback is admitted.
+        # "latest" official source. The new standalone identity excluded only
+        # proven replies/retweets above; quotes and unsupported/skipped latest
+        # posts still participate here. No backlog fallback is admitted.
         observed_ids = [int(post["id"]) for post in posts if isinstance(post.get("id"), str)
                         and post["id"].isdigit()]
         eligible_ids = [int(post["id"]) for post in eligible if isinstance(post.get("id"), str)

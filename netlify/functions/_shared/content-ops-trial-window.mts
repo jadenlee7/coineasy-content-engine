@@ -6,17 +6,24 @@ export const FRESH_BABYLON_EARLIEST = "2026-10-15T15:00:00Z";
 export const FRESH_BABYLON_KST_DATE = "2026-10-16";
 export const NEW_BABYLON_TRIAL_ID = "c34dbb8a-ff7c-484e-8e43-757f692ec743";
 export const NEW_BABYLON_EARLIEST = "2026-10-15T15:47:35Z";
+export const STANDALONE_BABYLON_TRIAL_ID = "7b27e277-0641-4aef-b739-761f86547287";
+export const STANDALONE_BABYLON_EARLIEST = "2026-10-16T19:45:03Z";
 type TrialIdentityPolicy = Readonly<{ clientIds: readonly string[]; maxPerClient: number; maxTotal: number; earliest: number; kstDate?: string }>;
 const LEGACY_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon", "origintrail"]), maxPerClient: 1, maxTotal: 2, earliest: 0 });
 const FRESH_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon"]), maxPerClient: 1, maxTotal: 1,
   earliest: Date.parse(FRESH_BABYLON_EARLIEST), kstDate: FRESH_BABYLON_KST_DATE });
 const NEW_BABYLON_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon"]), maxPerClient: 1, maxTotal: 1,
   earliest: Date.parse(NEW_BABYLON_EARLIEST), kstDate: FRESH_BABYLON_KST_DATE });
+// The immutable readiness anchor chooses the day; this identity never derives
+// a fresh window from the runtime clock or reopens a historical trial.
+const STANDALONE_BABYLON_POLICY: TrialIdentityPolicy = Object.freeze({ clientIds: Object.freeze(["babylon"]), maxPerClient: 1, maxTotal: 1,
+  earliest: Date.parse(STANDALONE_BABYLON_EARLIEST) });
 /** Code-owned identities, never a caller-selected client list or mode. */
 export function trialIdentityPolicy(trialId: unknown): TrialIdentityPolicy | null {
   return trialId === READY_ANCHORED_TRIAL_ID ? LEGACY_POLICY
     : trialId === FRESH_BABYLON_TRIAL_ID ? FRESH_POLICY
-    : trialId === NEW_BABYLON_TRIAL_ID ? NEW_BABYLON_POLICY : null;
+    : trialId === NEW_BABYLON_TRIAL_ID ? NEW_BABYLON_POLICY
+    : trialId === STANDALONE_BABYLON_TRIAL_ID ? STANDALONE_BABYLON_POLICY : null;
 }
 export type TrialWindow = Readonly<{ notBefore: string; deadline: string; start: number; end: number; kstDate: string }>;
 type Env = (name: string) => string | undefined;
