@@ -8,10 +8,10 @@ import re
 from core.content_ops.private_review_bot_policy import ExistingReviewBotPolicy
 from core.content_ops.trial_courier_adapter import canonical_sha256
 from core.content_ops.trial_private_review_runtime import (
-    TrialCourierSettings, enabled, require, run_trial, result,
+    TrialCourierSettings, enabled, require, run_trial, result, validated_trial_provenance,
 )
 from scripts.run_private_review_card_canary import (
-    _private_card_identity, _validated_scope_and_provenance,
+    _private_card_identity,
 )
 
 
@@ -25,12 +25,8 @@ def run(*, validate_only=False, environ=None, stamp_reader=None, runner=run_tria
             # A release-only OFF deployment precedes the real receipt and anchor.
             # Its pre-deploy check must authenticate the existing private route
             # and immutable image without inventing a new trial plan/window.
-            require(all(env.get(k, "false") == "false" for k in (
-                "CONTENT_OPS_REVIEW_ENABLED", "CONTENT_OPS_BUTTON_CARD_ENABLED",
-                "CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED",
-            )))
-            proof = _validated_scope_and_provenance(env, stamp_reader=stamp_reader,
-                allow_missing_runtime_sha=True, daily=True)
+            proof = validated_trial_provenance(env, stamp_reader=stamp_reader,
+                allow_missing_runtime_sha=True)
             identity = _private_card_identity(env)
             policy_sha = env.get("CONTENT_OPS_TRIAL_DESTINATION_POLICY_SHA256", "")
             require(type(identity[-1]) is ExistingReviewBotPolicy

@@ -270,9 +270,31 @@ jobs:
           assert not any(off[k] for k in ('network_calls', 'database_calls', 'telegram_calls'))
           old['CONTENT_OPS_TRIAL_COURIER_ENABLED'] = 'true'
           assert run(validate_only=True, environ=old, runner=forbidden)['ok'] is False
+          # New immutable identity pins its day from the readiness window;
+          # literal OFF metadata is not an extra Telegram credential.
+          standalone = {**env, 'CONTENT_OPS_TRIAL_ID': '7b27e277-0641-4aef-b739-761f86547287',
+              'CONTENT_OPS_TRIAL_NOT_BEFORE': '2026-10-17T19:46:00Z',
+              'CONTENT_OPS_TRIAL_DEADLINE': '2026-10-17T21:46:00Z',
+              'CONTENT_OPS_RECOVERY_COURIER_ENABLED': 'false',
+              'TELEGRAM_PUBLICATION_ENABLED': 'false', 'STUDIO_TELEGRAM_PUBLISH_ENABLED': 'false'}
+          for flag in ('false', 'true'):
+              standalone['CONTENT_OPS_TRIAL_COURIER_ENABLED'] = flag
+              unchanged = dict(standalone)
+              checked = run(validate_only=True, environ=standalone, runner=forbidden)
+              assert checked['ok'] and checked['enabled'] == (flag == 'true')
+              assert not any(checked[k] for k in ('network_calls', 'database_calls', 'telegram_calls'))
+              assert standalone == unchanged
+              for key in ('CONTENT_OPS_RECOVERY_COURIER_ENABLED', 'TELEGRAM_PUBLICATION_ENABLED',
+                          'STUDIO_TELEGRAM_PUBLISH_ENABLED'):
+                  for invalid in ('true', 'FALSE', '', None):
+                      assert not run(validate_only=True, environ={**standalone, key: invalid},
+                          runner=forbidden)['ok']
+              assert not run(validate_only=True,
+                  environ={**standalone, 'TELEGRAM_PUBLICATION_TOKEN': 'forbidden'}, runner=forbidden)['ok']
           env['RAILWAY_GIT_COMMIT_SHA'] = 'f' * 40
           assert run(validate_only=True, environ=env, runner=forbidden)['ok'] is False
           print(json.dumps({'actual_image_trial_imports': True, 'synthetic_validate_only': True,
-              'runtime_sha_mismatch_denied': True, 'network_calls': False,
+              'runtime_sha_mismatch_denied': True, 'standalone_readiness_identity_verified': True,
+              'literal_off_metadata_verified': True, 'network_calls': False,
               'database_calls': False, 'telegram_calls': False, 'production_proof': False}))
           PY

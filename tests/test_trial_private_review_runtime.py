@@ -79,6 +79,52 @@ def test_validate_only_no_http_socket_or_sender(monkeypatch):
     assert env()["TELEGRAM_REVIEW_BOT_TOKEN"] not in json.dumps(r)
 
 
+@pytest.mark.parametrize("active", ["true", "false"])
+def test_literal_publication_off_metadata_passes_trial_cli_without_io(monkeypatch, active):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no clients or dispatch")
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", forbidden)
+    configured = env(CONTENT_OPS_TRIAL_COURIER_ENABLED=active,
+        CONTENT_OPS_RECOVERY_COURIER_ENABLED="false", TELEGRAM_PUBLICATION_ENABLED="false",
+        STUDIO_TELEGRAM_PUBLISH_ENABLED="false")
+    before = dict(configured)
+    receipt = cli.run(validate_only=True, environ=configured, stamp_reader=lambda: SHA, runner=forbidden)
+    assert receipt["ok"] and receipt["enabled"] == (active == "true")
+    assert not receipt["network_calls"] and not receipt["telegram_calls"]
+    assert configured == before
+    assert TrialCourierSettings.from_env(configured, stamp_reader=lambda: SHA).trial_id == TRIAL_ID
+
+
+@pytest.mark.parametrize("active", ["true", "false"])
+@pytest.mark.parametrize("key", ["TELEGRAM_PUBLICATION_ENABLED", "STUDIO_TELEGRAM_PUBLISH_ENABLED",
+    "CONTENT_OPS_RECOVERY_COURIER_ENABLED"])
+@pytest.mark.parametrize("value", ["true", "FALSE", " false ", "", None, False, 0])
+def test_trial_never_normalizes_enabled_or_malformed_off_switches(active, key, value):
+    configured = env(CONTENT_OPS_TRIAL_COURIER_ENABLED=active, **{key: value})
+    assert cli.run(validate_only=True, environ=configured, stamp_reader=lambda: SHA)["ok"] is False
+    with pytest.raises(TrialRuntimeError):
+        TrialCourierSettings.from_env(configured, stamp_reader=lambda: SHA)
+
+
+@pytest.mark.parametrize("active", ["true", "false"])
+@pytest.mark.parametrize("key", ["TELEGRAM_PUBLICATION_TOKEN", "telegram_publication_enabled",
+    "OPENAI_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "DATABASE_URL", "API_SECRET"])
+def test_trial_off_normalization_never_hides_forbidden_credentials(active, key):
+    configured = env(CONTENT_OPS_TRIAL_COURIER_ENABLED=active,
+        TELEGRAM_PUBLICATION_ENABLED="false", **{key: "forbidden"})
+    assert cli.run(validate_only=True, environ=configured, stamp_reader=lambda: SHA)["ok"] is False
+    with pytest.raises(ValueError, match="private_card_credential_boundary_invalid"):
+        TrialCourierSettings.from_env(configured, stamp_reader=lambda: SHA)
+
+
+def test_recovery_validator_still_rejects_trial_on_even_with_publication_off():
+    from test_recovery_private_review_runtime import env as recovery_env
+    from scripts import run_recovery_private_review_cards as recovery_cli
+    configured = recovery_env(CONTENT_OPS_TRIAL_COURIER_ENABLED="true", TELEGRAM_PUBLICATION_ENABLED="false")
+    assert recovery_cli.run(validate_only=True, environ=configured, stamp_reader=lambda: SHA)["ok"] is False
+
+
 def test_off_validate_only_accepts_existing_expired_trial_without_new_plan_or_io(monkeypatch):
     def forbidden(*a, **k): raise AssertionError("no client, runner or external I/O")
     monkeypatch.setattr(httpx, "AsyncClient", forbidden)

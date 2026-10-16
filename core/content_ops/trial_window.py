@@ -8,6 +8,8 @@ FRESH_TRIAL_ID = "9d7865c1-c13b-4b1b-aba1-83124aa8d2cd"
 FRESH_ELIGIBLE_CLIENTS = ("babylon",)
 NEW_BABYLON_TRIAL_ID = "c34dbb8a-ff7c-484e-8e43-757f692ec743"
 NEW_BABYLON_EARLIEST = datetime(2026, 10, 15, 15, 47, 35, tzinfo=timezone.utc)
+STANDALONE_BABYLON_TRIAL_ID = "7b27e277-0641-4aef-b739-761f86547287"
+STANDALONE_BABYLON_EARLIEST = datetime(2026, 10, 16, 19, 45, 3, tzinfo=timezone.utc)
 WINDOW_SECONDS = 7200
 KST = timezone(timedelta(hours=9))
 
@@ -20,6 +22,7 @@ class TrialIdentityPolicy:
     earliest: datetime | None = None
     kst_date: date | None = None
     natural: bool = False
+    latest_standalone: bool = False
 
 
 _POLICIES = {
@@ -28,6 +31,10 @@ _POLICIES = {
         datetime(2026, 10, 15, 15, tzinfo=timezone.utc), date(2026, 10, 16), True),
     NEW_BABYLON_TRIAL_ID: TrialIdentityPolicy(FRESH_ELIGIBLE_CLIENTS, 1, 1,
         NEW_BABYLON_EARLIEST, date(2026, 10, 16), True),
+    # One new immutable identity; readiness fixes its exact KST day and window.
+    # No runtime re-anchoring, recurring identity, or legacy policy widening.
+    STANDALONE_BABYLON_TRIAL_ID: TrialIdentityPolicy(FRESH_ELIGIBLE_CLIENTS, 1, 1,
+        STANDALONE_BABYLON_EARLIEST, natural=True, latest_standalone=True),
 }
 
 

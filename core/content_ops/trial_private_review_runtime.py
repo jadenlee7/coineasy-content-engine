@@ -45,6 +45,21 @@ def enabled(env):
     return value == "true"
 
 
+def validated_trial_provenance(env, *, stamp_reader=None, allow_missing_runtime_sha=False):
+    """Check trial exclusivity before normalizing one verified non-secret flag."""
+    require(all(env.get(key, "false") == "false" for key in (
+        "CONTENT_OPS_REVIEW_ENABLED", "CONTENT_OPS_BUTTON_CARD_ENABLED",
+        "CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED", "CONTENT_OPS_RECOVERY_COURIER_ENABLED",
+        "TELEGRAM_PUBLICATION_ENABLED", "STUDIO_TELEGRAM_PUBLISH_ENABLED")))
+    # Keep the runtime environment intact. The generic credential validator
+    # rejects extra TELEGRAM_* keys; omit only this already verified OFF flag,
+    # never a secret, a truthy/invalid switch, or another courier's authority.
+    provenance_env = {key: value for key, value in env.items()
+        if not (key == "TELEGRAM_PUBLICATION_ENABLED" and value == "false")}
+    return _validated_scope_and_provenance(provenance_env, stamp_reader=stamp_reader,
+        allow_missing_runtime_sha=allow_missing_runtime_sha, daily=True)
+
+
 @dataclass(frozen=True, repr=False)
 class TrialCourierSettings:
     workspace_id: str
@@ -66,10 +81,8 @@ class TrialCourierSettings:
     @classmethod
     def from_env(cls, env, *, stamp_reader=None, validate_only=False):
         is_enabled = enabled(env)
-        require(all(env.get(k, "false") == "false" for k in (
-            "CONTENT_OPS_REVIEW_ENABLED", "CONTENT_OPS_BUTTON_CARD_ENABLED", "CONTENT_OPS_DAILY_BUTTON_CARD_ENABLED")))
-        proof = _validated_scope_and_provenance(env, stamp_reader=stamp_reader,
-            allow_missing_runtime_sha=validate_only and not is_enabled, daily=True)
+        proof = validated_trial_provenance(env, stamp_reader=stamp_reader,
+            allow_missing_runtime_sha=validate_only and not is_enabled)
         workspace, gateway, bot, bid, room, signing, binding, policy = _private_card_identity(env)
         require(type(policy) is ExistingReviewBotPolicy)
         trial, plan, policy_sha = (env.get(k, "") for k in (
