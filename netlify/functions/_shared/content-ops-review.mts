@@ -211,9 +211,14 @@ async function buttonImage(body: Json, scope: ReviewScope, cfg: NonNullable<Retu
     });
   } catch (error) { return unavailable("image_locator", error instanceof TrialAdmissionRejection ? "admission" : "request"); }
   if (located.status !== 200 || located.redirected) return unavailable("image_locator", "http", located.status);
+  // PostgREST adds item ranges even to a complete scalar JSON RPC response.
+  // Accept only that single-item form; PNG Storage ranges remain forbidden.
+  // https://docs.postgrest.org/en/v14/references/api/pagination_count.html
+  const locatorRange = located.headers.get("content-range"), locatorUnit = located.headers.get("range-unit");
   if ((located.headers.get("content-type") || "").split(";", 1)[0] !== "application/json"
     || (located.headers.get("content-encoding") || "identity") !== "identity"
-    || located.headers.has("content-range")) {
+    || (locatorRange !== null && locatorRange !== "0-0/*" && locatorRange !== "0-0/1")
+    || (locatorUnit !== null && locatorUnit !== "items")) {
     return unavailable("image_locator", "contract");
   }
   let value: unknown;

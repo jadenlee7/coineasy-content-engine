@@ -66,10 +66,14 @@ export function configuredRecovery(req: Request, env: Env, release: string, cloc
 }
 
 export async function boundedRecoveryJson(response: Response): Promise<unknown> {
+  // PostgREST scalar JSON RPCs may carry one-item range metadata. This is
+  // not a partial byte response; Storage PNG responses remain range-free.
+  const rpcRange = response.headers.get("content-range"), rpcUnit = response.headers.get("range-unit");
   requireTrue(response.status === 200 && !response.redirected && response.body
     && (response.headers.get("content-type") || "").split(";", 1)[0] === "application/json"
     && (response.headers.get("content-encoding") || "identity") === "identity"
-    && !response.headers.has("content-range"));
+    && (rpcRange === null || rpcRange === "0-0/*" || rpcRange === "0-0/1")
+    && (rpcUnit === null || rpcUnit === "items"));
   const declared = response.headers.get("content-length");
   requireTrue(declared === null || (/^\d+$/.test(declared) && Number(declared) <= 16384));
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;

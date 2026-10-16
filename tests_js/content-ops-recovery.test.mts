@@ -57,8 +57,9 @@ function harness(options: any = {}) {
       if (override) return override;
       if (String(url).includes("/storage/")) return new Response(PNG, {headers: {"content-type": "image/png"}});
       assert.match(String(url), /\/rest\/v1\/rpc\/content_ops_recovery_step$/);
-      if (body.target_action === "status") return Response.json(options.status ?? status);
-      return Response.json(options.result ?? ({claim, image: locator, begin: {accepted: true}, terminal} as any)[body.target_action] ?? 1);
+      if (body.target_action === "status") return Response.json(options.status ?? status, {headers: options.rpcHeaders});
+      return Response.json(options.result ?? ({claim, image: locator, begin: {accepted: true}, terminal} as any)[body.target_action] ?? 1,
+        {headers: options.rpcHeaders});
     }) as typeof fetch});
   return {calls, env, call: (r = request()) => handler(r, options.runtime ?? runtime)};
 }
@@ -136,6 +137,47 @@ test("exact PNG requires status before locator and before canonical storage read
   assert.equal(r.status, 200); assert.deepEqual(Buffer.from(await r.arrayBuffer()), PNG);
   assert.equal(r.headers.get("x-content-ops-recovery-id"), plan.recovery_id);
   assert.deepEqual(h.calls.map(c => c.body?.target_action ?? "storage"), ["status", "image", "status", "storage"]);
+});
+for (const range of [undefined, "0-0/*", "0-0/1"]) {
+  for (const unit of [undefined, "items"]) {
+    test(`scalar RPC item-range metadata accepted across recovery actions: ${range}/${unit}`, async () => {
+      const rpcHeaders: Record<string, string> = {};
+      if (range !== undefined) rpcHeaders["content-range"] = range;
+      if (unit !== undefined) rpcHeaders["range-unit"] = unit;
+      const scalar = {active: true};
+      assert.deepEqual(await boundedRecoveryJson(Response.json(scalar, {headers: rpcHeaders})), scalar);
+      for (const body of [{action: "status"}, {action: "reconcile"}, {action: "claim", claim_token: id(10)},
+        {action: "image", outbox_id: plan.outbox_id, claim_token: id(10)},
+        {action: "owner", step: "terminal", args: terminalArgs}]) {
+        const h = harness({rpcHeaders}); const r = await h.call(request(body));
+        assert.equal(r.status, 200, body.action);
+        if (body.action === "image") assert.deepEqual(Buffer.from(await r.arrayBuffer()), PNG);
+      }
+    });
+  }
+}
+for (const headers of [{"content-range": "bytes 0-0/1"}, {"content-range": "0-1/2"},
+  {"content-range": "0-0/2"}, {"content-range": "1-1/*"}, {"content-range": "*/0"},
+  {"content-range": "0-0/1, 0-0/1"}, {"content-range": "invalid"}, {"range-unit": "bytes"},
+  {"content-range": "0-0/1", "range-unit": "bytes"}, {"range-unit": "Items"}]) {
+  test(`scalar RPC malformed or non-singleton range blocks before business RPC: ${JSON.stringify(headers)}`, async () => {
+    // Use a fully valid body so only the header contract can reject it.
+    await assert.rejects(() => boundedRecoveryJson(Response.json({active: true}, {headers})));
+    const h = harness({rpcHeaders: headers});
+    assert.equal((await h.call()).status, 503);
+    assert.deepEqual(h.calls.map(c => c.body.target_action), ["status"]);
+  });
+}
+test("scalar RPC one-item metadata still rejects HTTP 206 and PNG Storage ranges", async () => {
+  await assert.rejects(() => boundedRecoveryJson(Response.json({active: true},
+    {status: 206, headers: {"content-range": "0-0/1", "range-unit": "items"}})));
+  for (const range of ["0-0/*", "0-0/1", "bytes 0-8/9"]) {
+    const h = harness({rpcHeaders: {"content-range": "0-0/1", "range-unit": "items"}, respond: (action: string) => {
+      if (!action) return new Response(PNG, {headers: {"content-type": "image/png", "content-range": range}});
+    }});
+    assert.equal((await h.call(request({action: "image", outbox_id: plan.outbox_id, claim_token: id(10)}))).status, 503);
+    assert.deepEqual(h.calls.map(c => c.body?.target_action ?? "storage"), ["status", "image", "status", "storage"]);
+  }
 });
 test("image cannot return after expiry during storage response", async () => {
   let now = NOW;
