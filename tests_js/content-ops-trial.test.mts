@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import test from "node:test";
 import { createContentOpsReviewHandler } from "../netlify/functions/_shared/content-ops-review.mts";
 import { trialManifestHash } from "../netlify/functions/_shared/content-ops-trial.mts";
@@ -204,6 +206,79 @@ test("decompressed locator JSON with compressed Content-Length blocks before Sto
   assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
     stage: "image_locator", reason: "body" }]);
 });
+test("real HTTP locator negotiates identity instead of comparing decoded bytes to compressed wire length", async t => {
+  const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+    content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+    asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+    sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+  const decoded = Buffer.from(JSON.stringify(locator)), compressed = gzipSync(decoded);
+  const requests: Array<{ method: string | undefined; encoding: string | undefined }> = [];
+  const server = createServer((req, res) => {
+    requests.push({ method: req.method, encoding: req.headers["accept-encoding"] });
+    req.resume();
+    const identity = req.headers["accept-encoding"] === "identity";
+    const bytes = identity ? decoded : compressed;
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": String(bytes.length), ...(identity ? {} : { "Content-Encoding": "gzip" }) });
+    res.end(bytes);
+  });
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve()); server.closeAllConnections();
+  }));
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  const url = `http://127.0.0.1:${address.port}/fixture-locator`;
+  // Actual Node fetch, not a hand-built Response: headers describe compressed
+  // bytes while arrayBuffer() contains the decoded JSON.
+  const baseline = await fetch(url, { method: "POST", body: "{}" });
+  assert.equal(baseline.headers.get("content-encoding"), "gzip");
+  assert.equal(Number(baseline.headers.get("content-length")), compressed.length);
+  assert.equal((await baseline.arrayBuffer()).byteLength, decoded.length);
+  assert.notEqual(compressed.length, decoded.length);
+  const h = harness({ respond: (u: URL, init: RequestInit) => u.pathname.includes("image_locator")
+    ? fetch(url, init) : u.pathname.includes("/storage/")
+      ? new Response(PNG, { headers: { "Content-Type": "image/png", "Content-Length": String(PNG.length) } }) : null });
+  const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+    claim_token: claim.claim_token }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), PNG);
+  assert.equal(requests.length, 2); // one baseline probe + one handler request, no retry
+  assert.deepEqual(requests[1], { method: "POST", encoding: "identity" });
+  assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+  assert.equal(h.calls.filter(c => c.url.pathname.includes("/storage/")).length, 1);
+  assert.deepEqual(h.diagnostics, []);
+});
+for (const headers of [{ "Content-Encoding": "gzip" }, { "Content-Encoding": "br" },
+  { "Content-Encoding": "deflate" }, { "Content-Encoding": "unknown" },
+  { "Content-Range": "bytes 0-99/100" }]) {
+  test(`locator refuses unexpected representation ${JSON.stringify(headers)} without Storage or retry`, async () => {
+    const h = harness({ respond: (u: URL, init: RequestInit) => {
+      if (!u.pathname.includes("image_locator")) return null;
+      assert.equal(new Headers(init.headers).get("accept-encoding"), "identity");
+      return new Response("{}", { headers: { "Content-Type": "application/json", ...headers } });
+    } });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 503);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+    assert.equal(h.calls.some(c => c.url.pathname.includes("/storage/")), false);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: "image_locator", reason: "contract" }]);
+  });
+}
+for (const status of [201, 206]) {
+  test(`locator rejects non-200 success status ${status} before Storage`, async () => {
+    const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+      ? new Response("{}", { status, headers: { "Content-Type": "application/json" } }) : null });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 503);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+    assert.equal(h.calls.some(c => c.url.pathname.includes("/storage/")), false);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: "image_locator", reason: "http", status }]);
+  });
+}
 test("owner freshness diagnostics are bounded and reporter failure cannot change denial", async () => {
   for (const [observed_at, reason] of [
     [new Date(NOW - 5001).toISOString(), "stale"], ["invalid-timestamp", "invalid"],
