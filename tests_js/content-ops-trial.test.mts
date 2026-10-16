@@ -219,6 +219,7 @@ test("real HTTP locator negotiates identity instead of comparing decoded bytes t
     const identity = req.headers["accept-encoding"] === "identity";
     const bytes = identity ? decoded : compressed;
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8",
+      "Range-Unit": "items", "Content-Range": "0-0/*",
       "Content-Length": String(bytes.length), ...(identity ? {} : { "Content-Encoding": "gzip" }) });
     res.end(bytes);
   });
@@ -248,14 +249,45 @@ test("real HTTP locator negotiates identity instead of comparing decoded bytes t
   assert.equal(h.calls.filter(c => c.url.pathname.includes("/storage/")).length, 1);
   assert.deepEqual(h.diagnostics, []);
 });
+for (const range of [null, "0-0/*", "0-0/1"]) for (const unit of [null, "items"]) {
+  test(`locator accepts complete scalar JSON range ${range} unit ${unit}`, async () => {
+    const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+      content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+      asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+      sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+    const headers = new Headers({ "Content-Type": "application/json" });
+    if (range !== null) headers.set("Content-Range", range);
+    if (unit !== null) headers.set("Range-Unit", unit);
+    const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+      ? new Response(JSON.stringify(locator), { headers }) : u.pathname.includes("/storage/")
+        ? new Response(PNG, { headers: { "Content-Type": "image/png", "Content-Length": String(PNG.length) } }) : null });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), PNG);
+    assert.equal(response.headers.get("x-content-ops-banner-sha256"), entry.banner_sha256);
+    assert.equal(response.headers.get("x-content-ops-trial-manifest-sha256"), HASH);
+    assert.equal(response.headers.has("content-range"), false);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("/storage/")).length, 1);
+    assert.deepEqual(h.diagnostics, []);
+  });
+}
 for (const headers of [{ "Content-Encoding": "gzip" }, { "Content-Encoding": "br" },
   { "Content-Encoding": "deflate" }, { "Content-Encoding": "unknown" },
-  { "Content-Range": "bytes 0-99/100" }]) {
+  ...["bytes 0-99/100", "0-0/2", "0-1/*", "1-1/1", "*/1", "", "00-00/1", "0-0/*,0-0/*", "0-0/* extra"]
+    .map(value => ({ "Content-Range": value })),
+  ...["bytes", "Items", "items, bytes", ""].map(value => ({ "Range-Unit": value })),
+  { "Content-Range": "0-0/*", "Range-Unit": "bytes" }]) {
   test(`locator refuses unexpected representation ${JSON.stringify(headers)} without Storage or retry`, async () => {
+    const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+      content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+      asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+      sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
     const h = harness({ respond: (u: URL, init: RequestInit) => {
       if (!u.pathname.includes("image_locator")) return null;
       assert.equal(new Headers(init.headers).get("accept-encoding"), "identity");
-      return new Response("{}", { headers: { "Content-Type": "application/json", ...headers } });
+      return Response.json(locator, { headers });
     } });
     const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
       claim_token: claim.claim_token }));
@@ -268,8 +300,12 @@ for (const headers of [{ "Content-Encoding": "gzip" }, { "Content-Encoding": "br
 }
 for (const status of [201, 206]) {
   test(`locator rejects non-200 success status ${status} before Storage`, async () => {
+    const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+      content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+      asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+      sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
     const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
-      ? new Response("{}", { status, headers: { "Content-Type": "application/json" } }) : null });
+      ? Response.json(locator, { status, headers: { "Content-Range": "0-0/1", "Range-Unit": "items" } }) : null });
     const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
       claim_token: claim.claim_token }));
     assert.equal(response.status, 503);
@@ -277,6 +313,37 @@ for (const status of [201, 206]) {
     assert.equal(h.calls.some(c => c.url.pathname.includes("/storage/")), false);
     assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
       stage: "image_locator", reason: "http", status }]);
+  });
+}
+for (const range of ["0-0/*", "0-0/1", "bytes 0-8/9"]) {
+  test(`PNG storage still rejects any Content-Range ${range}`, async () => {
+    const locator = { status: "ready", outbox_id: claim.outbox_id, client_id: "babylon",
+      content_item_id: entry.content_item_id, content_version_id: entry.content_version_id,
+      asset_id: id(7), bucket: "content-studio", path: rows.assets.storage_path,
+      sha256: entry.banner_sha256, byte_size: PNG.length, execution_authorized: false };
+    const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+      ? Response.json(locator, { headers: { "Content-Range": "0-0/*", "Range-Unit": "items" } })
+      : u.pathname.includes("/storage/") ? new Response(PNG, { headers: { "Content-Type": "image/png",
+          "Content-Length": String(PNG.length), "Content-Range": range, "Range-Unit": "items" } }) : null });
+    const response = await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }));
+    assert.equal(response.status, 503);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("/storage/")).length, 1);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: "image_storage", reason: "http", status: 200 }]);
+  });
+}
+for (const value of [null, [], { status: "ready" }]) {
+  test(`allowed scalar range does not make invalid locator body ${JSON.stringify(value)} valid`, async () => {
+    const h = harness({ respond: (u: URL) => u.pathname.includes("image_locator")
+      ? Response.json(value, { headers: { "Content-Range": "0-0/*", "Range-Unit": "items" } }) : null });
+    assert.equal((await h.call(request({ action: "image", outbox_id: claim.outbox_id,
+      claim_token: claim.claim_token }))).status, 503);
+    assert.equal(h.calls.filter(c => c.url.pathname.includes("image_locator")).length, 1);
+    assert.equal(h.calls.some(c => c.url.pathname.includes("/storage/")), false);
+    assert.deepEqual(h.diagnostics, [{ schema_version: "content-ops-trial-diagnostic@1",
+      stage: "image_locator", reason: "contract" }]);
   });
 }
 test("owner freshness diagnostics are bounded and reporter failure cannot change denial", async () => {
