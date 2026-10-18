@@ -122,7 +122,8 @@ def prepare(runtime):
 
 
 def gate(runtime):
-    plan = SimpleNamespace(trial_id=recovery.TRIAL_ID, payload={"release_sha": RELEASE})
+    plan = SimpleNamespace(trial_id=recovery.TRIAL_ID, payload={"release_sha": RELEASE},
+        eligible_clients=("babylon", "origintrail"))
     owner = SimpleNamespace(path=runtime.root / f"{recovery.TRIAL_ID}.trial-owner.sqlite3",
                             generation_authorized=lambda *args: True)
     return TrialGenerationGate(plan=plan, owner=owner, clock=lambda: NOW)

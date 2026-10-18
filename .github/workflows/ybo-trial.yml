@@ -73,6 +73,8 @@ jobs:
         run: python ops/ybo-readiness-babylon/readiness_local_unittest.py --local-only
       - name: Verify standalone Babylon slot, readiness anchor and historical state preservation
         run: python ops/ybo-standalone-babylon/standalone_local_unittest.py --local-only
+      - name: Verify reusable exact Babylon claim and two body-only changes
+        run: python ops/babylon-natural-once/natural_local_unittest.py --local-only
       - name: Record proof boundary
         if: always()
         run: |

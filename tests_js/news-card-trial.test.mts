@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import sharp from "sharp";
-import { admitTrialGeneration, TrialGenerationError } from "../netlify/functions/_shared/content-ops-trial-generation.mts";
+import { admitTrialGeneration, canonicalTrialPayload, TrialGenerationError } from "../netlify/functions/_shared/content-ops-trial-generation.mts";
+import { BABYLON_NATURAL_ONCE_ESTIMATE_POLICY } from "../netlify/functions/_shared/babylon-natural-once.mts";
 import { createNewsCardHandler } from "../netlify/functions/news-card.mts";
 import { QUALITY_BANNER_POLICY } from "../netlify/functions/_shared/quality-banner.mts";
 
@@ -128,14 +129,21 @@ async function integration(options: any = {}) {
   const oldFetch = globalThis.fetch, oldNow = Date.now;
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Netlify");
   const calls: string[] = []; let paid = 0, stored = 0, auth = 0, downstream = 0, clock = NOW;
-  const env = { ...ENV, ...options.env };
+  const naturalPlan = { contract: "babylon-natural-once@1", trial_id: id(99),
+    not_before: ENV.YBO_TRIAL_NOT_BEFORE, deadline: ENV.YBO_TRIAL_DEADLINE, kst_date: "2026-10-15",
+    client_ids: ["babylon"], max_per_client: 1, max_total: 1, estimated_daily_limit_micros: 10_000_000,
+    estimate_policy_sha256: BABYLON_NATURAL_ONCE_ESTIMATE_POLICY, release_sha: RELEASE };
+  const naturalJson = canonicalTrialPayload(naturalPlan);
+  const env = { ...ENV, ...(options.naturalOnce ? { YBO_TRIAL_PLAN_JSON: naturalJson,
+    YBO_TRIAL_ID: naturalPlan.trial_id, YBO_TRIAL_PLAN_SHA256: sha(naturalJson) } : {}), ...options.env };
   Object.defineProperty(globalThis, "Netlify", { configurable: true, value: { env: { get: (k: string) => env[k] } } });
   Date.now = () => clock;
   globalThis.fetch = async (input, init) => {
     const url = String(input); calls.push(url);
     if (url.endsWith("/generation-authorize")) {
       auth++; assert.deepEqual(JSON.parse(String(init?.body)).payload, trialPayload);
-      return Response.json(receipt({ authorized: !options.denied && !(options.denyAfterGeneration && paid > 0)
+      return Response.json(receipt({ trial_id: env.YBO_TRIAL_ID, plan_sha256: env.YBO_TRIAL_PLAN_SHA256,
+        authorized: !options.denied && !(options.denyAfterGeneration && paid > 0)
         && !(options.denyAfterUpload && stored > 0) }));
     }
     // Initial authorization plus one per HTTP. Read-only bucket/scope probes
@@ -159,7 +167,7 @@ async function integration(options: any = {}) {
       ...(options.logoOnly && !options.sourceHasImage ? {} : { photos: [{ url: options.badMedia ? "https://invalid.test/photo" : IMAGE }] }) });
     if (url.endsWith("/clients/babylon/generate/news-card")) {
       paid++; const headers = new Headers(init?.headers);
-      assert.equal(headers.get("X-YBO-Trial-ID"), "d346ceea-4ea9-479f-a5cf-05097b50ce48"); assert.equal(headers.get("Idempotency-Key"), id(2));
+      assert.equal(headers.get("X-YBO-Trial-ID"), env.YBO_TRIAL_ID); assert.equal(headers.get("Idempotency-Key"), id(2));
       assert.equal(headers.get("X-YBO-Trial-Collect-Only"), options.collectOnly ? "true" : null);
       assert.deepEqual(JSON.parse(String(init?.body)), trialPayload);
       if (options.expireAfterGeneration) clock = Date.parse("2026-10-14T17:10:51Z");
@@ -191,7 +199,8 @@ async function integration(options: any = {}) {
     throw Error("unexpected fixture HTTP");
   };
   try {
-    const response = await createNewsCardHandler(() => RELEASE)(options.request ?? request(trialBody), runtime as never);
+    const response = await createNewsCardHandler(() => RELEASE)(options.request ?? request(trialBody, {
+      "X-YBO-Trial-ID": env.YBO_TRIAL_ID, "X-YBO-Trial-Plan-Sha256": env.YBO_TRIAL_PLAN_SHA256 }), runtime as never);
     return { status: response.status, body: await response.json(), paid, stored, auth, calls };
   } finally {
     globalThis.fetch = oldFetch; Date.now = oldNow;
@@ -295,5 +304,30 @@ test("generation cannot accept changed window or credential after authorization 
       Object.assign(env, delta); return Response.json(receipt());
     } });
     await assert.rejects(h.admit, TrialGenerationError); assert.equal(h.calls.length, 1);
+  }
+});
+
+test("explicit natural-once plan uses real route for source-image and true-empty-media logo banners", async () => {
+  for (const logoOnly of [false, true]) {
+    const result = await integration({ naturalOnce: true, logoOnly });
+    assert.equal(result.status, 200, JSON.stringify(result.body)); assert.equal(result.paid, 1); assert.equal(result.stored, 1);
+    assert.equal(result.body.source_image_used, !logoOnly);
+    assert.ok(!result.calls.some(url => /telegram|typefully/.test(url)));
+  }
+});
+test("natural-once owner/context conflicts, prior results and invalid absence proofs perform no paid work", async () => {
+  for (const option of [{ denied: true }, { contextDrift: true }, { existing: true },
+    { logoOnly: true, sourceHasImage: true }, { logoOnly: true, sourceHasImage: true, badMedia: true },
+    { logoOnly: true, wrongAccount: true }]) {
+    const result = await integration({ naturalOnce: true, ...option });
+    assert.ok(result.status >= 400); assert.equal(result.paid, 0); assert.equal(result.stored, 0);
+  }
+});
+test("natural-once closes fail-safe after provider or upload and never deletes or retries", async () => {
+  for (const option of [{ denyAfterGeneration: true }, { expireAfterGeneration: true }, { denyAfterUpload: true }]) {
+    const result = await integration({ naturalOnce: true, ...option }); assert.ok(result.status >= 400);
+    assert.equal(result.paid, 1); assert.equal(result.stored, option.denyAfterUpload ? 1 : 0);
+    assert.ok(!result.calls.some(url => url.endsWith("/record_generated_content")));
+    assert.equal(result.calls.filter(url => url.includes("/storage/v1/object/")).length, option.denyAfterUpload ? 1 : 0);
   }
 });

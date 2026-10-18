@@ -26,13 +26,19 @@ import stat
 from uuid import UUID
 
 from core.content_ops.trial_window import (
-    ELIGIBLE_CLIENTS, KST, trial_clients, trial_identity_policy, trial_anchor_allowed,
-    trial_window as _trial_window,
+    ELIGIBLE_CLIENTS, KST, trial_identity_policy,
+    TrialIdentityPolicy, trial_window as _trial_window,
 )
 
 CLIENTS = ("yellow", "babylon", "origintrail")
 POLICY_SHA256 = "2f71160c21ebb2b40d000ccf6cf6d36553c0039766416d52e89d3ab0af653982"
 LIMIT_MICROS = 10_000_000
+NATURAL_ONCE_CONTRACT = "babylon-natural-once@1"
+# Retired readiness identity is not an active trial policy, but may never be
+# reinterpreted under a new contract either.
+_RETIRED_READINESS_ID = "1a2bef47-4827-4bc3-9b4d-5baf2714015d"
+_NATURAL_ONCE_POLICY = TrialIdentityPolicy(("babylon",), 1, 1,
+    natural=True, latest_standalone=True)
 PHASES = ("intake", "generate", "review", "send")
 TERMINAL = frozenset({"completed", "blocked", "unknown", "aborted", "expired", "clock_rollback"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -97,6 +103,30 @@ def canonical_sha256(payload):
         separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode()).hexdigest()
 
 
+def _plan_policy(payload):
+    """Explicit contract selection, never an unknown legacy-ID fallback.
+
+    A fresh operation is authorized only by trusted deployment configuration
+    and its existing durable owner. Request IDs alone cannot create admission.
+    Every historical identity remains tied to its historical contract/owner.
+    """
+    if payload["contract"] == NATURAL_ONCE_CONTRACT:
+        if (payload["trial_id"] == _RETIRED_READINESS_ID
+                or UUID(payload["trial_id"]).version not in (1, 2, 3, 4, 5)):
+            raise TrialError("trial_plan_scope_invalid")
+        try:
+            trial_identity_policy(payload["trial_id"])
+        except ValueError:
+            return _NATURAL_ONCE_POLICY
+        raise TrialError("trial_plan_scope_invalid")
+    if payload["contract"] != "ybo-server-trial@1":
+        raise TrialError("trial_plan_scope_invalid")
+    try:
+        return trial_identity_policy(payload["trial_id"])
+    except ValueError:
+        raise TrialError("trial_plan_scope_invalid") from None
+
+
 @dataclass(frozen=True)
 class TrialPlan:
     payload_json: str = field(repr=False)
@@ -109,13 +139,10 @@ class TrialPlan:
             raise TrialError("trial_plan_shape_invalid")
         _uuid(payload["trial_id"])
         start, _ = trial_window(payload["not_before"], payload["deadline"])
-        try:
-            policy = trial_identity_policy(payload["trial_id"])
-        except ValueError:
-            raise TrialError("trial_plan_scope_invalid") from None
-        if (payload["contract"] != "ybo-server-trial@1"
-            or payload["kst_date"] != start.astimezone(KST).date().isoformat()
-            or not trial_anchor_allowed(payload["trial_id"], start)
+        policy = _plan_policy(payload)
+        if (payload["kst_date"] != start.astimezone(KST).date().isoformat()
+            or (policy.earliest is not None and start < policy.earliest)
+            or (policy.kst_date is not None and start.astimezone(KST).date() != policy.kst_date)
             or payload["client_ids"] != list(policy.client_ids)
             or any(type(payload[key]) is not int for key in
                    ("max_per_client", "max_total", "estimated_daily_limit_micros"))
@@ -144,7 +171,15 @@ class TrialPlan:
 
     @property
     def eligible_clients(self):
-        return trial_clients(self.trial_id)
+        return self.identity_policy.client_ids
+
+    @property
+    def identity_policy(self):
+        return _plan_policy(self.payload)
+
+    @property
+    def natural_once(self):
+        return self.payload["contract"] == NATURAL_ONCE_CONTRACT
 
     @property
     def not_before(self):
