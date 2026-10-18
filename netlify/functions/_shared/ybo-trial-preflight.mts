@@ -3,6 +3,7 @@
 import type { Context } from "@netlify/functions";
 import { constantTimeAccessCodeMatch } from "./studio-session.mts";
 import { trialIdentityPolicy, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
+import { trustedNaturalOncePolicy, naturalOncePolicyUnchanged } from "./babylon-natural-once.mts";
 
 export const YBO_TRIAL_PREFLIGHT_PATH = "/api/ybo-trial-preflight";
 export const YBO_TRIAL_REQUIRED_OFF_FLAGS = [
@@ -39,10 +40,11 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
       if (url.search || url.hash || req.body !== null
         || ![null, "0"].includes(req.headers.get("content-length"))) return json({ error: "invalid_request" }, 400);
       const release = deps.releaseSha(), trialId = req.headers.get("x-ybo-trial-id");
-      const identityPolicy = trialIdentityPolicy(trialId);
+      const naturalOnce = trustedNaturalOncePolicy(deps.getEnv);
+      const identityPolicy = naturalOnce?.policy ?? trialIdentityPolicy(trialId);
       const plan = req.headers.get("x-ybo-trial-plan-sha256");
       const now = (deps.clock ?? Date.now)();
-      const bounds = configuredTrialWindow(deps.getEnv, "YBO_TRIAL");
+      const bounds = naturalOnce?.bounds ?? configuredTrialWindow(deps.getEnv, "YBO_TRIAL");
       if (!release || !/^[a-f0-9]{40}$/.test(release)
         || req.headers.get("x-studio-expected-release-sha") !== release
         || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
@@ -50,6 +52,7 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         || !plan || !/^[a-f0-9]{64}$/.test(plan) || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
         || !bounds || !withinTrialWindow(bounds, now)
         || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"
+        || (naturalOnce && !naturalOncePolicyUnchanged(deps.getEnv, naturalOnce))
         || !YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => deps.getEnv(key) === "false")) {
         return json({ error: "trial_preflight_blocked" }, 503);
       }
@@ -97,6 +100,7 @@ export function createYboTrialPreflightHandler(deps: Dependencies) {
         throw Error();
       }
       if (observed < now || !withinTrialWindow(bounds, observed) || !trialWindowUnchanged(deps.getEnv, "YBO_TRIAL", bounds)
+        || (naturalOnce && !naturalOncePolicyUnchanged(deps.getEnv, naturalOnce))
         || deps.releaseSha() !== release || deps.getEnv("YBO_TRIAL_RELEASE_SHA") !== release
         || deps.getEnv("YBO_TRIAL_ID") !== trialId || deps.getEnv("YBO_TRIAL_PLAN_SHA256") !== plan
         || deps.getEnv("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") !== "true"

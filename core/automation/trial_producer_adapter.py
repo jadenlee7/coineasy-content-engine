@@ -26,13 +26,14 @@ from core.automation.generation_client import (GeneratedCatalogResult, Generatio
 from core.automation.mode_router import select_daily_review_candidate
 from core.automation.models import ClaimedJob, StyleReferencePack
 from core.automation.news_generation_journal import request_digest
+from core.automation.source_announcement import meets_source_text_minimum
 from core.automation.repository import (AutomationRepositoryError, SupabaseAutomationRepository,
     _style_reference_pack)
 from core.automation.trial_owner import CLIENTS, KST, TrialOwner
 from core.client_config import load_client_config
 from core.sources.x_client import XClient
 from core.sources.x_media_url import normalize_x_media_url
-from core.content_ops.trial_window import TRIAL_ID, trial_identity_policy
+from core.content_ops.trial_window import TRIAL_ID
 
 HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 WORKER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -129,6 +130,13 @@ class ClaimedTrialGeneration:
     worker_id: str
 
 
+def trial_worker_id(plan, request_id):
+    """New exact claims bind the durable request, never a historical owner."""
+    if plan.natural_once:
+        return "babylon-natural-once:" + _uuid(request_id)
+    return f"ybo-trial:{plan.trial_id}"
+
+
 class TrialNaturalProducerAdapter:
     def __init__(self, *, repository: SupabaseAutomationRepository, x_client: XClient,
                  studio: StudioGenerationClient, owner: TrialOwner, workspace_id: str,
@@ -138,7 +146,7 @@ class TrialNaturalProducerAdapter:
         _uuid(workspace_id); _uuid(trial_id)
         _require(type(owner) is TrialOwner and owner.plan.trial_id == trial_id
                  and callable(sleep))
-        policy = trial_identity_policy(trial_id)
+        policy = owner.plan.identity_policy
         _require((trial_id == TRIAL_ID and recovery_receipt_id is not None)
                  or (policy.natural and recovery_receipt_id is None),
                  "trial_producer_recovery_configuration_invalid")
@@ -183,7 +191,7 @@ class TrialNaturalProducerAdapter:
         # query alone would not establish that an older pending item is latest.
         posts = await self.x_client.get_recent_tweets(source.handle, hours=24,
             max_results=100, since_id=None, require_complete=True)
-        if trial_identity_policy(self.trial_id).latest_standalone:
+        if self.owner.plan.identity_policy.latest_standalone:
             # X may return a reply despite exclude=replies. Only this new
             # identity defines latest as the newest non-reply/non-retweet.
             # Reject ambiguous evidence before filtering; never relabel it.
@@ -218,10 +226,23 @@ class TrialNaturalProducerAdapter:
                         and post["id"].isdigit()]
         eligible_ids = [int(post["id"]) for post in eligible if isinstance(post.get("id"), str)
                         and post["id"].isdigit()]
-        if trial_identity_policy(self.trial_id).natural and not observed_ids:
+        if self.owner.plan.identity_policy.natural and not observed_ids:
             return None  # An empty timeline cannot prove the pending source is latest.
         if observed_ids and (not eligible_ids or max(observed_ids) != max(eligible_ids)):
             return None
+        latest_observed = None
+        if self.owner.plan.natural_once:
+            latest_observed = max(eligible, key=lambda post: int(post["id"]))
+            # A newer cached cursor absent from this complete fresh timeline
+            # is not evidence for a current original (it may have been deleted).
+            if (state.last_cursor is not None and (type(state.last_cursor) is not str
+                    or not state.last_cursor.isdigit()
+                    or int(state.last_cursor) > int(latest_observed["id"]))):
+                return None
+            if not meets_source_text_minimum(latest_observed.get("text")):
+                # Structural minimum only, not factual/semantic approval. Never
+                # replace an insufficient latest original with older news.
+                return None
         latest_cursor = OfficialXDailyRunner._newest_cursor(eligible, state.last_cursor)
         self._before_effect(before_effect)
         state = await self.repository.record_trial_official_sources(workspace_id=self.workspace_id,
@@ -237,6 +258,19 @@ class TrialNaturalProducerAdapter:
             skip_patterns=config.routing.skip_patterns)
         if selected is None:
             return None
+        if self.owner.plan.natural_once:
+            if (not meets_source_text_minimum(selected.get("text"))
+                    or any(selected.get(key) != latest_observed.get(key)
+                        for key in ("id", "url", "source_image_url", "media", "is_note_tweet"))
+                    or selected["text"].strip() != latest_observed["text"].strip()):
+                return None
+            try:
+                observed_at = datetime.fromisoformat(latest_observed["created_at"].replace("Z", "+00:00"))
+                selected_at = datetime.fromisoformat(selected["created_at"].replace("Z", "+00:00"))
+                if observed_at.utcoffset() is None or selected_at != observed_at:
+                    return None
+            except (ValueError, TypeError, AttributeError, KeyError):
+                return None
         try:
             image = _pinned_source_image_url(selected)
         except (TypeError, ValueError):
@@ -366,7 +400,8 @@ class TrialNaturalProducerAdapter:
         _require(type(slot) is NaturalSlot and slot.workspace_id == self.workspace_id
                  and slot.client_id in self.owner.plan.eligible_clients
                  and slot.kst_date == self.owner.plan.kst_date
-                 and WORKER.fullmatch(worker_id or "") and worker_id == f"ybo-trial:{self.trial_id}"
+                 and WORKER.fullmatch(worker_id or "")
+                 and worker_id == trial_worker_id(self.owner.plan, slot.request_id)
                  and callable(before_effect))
         _require(slot.client_id == "babylon", "trial_producer_successor_client_unsupported")
         for value in slot.identifiers().values(): _uuid(value)
@@ -462,7 +497,7 @@ class TrialNaturalProducerAdapter:
         slot = prepared.slot
         started = _window(self.clock(), self.owner.plan)
         _require(slot.client_id == "babylon" and slot.kst_date == self.owner.plan.kst_date
-                 and prepared.worker_id == f"ybo-trial:{self.trial_id}")
+                 and prepared.worker_id == trial_worker_id(self.owner.plan, slot.request_id))
         _require(request_digest(slot.client_id, prepared.payload) == prepared.payload_sha256,
                  "trial_producer_payload_changed")
         _require(self.owner.generation_authorized(slot.client_id, slot.identifiers(),

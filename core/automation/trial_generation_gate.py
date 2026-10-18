@@ -17,7 +17,7 @@ from uuid import UUID
 
 from core.automation.news_generation_journal import request_digest
 from core.automation.trial_owner import TrialError, TrialOwner, TrialPlan
-from core.content_ops.trial_window import TRIAL_ID, trial_clients
+from core.content_ops.trial_window import TRIAL_ID
 
 
 class TrialGenerationDenied(ValueError):
@@ -61,6 +61,10 @@ class TrialGenerationGate:
                 raise TrialGenerationDenied("trial_generation_disabled")
             payload = json.loads(env["YBO_TRIAL_PLAN_JSON"])
             plan = TrialPlan.from_mapping(payload, env["YBO_TRIAL_PLAN_SHA256"])
+            if plan.natural_once and env["YBO_TRIAL_PLAN_JSON"] != plan.payload_json:
+                # Reject duplicate JSON keys and alternate serializations for
+                # the new trusted contract. Historical configuration is intact.
+                raise TrialGenerationDenied("trial_generation_owner_unavailable")
             if plan.trial_id == TRIAL_ID:
                 receipt_id = env["YBO_PRESERVED_BABYLON_RECEIPT_ID"]
                 if (not isinstance(receipt_id, str) or str(UUID(receipt_id)) != receipt_id
@@ -71,6 +75,7 @@ class TrialGenerationGate:
             release = env.get("RAILWAY_GIT_COMMIT_SHA", "")
             if (not re.fullmatch(r"[a-f0-9]{40}", release)
                     or release != plan.payload["release_sha"]
+                    or (plan.natural_once and env.get("QUALITY_BANNER_RELEASE_SHA") != release)
                     or stamp_reader() != release):
                 raise TrialGenerationDenied("trial_generation_release_mismatch")
             root = Path(env["NEWS_CARD_IDEMPOTENCY_JOURNAL_ROOT"])
@@ -95,7 +100,7 @@ class TrialGenerationGate:
         phase that the trusted orchestrator reserved after exact SQL claim.
         """
         try:
-            clients = trial_clients(self.plan.trial_id)
+            clients = self.plan.eligible_clients
         except ValueError:
             raise TrialGenerationDenied("trial_generation_not_admitted") from None
         if trial_id != self.plan.trial_id or client_id not in clients:

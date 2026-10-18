@@ -4,6 +4,7 @@
 import { currentStudioReleaseSha } from "./studio-release.mts";
 import { trialIdentityPolicy, configuredTrialWindow, trialWindowUnchanged, withinTrialWindow } from "./content-ops-trial-window.mts";
 import { YBO_TRIAL_REQUIRED_OFF_FLAGS } from "./ybo-trial-preflight.mts";
+import { trustedNaturalOncePolicy, naturalOncePolicyUnchanged } from "./babylon-natural-once.mts";
 
 type Json = Record<string, any>;
 type Env = (name: string) => string | undefined;
@@ -35,10 +36,14 @@ export async function admitTrialGeneration(options: {
   const fetcher = options.fetcher ?? fetch, clock = options.clock ?? Date.now;
   const release = options.release === undefined ? currentStudioReleaseSha() : options.release;
   const trialId = req.headers.get("x-ybo-trial-id"), plan = req.headers.get("x-ybo-trial-plan-sha256");
-  const identityPolicy = trialIdentityPolicy(trialId);
+  // Only this generation seam accepts the explicit trusted natural-once
+  // contract; generic trial identities/courier paths remain closed.
+  let naturalOnce: ReturnType<typeof trustedNaturalOncePolicy>;
+  try { naturalOnce = trustedNaturalOncePolicy(env); } catch { throw new TrialGenerationError(); }
+  const identityPolicy = naturalOnce?.policy ?? trialIdentityPolicy(trialId);
   const collectOnly = req.headers.get("x-ybo-trial-collect-only");
   const secret = env("API_SECRET"), rawApi = env("RAILWAY_API_URL"), configuredApi = (rawApi || API).replace(/\/+$/, "");
-  const bounds = configuredTrialWindow(env, "YBO_TRIAL");
+  const bounds = naturalOnce?.bounds ?? configuredTrialWindow(env, "YBO_TRIAL");
   const url = new URL(req.url), deploy = runtime?.deploy;
   requireTrue(automation && identityPolicy && identityPolicy.clientIds.includes(clientId) && UUID.test(requestId)
     && (collectOnly === null || collectOnly === "true")
@@ -77,7 +82,8 @@ export async function admitTrialGeneration(options: {
       && env("YBO_TRIAL_GENERATION_GATEWAY_ENABLED") === "true"
       && YBO_TRIAL_REQUIRED_OFF_FLAGS.every(key => env(key) === "false")
       && env("YBO_TRIAL_ID") === trialId && env("YBO_TRIAL_PLAN_SHA256") === plan
-      && env("YBO_TRIAL_RELEASE_SHA") === release && env("RAILWAY_API_URL") === rawApi && env("API_SECRET") === secret);
+      && env("YBO_TRIAL_RELEASE_SHA") === release && env("RAILWAY_API_URL") === rawApi && env("API_SECRET") === secret
+      && (!naturalOnce || naturalOncePolicyUnchanged(env, naturalOnce)));
     return now;
   }
   async function assertActive() {

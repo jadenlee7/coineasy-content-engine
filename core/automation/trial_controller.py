@@ -24,7 +24,7 @@ from core.automation.repository import SupabaseAutomationRepository
 from core.automation.trial_generation_gate import TrialGenerationGate
 from core.automation.trial_manifest import TrialManifestStore
 from core.automation.trial_owner import CLIENTS, canonical_sha256
-from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter
+from core.automation.trial_producer_adapter import TrialNaturalProducerAdapter, trial_worker_id
 from core.sources.x_client import XClient
 
 class TrialControllerBlocked(ValueError):
@@ -298,7 +298,7 @@ class HostedTrialController:
                     continue
                 stage = "claim"
                 prepared = await self.producer.claim_and_prepare(slot,
-                    worker_id=f"ybo-trial:{self.gate.plan.trial_id}", before_effect=self.guard)
+                    worker_id=trial_worker_id(self.gate.plan, slot.identifiers()["request_id"]), before_effect=self.guard)
                 require(self.owner.reserve_phase(self.admission, f"{client}:generate", client,
                     prepared.payload_sha256, self.guard(), identifiers=slot.identifiers()))
                 # The existing account-bound durable image ledger admits and
@@ -321,6 +321,13 @@ class HostedTrialController:
             if not entries:
                 require(self.owner.terminate(self.admission, "completed", self.guard()))
                 return {**result, "status": "completed_no_new_source"}
+            if self.gate.plan.natural_once:
+                # Generation is complete, not permission to send. A separately
+                # scoped exact-version private canary owns duplicate checks and
+                # staff delivery after source/copy/visual review. Never widen
+                # the historical trial courier or publish a new trial manifest.
+                require(self.owner.terminate(self.admission, "completed", self.guard()))
+                return {**result, "status": "ready_for_private_review", "effective_on": False}
             stage = "manifest"
             for entry in entries:
                 artifact = {k: v for k, v in entry.items() if k != "job_id"}
