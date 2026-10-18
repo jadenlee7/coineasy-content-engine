@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
+from core.automation.babylon_source_intake import (
+    BabylonIntakeError,
+    select_babylon_intake_posts,
+)
 from core.automation.content_signals import (
     ContentSignalsError,
     ContentSignalsSnapshot,
@@ -291,6 +295,8 @@ class OfficialXDailyRunner:
                 self._error(summary, client_id, "x_temporarily_unavailable")
             except AutomationRepositoryError as exc:
                 self._error(summary, client_id, exc.code)
+            except BabylonIntakeError as exc:
+                self._error(summary, client_id, f"babylon_intake_{exc.code}")
             except (FileNotFoundError, ValueError):
                 self._error(summary, client_id, "automation_client_configuration_invalid")
             except Exception:
@@ -447,7 +453,13 @@ class OfficialXDailyRunner:
             fresh_posts = None
 
         queueable_fresh_posts = fresh_posts
-        if client_id == "origintrail" and fresh_posts is not None:
+        if client_id == "babylon" and fresh_posts is not None:
+            # X's exclude parameter is not a postcondition. Validate first,
+            # then exclude known replies/retweets without advancing past them.
+            queueable_fresh_posts = select_babylon_intake_posts(
+                fresh_posts, state.last_cursor,
+            )
+        elif client_id == "origintrail" and fresh_posts is not None:
             queueable_fresh_posts = tuple(
                 post
                 for post in fresh_posts
@@ -481,7 +493,7 @@ class OfficialXDailyRunner:
                     self._source_payload(
                         post,
                         include_standalone_signals=(
-                            client_id in {"origintrail", "squid"}
+                            client_id in {"origintrail", "squid", "babylon"}
                         ),
                     )
                     for post in queueable_fresh_posts or ()
