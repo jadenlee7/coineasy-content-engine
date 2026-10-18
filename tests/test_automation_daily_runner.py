@@ -2022,6 +2022,7 @@ async def test_dry_run_merges_fresh_post_over_pending_copy_without_writes():
         "url": stale.source_url,
         "is_retweet": False,
         "is_reply": False,
+        "is_quote": False,
         "is_note_tweet": False,
         "metrics": {"like_count": 5},
         "media": [],
