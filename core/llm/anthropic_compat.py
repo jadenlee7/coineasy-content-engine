@@ -49,6 +49,8 @@ def _default_thinking(model: str) -> Optional[dict[str, Any]]:
         return None
     if os.environ.get("LLM_THINKING", "").strip().lower() == "adaptive":
         return {"type": "adaptive"}
+    if model.strip().lower() == "claude-sonnet-5-5":
+        return {"type": "between_tools"}
     return {"type": "disabled"}
 
 

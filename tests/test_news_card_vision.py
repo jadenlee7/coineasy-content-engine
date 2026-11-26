@@ -176,7 +176,7 @@ def test_squid_visual_is_sent_to_llm_with_translation_only_guidance(monkeypatch)
     assert 0 < calls[1]["timeout"] <= 8.0
     audit_content = calls[2]["messages"][0]["content"]
     assert calls[2]["system"].startswith("You are the final visual replacement QA")
-    assert calls[2]["model"] == "claude-sonnet-4-5-20250929"
+    assert calls[2]["model"] == "claude-sonnet-5-5"
     assert calls[2]["temperature"] == 0
     assert 0 < calls[2]["timeout"] <= 8.0
     assert audit_content[0]["source"]["data"] == "aW1hZ2U="
@@ -1941,7 +1941,7 @@ def test_squid_stable_discovery_overrides_a_valid_but_wrong_main_candidate(monke
     )
 
     assert len(calls) == 3
-    assert calls[1]["model"] == "claude-sonnet-4-5-20250929"
+    assert calls[1]["model"] == "claude-sonnet-5-5"
     assert calls[1]["temperature"] == 0
     assert calls[1]["system"].startswith("You are a deterministic visual-copy localizer")
     assert "Include short meme/slang captions" in calls[1]["messages"][0]["content"][1]["text"]
