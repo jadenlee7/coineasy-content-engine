@@ -169,7 +169,7 @@ Return STRICT JSON ONLY in the requested schema. No markdown or commentary."""
 # Deliberately NOT bumped to Opus 5: temperature=0 determinism is the point here.
 VISUAL_PLACEMENT_AUDIT_MODEL = os.environ.get(
     "VISUAL_PLACEMENT_AUDIT_MODEL",
-    "claude-sonnet-4-5-20250929",
+    "claude-sonnet-5-5",
 )
 # Railway may spend up to 12s fetching the source image before this function,
 # then still needs deterministic cleanup and a bounded Playwright render. Keep

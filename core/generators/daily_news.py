@@ -47,7 +47,7 @@ Return ONLY the JSON object."""
 class DailyNewsGenerator:
     def __init__(self):
         self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        self.model = os.getenv("DAILY_NEWS_MODEL", "claude-opus-5")
+        self.model = os.getenv("DAILY_NEWS_MODEL", "claude-sonnet-5-5")
 
     async def filter_tweets(self, tweets: List[Dict]) -> List[Dict]:
         """LLM-filter tweets to keep only meaningful announcements."""
